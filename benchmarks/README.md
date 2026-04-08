@@ -130,6 +130,21 @@ What it does not measure:
 - filesystem or network I/O
 - long-running application throughput
 
+### `http-loopback`
+Starts a small local HTTP server, performs a fixed number of loopback requests against it, and prints a deterministic checksum.
+
+What it isolates:
+- local HTTP request/response overhead in a small one-shot process
+- runtime behavior across a basic built-in networking path
+- a more representative server/client surface than startup-only baselines
+
+What it does not measure:
+- real network conditions
+- TLS/HTTPS behavior
+- production throughput
+- websocket behavior
+- framework or router overhead
+
 ### `timers-settimeout-chain`
 
 Chains 200 sequential `setTimeout(fn, 0)` calls. Each callback fires, increments a counter, and schedules the next timer. Prints a deterministic checksum when the chain completes.
