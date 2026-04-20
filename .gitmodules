@@ -10,7 +10,7 @@
 	url = git@github.com:wasmerio/examples.git
 [submodule "napi"]
 	path = napi
-	url = git@github.com:wasmerio/napi.git
+	url = git@github.com:sadhbh-c0d3/napi.git
 	branch = main
 [submodule "ssl-certs"]
 	path = ssl-certs
