@@ -2,6 +2,7 @@
 
 UNAME_S := $(shell uname -s)
 BUILD_NAPI_DIR ?= build-v8-napi
+BUILD_NAPI_QUICKJS_DIR ?= build-quickjs-napi
 BUILD_DIR ?= build-edge
 DIST_DIR ?= dist
 DIST_BIN_DIR ?= $(DIST_DIR)/bin
@@ -39,6 +40,15 @@ EDGE_WASMER_PACKAGE ?= wasmer/edgejs@=$(EDGE_PACKAGE_VERSION)
 ifeq ($(UNAME_S),Darwin)
 BUILD_ENV := env -u CPPFLAGS -u LDFLAGS
 endif
+
+build-napi-quickjs:
+	$(BUILD_ENV) cmake -S napi/quickjs -B $(BUILD_NAPI_QUICKJS_DIR) -DCMAKE_BUILD_TYPE=$(CMAKE_BUILD_TYPE) $(EXTRA_CMAKE_ARGS) $(CMAKE_ARGS)
+	$(BUILD_ENV) cmake --build $(BUILD_NAPI_QUICKJS_DIR) -j$(JOBS)
+
+test-napi-quickjs: build-napi-quickjs test-napi-quickjs-only
+
+test-napi-quickjs-only:
+	$(BUILD_ENV) ctest --test-dir $(BUILD_NAPI_QUICKJS_DIR) --output-on-failure -R '^napi_quickjs\.'
 
 build-napi:
 	$(BUILD_ENV) cmake -S napi/v8 -B $(BUILD_NAPI_DIR) -DCMAKE_BUILD_TYPE=$(CMAKE_BUILD_TYPE) $(EXTRA_CMAKE_ARGS) $(CMAKE_ARGS)
