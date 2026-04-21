@@ -41,6 +41,10 @@ ifeq ($(UNAME_S),Darwin)
 BUILD_ENV := env -u CPPFLAGS -u LDFLAGS
 endif
 
+build-quickjs:
+	$(BUILD_ENV) cmake -S quickjs -B $(BUILD_NAPI_QUICKJS_DIR)/quickjs -DCMAKE_BUILD_TYPE=$(CMAKE_BUILD_TYPE) $(EXTRA_CMAKE_ARGS) $(CMAKE_ARGS)
+	$(BUILD_ENV) cmake --build $(BUILD_NAPI_QUICKJS_DIR)/quickjs -j$(JOBS)
+
 build-napi-quickjs:
 	$(BUILD_ENV) cmake -S napi/quickjs -B $(BUILD_NAPI_QUICKJS_DIR) -DCMAKE_BUILD_TYPE=$(CMAKE_BUILD_TYPE) $(EXTRA_CMAKE_ARGS) $(CMAKE_ARGS)
 	$(BUILD_ENV) cmake --build $(BUILD_NAPI_QUICKJS_DIR) -j$(JOBS)
