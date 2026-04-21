@@ -17,4 +17,4 @@
 	url = https://github.com/wasix-org/ssl-certs.git
 [submodule "quickjs"]
 	path = quickjs
-	url = git@github.com:quickjs-ng/quickjs.git
+	url = git@github.com:sadhbh-c0d3/quickjs.git
