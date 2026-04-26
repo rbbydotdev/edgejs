@@ -815,3 +815,54 @@ Next steps in priority order:
 1. Bun delta comparison to identify any remaining JS surfaces worth targeting
 2. Host-side deferral only if future profiling shows a clear >1ms target
 3. Evaluate an Edge-specific startup snapshot pipeline as the next major investment
+
+## Pass 5 Investigation: `internal/timers` load-order reordering
+
+### Hypothesis
+
+`lib/internal/bootstrap/node.js` requires `internal/timers` at line 69 — the very first `require()` call in the entire bootstrap sequence. `lib/timers.js` (loaded at line 232) also requires `internal/timers`. The theory: if the eager line-69 require is removed and `internal/timers` is instead inlined at the `setupTimers` call site (~line 361), its first load moves to line 232 via `require('timers')`. At that point, two of `internal/timers`'s own dependencies — `internal/async_hooks` (loaded at line 226) and `internal/validators` (loaded at line 72) — would already be in the builtin module registry, potentially removing their first-load cost from the `internal/timers` trace bucket.
+
+### Trace findings
+
+Load-order analysis confirmed:
+
+- `internal/timers` is loaded at `bootstrap/node:69`, the first `require()` in bootstrap, called from `BuiltinModule.compileForInternalLoader` inside the realm bootstrap machinery.
+- At that point `require.cache` holds 0 entries — Edge.js's builtin module loader uses its own internal registry, not `require.cache`. Load-order must be determined from source, not runtime cache inspection.
+- The one dependency already in the builtin registry at line 69 is `internal/errors`, loaded earlier by `realm.js`.
+- All other `internal/timers` dependencies are not yet loaded at line 69:
+  - `internal/async_hooks`
+  - `internal/validators`
+  - `internal/linkedlist`
+  - `internal/priority_queue`
+  - `internal/util/inspect`
+  - `internal/util/debuglog`
+  - `internal/async_context_frame`
+
+The premise of the hypothesis was therefore correct: all seven deps are cold at line 69. Moving the load to line 232 would find `internal/async_hooks` and `internal/validators` cached, but the remaining five would still be cold.
+
+### What was changed
+
+- Removed: `const internalTimers = require('internal/timers');` at line 69 of `lib/internal/bootstrap/node.js`.
+- Added inline at the `setupTimers` block (~line 361): `require('internal/timers').getTimerCallbacks(runNextTicks)`.
+- Result: the first load of `internal/timers` moves to line 232, where `timers.js` triggers it, with `internal/async_hooks` and `internal/validators` already cached.
+
+### Measurement
+
+Method: `hyperfine --warmup 10 --runs 80`, baseline and candidate binaries built separately.
+
+| workload | baseline | candidate | delta |
+|---|---|---|---|
+| `edge -e ""` | 34.8ms ± 0.6ms | 34.8ms ± 0.5ms | 0.0ms / 0.0% |
+| `edge benchmarks/workloads/empty-startup.js` | 35.3ms ± 1.0ms | 35.4ms ± 1.5ms | +0.1ms (within noise) |
+
+Result: no measurable wall-clock improvement. Change reverted.
+
+### Why no wall-clock win
+
+The `bootstrap.node.top-level.require-internal-timers` trace bucket (~2.9ms) is dominated by the initialization work inside `internal/timers` itself — constructing the `PriorityQueue`, `TimersList`, `timerListQueue`, `timerListMap`, and `knownTimersById` structures — not by loading its transitive dependencies. Saving two dep loads (`internal/async_hooks` and `internal/validators`) eliminates only a sub-noise fraction of that bucket. Reordering when `internal/timers` loads cannot move the initialization work; it only changes which other modules are cached at the time of load.
+
+The remaining five cold deps (`internal/linkedlist`, `internal/priority_queue`, `internal/util/inspect`, `internal/util/debuglog`, `internal/async_context_frame`) are still paid regardless. The net dep-load savings from the reordering are too small to register against measurement noise.
+
+### Lesson
+
+Trace bucket size is not equivalent to dep-load cost. Before attempting a load-order reorder, verify that dep loads — not the module's own initialization — account for a meaningful fraction of the bucket. For `internal/timers`, initialization is the driver. The bucket cannot be meaningfully reduced by reordering without a snapshot approach that eliminates the initialization work at launch time entirely.
