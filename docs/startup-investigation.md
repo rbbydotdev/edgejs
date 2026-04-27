@@ -866,3 +866,58 @@ The remaining five cold deps (`internal/linkedlist`, `internal/priority_queue`, 
 ### Lesson
 
 Trace bucket size is not equivalent to dep-load cost. Before attempting a load-order reorder, verify that dep loads — not the module's own initialization — account for a meaningful fraction of the bucket. For `internal/timers`, initialization is the driver. The bucket cannot be meaningfully reduced by reordering without a snapshot approach that eliminates the initialization work at launch time entirely.
+
+## Pass 6 Investigation: Host-Side C++ (N-API + OpenSSL)
+
+### Hypothesis
+
+Two host-side C++ buckets had not been traced at sub-phase granularity:
+- `cli.env.create-napi-env` (~1.2–1.5ms trace): driven by V8 isolate + context creation, N-API wrapper
+- `cli.env.openssl-init` (~0.7ms trace): config-file loading + CSPRNG check
+
+### N-API sub-phase trace results (median over 10 runs)
+
+| sub-phase | edge -e "" | empty-startup.js | action |
+|---|---|---|---|
+| cli.env.napi.acquire-runtime | 0.461 ms | 0.513 ms | unavoidable (V8 platform init) |
+| cli.env.napi.isolate-params | 0.011 ms | 0.012 ms | below gate — sysconf not the bottleneck |
+| cli.env.napi.create-isolate | 0.498 ms | 0.575 ms | unavoidable (V8 isolate alloc) |
+| cli.env.napi.create-context | 0.233 ms | 0.230 ms | unavoidable for eval path |
+| cli.env.napi.env-from-context | 0.012 ms | 0.011 ms | negligible |
+
+### OpenSSL sub-phase trace results (median over 10 runs)
+
+| sub-phase | edge -e "" | empty-startup.js | action |
+|---|---|---|---|
+| cli.env.openssl.load-config | 0.123 ms | 0.136 ms | attempted fast path — no wall-clock win |
+| cli.env.openssl.csprng-check | (traced separately) | (traced separately) | keep unconditional |
+
+### Changes attempted
+
+- **Task 5 (sysconf caching in `edge_napi_embedder_hooks.cc`)**: SKIPPED — `cli.env.napi.isolate-params`
+  median is 0.011ms, well below the 0.1ms gate. `DetectTotalMemory()` is not the bottleneck.
+- **Task 6 (OpenSSL no-config fast path in `edge_runtime.cc`)**: ATTEMPTED then REVERTED — trace showed
+  0.12–0.14ms, which cleared the gate, but A/B hyperfine showed no measurable wall-clock difference
+  (σ bands fully overlap on both workloads).
+
+### Measurement (hyperfine --warmup 10 --runs 80)
+
+| workload | baseline | Pass 6 candidate | delta |
+|---|---|---|---|
+| `edge -e ""` | 34.6ms ± 0.6ms | 34.5ms ± 0.5ms | -0.1ms (-0.3%) |
+| `edge empty-startup.js` | 34.8ms ± 0.7ms | 34.9ms ± 0.7ms | +0.1ms (+0.3%) |
+
+### Outcome
+
+REVERTED — no change committed. σ bands fully overlap; sub-0.2ms trace deltas do not survive
+wall-clock measurement noise.
+
+### Lesson
+
+The remaining host-side C++ costs are dominated by V8 internals: isolate allocation (~0.5ms),
+context creation (~0.23ms), and runtime platform init (~0.47ms). These are structurally
+unavoidable without a startup snapshot pipeline. Sub-phase tracing confirmed that the previously
+opaque `cli.env.create-napi-env` (~1.2ms) is almost entirely V8, not Edge-owned C++. The only
+Edge-owned host-side cost that cleared the trace gate (OpenSSL config-load, ~0.13ms) did not
+produce a measurable wall-clock win — consistent with the pattern from Passes 4–5 where
+sub-0.2ms trace savings are absorbed by system noise.
