@@ -49,6 +49,9 @@ if(TARGET napi_v8 AND NAPI_V8_LIBRARY)
     if(NAPI_V8_DEFINES)
       target_compile_definitions(${target_name} PRIVATE ${NAPI_V8_DEFINES})
     endif()
+    if(ENABLE_TRACING)
+      target_compile_definitions(${target_name} PRIVATE ENABLE_TRACING=1)
+    endif()
     # Keep a stable path to the generated CTest manifest for this target.
     set(_gtest_tests_manifest "${CMAKE_CURRENT_BINARY_DIR}/${target_name}[1]_tests.cmake")
     gtest_discover_tests(

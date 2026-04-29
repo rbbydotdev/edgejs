@@ -687,7 +687,9 @@ This investigation did not change:
 
 ## Pass 3 Changes
 
-Three new changes land in this pass.
+Two native-only changes land in this pass. A larger source-map lazy-load
+prototype was measured but is not kept in this branch because it requires
+modifying Node `lib` files.
 
 ### 1. Single-pass `ApplySupportedV8Flags`
 
@@ -719,54 +721,38 @@ Why this helps:
 - Avoids constructing `std::string` temporaries from raw `const char*` argv values for simple equality checks.
 - Even with SSO, each construction and destruction has overhead. The fast-path checks for `--version`, `--help`, `--safe`, `--test`, and separator tokens (`--`, `-`) are on every startup path and previously paid this cost unconditionally.
 
-### 3. Lazy `internal/source_map/source_map_cache` loading
+### 3. Source-map lazy-load prototype, not kept
 
-Files:
+The source-map prototype deferred `internal/source_map/source_map_cache` by
+changing `lib/internal/bootstrap/node.js`, `lib/internal/process/pre_execution.js`,
+and later `lib/internal/process/execution.js`.
 
-- `lib/internal/bootstrap/node.js`
-- `lib/internal/process/pre_execution.js`
+Measured A/B showed a large startup win:
 
-Change:
-
-- `node.js` no longer eagerly requires `internal/source_map/source_map_cache` at bootstrap.
-  - `process.sourceMapsEnabled` getter is now backed by a lazy loader.
-  - `process.setSourceMapsEnabled` function lazily loads the module on first call.
-  - The `setMaybeCacheGeneratedSourceMap` C++ callback now receives a thunk that loads the module on first actual use.
-- `pre_execution.js` `initializeSourceMapsHandlers()` now returns early when `--enable-source-maps` is not set and `NODE_V8_COVERAGE` is not active, skipping the module require entirely.
-
-Why this is safe:
-
-- The `source_map_cache.js` module initializes `sourceMapsSupport` to `{enabled: false, ...}` by default.
-- Skipping `setSourceMapsSupport(false, ...)` is safe because calling it only sets the state that is already the default.
-- The `maybeCacheGeneratedSourceMap` callback checks `support.enabled` before doing anything; even if called via the thunk when source maps are off, it returns immediately.
-- `NODE_V8_COVERAGE` is explicitly preserved as a trigger for loading the module, since the source map cache is also used for code coverage output.
-
-Measured A/B (hyperfine --warmup 10 --runs 80):
-
-| workload | before (Pass 2 baseline) | after (Pass 3) | delta |
+| workload | before prototype | after prototype | delta |
 |---|---|---|---|
-| `edge -e ""` | 40.9ms ± 1.0ms | 35.1ms ± 0.8ms | −5.8ms / −14% |
-| `edge benchmarks/workloads/empty-startup.js` | 40.2ms ± 0.7ms | 34.4ms ± 0.7ms | −5.8ms / −14% |
+| `edge -e ""` | 40.9ms +/- 1.0ms | 35.1ms +/- 0.8ms | -5.8ms / -14% |
+| `edge benchmarks/workloads/empty-startup.js` | 40.2ms +/- 0.7ms | 34.4ms +/- 0.7ms | -5.8ms / -14% |
 
-Unlike previous JS lazy-load experiments that shifted cost between trace buckets, the source map deferral produces a real wall-clock reduction. The `internal/source_map/source_map_cache` module is not loaded at all on the default path, eliminating its first-load cost entirely rather than moving it.
+This branch does not keep that optimization because the project currently wants
+the `lib` files to match Node.js. The measurement remains useful evidence that
+source-map setup is a real startup hotspot, but any future version needs a
+native-side design that preserves the upstream JS files.
 
-Risk and caveats:
+## Cumulative Results Kept In This Branch
 
-- The `setSourceMapsSupport(false, ...)` call also invokes `setInternalPrepareStackTrace(defaultPrepareStackTrace)`, which sets the V8 prepare-stack-trace hook. Skipping this means the hook set during `realm.js` bootstrap remains. If that hook is already the same as `defaultPrepareStackTrace`, this is a no-op. Test suite coverage should catch any regression.
-- Any code path that accesses `process.sourceMapsEnabled` or calls `process.setSourceMapsEnabled` before `initializeSourceMapsHandlers` would now trigger the lazy load. This is correct behavior but would shift the cost to that access point.
+| workload | original baseline | kept branch result | total delta |
+|---|---|---|---|
+| `edge -e ""` | 41.6ms | 40.9ms | -0.7ms / -1.7% |
+| `edge benchmarks/workloads/empty-startup.js` | 40.4ms | 40.2ms | -0.2ms / -0.5% |
 
-## Cumulative Results Across All Passes
-
-| workload | original baseline | after Pass 1+2 | after Pass 3 | total delta |
-|---|---|---|---|---|
-| `edge -e ""` | 41.6ms | 40.9ms | 35.1ms | −6.5ms / −16% |
-| `edge benchmarks/workloads/empty-startup.js` | 40.4ms | 40.2ms | 34.4ms | −6.0ms / −15% |
-
-The source map lazy-load change (Pass 3) is the largest single contributor, accounting for ~5.8ms of the total ~6ms gain.
+The larger source-map numbers above are not included in the kept branch result
+because that prototype touched `lib` files.
 
 ## Pass 4 Investigation: source_map_cache residual load
 
-After Pass 3, further investigation traced whether `source_map_cache` was still being loaded at startup.
+After the source-map prototype, further investigation traced whether
+`source_map_cache` was still being loaded at startup.
 
 ### Tracing technique
 
@@ -789,7 +775,7 @@ Three approaches were tested:
 
 1. Make `maybeCacheSourceMap` lazy in `lib/internal/modules/esm/utils.js` — no measurable improvement (`is_main_thread.js` loaded `esm/utils` which loaded `source_map_cache`)
 2. Make `maybeCacheSourceMap` lazy in `lib/internal/modules/cjs/loader.js` — no measurable improvement (CJS loader is loaded after the `is_main_thread.js` path)
-3. Fix `evalScript` / `evalTypeScript` in `execution.js` to use `ObjectGetOwnPropertyDescriptor` instead of accessing the lazy getter — **correct fix, committed**, but no measurable improvement
+3. Fix `evalScript` / `evalTypeScript` in `execution.js` to use `ObjectGetOwnPropertyDescriptor` instead of accessing the lazy getter - correct, but not kept because it modifies `lib`
 
 ### Why no wall-clock win
 
@@ -803,8 +789,8 @@ The `EDGE_STARTUP_TRACE=1 + new Error().stack` trace technique reliably finds wh
 
 Right now, the evidence suggests:
 
-- JS lazy-load wins are now mostly exhausted at the current startup cost baseline
-- The `execution.js` lazy getter fix is committed (`19bc9c14`) and is a correct behavioral improvement even without a large measurable speedup
+- JS lazy-load wins are mostly exhausted unless the project accepts targeted `lib` changes or grows a native-side equivalent
+- The `execution.js` lazy getter fix was validated but is not kept because it modifies `lib`
 - Remaining named JS phases (timers ~2.9ms, realm ~3ms, primordials ~2.6ms, thread switch ~2.1ms) are structurally unavoidable without a snapshot approach
 - The remaining high-value work is:
   - build-time startup snapshot/preinit (eliminates most of realm bootstrap cost)

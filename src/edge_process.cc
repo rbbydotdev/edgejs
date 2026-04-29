@@ -4964,9 +4964,11 @@ void ReportBindingFinalize(napi_env env, void* data, void* hint) {
 
 }  // namespace
 
+#if defined(ENABLE_TRACING)
 uint64_t EdgeGetProcessStartTimeNanoseconds() {
   return g_process_start_time_ns;
 }
+#endif
 
 void EdgeSetProcessArgv0(const std::string& argv0) {
   g_edge_argv0 = argv0;

@@ -90,6 +90,7 @@ bool EdgeIsTruthyEnvVar(const char* value) {
          normalized != "off";
 }
 
+#if defined(ENABLE_TRACING)
 class CliStartupTracer {
  public:
   CliStartupTracer()
@@ -124,6 +125,11 @@ void CliStartupTraceForward(void* data, const char* phase) {
   auto* tracer = static_cast<CliStartupTracer*>(data);
   if (tracer != nullptr) tracer->Mark(phase);
 }
+#define EDGE_STARTUP_TRACE(tracer, phase) (tracer).Mark((phase))
+#else
+struct CliStartupTracer {};
+#define EDGE_STARTUP_TRACE(tracer, phase) ((void)0)
+#endif
 
 struct RuntimeInitOptions {
   const std::vector<std::string>* raw_exec_argv = nullptr;
@@ -168,21 +174,21 @@ int RunWithFreshEnv(const std::function<int(napi_env)>& runner,
                    std::string* error_out,
                    const RuntimeInitOptions& options = {}) {
   CliStartupTracer startup_trace;
-  startup_trace.Mark("cli.env.begin");
+  EDGE_STARTUP_TRACE(startup_trace, "cli.env.begin");
   if (options.initialize_openssl) {
     const std::vector<std::string>* effective_exec_argv = options.effective_exec_argv;
     edge_options::EffectiveCliState derived_effective_state;
     if (effective_exec_argv == nullptr) {
-      startup_trace.Mark("cli.env.openssl.build-effective-state.begin");
+      EDGE_STARTUP_TRACE(startup_trace, "cli.env.openssl.build-effective-state.begin");
       derived_effective_state = edge_options::BuildEffectiveCliState(
           options.raw_exec_argv != nullptr ? *options.raw_exec_argv
                                            : std::vector<std::string>{});
-      startup_trace.Mark("cli.env.openssl.build-effective-state.end");
+      EDGE_STARTUP_TRACE(startup_trace, "cli.env.openssl.build-effective-state.end");
       effective_exec_argv =
           (derived_effective_state.ok ? &derived_effective_state.effective_tokens
                                       : options.raw_exec_argv);
     } else {
-      startup_trace.Mark("cli.env.openssl.use-precomputed-effective-state");
+      EDGE_STARTUP_TRACE(startup_trace, "cli.env.openssl.use-precomputed-effective-state");
     }
 
     if (effective_exec_argv == nullptr) {
@@ -192,27 +198,27 @@ int RunWithFreshEnv(const std::function<int(napi_env)>& runner,
       return 1;
     }
 
-    startup_trace.Mark("cli.env.openssl.configure.begin");
+    EDGE_STARTUP_TRACE(startup_trace, "cli.env.openssl.configure.begin");
     if (!EdgeInitializeOpenSslForExecArgv(
             *effective_exec_argv,
             false,
             error_out)) {
       return 1;
     }
-    startup_trace.Mark("cli.env.openssl.configure.end");
+    EDGE_STARTUP_TRACE(startup_trace, "cli.env.openssl.configure.end");
 
     if (options.validate_openssl_csprng) {
-      startup_trace.Mark("cli.env.openssl.csprng-check.begin");
+      EDGE_STARTUP_TRACE(startup_trace, "cli.env.openssl.csprng-check.begin");
       EdgeValidateOpenSslCsprng();
-      startup_trace.Mark("cli.env.openssl.csprng-check.end");
+      EDGE_STARTUP_TRACE(startup_trace, "cli.env.openssl.csprng-check.end");
     }
-    startup_trace.Mark("cli.env.openssl-init");
+    EDGE_STARTUP_TRACE(startup_trace, "cli.env.openssl-init");
   } else {
-    startup_trace.Mark("cli.env.openssl.skip");
+    EDGE_STARTUP_TRACE(startup_trace, "cli.env.openssl.skip");
   }
 
   EdgeInstallNapiEmbedderHooks();
-  startup_trace.Mark("cli.env.install-napi-hooks");
+  EDGE_STARTUP_TRACE(startup_trace, "cli.env.install-napi-hooks");
 
   napi_env env = nullptr;
   void* env_scope = nullptr;
@@ -223,16 +229,22 @@ int RunWithFreshEnv(const std::function<int(napi_env)>& runner,
     }
     return 1;
   }
-  startup_trace.Mark("cli.env.create-napi-env");
+  EDGE_STARTUP_TRACE(startup_trace, "cli.env.create-napi-env");
 
-  if (!EdgeAttachEnvironmentForRuntime(env, nullptr, CliStartupTraceForward, &startup_trace)) {
+  if (!EdgeAttachEnvironmentForRuntime(env, nullptr
+#if defined(ENABLE_TRACING)
+                                       ,
+                                       CliStartupTraceForward,
+                                       &startup_trace
+#endif
+                                       )) {
     (void)unofficial_napi_release_env(env_scope);
     if (error_out != nullptr) {
       *error_out = "Failed to attach runtime environment";
     }
     return 1;
   }
-  startup_trace.Mark("cli.env.attach-runtime");
+  EDGE_STARTUP_TRACE(startup_trace, "cli.env.attach-runtime");
 
   if (EdgeRuntimePlatformInstallHooks(env) != napi_ok) {
     (void)unofficial_napi_release_env(env_scope);
@@ -241,13 +253,13 @@ int RunWithFreshEnv(const std::function<int(napi_env)>& runner,
     }
     return 1;
   }
-  startup_trace.Mark("cli.env.install-runtime-hooks");
+  EDGE_STARTUP_TRACE(startup_trace, "cli.env.install-runtime-hooks");
 
   const int exit_code = runner(env);
-  startup_trace.Mark("cli.env.runner-returned");
+  EDGE_STARTUP_TRACE(startup_trace, "cli.env.runner-returned");
   EdgeEnvironmentRunCleanup(env);
   EdgeEnvironmentRunAtExitCallbacks(env);
-  startup_trace.Mark("cli.env.cleanup");
+  EDGE_STARTUP_TRACE(startup_trace, "cli.env.cleanup");
   const napi_status release_status = unofficial_napi_release_env(env_scope);
   if (release_status != napi_ok) {
     if (error_out != nullptr) {
@@ -255,7 +267,7 @@ int RunWithFreshEnv(const std::function<int(napi_env)>& runner,
     }
     return 1;
   }
-  startup_trace.Mark("cli.env.release-napi-env");
+  EDGE_STARTUP_TRACE(startup_trace, "cli.env.release-napi-env");
   return exit_code;
 }
 
@@ -1213,9 +1225,9 @@ int EdgeRunCliScript(const char* script_path,
 
 int EdgeRunCli(int argc, const char* const* argv, std::string* error_out) {
   CliStartupTracer startup_trace;
-  startup_trace.Mark("cli.enter");
+  EDGE_STARTUP_TRACE(startup_trace, "cli.enter");
   EdgeInitializeCliProcess();
-  startup_trace.Mark("cli.initialize-process");
+  EDGE_STARTUP_TRACE(startup_trace, "cli.initialize-process");
   if (error_out != nullptr) {
     error_out->clear();
   }
@@ -1228,11 +1240,11 @@ int EdgeRunCli(int argc, const char* const* argv, std::string* error_out) {
   }
   if (argc > 1 && argv[1] != nullptr &&
       std::strcmp(argv[1], kEdgeInternalEnvCliDispatchFlag) == 0) {
-    startup_trace.Mark("cli.dispatch.env-compat");
+    EDGE_STARTUP_TRACE(startup_trace, "cli.dispatch.env-compat");
     return RunEnvCliWithOffset(argc, argv, 1, error_out);
   }
   if (argc > 1 && argv[1] != nullptr && EdgeShouldWrapCompatCommand(argv[1])) {
-    startup_trace.Mark("cli.dispatch.compat-command");
+    EDGE_STARTUP_TRACE(startup_trace, "cli.dispatch.compat-command");
     return EdgeRunCompatCommand(argc, argv, error_out);
   }
   const bool env_safe_mode = EdgeIsTruthyEnvVar(std::getenv("EDGE_SAFE"));
@@ -1241,7 +1253,7 @@ int EdgeRunCli(int argc, const char* const* argv, std::string* error_out) {
     if (argv[i] == nullptr) continue;
     if (std::strcmp(argv[i], "--safe") == 0) cli_safe_mode = true;
   }
-  startup_trace.Mark("cli.scan-safe-mode");
+  EDGE_STARTUP_TRACE(startup_trace, "cli.scan-safe-mode");
   const bool safe_mode_requested = cli_safe_mode || env_safe_mode;
   if (safe_mode_requested) {
     bool has_cli_wasmer_bin = false;
@@ -1338,18 +1350,18 @@ int EdgeRunCli(int argc, const char* const* argv, std::string* error_out) {
       if (token.rfind("--wasmer-package=", 0) == 0) continue;
       forwarded_args.emplace_back(argv[i]);
     }
-    startup_trace.Mark("cli.dispatch.safe-mode");
+    EDGE_STARTUP_TRACE(startup_trace, "cli.dispatch.safe-mode");
     return EdgeRunSafeModeCommand(forwarded_args, wasmer_bin, wasmer_package, error_out);
   }
   if (argc > 1 && argv[1] != nullptr &&
       (std::strcmp(argv[1], "-v") == 0 || std::strcmp(argv[1], "--version") == 0)) {
-    startup_trace.Mark("cli.dispatch.version");
+    EDGE_STARTUP_TRACE(startup_trace, "cli.dispatch.version");
     std::cout << NODE_VERSION << "\n";
     return 0;
   }
   if (argc > 1 && argv[1] != nullptr &&
       (std::strcmp(argv[1], "-h") == 0 || std::strcmp(argv[1], "--help") == 0)) {
-    startup_trace.Mark("cli.dispatch.help");
+    EDGE_STARTUP_TRACE(startup_trace, "cli.dispatch.help");
     std::cout << kNativeHelpText;
     return 0;
   }
@@ -1539,7 +1551,7 @@ int EdgeRunCli(int argc, const char* const* argv, std::string* error_out) {
       raw_exec_argv.emplace_back(argv[++i]);
     }
   }
-  startup_trace.Mark("cli.parse-argv");
+  EDGE_STARTUP_TRACE(startup_trace, "cli.parse-argv");
 
   if (script_index == argc) script_index = i;
 
@@ -1547,13 +1559,13 @@ int EdgeRunCli(int argc, const char* const* argv, std::string* error_out) {
   if (!finalize_effective_state(&effective_state)) {
     return 9;
   }
-  startup_trace.Mark("cli.build-effective-state");
+  EDGE_STARTUP_TRACE(startup_trace, "cli.build-effective-state");
 
   EdgeSetExecArgv(raw_exec_argv);
   ApplySupportedV8Flags(raw_exec_argv);
-  startup_trace.Mark("cli.apply-v8-flags");
+  EDGE_STARTUP_TRACE(startup_trace, "cli.apply-v8-flags");
   if (HasExactOptionToken(effective_state.effective_tokens, "--completion-bash")) {
-    startup_trace.Mark("cli.dispatch.completion-bash");
+    EDGE_STARTUP_TRACE(startup_trace, "cli.dispatch.completion-bash");
     std::cout << GetBashCompletion();
     return 0;
   }
@@ -1642,7 +1654,7 @@ int EdgeRunCli(int argc, const char* const* argv, std::string* error_out) {
   if (!use_watch_mode) {
     ApplyEnvUpdates(effective_state.env_updates);
   }
-  startup_trace.Mark("cli.apply-env-updates");
+  EDGE_STARTUP_TRACE(startup_trace, "cli.apply-env-updates");
 
   RuntimeInitOptions init_options;
   init_options.raw_exec_argv = &raw_exec_argv;
@@ -1657,7 +1669,7 @@ int EdgeRunCli(int argc, const char* const* argv, std::string* error_out) {
     }
     PrepareEnvForRepl();
     EdgeSetScriptArgv({});
-    startup_trace.Mark("cli.dispatch.repl");
+    EDGE_STARTUP_TRACE(startup_trace, "cli.dispatch.repl");
     return RunCliBuiltin(";", "internal/main/repl", nullptr, error_out, init_options);
   }
 
@@ -1670,7 +1682,7 @@ int EdgeRunCli(int argc, const char* const* argv, std::string* error_out) {
       if (argv[argi] != nullptr) script_argv.emplace_back(argv[argi]);
     }
     EdgeSetScriptArgv(script_argv);
-    startup_trace.Mark("cli.dispatch.eval");
+    EDGE_STARTUP_TRACE(startup_trace, "cli.dispatch.eval");
     return RunCliBuiltin(";", "internal/main/eval_string", nullptr, error_out, init_options);
   }
 
@@ -1685,7 +1697,7 @@ int EdgeRunCli(int argc, const char* const* argv, std::string* error_out) {
     for (int argi = positional_index; argi < argc; ++argi) {
       if (argv[argi] != nullptr) run_positional_argv.emplace_back(argv[argi]);
     }
-    startup_trace.Mark("cli.dispatch.run");
+    EDGE_STARTUP_TRACE(startup_trace, "cli.dispatch.run");
     return RunCliPackageScript(run_target, run_positional_argv, error_out);
   }
 
@@ -1701,7 +1713,7 @@ int EdgeRunCli(int argc, const char* const* argv, std::string* error_out) {
       if (argv[argi] != nullptr) script_argv.emplace_back(argv[argi]);
     }
     EdgeSetScriptArgv(script_argv);
-    startup_trace.Mark("cli.dispatch.test");
+    EDGE_STARTUP_TRACE(startup_trace, "cli.dispatch.test");
     return RunCliBuiltin(";", "internal/main/test_runner", nullptr, error_out, init_options);
   }
 
@@ -1717,7 +1729,7 @@ int EdgeRunCli(int argc, const char* const* argv, std::string* error_out) {
       if (argv[argi] != nullptr) script_argv.emplace_back(argv[argi]);
     }
     EdgeSetScriptArgv(script_argv);
-    startup_trace.Mark("cli.dispatch.watch");
+    EDGE_STARTUP_TRACE(startup_trace, "cli.dispatch.watch");
     return RunCliBuiltin(";", "internal/main/watch_mode", nullptr, error_out, init_options);
   }
 
@@ -1732,11 +1744,11 @@ int EdgeRunCli(int argc, const char* const* argv, std::string* error_out) {
     }
     EdgeSetScriptArgv(script_argv);
     if (mode == CliMode::kCheck) {
-      startup_trace.Mark("cli.dispatch.stdin-check");
+      EDGE_STARTUP_TRACE(startup_trace, "cli.dispatch.stdin-check");
       return RunCliBuiltin(";", "internal/main/check_syntax", "-", error_out, init_options);
     }
     PrepareEnvForRepl();
-    startup_trace.Mark("cli.dispatch.stdin");
+    EDGE_STARTUP_TRACE(startup_trace, "cli.dispatch.stdin");
     return RunCliBuiltin(";", StdinIsTTY() ? "internal/main/repl" : "internal/main/eval_stdin",
                          "-", error_out, init_options);
   }
@@ -1747,10 +1759,10 @@ int EdgeRunCli(int argc, const char* const* argv, std::string* error_out) {
   }
   EdgeSetScriptArgv(script_argv);
   if (mode == CliMode::kCheck) {
-    startup_trace.Mark("cli.dispatch.check");
+    EDGE_STARTUP_TRACE(startup_trace, "cli.dispatch.check");
     return RunCliBuiltin(";", "internal/main/check_syntax", nullptr, error_out, init_options);
   }
-  startup_trace.Mark("cli.dispatch.script");
+  EDGE_STARTUP_TRACE(startup_trace, "cli.dispatch.script");
   return EdgeRunCliScript(argv[script_index], &effective_state.effective_tokens, error_out);
 }
 
