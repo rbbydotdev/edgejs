@@ -6,5 +6,10 @@ We want an alternative way to run edgejs in webassembly with the quickjs JS engi
 
 do some research, and come up with a plan how to implement this.
 notes: 
+* it might make sense to look for existing forks of quickjs that can already compile to webassembly.
+* use  `nix run github:wasix-org/wasinix#wasixcc` for  a working wasixcc compiler 
+* the end goal is to build a `quickjs-wasm/wasmer.toml` package definition that contains a wasm binary for edgejs, that uses quickjs directly from wasm and can be used to run code
 
-it might make sense to look for existing
+be token efficient in your research and internal reasoning
+
+compe up with a high quality step by step plan for how to implement this, and write it to ./plan.md 

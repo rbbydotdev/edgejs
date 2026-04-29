@@ -1,0 +1,5 @@
+kind: wasmer.io/App.v0
+name: edgejs-quickjs-echoserver
+owner: christoph
+package: .
+app_id: da_nP7IptBUYo57

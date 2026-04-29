@@ -2,6 +2,7 @@
 	path = node
 	url = https://github.com/nodejs/node.git
 	branch = v24.x
+	shallow = true
 [submodule "test"]
 	path = test
 	url = https://github.com/wasmerio/node-test.git

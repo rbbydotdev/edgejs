@@ -1,0 +1,19 @@
+[package]
+name = "christoph/edgejs-quickjs-echoserver"
+version = "0.0.2"
+description = "Echo HTTP server sample for EdgeJS QuickJS"
+entrypoint = "echo-server"
+
+[dependencies]
+"christoph/edgejs-quickjs" = "^0.0.1"
+
+[fs]
+"/app" = "."
+
+[[command]]
+name = "echo-server"
+module = "christoph/edgejs-quickjs:edgejs"
+runner = "https://webc.org/runner/wasi"
+
+[command.annotations.wasi]
+main-args = ["/app/echo-server.js"]

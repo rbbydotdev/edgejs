@@ -1,0 +1,19 @@
+[package]
+entrypoint = "edgejs"
+name = "christoph/edgejs-quickjs"
+version = "0.0.1"
+
+[fs]
+"/usr/local/ssl" = "../ssl-certs"
+
+[[module]]
+name = "edgejs"
+source = "../build-quickjs-wasix/edgejs.wasm"
+
+[[command]]
+name = "edgejs"
+module = "edgejs"
+runner = "https://webc.org/runner/wasi"
+
+[command.annotations.wasi]
+atom = "edgejs"

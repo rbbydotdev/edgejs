@@ -413,6 +413,8 @@ void napi_v8_run_async_cleanup_hooks(napi_env env) {
 
 extern "C" {
 
+#if !defined(EDGE_QUICKJS_OWNS_NAPI_SYMBOLS)
+
 napi_status NAPI_CDECL node_api_post_finalizer(node_api_basic_env env,
                                                napi_finalize finalize_cb,
                                                void* finalize_data,
@@ -768,6 +770,8 @@ napi_status NAPI_CDECL napi_close_callback_scope(napi_env env, napi_callback_sco
   delete scope;
   return napi_ok;
 }
+
+#endif  // !defined(EDGE_QUICKJS_OWNS_NAPI_SYMBOLS)
 
 }  // extern "C"
 

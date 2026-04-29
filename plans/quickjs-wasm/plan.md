@@ -85,9 +85,14 @@ possible.
    - allow `EDGE_NAPI_PROVIDER=quickjs`;
    - add `napi/quickjs` as a subdirectory for that provider;
    - link `edge_node_api` and `edge_runtime` against `napi_quickjs`;
+   - make the same lifecycle hook paths currently gated by
+     `EDGE_BUNDLED_NAPI_V8` available to QuickJS, preferably through a neutral
+     compile definition such as `EDGE_EMBEDDED_NAPI_PROVIDER`;
    - do not enable `EDGE_ALLOW_UNDEFINED_IMPORTS` for this provider except for
      unrelated WASIX system imports.
-5. Add a link check that fails if the final QuickJS wasm still imports N-API
+5. Ensure `napi/quickjs` CMake source lists only checked-in files before the
+   first configure/build attempt.
+6. Add a link check that fails if the final QuickJS wasm still imports N-API
    symbols.
 
 Deliverable: a wasm binary that links QuickJS into the guest and starts, even if
@@ -97,7 +102,8 @@ it only prints a provider initialization error.
 
 1. Add `napi/quickjs` with:
    - `CMakeLists.txt`;
-   - QuickJS/QuickJS-NG source import or fetch instructions;
+   - a CMake `FetchContent` import for QuickJS-NG from a pinned release
+     archive with `URL_HASH SHA256`;
    - `napi_quickjs_env.*`;
    - `napi_quickjs_values.*`;
    - `napi_quickjs_unofficial.*`.
@@ -109,6 +115,9 @@ it only prints a provider initialization error.
    - cleanup and destroy callbacks.
 3. Map `napi_env`, `napi_value`, and `napi_ref` to QuickJS runtime/context,
    `JSValue`, and explicit reference records.
+   - Placeholder C++ value graphs are acceptable only for link bring-up; replace
+     them with QuickJS `JSValue` ownership before relying on GC or runtime
+     correctness.
 4. Implement the primitive value APIs needed by bootstrap:
    - undefined/null/boolean/number/string creation;
    - type checks and conversions;

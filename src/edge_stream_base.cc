@@ -1637,14 +1637,18 @@ napi_value EdgeLibuvStreamWriteString(EdgeStreamBase* base,
                                      uv_stream_t* send_handle,
                                      napi_value send_handle_obj) {
   if (base == nullptr || base->env == nullptr) return nullptr;
+  (void)encoding_name;
 
-  napi_value encoded = payload;
-  if (encoding_name != nullptr && payload != nullptr) {
-    napi_value encoding = nullptr;
-    if (napi_create_string_utf8(base->env, encoding_name, NAPI_AUTO_LENGTH, &encoding) == napi_ok &&
-        encoding != nullptr) {
-      encoded = EdgeStreamBufferFromWithEncoding(base->env, payload, encoding);
-    }
+  std::string encoded_text = ValueToUtf8(base->env, payload);
+  napi_value encoded = nullptr;
+  void* encoded_data = nullptr;
+  if (napi_create_buffer_copy(base->env,
+                              encoded_text.size(),
+                              encoded_text.data(),
+                              &encoded_data,
+                              &encoded) != napi_ok ||
+      encoded == nullptr) {
+    return EdgeStreamBaseMakeInt32(base->env, UV_ENOMEM);
   }
 
   return EdgeLibuvStreamWriteBuffer(base, req_obj, encoded, send_handle, send_handle_obj);
