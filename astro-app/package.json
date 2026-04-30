@@ -8,11 +8,17 @@
   "scripts": {
     "dev": "astro dev",
     "build": "astro build",
+    "build:edge": "astro build && node ./build-edge.mjs",
+    "start": "node ./dist/server/entry.mjs",
+    "start:edge": "node ./dist/server/entry.cjs",
     "preview": "astro preview",
     "astro": "astro"
   },
   "dependencies": {
     "@astrojs/node": "^10.0.6",
     "astro": "^6.1.10"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.0"
   }
 }

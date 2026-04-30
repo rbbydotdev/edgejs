@@ -1,0 +1,5 @@
+kind: wasmer.io/App.v0
+name: edgejs-quickjs-astro
+owner: christoph
+package: .
+app_id: da_RLmILtvUym0j
