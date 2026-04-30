@@ -61,6 +61,11 @@ const removeAllListeners = util.removeAllListeners
 let extractBody
 
 function lazyllhttp () {
+  if (typeof WebAssembly === 'undefined' && process.config?.variables?.node_is_edge) {
+    const { HTTPParser } = internalBinding('http_parser')
+    return { exports: { native: true, HTTPParser } }
+  }
+
   const llhttpWasmData = process.env.JEST_WORKER_ID ? require('../llhttp/llhttp-wasm.js') : undefined
 
   let mod
@@ -201,6 +206,13 @@ const TIMEOUT_BODY = 4 | USE_FAST_TIMER
 // handling.
 const TIMEOUT_KEEP_ALIVE = 8 | USE_NATIVE_TIMER
 
+function appendNativeHeaders (parser, headers) {
+  for (let i = 0; i < headers.length; i += 2) {
+    parser.headers.push(Buffer.from(headers[i], 'latin1'))
+    parser.headers.push(Buffer.from(headers[i + 1], 'latin1'))
+  }
+}
+
 class Parser {
   /**
      * @param {import('./client.js')} client
@@ -209,7 +221,7 @@ class Parser {
      */
   constructor (client, socket, { exports }) {
     this.llhttp = exports
-    this.ptr = this.llhttp.llhttp_alloc(constants.TYPE.RESPONSE)
+    this.ptr = this.llhttp.native ? 1 : this.llhttp.llhttp_alloc(constants.TYPE.RESPONSE)
     this.client = client
     /**
      * @type {import('net').Socket}
@@ -234,6 +246,41 @@ class Parser {
     this.contentLength = ''
     this.connection = ''
     this.maxResponseSize = client[kMaxResponseSize]
+
+    if (this.llhttp.native) {
+      this.initializeNativeParser()
+    }
+  }
+
+  initializeNativeParser () {
+    const { HTTPParser } = this.llhttp
+    const nativeParser = this.nativeParser = new HTTPParser()
+    nativeParser.initialize(HTTPParser.RESPONSE, {}, this.headersMaxSize)
+    nativeParser[HTTPParser.kOnMessageBegin | 0] = () => this.onMessageBegin()
+    nativeParser[HTTPParser.kOnHeaders | 0] = (headers) => {
+      appendNativeHeaders(this, headers)
+    }
+    nativeParser[HTTPParser.kOnHeadersComplete | 0] = (
+      versionMajor,
+      versionMinor,
+      headers,
+      method,
+      url,
+      statusCode,
+      statusMessage,
+      upgrade,
+      shouldKeepAlive
+    ) => {
+      appendNativeHeaders(this, headers)
+      this.statusText = statusMessage || ''
+      const rv = this.onHeadersComplete(statusCode, upgrade, shouldKeepAlive)
+      return rv === constants.ERROR.PAUSED ? 0 : rv
+    }
+    nativeParser[HTTPParser.kOnBody | 0] = (buf) => {
+      this.onBody(buf)
+      return 0
+    }
+    nativeParser[HTTPParser.kOnMessageComplete | 0] = () => this.onMessageComplete()
   }
 
   setTimeout (delay, type) {
@@ -278,7 +325,11 @@ class Parser {
     assert(this.ptr != null)
     assert(currentParser === null)
 
-    this.llhttp.llhttp_resume(this.ptr)
+    if (this.llhttp.native) {
+      this.nativeParser.resume()
+    } else {
+      this.llhttp.llhttp_resume(this.ptr)
+    }
 
     assert(this.timeoutType === TIMEOUT_BODY)
     if (this.timeout) {
@@ -311,6 +362,27 @@ class Parser {
     assert(!this.paused)
 
     const { socket, llhttp } = this
+
+    if (llhttp.native) {
+      try {
+        currentParser = this
+        const ret = this.nativeParser.execute(chunk)
+        if (ret && ret.code) {
+          const data = chunk.subarray(ret.bytesParsed || 0)
+          if (ret.code === 'HPE_PAUSED') {
+            this.paused = true
+            socket.unshift(data)
+          } else {
+            throw new HTTPParserError(ret.message, ret.code.replace(/^HPE_/, ''), data)
+          }
+        }
+      } catch (err) {
+        util.destroy(socket, err)
+      } finally {
+        currentParser = null
+      }
+      return
+    }
 
     // Allocate a new buffer if the current buffer is too small.
     if (chunk.length > currentBufferSize) {
@@ -370,7 +442,12 @@ class Parser {
     assert(currentParser === null)
     assert(this.ptr != null)
 
-    this.llhttp.llhttp_free(this.ptr)
+    if (this.llhttp.native) {
+      this.nativeParser.close()
+      this.nativeParser = null
+    } else {
+      this.llhttp.llhttp_free(this.ptr)
+    }
     this.ptr = null
 
     this.timeout && timers.clearTimeout(this.timeout)

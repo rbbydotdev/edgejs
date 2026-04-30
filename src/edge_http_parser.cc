@@ -378,6 +378,14 @@ int CallIndexedNoArgs(Parser* p, uint32_t index, bool skip_task_queues = false) 
     llhttp_set_error_reason(&p->parser, "HPE_JS_EXCEPTION:JS Exception");
     return HPE_USER;
   }
+  int32_t rv = 0;
+  if (result != nullptr) {
+    napi_valuetype rt = napi_undefined;
+    napi_typeof(p->env, result, &rt);
+    if (rt == napi_number) napi_get_value_int32(p->env, result, &rv);
+  }
+  if (rv == HPE_PAUSED) p->pending_pause = true;
+  if (rv != 0) return rv;
   return 0;
 }
 
@@ -608,17 +616,25 @@ int ParserOnBody(llhttp_t* llp, const char* at, size_t length) {
   if (t != napi_function) return 0;
   napi_value buf = CreateBufferCopy(p->env, at, length);
   napi_value argv[1] = {buf};
-  napi_value ignored = nullptr;
+  napi_value result = nullptr;
   bool has_pending = false;
   napi_status status = p->propagate_callback_exceptions
-                           ? napi_call_function(p->env, self, cb, 1, argv, &ignored)
-                           : EdgeMakeCallback(p->env, self, cb, 1, argv, &ignored);
+                           ? napi_call_function(p->env, self, cb, 1, argv, &result)
+                           : EdgeMakeCallback(p->env, self, cb, 1, argv, &result);
   if (status != napi_ok ||
       (napi_is_exception_pending(p->env, &has_pending) == napi_ok && has_pending)) {
     p->got_exception = true;
     llhttp_set_error_reason(&p->parser, "HPE_JS_EXCEPTION:JS Exception");
     return HPE_USER;
   }
+  int32_t rv = 0;
+  if (result != nullptr) {
+    napi_valuetype rt = napi_undefined;
+    napi_typeof(p->env, result, &rt);
+    if (rt == napi_number) napi_get_value_int32(p->env, result, &rv);
+  }
+  if (rv == HPE_PAUSED) p->pending_pause = true;
+  if (rv != 0) return rv;
   return 0;
 }
 

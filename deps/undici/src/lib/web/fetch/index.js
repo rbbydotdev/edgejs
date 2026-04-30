@@ -237,10 +237,15 @@ function fetch (input, init = undefined) {
 
     // 4. Set responseObject to the result of creating a Response object,
     // given response, "immutable", and relevantRealm.
-    responseObject = new WeakRef(fromInnerResponse(response, 'immutable'))
+    //
+    // Keep a strong reference until the promise is resolved. V8 keeps the
+    // temporary Response alive across the WeakRef construction below, but
+    // QuickJS may clear a WeakRef immediately when no strong reference exists.
+    const resolvedResponse = fromInnerResponse(response, 'immutable')
+    responseObject = new WeakRef(resolvedResponse)
 
     // 5. Resolve p with responseObject.
-    p.resolve(responseObject.deref())
+    p.resolve(resolvedResponse)
     p = null
   }
 
