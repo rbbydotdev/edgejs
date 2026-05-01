@@ -61,7 +61,7 @@ const removeAllListeners = util.removeAllListeners
 let extractBody
 
 function lazyllhttp () {
-  if (typeof WebAssembly === 'undefined' && process.config?.variables?.node_is_edge) {
+  if (process.config?.variables?.node_is_edge) {
     const { HTTPParser } = internalBinding('http_parser')
     return { exports: { native: true, HTTPParser } }
   }

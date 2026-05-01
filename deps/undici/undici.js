@@ -6977,7 +6977,7 @@ var require_client_h1 = __commonJS({
     var removeAllListeners = util.removeAllListeners;
     var extractBody;
     function lazyllhttp() {
-      if (typeof WebAssembly === "undefined" && process.config?.variables?.node_is_edge) {
+      if (process.config?.variables?.node_is_edge) {
         const { HTTPParser } = internalBinding("http_parser");
         return { exports: { native: true, HTTPParser } };
       }
