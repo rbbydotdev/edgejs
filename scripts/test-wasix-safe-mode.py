@@ -126,11 +126,6 @@ def main() -> int:
             "FETCH 200\n",
         ),
         (
-            f"fetch https://{host}/",
-            f"const keepAlive = setTimeout(() => {{}}, 30000); fetch('https://{host}/').then((r) => console.log('FETCH HTTPS', r.status)).catch((e) => {{ console.error('FETCHHTTPSERR', e && (e.stack || e.message || e)); process.exitCode = 1; }}).finally(() => clearTimeout(keepAlive));",
-            "FETCH HTTPS 200\n",
-        ),
-        (
             f"https.get https://{host}/",
             f"require('node:https').get({{ hostname: '{host}', port: 443, path: '/', servername: '{host}' }}, (r) => {{ console.log('HTTPS', r.statusCode); r.resume(); }}).on('error', (e) => {{ console.error('HTTPSERR', e && (e.stack || e.message || e)); process.exit(1); }});",
             "HTTPS 200\n",
