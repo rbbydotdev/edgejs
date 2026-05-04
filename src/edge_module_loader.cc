@@ -1353,6 +1353,17 @@ static bool ThrowNativeBuiltinExecutionError(napi_env env,
   return false;
 }
 
+static std::string LastNapiErrorMessage(napi_env env) {
+  const napi_extended_error_info* error_info = nullptr;
+  if (napi_get_last_error_info(env, &error_info) != napi_ok ||
+      error_info == nullptr ||
+      error_info->error_message == nullptr ||
+      error_info->error_message[0] == '\0') {
+    return {};
+  }
+  return error_info->error_message;
+}
+
 static bool ResolveNativeBuiltinCompileInput(napi_env env,
                                              ModuleLoaderState* state,
                                              const std::string& id,
@@ -1492,7 +1503,8 @@ static bool ExecuteBuiltinFromNative(napi_env env, ModuleLoaderState* state, con
   }
 
   napi_value compile_result = nullptr;
-  if (unofficial_napi_contextify_compile_function(env,
+  const napi_status compile_status =
+      unofficial_napi_contextify_compile_function(env,
                                                   code,
                                                   filename,
                                                   0,
@@ -1503,9 +1515,16 @@ static bool ExecuteBuiltinFromNative(napi_env env, ModuleLoaderState* state, con
                                                   undefined,
                                                   params,
                                                   undefined,
-                                                  &compile_result) != napi_ok ||
+                                                  &compile_result);
+  if (compile_status != napi_ok ||
       compile_result == nullptr) {
-    return false;
+    std::string message = "contextify compile failed";
+    const std::string last_error = LastNapiErrorMessage(env);
+    if (!last_error.empty()) {
+      message += ": ";
+      message += last_error;
+    }
+    return ThrowNativeBuiltinExecutionError(env, id, message);
   }
 
   napi_value compiled_fn = nullptr;

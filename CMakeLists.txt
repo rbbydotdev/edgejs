@@ -34,8 +34,10 @@ set(EDGE_DEFAULT_WASMER_PACKAGE
   CACHE STRING "Default Wasmer package used by edge --safe"
 )
 
-include("${PROJECT_ROOT}/napi/v8/cmake/NapiBuildCache.cmake")
-napi_enable_sccache_if_available()
+if(EXISTS "${PROJECT_ROOT}/napi/v8/cmake/NapiBuildCache.cmake")
+  include("${PROJECT_ROOT}/napi/v8/cmake/NapiBuildCache.cmake")
+  napi_enable_sccache_if_available()
+endif()
 
 set(NAPI_V8_NODE_ROOT_DEFAULT "${PROJECT_ROOT}/node")
 if(DEFINED ENV{NAPI_V8_NODE_ROOT})
@@ -83,7 +85,6 @@ if(CMAKE_SYSTEM_NAME MATCHES "WASI|WASIX" OR
    CMAKE_C_COMPILER MATCHES "wasixcc" OR
    CMAKE_CXX_COMPILER MATCHES "wasixcc\\+\\+")
   set(EDGE_IS_WASIX_TARGET ON)
-  set(EDGE_ALLOW_UNDEFINED_IMPORTS ON CACHE BOOL "" FORCE)
 endif()
 
 function(edge_detect_native_openssl_target_os out_var)
@@ -160,23 +161,28 @@ if(EDGE_IS_WASIX_TARGET)
 endif()
 set(EDGE_NAPI_PROVIDER
   "${_edge_napi_provider_default}"
-  CACHE STRING "N-API provider backend: bundled-v8|imports"
+  CACHE STRING "N-API provider backend: bundled-v8|imports|quickjs"
 )
-set_property(CACHE EDGE_NAPI_PROVIDER PROPERTY STRINGS bundled-v8 imports)
+set_property(CACHE EDGE_NAPI_PROVIDER PROPERTY STRINGS bundled-v8 imports quickjs)
 if(EDGE_EXTERNAL_NAPI_V8)
   message(WARNING
     "EDGE_EXTERNAL_NAPI_V8 is deprecated; use EDGE_NAPI_PROVIDER=imports.")
   set(EDGE_NAPI_PROVIDER "imports" CACHE STRING
-    "N-API provider backend: bundled-v8|imports" FORCE)
+    "N-API provider backend: bundled-v8|imports|quickjs" FORCE)
 endif()
 string(TOLOWER "${EDGE_NAPI_PROVIDER}" EDGE_NAPI_PROVIDER)
-if(NOT EDGE_NAPI_PROVIDER MATCHES "^(bundled-v8|imports)$")
+if(NOT EDGE_NAPI_PROVIDER MATCHES "^(bundled-v8|imports|quickjs)$")
   message(FATAL_ERROR
     "Invalid EDGE_NAPI_PROVIDER='${EDGE_NAPI_PROVIDER}'. "
-    "Valid values: bundled-v8, imports.")
+    "Valid values: bundled-v8, imports, quickjs.")
 endif()
 set(EDGE_NAPI_PROVIDER "${EDGE_NAPI_PROVIDER}" CACHE STRING
-  "N-API provider backend: bundled-v8|imports" FORCE)
+  "N-API provider backend: bundled-v8|imports|quickjs" FORCE)
+if(EDGE_IS_WASIX_TARGET AND EDGE_NAPI_PROVIDER STREQUAL "imports")
+  set(EDGE_ALLOW_UNDEFINED_IMPORTS ON CACHE BOOL "" FORCE)
+elseif(EDGE_NAPI_PROVIDER STREQUAL "quickjs")
+  set(EDGE_ALLOW_UNDEFINED_IMPORTS OFF CACHE BOOL "" FORCE)
+endif()
 
 # Hard gate: edge runtime/library sources must never directly reference V8.
 file(GLOB_RECURSE EDGE_PURE_SRC_FILES
@@ -220,6 +226,13 @@ if(EDGE_NAPI_PROVIDER STREQUAL "bundled-v8")
 elseif(EDGE_NAPI_PROVIDER STREQUAL "imports")
   add_library(edge_napi_headers INTERFACE)
   target_include_directories(edge_napi_headers INTERFACE "${NAPI_INCLUDE_ROOT}")
+elseif(EDGE_NAPI_PROVIDER STREQUAL "quickjs")
+  set(QJS_ENABLE_INSTALL OFF CACHE BOOL "" FORCE)
+  set(QJS_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+  set(QJS_BUILD_CLI_STATIC OFF CACHE BOOL "" FORCE)
+  add_subdirectory("${PROJECT_ROOT}/quickjs" "${CMAKE_CURRENT_BINARY_DIR}/quickjs" EXCLUDE_FROM_ALL)
+  set(NAPI_QUICKJS_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+  add_subdirectory("${PROJECT_ROOT}/napi/quickjs" "${CMAKE_CURRENT_BINARY_DIR}/napi-quickjs")
 endif()
 
 if(EDGE_IS_WASIX_TARGET)
@@ -636,7 +649,9 @@ target_include_directories(edge_environment_core
 )
 target_link_libraries(edge_environment_core PUBLIC uv_a)
 if(EDGE_NAPI_PROVIDER STREQUAL "bundled-v8")
-  target_compile_definitions(edge_environment_core PUBLIC EDGE_BUNDLED_NAPI_V8=1)
+  target_compile_definitions(edge_environment_core PUBLIC EDGE_BUNDLED_NAPI_V8=1 EDGE_EMBEDDED_NAPI_PROVIDER=1)
+elseif(EDGE_NAPI_PROVIDER STREQUAL "quickjs")
+  target_compile_definitions(edge_environment_core PUBLIC EDGE_EMBEDDED_NAPI_PROVIDER=1)
 endif()
 
 set(EDGE_ICU_ROOT "${PROJECT_ROOT}/deps/icu-small")
@@ -771,8 +786,10 @@ target_link_libraries(edge_node_api
     uv_a
 )
 if(EDGE_NAPI_PROVIDER STREQUAL "bundled-v8")
-  target_compile_definitions(napi_v8 PUBLIC EDGE_BUNDLED_NAPI_V8=1)
+  target_compile_definitions(napi_v8 PUBLIC EDGE_BUNDLED_NAPI_V8=1 EDGE_EMBEDDED_NAPI_PROVIDER=1)
   target_link_libraries(edge_node_api PUBLIC napi_v8)
+elseif(EDGE_NAPI_PROVIDER STREQUAL "quickjs")
+  target_link_libraries(edge_node_api PUBLIC napi_quickjs)
 endif()
 
 add_library(edge_runtime STATIC
@@ -940,6 +957,8 @@ target_link_libraries(edge_runtime
 )
 if(EDGE_NAPI_PROVIDER STREQUAL "bundled-v8")
   target_link_libraries(edge_runtime PUBLIC napi_v8)
+elseif(EDGE_NAPI_PROVIDER STREQUAL "quickjs")
+  target_link_libraries(edge_runtime PUBLIC napi_quickjs)
 endif()
 set(EDGE_NODE_SHARED_OPENSSL 0)
 if(NOT EDGE_IS_WASIX_TARGET AND EDGE_SHARED_OPENSSL)
@@ -961,7 +980,9 @@ if(EDGE_IS_WASIX_TARGET)
   target_compile_definitions(edge_runtime PRIVATE NODE_OPENSSL_CERT_STORE=1)
 endif()
 if(EDGE_NAPI_PROVIDER STREQUAL "bundled-v8")
-  target_compile_definitions(edge_runtime PRIVATE EDGE_BUNDLED_NAPI_V8=1)
+  target_compile_definitions(edge_runtime PRIVATE EDGE_BUNDLED_NAPI_V8=1 EDGE_EMBEDDED_NAPI_PROVIDER=1)
+elseif(EDGE_NAPI_PROVIDER STREQUAL "quickjs")
+  target_compile_definitions(edge_runtime PRIVATE EDGE_EMBEDDED_NAPI_PROVIDER=1)
 endif()
 
 add_library(edge_cli STATIC
