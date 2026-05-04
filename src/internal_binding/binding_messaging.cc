@@ -2686,6 +2686,11 @@ napi_value CloneMessageValueWithTransfers(napi_env env, napi_value value, napi_v
     DeleteTransferredPortRefs(env, &transferred_ports);
     return nullptr;
   }
+  transformed_value = PrepareTransferableDataForStructuredClone(env, transformed_value, false);
+  if (transformed_value == nullptr) {
+    DeleteTransferredPortRefs(env, &transferred_ports);
+    return nullptr;
+  }
 
   auto clone_prepared_value = [&](napi_value clone_input) -> napi_value {
     napi_value arraybuffer_transfer_list = CreateArrayBufferTransferList(env, normalized_transfer_arg);

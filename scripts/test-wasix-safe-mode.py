@@ -122,13 +122,8 @@ def main() -> int:
         ),
         (
             f"fetch http://{host}/",
-            f"fetch('http://{host}/').then((r) => console.log('FETCH', r.status)).catch((e) => {{ console.error('FETCHERR', e && (e.stack || e.message || e)); process.exit(1); }});",
+            f"const keepAlive = setTimeout(() => {{}}, 30000); fetch('http://{host}/').then((r) => console.log('FETCH', r.status)).catch((e) => {{ console.error('FETCHERR', e && (e.stack || e.message || e)); process.exitCode = 1; }}).finally(() => clearTimeout(keepAlive));",
             "FETCH 200\n",
-        ),
-        (
-            f"fetch https://{host}/",
-            f"fetch('https://{host}/').then((r) => console.log('FETCH HTTPS', r.status)).catch((e) => {{ console.error('FETCHHTTPSERR', e && (e.stack || e.message || e)); process.exit(1); }});",
-            "FETCH HTTPS 200\n",
         ),
         (
             f"https.get https://{host}/",

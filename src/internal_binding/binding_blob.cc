@@ -17,7 +17,9 @@ namespace internal_binding {
 namespace {
 
 constexpr const char* kBlobDataKey = "__edge_blob_data";
+constexpr const char* kBlobChunksKey = "__edge_blob_chunks";
 constexpr const char* kBlobReaderDoneKey = "__edge_blob_reader_done";
+constexpr const char* kBlobReaderIndexKey = "__edge_blob_reader_index";
 
 struct StoredDataObject {
   napi_ref handle_ref = nullptr;
@@ -214,12 +216,22 @@ napi_value GetOrCreateCachedFunction(napi_env env,
   return fn;
 }
 
-napi_value CreateBlobHandle(napi_env env, napi_value data_arraybuffer) {
+napi_value CreateBlobHandle(napi_env env, napi_value data_arraybuffer, napi_value chunks = nullptr) {
   BlobBindingState& state = EnsureBlobState(env);
 
   napi_value handle = nullptr;
   if (napi_create_object(env, &handle) != napi_ok || handle == nullptr) return Undefined(env);
   if (napi_set_named_property(env, handle, kBlobDataKey, data_arraybuffer) != napi_ok) {
+    return Undefined(env);
+  }
+
+  if (chunks == nullptr) {
+    if (napi_create_array_with_length(env, 1, &chunks) != napi_ok || chunks == nullptr ||
+        napi_set_element(env, chunks, 0, data_arraybuffer) != napi_ok) {
+      return Undefined(env);
+    }
+  }
+  if (napi_set_named_property(env, handle, kBlobChunksKey, chunks) != napi_ok) {
     return Undefined(env);
   }
 
@@ -244,6 +256,14 @@ napi_value CreateBlobHandleFromBytes(napi_env env, const std::vector<uint8_t>& b
   napi_value ab = CreateArrayBufferFromBytes(env, bytes);
   if (ab == nullptr || IsUndefined(env, ab)) return Undefined(env);
   return CreateBlobHandle(env, ab);
+}
+
+napi_value CreateBlobHandleFromBytesAndChunks(napi_env env,
+                                              const std::vector<uint8_t>& bytes,
+                                              napi_value chunks) {
+  napi_value ab = CreateArrayBufferFromBytes(env, bytes);
+  if (ab == nullptr || IsUndefined(env, ab)) return Undefined(env);
+  return CreateBlobHandle(env, ab, chunks);
 }
 
 bool GetBlobHandleArrayBuffer(napi_env env, napi_value handle, napi_value* out_arraybuffer) {
@@ -307,14 +327,25 @@ napi_value BlobHandleGetReaderCallback(napi_env env, napi_callback_info info) {
 
   napi_value arraybuffer = nullptr;
   if (!GetBlobHandleArrayBuffer(env, this_arg, &arraybuffer)) return Undefined(env);
+  napi_value chunks = nullptr;
+  if (!GetNamedProperty(env, this_arg, kBlobChunksKey, &chunks)) {
+    if (napi_create_array_with_length(env, 1, &chunks) != napi_ok || chunks == nullptr ||
+        napi_set_element(env, chunks, 0, arraybuffer) != napi_ok) {
+      return Undefined(env);
+    }
+  }
 
   napi_value reader = nullptr;
   if (napi_create_object(env, &reader) != napi_ok || reader == nullptr) return Undefined(env);
   if (napi_set_named_property(env, reader, kBlobDataKey, arraybuffer) != napi_ok) return Undefined(env);
+  if (napi_set_named_property(env, reader, kBlobChunksKey, chunks) != napi_ok) return Undefined(env);
 
   napi_value done = nullptr;
   if (napi_get_boolean(env, false, &done) != napi_ok || done == nullptr) return Undefined(env);
   if (napi_set_named_property(env, reader, kBlobReaderDoneKey, done) != napi_ok) return Undefined(env);
+  napi_value index = nullptr;
+  if (napi_create_uint32(env, 0, &index) != napi_ok || index == nullptr) return Undefined(env);
+  if (napi_set_named_property(env, reader, kBlobReaderIndexKey, index) != napi_ok) return Undefined(env);
 
   BlobBindingState& state = EnsureBlobState(env);
   napi_value pull_fn = GetOrCreateCachedFunction(
@@ -350,27 +381,40 @@ napi_value BlobReaderPullCallback(napi_env env, napi_callback_info info) {
     (void)napi_get_value_bool(env, done_value, &done);
   }
 
-  napi_value arraybuffer = nullptr;
-  if (!GetNamedProperty(env, this_arg, kBlobDataKey, &arraybuffer)) return Undefined(env);
+  napi_value chunks = nullptr;
+  if (!GetNamedProperty(env, this_arg, kBlobChunksKey, &chunks)) return Undefined(env);
 
   int32_t status = 0;
   napi_value maybe_data = Undefined(env);
   if (!done) {
-    void* data = nullptr;
-    size_t byte_length = 0;
-    if (napi_get_arraybuffer_info(env, arraybuffer, &data, &byte_length) == napi_ok &&
-        data != nullptr &&
-        byte_length > 0) {
+    uint32_t index = 0;
+    uint32_t chunk_count = 0;
+    napi_value index_value = nullptr;
+    if (GetNamedProperty(env, this_arg, kBlobReaderIndexKey, &index_value)) {
+      (void)napi_get_value_uint32(env, index_value, &index);
+    }
+    (void)napi_get_array_length(env, chunks, &chunk_count);
+
+    if (index < chunk_count &&
+        napi_get_element(env, chunks, index, &maybe_data) == napi_ok &&
+        maybe_data != nullptr) {
       status = 1;
-      maybe_data = arraybuffer;
+
+      napi_value next_index = nullptr;
+      if (napi_create_uint32(env, index + 1, &next_index) == napi_ok && next_index != nullptr) {
+        napi_set_named_property(env, this_arg, kBlobReaderIndexKey, next_index);
+      }
     } else {
       status = 0;
       maybe_data = Undefined(env);
+      done = true;
     }
 
-    napi_value done_true = nullptr;
-    if (napi_get_boolean(env, true, &done_true) == napi_ok && done_true != nullptr) {
-      napi_set_named_property(env, this_arg, kBlobReaderDoneKey, done_true);
+    if (index + 1 >= chunk_count || done) {
+      napi_value done_true = nullptr;
+      if (napi_get_boolean(env, true, &done_true) == napi_ok && done_true != nullptr) {
+        napi_set_named_property(env, this_arg, kBlobReaderDoneKey, done_true);
+      }
     }
   }
 
@@ -424,6 +468,8 @@ napi_value BlobCreateBlobCallback(napi_env env, napi_callback_info info) {
   if (napi_is_array(env, argv[0], &is_array) != napi_ok || !is_array) return Undefined(env);
 
   std::vector<uint8_t> bytes;
+  napi_value chunks = nullptr;
+  if (napi_create_array_with_length(env, 0, &chunks) != napi_ok || chunks == nullptr) return Undefined(env);
   if (argc >= 2 && argv[1] != nullptr) {
     uint32_t expected = 0;
     if (napi_get_value_uint32(env, argv[1], &expected) == napi_ok) {
@@ -437,10 +483,15 @@ napi_value BlobCreateBlobCallback(napi_env env, napi_callback_info info) {
   for (uint32_t i = 0; i < source_count; ++i) {
     napi_value source = nullptr;
     if (napi_get_element(env, argv[0], i, &source) != napi_ok || source == nullptr) continue;
-    (void)AppendBytesFromValue(env, source, &bytes);
+    std::vector<uint8_t> source_bytes;
+    if (!AppendBytesFromValue(env, source, &source_bytes)) continue;
+    bytes.insert(bytes.end(), source_bytes.begin(), source_bytes.end());
+    napi_value chunk = CreateArrayBufferFromBytes(env, source_bytes);
+    if (chunk == nullptr || IsUndefined(env, chunk)) return Undefined(env);
+    if (napi_set_element(env, chunks, i, chunk) != napi_ok) return Undefined(env);
   }
 
-  return CreateBlobHandleFromBytes(env, bytes);
+  return CreateBlobHandleFromBytesAndChunks(env, bytes, chunks);
 }
 
 napi_value BlobCreateBlobFromFilePathCallback(napi_env env, napi_callback_info info) {

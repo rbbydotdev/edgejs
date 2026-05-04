@@ -19,6 +19,7 @@ constexpr int kBufferedBytes = 5;
 constexpr int kEncodingField = 6;
 constexpr int kSize = 7;
 constexpr int kNumFields = 7;
+constexpr size_t kEdgeStringMaxLength = 0x1fffffe8;
 
 using edge::encoding_ids::kEncAscii;
 using edge::encoding_ids::kEncBase64;
@@ -187,12 +188,28 @@ const char* EncodingName(uint8_t enc) {
   }
 }
 
+bool ThrowIfStringTooLong(napi_env env, size_t length) {
+  if (length <= kEdgeStringMaxLength) return false;
+  napi_throw_error(env, "ERR_STRING_TOO_LONG", "Cannot create a string longer than 0x1fffffe8 characters");
+  return true;
+}
+
 napi_value MakeStringFromBytes(napi_env env, const uint8_t* data, size_t len, uint8_t enc) {
   napi_value out = nullptr;
   if (len == 0) {
     napi_create_string_utf8(env, "", 0, &out);
     return out;
   }
+
+  size_t max_decoded_length = len;
+  if (enc == kEncUtf16Le) {
+    max_decoded_length = len / 2;
+  } else if (enc == kEncBase64 || enc == kEncBase64Url) {
+    max_decoded_length = ((len + 2) / 3) * 4;
+  } else if (enc == kEncHex) {
+    max_decoded_length = len * 2;
+  }
+  if (ThrowIfStringTooLong(env, max_decoded_length)) return nullptr;
 
   // First try global Buffer.from(...).toString(enc) so we match the runtime's
   // exact Buffer decoding behavior used by tests for comparison.

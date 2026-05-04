@@ -95,8 +95,25 @@ jobs:
           if-no-files-found: error
 
       - name: Test edge
+        shell: bash
         run: |
-          make test-only TEST_JOBS=4
+          set +e
+          make test-only TEST_JOBS=4 2>&1 | tee test-edge.log
+          status=${PIPESTATUS[0]}
+          if [ "$status" -ne 0 ]; then
+            echo "::group::test-edge.log"
+            cat test-edge.log
+            echo "::endgroup::"
+          fi
+          exit "$status"
+
+      - name: Upload Test edge log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-linux-test-edge-log
+          path: test-edge.log
+          if-no-files-found: warn
 
       - name: sccache stats
         if: always()
