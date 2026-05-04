@@ -1,9 +1,10 @@
-.PHONY: build build-wasix build-napi-wasmer-cli test-wasix-napi-cli test-wasix-safe-mode test test-only check-portability clean-dist dist dist-only framework-test framework-test-reset
+.PHONY: build build-edge-quickjs-cli build-wasix build-napi-wasmer-cli test-wasix-napi-cli test-wasix-safe-mode test test-only check-portability clean-edge-quickjs-cli clean-dist dist dist-only framework-test framework-test-reset
 
 UNAME_S := $(shell uname -s)
 BUILD_NAPI_DIR ?= build-v8-napi
 BUILD_NAPI_QUICKJS_DIR ?= build-quickjs-napi
 BUILD_DIR ?= build-edge
+BUILD_EDGE_QUICKJS_CLI_DIR ?= build-edge-quickjs-cli
 DIST_DIR ?= dist
 DIST_BIN_DIR ?= $(DIST_DIR)/bin
 DIST_BIN_COMPAT_DIR ?= $(DIST_DIR)/bin-compat
@@ -70,6 +71,10 @@ build:
 	$(BUILD_ENV) cmake -S . -B $(BUILD_DIR) -DCMAKE_BUILD_TYPE=$(CMAKE_BUILD_TYPE) -DEDGE_DEFAULT_WASMER_PACKAGE=$(EDGE_WASMER_PACKAGE) $(EXTRA_CMAKE_ARGS) $(CMAKE_ARGS)
 	$(BUILD_ENV) cmake --build $(BUILD_DIR) -j$(JOBS)
 
+build-edge-quickjs-cli:
+	$(BUILD_ENV) cmake -S . -B $(BUILD_EDGE_QUICKJS_CLI_DIR) -DCMAKE_BUILD_TYPE=$(CMAKE_BUILD_TYPE) -DEDGE_DEFAULT_WASMER_PACKAGE=$(EDGE_WASMER_PACKAGE) -DEDGE_NAPI_PROVIDER=quickjs $(EXTRA_CMAKE_ARGS) $(CMAKE_ARGS)
+	$(BUILD_ENV) cmake --build $(BUILD_EDGE_QUICKJS_CLI_DIR) --target edge -j$(JOBS)
+
 build-wasix:
 	./wasix/build-wasix.sh
 
@@ -92,6 +97,9 @@ test: build test-only
 test-only:
 	NODE_TEST_RUNNER=$(EDGE_BINARY) ./test/nodejs_test_harness --category=node:buffer,node:console,node:dgram,node:diagnostics_channel,node:dns,node:events,node:http,node:https,node:os,node:path,node:punycode,node:querystring,node:stream,node:string_decoder,node:tty,node:url,node:zlib,node:crypto,node:domain,node:http2,node:tls,node:sys \
 	  --skip-tests=known_issues/test-stdin-is-always-net.socket.js,parallel/test-dns-perf_hooks.js,parallel/test-dns-channel-timeout.js
+
+clean-edge-quickjs-cli:
+	rm -rf $(BUILD_EDGE_QUICKJS_CLI_DIR)
 
 # 	Tests not working on linux
 
