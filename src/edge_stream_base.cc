@@ -1,5 +1,6 @@
 #include "edge_stream_base.h"
 
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
@@ -537,7 +538,15 @@ bool CallJsOnRead(EdgeStreamBase* base,
   SetStreamState(base->env, kEdgeArrayBufferOffset, static_cast<int32_t>(offset));
 
   napi_value callback = GetRefValue(base->env, base->onread_ref);
-  if (!IsFunction(base->env, callback)) return false;
+  if (!IsFunction(base->env, callback)) {
+    if (std::getenv("EDGE_TRACE_TTY") != nullptr) {
+      std::fprintf(stderr,
+                   "EDGE_TRACE_TTY missing onread async_id=%llu nread=%zd\n",
+                   static_cast<unsigned long long>(base->async_id),
+                   nread);
+    }
+    return false;
+  }
 
   napi_value self = EdgeStreamBaseGetWrapper(base);
   if (self == nullptr) return false;

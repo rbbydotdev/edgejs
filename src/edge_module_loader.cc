@@ -3244,6 +3244,15 @@ static napi_value ContextifyMakeContextCallback(napi_env env, napi_callback_info
       out == nullptr) {
     return nullptr;
   }
+
+  napi_value context_symbol = GetUtilPrivateSymbolByName(env, "contextify_context_private_symbol");
+  if (context_symbol != nullptr) {
+    napi_value true_value = nullptr;
+    if (napi_get_boolean(env, true, &true_value) == napi_ok && true_value != nullptr) {
+      (void)napi_set_property(env, out, context_symbol, true_value);
+    }
+  }
+
   return out;
 }
 
