@@ -484,15 +484,23 @@ napi_value TtyWriteQueueSizeGetter(napi_env env, napi_callback_info info) {
 }  // namespace
 
 uv_stream_t* EdgeTtyWrapGetStream(napi_env env, napi_value value) {
+  EdgeStreamBase* base = EdgeTtyWrapGetStreamBase(env, value);
+  return base != nullptr ? reinterpret_cast<uv_stream_t*>(&FromBase(base)->handle) : nullptr;
+}
+
+EdgeStreamBase* EdgeTtyWrapGetStreamBase(napi_env env, napi_value value) {
   if (env == nullptr || value == nullptr) return nullptr;
   napi_valuetype type = napi_undefined;
-  if (napi_typeof(env, value, &type) != napi_ok || type != napi_object) return nullptr;
+  if (napi_typeof(env, value, &type) != napi_ok ||
+      (type != napi_object && type != napi_function && type != napi_external)) {
+    return nullptr;
+  }
   TtyWrap* wrap = nullptr;
   if (napi_unwrap(env, value, reinterpret_cast<void**>(&wrap)) != napi_ok || wrap == nullptr) return nullptr;
   if (!wrap->initialized) return nullptr;
   uv_handle_t* handle = reinterpret_cast<uv_handle_t*>(&wrap->handle);
   if (handle->data != wrap || handle->type != UV_TTY) return nullptr;
-  return reinterpret_cast<uv_stream_t*>(&wrap->handle);
+  return &wrap->base;
 }
 
 napi_value EdgeInstallTtyWrapBinding(napi_env env) {

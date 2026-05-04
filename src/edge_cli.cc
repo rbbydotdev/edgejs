@@ -142,6 +142,12 @@ int RunWithFreshEnv(const std::function<int(napi_env)>& runner, std::string* err
   }
 
   const int exit_code = runner(env);
+  if (std::getenv("EDGE_TRACE_BOOTSTRAP") != nullptr) {
+    std::fprintf(stderr,
+                 "EDGE_TRACE_BOOTSTRAP runner exit_code=%d error=%s\n",
+                 exit_code,
+                 (error_out != nullptr && !error_out->empty()) ? error_out->c_str() : "<none>");
+  }
   EdgeEnvironmentRunCleanup(env);
   EdgeEnvironmentRunAtExitCallbacks(env);
   const napi_status release_status = unofficial_napi_release_env(env_scope);

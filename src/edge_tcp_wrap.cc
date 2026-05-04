@@ -4,6 +4,8 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
+#include <cstdlib>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -71,6 +73,32 @@ TcpWrap* FromBase(EdgeStreamBase* base) {
   return reinterpret_cast<TcpWrap*>(reinterpret_cast<char*>(base) - offsetof(TcpWrap, base));
 }
 
+bool TraceNetEnabled() {
+  return std::getenv("EDGE_TRACE_NET") != nullptr;
+}
+
+const char* SocketTypeName(int socket_type) {
+  return socket_type == kTcpServer ? "server" : "socket";
+}
+
+std::string SockaddrToString(const sockaddr* addr) {
+  if (addr == nullptr) return "<null>";
+  char ip[INET6_ADDRSTRLEN] = {'\0'};
+  uint16_t port = 0;
+  if (addr->sa_family == AF_INET) {
+    const auto* in = reinterpret_cast<const sockaddr_in*>(addr);
+    inet_ntop(AF_INET, &in->sin_addr, ip, sizeof(ip));
+    port = ntohs(in->sin_port);
+  } else if (addr->sa_family == AF_INET6) {
+    const auto* in6 = reinterpret_cast<const sockaddr_in6*>(addr);
+    inet_ntop(AF_INET6, &in6->sin6_addr, ip, sizeof(ip));
+    port = ntohs(in6->sin6_port);
+  } else {
+    return "family=" + std::to_string(addr->sa_family);
+  }
+  return std::string(ip[0] != '\0' ? ip : "<invalid>") + ":" + std::to_string(port);
+}
+
 uv_handle_t* TcpGetHandle(EdgeStreamBase* base) {
   auto* wrap = FromBase(base);
   return wrap != nullptr ? reinterpret_cast<uv_handle_t*>(&wrap->handle) : nullptr;
@@ -88,6 +116,13 @@ void TcpDestroy(EdgeStreamBase* base) {
 void TcpAfterClose(uv_handle_t* handle) {
   auto* wrap = handle != nullptr ? static_cast<TcpWrap*>(handle->data) : nullptr;
   if (wrap == nullptr) return;
+  if (TraceNetEnabled()) {
+    std::fprintf(stderr,
+                 "EDGE_TRACE_NET tcp close type=%s handle=%p async_id=%llu\n",
+                 SocketTypeName(wrap->socket_type),
+                 static_cast<void*>(&wrap->handle),
+                 static_cast<unsigned long long>(wrap->base.async_id));
+  }
   EdgeStreamBaseOnClosed(&wrap->base);
 }
 
@@ -352,6 +387,17 @@ napi_value TcpBind(napi_env env, napi_callback_info info) {
   sockaddr_in addr{};
   int rc = uv_ip4_addr(host.c_str(), port, &addr);
   if (rc == 0) rc = uv_tcp_bind(&wrap->handle, reinterpret_cast<const sockaddr*>(&addr), flags);
+  if (TraceNetEnabled()) {
+    std::fprintf(stderr,
+                 "EDGE_TRACE_NET tcp bind4 type=%s handle=%p host=%s port=%d flags=%u rc=%d(%s)\n",
+                 SocketTypeName(wrap->socket_type),
+                 static_cast<void*>(&wrap->handle),
+                 host.c_str(),
+                 port,
+                 flags,
+                 rc,
+                 rc == 0 ? "OK" : uv_err_name(rc));
+  }
   return EdgeStreamBaseMakeInt32(env, rc);
 }
 
@@ -373,12 +419,31 @@ napi_value TcpBind6(napi_env env, napi_callback_info info) {
   sockaddr_in6 addr{};
   int rc = uv_ip6_addr(host.c_str(), port, &addr);
   if (rc == 0) rc = uv_tcp_bind(&wrap->handle, reinterpret_cast<const sockaddr*>(&addr), flags);
+  if (TraceNetEnabled()) {
+    std::fprintf(stderr,
+                 "EDGE_TRACE_NET tcp bind6 type=%s handle=%p host=%s port=%d flags=%u rc=%d(%s)\n",
+                 SocketTypeName(wrap->socket_type),
+                 static_cast<void*>(&wrap->handle),
+                 host.c_str(),
+                 port,
+                 flags,
+                 rc,
+                 rc == 0 ? "OK" : uv_err_name(rc));
+  }
   return EdgeStreamBaseMakeInt32(env, rc);
 }
 
 void OnConnection(uv_stream_t* server, int status) {
   auto* server_wrap = server != nullptr ? static_cast<TcpWrap*>(server->data) : nullptr;
   if (server_wrap == nullptr) return;
+  if (TraceNetEnabled()) {
+    std::fprintf(stderr,
+                 "EDGE_TRACE_NET tcp onconnection server=%p status=%d(%s) async_id=%llu\n",
+                 static_cast<void*>(server),
+                 status,
+                 status == 0 ? "OK" : uv_err_name(status),
+                 static_cast<unsigned long long>(server_wrap->base.async_id));
+  }
   napi_env env = server_wrap->env;
   napi_value server_obj = EdgeStreamBaseGetWrapper(&server_wrap->base);
   napi_value onconnection = nullptr;
@@ -403,7 +468,26 @@ void OnConnection(uv_stream_t* server, int status) {
     if (napi_unwrap(env, client_obj, reinterpret_cast<void**>(&client_wrap)) != napi_ok || client_wrap == nullptr) {
       return;
     }
-    if (uv_accept(server, reinterpret_cast<uv_stream_t*>(&client_wrap->handle)) != 0) {
+    int accept_rc = uv_accept(server, reinterpret_cast<uv_stream_t*>(&client_wrap->handle));
+    if (TraceNetEnabled()) {
+      sockaddr_storage peer{};
+      int peer_len = sizeof(peer);
+      int peer_rc = accept_rc == 0
+                        ? uv_tcp_getpeername(&client_wrap->handle,
+                                             reinterpret_cast<sockaddr*>(&peer),
+                                             &peer_len)
+                        : accept_rc;
+      std::fprintf(stderr,
+                   "EDGE_TRACE_NET tcp accept server=%p client=%p rc=%d(%s) peer_rc=%d(%s) peer=%s\n",
+                   static_cast<void*>(server),
+                   static_cast<void*>(&client_wrap->handle),
+                   accept_rc,
+                   accept_rc == 0 ? "OK" : uv_err_name(accept_rc),
+                   peer_rc,
+                   peer_rc == 0 ? "OK" : uv_err_name(peer_rc),
+                   peer_rc == 0 ? SockaddrToString(reinterpret_cast<sockaddr*>(&peer)).c_str() : "<none>");
+    }
+    if (accept_rc != 0) {
       return;
     }
     argv[1] = client_obj;
@@ -429,9 +513,23 @@ napi_value TcpListen(napi_env env, napi_callback_info info) {
   if (wrap == nullptr) return EdgeStreamBaseMakeInt32(env, UV_EINVAL);
   int32_t backlog = 511;
   if (argc >= 1 && argv[0] != nullptr) napi_get_value_int32(env, argv[0], &backlog);
-  return EdgeStreamBaseMakeInt32(
-      env,
-      uv_listen(reinterpret_cast<uv_stream_t*>(&wrap->handle), backlog, OnConnection));
+  int rc = uv_listen(reinterpret_cast<uv_stream_t*>(&wrap->handle), backlog, OnConnection);
+  if (TraceNetEnabled()) {
+    sockaddr_storage name{};
+    int name_len = sizeof(name);
+    int name_rc = uv_tcp_getsockname(&wrap->handle, reinterpret_cast<sockaddr*>(&name), &name_len);
+    std::fprintf(stderr,
+                 "EDGE_TRACE_NET tcp listen type=%s handle=%p backlog=%d rc=%d(%s) sock_rc=%d(%s) sock=%s\n",
+                 SocketTypeName(wrap->socket_type),
+                 static_cast<void*>(&wrap->handle),
+                 backlog,
+                 rc,
+                 rc == 0 ? "OK" : uv_err_name(rc),
+                 name_rc,
+                 name_rc == 0 ? "OK" : uv_err_name(name_rc),
+                 name_rc == 0 ? SockaddrToString(reinterpret_cast<sockaddr*>(&name)).c_str() : "<none>");
+  }
+  return EdgeStreamBaseMakeInt32(env, rc);
 }
 
 napi_value TcpConnectImpl(napi_env env,
@@ -528,6 +626,15 @@ napi_value TcpReadStart(napi_env env, napi_callback_info info) {
   int rc = uv_read_start(reinterpret_cast<uv_stream_t*>(&wrap->handle), OnAlloc, OnRead);
   if (rc == UV_EALREADY) rc = 0;
   EdgeStreamBaseSetReading(&wrap->base, rc == 0);
+  if (TraceNetEnabled()) {
+    std::fprintf(stderr,
+                 "EDGE_TRACE_NET tcp read_start type=%s handle=%p rc=%d(%s) async_id=%llu\n",
+                 SocketTypeName(wrap->socket_type),
+                 static_cast<void*>(&wrap->handle),
+                 rc,
+                 rc == 0 ? "OK" : uv_err_name(rc),
+                 static_cast<unsigned long long>(wrap->base.async_id));
+  }
   return EdgeStreamBaseMakeInt32(env, rc);
 }
 
@@ -538,6 +645,15 @@ napi_value TcpReadStop(napi_env env, napi_callback_info info) {
   int rc = uv_read_stop(reinterpret_cast<uv_stream_t*>(&wrap->handle));
   if (rc == UV_EALREADY) rc = 0;
   EdgeStreamBaseSetReading(&wrap->base, false);
+  if (TraceNetEnabled()) {
+    std::fprintf(stderr,
+                 "EDGE_TRACE_NET tcp read_stop type=%s handle=%p rc=%d(%s) async_id=%llu\n",
+                 SocketTypeName(wrap->socket_type),
+                 static_cast<void*>(&wrap->handle),
+                 rc,
+                 rc == 0 ? "OK" : uv_err_name(rc),
+                 static_cast<unsigned long long>(wrap->base.async_id));
+  }
   return EdgeStreamBaseMakeInt32(env, rc);
 }
 
@@ -766,14 +882,46 @@ void SetNamedU32(napi_env env, napi_value obj, const char* key, uint32_t value) 
 }  // namespace
 
 uv_stream_t* EdgeTcpWrapGetStream(napi_env env, napi_value value) {
+  EdgeStreamBase* base = EdgeTcpWrapGetStreamBase(env, value);
+  return base != nullptr ? reinterpret_cast<uv_stream_t*>(&FromBase(base)->handle) : nullptr;
+}
+
+EdgeStreamBase* EdgeTcpWrapGetStreamBase(napi_env env, napi_value value) {
   if (env == nullptr || value == nullptr) return nullptr;
   napi_valuetype type = napi_undefined;
-  if (napi_typeof(env, value, &type) != napi_ok || type != napi_object) return nullptr;
+  napi_status type_status = napi_typeof(env, value, &type);
+  if (TraceNetEnabled()) {
+    std::fprintf(stderr,
+                 "EDGE_TRACE_NET tcp get_stream_base value=%p type_status=%d type=%d\n",
+                 static_cast<void*>(value),
+                 static_cast<int>(type_status),
+                 static_cast<int>(type));
+  }
+  if (type_status != napi_ok ||
+      (type != napi_object && type != napi_function && type != napi_external)) {
+    return nullptr;
+  }
   TcpWrap* wrap = nullptr;
-  if (napi_unwrap(env, value, reinterpret_cast<void**>(&wrap)) != napi_ok || wrap == nullptr) return nullptr;
+  napi_status unwrap_status = napi_unwrap(env, value, reinterpret_cast<void**>(&wrap));
+  if (TraceNetEnabled()) {
+    std::fprintf(stderr,
+                 "EDGE_TRACE_NET tcp get_stream_base unwrap_status=%d wrap=%p\n",
+                 static_cast<int>(unwrap_status),
+                 static_cast<void*>(wrap));
+  }
+  if (unwrap_status != napi_ok || wrap == nullptr) return nullptr;
   uv_handle_t* handle = reinterpret_cast<uv_handle_t*>(&wrap->handle);
+  if (TraceNetEnabled()) {
+    std::fprintf(stderr,
+                 "EDGE_TRACE_NET tcp get_stream_base base=%p handle=%p data=%p type=%d expected=%d\n",
+                 static_cast<void*>(&wrap->base),
+                 static_cast<void*>(handle),
+                 handle != nullptr ? handle->data : nullptr,
+                 handle != nullptr ? static_cast<int>(handle->type) : -1,
+                 static_cast<int>(UV_TCP));
+  }
   if (handle->data != wrap || handle->type != UV_TCP) return nullptr;
-  return reinterpret_cast<uv_stream_t*>(&wrap->handle);
+  return &wrap->base;
 }
 
 bool EdgeTcpWrapPushStreamListener(uv_stream_t* stream, EdgeStreamListener* listener) {

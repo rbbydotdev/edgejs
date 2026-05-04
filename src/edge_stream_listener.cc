@@ -1,5 +1,16 @@
 #include "edge_stream_listener.h"
 
+#include <cstdio>
+#include <cstdlib>
+
+namespace {
+
+bool TraceNetEnabled() {
+  return std::getenv("EDGE_TRACE_NET") != nullptr;
+}
+
+}
+
 void EdgeInitStreamListenerState(EdgeStreamListenerState* state,
                                 EdgeStreamListener* initial) {
   if (state == nullptr) return;
@@ -49,7 +60,25 @@ bool EdgeStreamEmitAlloc(EdgeStreamListenerState* state,
        listener != nullptr;
        listener = listener->previous) {
     if (listener->on_alloc == nullptr) continue;
-    if (listener->on_alloc(listener, suggested_size, out)) return true;
+    if (TraceNetEnabled()) {
+      std::fprintf(stderr,
+                   "EDGE_TRACE_NET listener alloc_try listener=%p on_alloc=%p on_read=%p previous=%p suggested=%zu\n",
+                   static_cast<void*>(listener),
+                   reinterpret_cast<void*>(listener->on_alloc),
+                   reinterpret_cast<void*>(listener->on_read),
+                   static_cast<void*>(listener->previous),
+                   suggested_size);
+    }
+    bool handled = listener->on_alloc(listener, suggested_size, out);
+    if (TraceNetEnabled()) {
+      std::fprintf(stderr,
+                   "EDGE_TRACE_NET listener alloc_done listener=%p handled=%d buf=%p len=%zu\n",
+                   static_cast<void*>(listener),
+                   handled,
+                   handled ? static_cast<void*>(out->base) : nullptr,
+                   handled ? static_cast<size_t>(out->len) : 0);
+    }
+    if (handled) return true;
   }
 
   return false;
@@ -68,7 +97,25 @@ bool EdgeStreamEmitRead(EdgeStreamListenerState* state,
        listener != nullptr;
        listener = listener->previous) {
     if (listener->on_read == nullptr) continue;
-    if (listener->on_read(listener, nread, current_buf)) return true;
+    if (TraceNetEnabled()) {
+      std::fprintf(stderr,
+                   "EDGE_TRACE_NET listener read_try listener=%p on_read=%p previous=%p nread=%zd buf=%p len=%zu\n",
+                   static_cast<void*>(listener),
+                   reinterpret_cast<void*>(listener->on_read),
+                   static_cast<void*>(listener->previous),
+                   nread,
+                   current_buf != nullptr ? static_cast<void*>(current_buf->base) : nullptr,
+                   current_buf != nullptr ? static_cast<size_t>(current_buf->len) : 0);
+    }
+    bool handled = listener->on_read(listener, nread, current_buf);
+    if (TraceNetEnabled()) {
+      std::fprintf(stderr,
+                   "EDGE_TRACE_NET listener read_done listener=%p handled=%d nread=%zd\n",
+                   static_cast<void*>(listener),
+                   handled,
+                   nread);
+    }
+    if (handled) return true;
     if (nread < 0) current_buf = &empty;
   }
 
