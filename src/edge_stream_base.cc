@@ -1,5 +1,6 @@
 #include "edge_stream_base.h"
 
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
@@ -22,6 +23,10 @@
 namespace {
 
 void DeleteRefIfPresent(napi_env env, napi_ref* ref);
+
+bool TraceNetEnabled() {
+  return std::getenv("EDGE_TRACE_NET") != nullptr;
+}
 
 void ClearPendingException(napi_env env) {
   if (env == nullptr) return;
@@ -537,7 +542,26 @@ bool CallJsOnRead(EdgeStreamBase* base,
   SetStreamState(base->env, kEdgeArrayBufferOffset, static_cast<int32_t>(offset));
 
   napi_value callback = GetRefValue(base->env, base->onread_ref);
-  if (!IsFunction(base->env, callback)) return false;
+  if (!IsFunction(base->env, callback)) {
+    if (TraceNetEnabled()) {
+      napi_valuetype callback_type = napi_undefined;
+      if (callback != nullptr) (void)napi_typeof(base->env, callback, &callback_type);
+      std::fprintf(stderr,
+                   "EDGE_TRACE_NET stream missing_onread provider=%d async_id=%llu nread=%zd callback=%p type=%d\n",
+                   base->provider_type,
+                   static_cast<unsigned long long>(base->async_id),
+                   nread,
+                   static_cast<void*>(callback),
+                   static_cast<int>(callback_type));
+    }
+    if (std::getenv("EDGE_TRACE_TTY") != nullptr) {
+      std::fprintf(stderr,
+                   "EDGE_TRACE_TTY missing onread async_id=%llu nread=%zd\n",
+                   static_cast<unsigned long long>(base->async_id),
+                   nread);
+    }
+    return false;
+  }
 
   napi_value self = EdgeStreamBaseGetWrapper(base);
   if (self == nullptr) return false;
@@ -545,9 +569,28 @@ bool CallJsOnRead(EdgeStreamBase* base,
   napi_value argv[1] = {arraybuffer != nullptr ? arraybuffer : EdgeStreamBaseUndefined(base->env)};
   napi_value ignored = nullptr;
   napi_value* out = result != nullptr ? result : &ignored;
+  if (TraceNetEnabled()) {
+    std::fprintf(stderr,
+                 "EDGE_TRACE_NET stream call_onread provider=%d async_id=%llu nread=%zd has_ab=%d offset=%zu\n",
+                 base->provider_type,
+                 static_cast<unsigned long long>(base->async_id),
+                 nread,
+                 arraybuffer != nullptr,
+                 offset);
+  }
   if (EdgeAsyncWrapMakeCallback(
           base->env, base->async_id, self, self, callback, 1, argv, out, kEdgeMakeCallbackNone) != napi_ok) {
     *out = nullptr;
+  }
+  if (TraceNetEnabled()) {
+    bool pending = false;
+    (void)napi_is_exception_pending(base->env, &pending);
+    std::fprintf(stderr,
+                 "EDGE_TRACE_NET stream call_onread_done provider=%d async_id=%llu pending_exception=%d result=%p\n",
+                 base->provider_type,
+                 static_cast<unsigned long long>(base->async_id),
+                 pending,
+                 static_cast<void*>(out != nullptr ? *out : nullptr));
   }
   (void)EdgeHandlePendingExceptionNow(base->env, nullptr);
   return true;
@@ -558,6 +601,15 @@ bool DefaultOnAlloc(EdgeStreamListener* listener, size_t suggested_size, uv_buf_
   char* base = static_cast<char*>(malloc(suggested_size));
   if (base == nullptr && suggested_size > 0) return false;
   *out = uv_buf_init(base, static_cast<unsigned int>(suggested_size));
+  if (TraceNetEnabled()) {
+    auto* stream_base = static_cast<EdgeStreamBase*>(listener->data);
+    std::fprintf(stderr,
+                 "EDGE_TRACE_NET stream alloc provider=%d async_id=%llu suggested=%zu buf=%p\n",
+                 stream_base != nullptr ? stream_base->provider_type : -1,
+                 stream_base != nullptr ? static_cast<unsigned long long>(stream_base->async_id) : 0,
+                 suggested_size,
+                 static_cast<void*>(base));
+  }
   return true;
 }
 
@@ -568,6 +620,15 @@ bool DefaultOnRead(EdgeStreamListener* listener, ssize_t nread, const uv_buf_t* 
 
   const char* data = (buf != nullptr) ? buf->base : nullptr;
   size_t length = (buf != nullptr) ? buf->len : 0;
+  if (TraceNetEnabled()) {
+    std::fprintf(stderr,
+                 "EDGE_TRACE_NET stream read provider=%d async_id=%llu nread=%zd buf_len=%zu buf=%p\n",
+                 base->provider_type,
+                 static_cast<unsigned long long>(base->async_id),
+                 nread,
+                 length,
+                 static_cast<const void*>(data));
+  }
 
   if (nread <= 0) {
     if (nread < 0) {
@@ -737,6 +798,14 @@ void FreeWriteReq(LibuvWriteReq* wr) {
 void OnWriteDone(uv_write_t* req, int status) {
   auto* wr = static_cast<LibuvWriteReq*>(req->data);
   if (wr == nullptr) return;
+  if (TraceNetEnabled()) {
+    std::fprintf(stderr,
+                 "EDGE_TRACE_NET stream write_done provider=%d async_id=%llu status=%d(%s)\n",
+                 wr->base != nullptr ? wr->base->provider_type : -1,
+                 wr->base != nullptr ? static_cast<unsigned long long>(wr->base->async_id) : 0,
+                 status,
+                 status == 0 ? "OK" : uv_err_name(status));
+  }
   napi_value req_obj = GetRefValue(wr->env, wr->req_obj_ref);
   EdgeStreamBaseEmitAfterWrite(wr->base, req_obj, status);
   FreeWriteReq(wr);
@@ -909,17 +978,58 @@ void EdgeStreamBaseOnClosed(EdgeStreamBase* base) {
 
 bool EdgeStreamBasePushListener(EdgeStreamBase* base, EdgeStreamListener* listener) {
   if (base == nullptr || listener == nullptr) return false;
+  if (TraceNetEnabled()) {
+    std::fprintf(stderr,
+                 "EDGE_TRACE_NET stream listener_push base=%p old_current=%p listener=%p on_alloc=%p on_read=%p previous=%p\n",
+                 static_cast<void*>(base),
+                 static_cast<void*>(base->listener_state.current),
+                 static_cast<void*>(listener),
+                 reinterpret_cast<void*>(listener->on_alloc),
+                 reinterpret_cast<void*>(listener->on_read),
+                 static_cast<void*>(listener->previous));
+  }
   EdgePushStreamListener(&base->listener_state, listener);
+  if (TraceNetEnabled()) {
+    std::fprintf(stderr,
+                 "EDGE_TRACE_NET stream listener_push_done base=%p current=%p listener_previous=%p\n",
+                 static_cast<void*>(base),
+                 static_cast<void*>(base->listener_state.current),
+                 static_cast<void*>(listener->previous));
+  }
   return true;
 }
 
 bool EdgeStreamBaseRemoveListener(EdgeStreamBase* base, EdgeStreamListener* listener) {
   if (base == nullptr || listener == nullptr) return false;
-  return EdgeRemoveStreamListener(&base->listener_state, listener);
+  if (TraceNetEnabled()) {
+    std::fprintf(stderr,
+                 "EDGE_TRACE_NET stream listener_remove base=%p current=%p listener=%p previous=%p\n",
+                 static_cast<void*>(base),
+                 static_cast<void*>(base->listener_state.current),
+                 static_cast<void*>(listener),
+                 static_cast<void*>(listener->previous));
+  }
+  bool removed = EdgeRemoveStreamListener(&base->listener_state, listener);
+  if (TraceNetEnabled()) {
+    std::fprintf(stderr,
+                 "EDGE_TRACE_NET stream listener_remove_done base=%p removed=%d current=%p listener_previous=%p\n",
+                 static_cast<void*>(base),
+                 removed,
+                 static_cast<void*>(base->listener_state.current),
+                 static_cast<void*>(listener->previous));
+  }
+  return removed;
 }
 
 bool EdgeStreamBaseOnUvAlloc(EdgeStreamBase* base, size_t suggested_size, uv_buf_t* out) {
   if (base == nullptr || out == nullptr) return false;
+  if (TraceNetEnabled()) {
+    std::fprintf(stderr,
+                 "EDGE_TRACE_NET stream uv_alloc base=%p current=%p suggested=%zu\n",
+                 static_cast<void*>(base),
+                 static_cast<void*>(base->listener_state.current),
+                 suggested_size);
+  }
   if (EdgeStreamEmitAlloc(&base->listener_state, suggested_size, out)) return true;
   char* raw = static_cast<char*>(malloc(suggested_size));
   *out = uv_buf_init(raw, static_cast<unsigned int>(suggested_size));
@@ -930,6 +1040,15 @@ void EdgeStreamBaseOnUvRead(EdgeStreamBase* base, ssize_t nread, const uv_buf_t*
   if (base == nullptr) {
     if (buf != nullptr && buf->base != nullptr) free(buf->base);
     return;
+  }
+  if (TraceNetEnabled()) {
+    std::fprintf(stderr,
+                 "EDGE_TRACE_NET stream uv_read base=%p current=%p nread=%zd buf=%p len=%zu\n",
+                 static_cast<void*>(base),
+                 static_cast<void*>(base->listener_state.current),
+                 nread,
+                 buf != nullptr ? static_cast<void*>(buf->base) : nullptr,
+                 buf != nullptr ? static_cast<size_t>(buf->len) : 0);
   }
 
   if (nread == UV_EOF) {
@@ -1173,11 +1292,44 @@ uv_stream_t* EdgeStreamBaseGetLibuvStream(napi_env env, napi_value value) {
 EdgeStreamBase* EdgeStreamBaseFromValue(napi_env env, napi_value value) {
   if (env == nullptr || value == nullptr) return nullptr;
 
+  if (TraceNetEnabled()) {
+    std::fprintf(stderr, "EDGE_TRACE_NET stream from_value value=%p begin\n", static_cast<void*>(value));
+  }
+
+  if (EdgeStreamBase* base = EdgePipeWrapGetStreamBase(env, value)) {
+    if (TraceNetEnabled()) {
+      std::fprintf(stderr, "EDGE_TRACE_NET stream from_value pipe base=%p\n", static_cast<void*>(base));
+    }
+    return base;
+  }
+  if (EdgeStreamBase* base = EdgeTcpWrapGetStreamBase(env, value)) {
+    if (TraceNetEnabled()) {
+      std::fprintf(stderr, "EDGE_TRACE_NET stream from_value tcp base=%p\n", static_cast<void*>(base));
+    }
+    return base;
+  }
+  if (EdgeStreamBase* base = EdgeTtyWrapGetStreamBase(env, value)) {
+    if (TraceNetEnabled()) {
+      std::fprintf(stderr, "EDGE_TRACE_NET stream from_value tty base=%p\n", static_cast<void*>(base));
+    }
+    return base;
+  }
+
   napi_valuetype type = napi_undefined;
-  if (napi_typeof(env, value, &type) != napi_ok) return nullptr;
+  napi_status type_status = napi_typeof(env, value, &type);
+  if (TraceNetEnabled()) {
+    std::fprintf(stderr,
+                 "EDGE_TRACE_NET stream from_value type_status=%d type=%d\n",
+                 static_cast<int>(type_status),
+                 static_cast<int>(type));
+  }
+  if (type_status != napi_ok) return nullptr;
   if (type == napi_external) {
     void* data = nullptr;
     if (napi_get_value_external(env, value, &data) == napi_ok) {
+      if (TraceNetEnabled()) {
+        std::fprintf(stderr, "EDGE_TRACE_NET stream from_value direct_external data=%p\n", data);
+      }
       return static_cast<EdgeStreamBase*>(data);
     }
   }
@@ -1188,10 +1340,19 @@ EdgeStreamBase* EdgeStreamBaseFromValue(napi_env env, napi_value value) {
 
   napi_value external = nullptr;
   if (napi_get_named_property(env, value, "_externalStream", &external) != napi_ok || external == nullptr) {
+    if (TraceNetEnabled()) {
+      std::fprintf(stderr, "EDGE_TRACE_NET stream from_value no_external_property\n");
+    }
     return nullptr;
   }
   void* data = nullptr;
   if (napi_get_value_external(env, external, &data) != napi_ok) return nullptr;
+  if (TraceNetEnabled()) {
+    std::fprintf(stderr,
+                 "EDGE_TRACE_NET stream from_value external value=%p data=%p\n",
+                 static_cast<void*>(external),
+                 data);
+  }
   return static_cast<EdgeStreamBase*>(data);
 }
 
@@ -1553,6 +1714,16 @@ napi_value EdgeLibuvStreamWriteBuffer(EdgeStreamBase* base,
     write_buf =
         uv_buf_init(const_cast<char*>(reinterpret_cast<const char*>(data)), static_cast<unsigned int>(len));
     const int try_rc = EdgeLibuvStreamDoTryWrite(stream, &write_bufs, &write_count);
+    if (TraceNetEnabled()) {
+      std::fprintf(stderr,
+                   "EDGE_TRACE_NET stream try_write provider=%d async_id=%llu len=%zu rc=%d(%s) remaining=%zu\n",
+                   base->provider_type,
+                   static_cast<unsigned long long>(base->async_id),
+                   len,
+                   try_rc,
+                   try_rc == 0 ? "OK" : uv_err_name(try_rc),
+                   write_count > 0 ? static_cast<size_t>(write_bufs[0].len) : 0);
+    }
     if (try_rc != 0 || write_count == 0) {
       SetStreamState(base->env, kEdgeBytesWritten, static_cast<int32_t>(len));
       SetStreamState(base->env, kEdgeLastWriteWasAsync, 0);
@@ -1620,6 +1791,16 @@ napi_value EdgeLibuvStreamWriteBuffer(EdgeStreamBase* base,
     rc = uv_write2(&wr->req, stream, wr->bufs, wr->nbufs, send_handle, OnWriteDone);
   } else {
     rc = uv_write(&wr->req, stream, wr->bufs, wr->nbufs, OnWriteDone);
+  }
+  if (TraceNetEnabled()) {
+    std::fprintf(stderr,
+                 "EDGE_TRACE_NET stream write provider=%d async_id=%llu len=%zu remaining=%zu rc=%d(%s)\n",
+                 base->provider_type,
+                 static_cast<unsigned long long>(base->async_id),
+                 len,
+                 remaining,
+                 rc,
+                 rc == 0 ? "OK" : uv_err_name(rc));
   }
   if (rc != 0) {
     SetStreamState(base->env, kEdgeLastWriteWasAsync, 0);

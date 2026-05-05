@@ -38,6 +38,7 @@
 #include <cctype>
 #include <cstring>
 #include <cstdlib>
+#include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <initializer_list>
@@ -973,6 +974,9 @@ static napi_value BuiltinsCompileFunctionCallback(napi_env env, napi_callback_in
   }
 
   const std::string id = ValueToUtf8(env, argv[0]);
+  if (std::getenv("EDGE_TRACE_BUILTINS") != nullptr) {
+    std::fprintf(stderr, "EDGE_TRACE_BUILTINS compile %s\n", id.c_str());
+  }
   if (id.empty()) {
     napi_throw_error(env, nullptr, "builtins.compileFunction requires a builtin id");
     return nullptr;
@@ -1353,6 +1357,38 @@ static bool ThrowNativeBuiltinExecutionError(napi_env env,
   return false;
 }
 
+static std::string DescribeAndClearPendingException(napi_env env) {
+  bool has_exception = false;
+  if (napi_is_exception_pending(env, &has_exception) != napi_ok || !has_exception) {
+    return {};
+  }
+
+  napi_value exc = nullptr;
+  if (napi_get_and_clear_last_exception(env, &exc) != napi_ok || exc == nullptr) {
+    return {};
+  }
+
+  napi_value stack = nullptr;
+  if (napi_get_named_property(env, exc, "stack", &stack) == napi_ok && stack != nullptr) {
+    const std::string stack_text = ValueToUtf8(env, stack);
+    if (!stack_text.empty()) return stack_text;
+  }
+
+  const std::string text = ValueToUtf8(env, exc);
+  return text.empty() ? "unknown exception" : text;
+}
+
+static std::string LastNapiErrorMessage(napi_env env) {
+  const napi_extended_error_info* error_info = nullptr;
+  if (napi_get_last_error_info(env, &error_info) != napi_ok ||
+      error_info == nullptr ||
+      error_info->error_message == nullptr ||
+      error_info->error_message[0] == '\0') {
+    return {};
+  }
+  return error_info->error_message;
+}
+
 static bool ResolveNativeBuiltinCompileInput(napi_env env,
                                              ModuleLoaderState* state,
                                              const std::string& id,
@@ -1492,7 +1528,8 @@ static bool ExecuteBuiltinFromNative(napi_env env, ModuleLoaderState* state, con
   }
 
   napi_value compile_result = nullptr;
-  if (unofficial_napi_contextify_compile_function(env,
+  const napi_status compile_status =
+      unofficial_napi_contextify_compile_function(env,
                                                   code,
                                                   filename,
                                                   0,
@@ -1503,9 +1540,16 @@ static bool ExecuteBuiltinFromNative(napi_env env, ModuleLoaderState* state, con
                                                   undefined,
                                                   params,
                                                   undefined,
-                                                  &compile_result) != napi_ok ||
+                                                  &compile_result);
+  if (compile_status != napi_ok ||
       compile_result == nullptr) {
-    return false;
+    std::string message = "contextify compile failed";
+    const std::string last_error = LastNapiErrorMessage(env);
+    if (!last_error.empty()) {
+      message += ": ";
+      message += last_error;
+    }
+    return ThrowNativeBuiltinExecutionError(env, id, message);
   }
 
   napi_value compiled_fn = nullptr;
@@ -1516,7 +1560,9 @@ static bool ExecuteBuiltinFromNative(napi_env env, ModuleLoaderState* state, con
 
   napi_value call_result = nullptr;
   if (napi_call_function(env, undefined, compiled_fn, argv.size(), argv.data(), &call_result) != napi_ok) {
-    return false;
+    const std::string exception = DescribeAndClearPendingException(env);
+    return ThrowNativeBuiltinExecutionError(
+        env, id, exception.empty() ? "builtin threw" : exception);
   }
 
   if (out != nullptr) {
@@ -3198,6 +3244,15 @@ static napi_value ContextifyMakeContextCallback(napi_env env, napi_callback_info
       out == nullptr) {
     return nullptr;
   }
+
+  napi_value context_symbol = GetUtilPrivateSymbolByName(env, "contextify_context_private_symbol");
+  if (context_symbol != nullptr) {
+    napi_value true_value = nullptr;
+    if (napi_get_boolean(env, true, &true_value) == napi_ok && true_value != nullptr) {
+      (void)napi_set_property(env, out, context_symbol, true_value);
+    }
+  }
+
   return out;
 }
 
@@ -3885,6 +3940,12 @@ static napi_value ResolveContextifyBinding(napi_env env) {
   napi_get_undefined(env, &undefined);
 
   ModuleLoaderState* state = GetModuleLoaderState(env);
+  if (std::getenv("EDGE_TRACE_INTERNAL_BINDING") != nullptr) {
+    std::fprintf(stderr,
+                 "EDGE_TRACE_INTERNAL_BINDING contextify state=%p finalized=%s\n",
+                 static_cast<void*>(state),
+                 state != nullptr && state->finalized ? "true" : "false");
+  }
   if (state == nullptr || state->finalized) return undefined;
   if (state->contextify_binding_ref != nullptr) {
     napi_value cached = nullptr;
@@ -3918,38 +3979,34 @@ static napi_value ResolveContextifyBinding(napi_env env) {
     napi_set_named_property(env, out, "makeContext", make_context);
   }
 
+  napi_property_descriptor script_properties[] = {
+      {"runInContext",
+       nullptr,
+       ContextifyScriptRunInContextCallback,
+       nullptr,
+       nullptr,
+       nullptr,
+       static_cast<napi_property_attributes>(napi_writable | napi_configurable),
+       nullptr},
+      {"createCachedData",
+       nullptr,
+       ContextifyScriptCreateCachedDataCallback,
+       nullptr,
+       nullptr,
+       nullptr,
+       static_cast<napi_property_attributes>(napi_writable | napi_configurable),
+       nullptr},
+  };
   napi_value contextify_script_ctor = nullptr;
-  if (napi_create_function(env,
-                           "ContextifyScript",
-                           NAPI_AUTO_LENGTH,
-                           ContextifyScriptConstructorCallback,
-                           nullptr,
-                           &contextify_script_ctor) == napi_ok &&
+  if (napi_define_class(env,
+                        "ContextifyScript",
+                        NAPI_AUTO_LENGTH,
+                        ContextifyScriptConstructorCallback,
+                        nullptr,
+                        sizeof(script_properties) / sizeof(script_properties[0]),
+                        script_properties,
+                        &contextify_script_ctor) == napi_ok &&
       contextify_script_ctor != nullptr) {
-    napi_value proto = nullptr;
-    if (napi_get_named_property(env, contextify_script_ctor, "prototype", &proto) == napi_ok && proto != nullptr) {
-      napi_value run_in_context = nullptr;
-      if (napi_create_function(env,
-                               "runInContext",
-                               NAPI_AUTO_LENGTH,
-                               ContextifyScriptRunInContextCallback,
-                               nullptr,
-                               &run_in_context) == napi_ok &&
-          run_in_context != nullptr) {
-        napi_set_named_property(env, proto, "runInContext", run_in_context);
-      }
-
-      napi_value create_cached_data = nullptr;
-      if (napi_create_function(env,
-                               "createCachedData",
-                               NAPI_AUTO_LENGTH,
-                               ContextifyScriptCreateCachedDataCallback,
-                               nullptr,
-                               &create_cached_data) == napi_ok &&
-          create_cached_data != nullptr) {
-      napi_set_named_property(env, proto, "createCachedData", create_cached_data);
-      }
-    }
     napi_set_named_property(env, out, "ContextifyScript", contextify_script_ctor);
   }
 
@@ -4010,6 +4067,9 @@ static napi_value ResolveContextifyBinding(napi_env env) {
 
   DeleteRefIfPresent(env, &state->contextify_binding_ref);
   (void)napi_create_reference(env, out, 1, &state->contextify_binding_ref);
+  if (std::getenv("EDGE_TRACE_INTERNAL_BINDING") != nullptr) {
+    std::fprintf(stderr, "EDGE_TRACE_INTERNAL_BINDING contextify resolved\n");
+  }
   return out;
 }
 
@@ -4252,9 +4312,15 @@ static napi_value NativeGetInternalBindingCallback(napi_env env, napi_callback_i
     return undefined;
   }
   const std::string name = ValueToUtf8(env, argv[0]);
+  if (std::getenv("EDGE_TRACE_INTERNAL_BINDING") != nullptr) {
+    std::fprintf(stderr, "EDGE_TRACE_INTERNAL_BINDING request %s\n", name.c_str());
+  }
   if (!name.empty() && ShouldCacheInternalBinding(name)) {
     napi_value cached = GetCachedInternalBinding(state, env, name.c_str());
     if (cached != nullptr) {
+      if (std::getenv("EDGE_TRACE_INTERNAL_BINDING") != nullptr) {
+        std::fprintf(stderr, "EDGE_TRACE_INTERNAL_BINDING cache-hit %s\n", name.c_str());
+      }
       return cached;
     }
   }
@@ -4273,6 +4339,14 @@ static napi_value NativeGetInternalBindingCallback(napi_env env, napi_callback_i
 
   napi_value resolved = internal_binding::Resolve(env, name, options);
   if (resolved != nullptr) {
+    if (std::getenv("EDGE_TRACE_INTERNAL_BINDING") != nullptr) {
+      napi_valuetype resolved_type = napi_undefined;
+      (void)napi_typeof(env, resolved, &resolved_type);
+      std::fprintf(stderr,
+                   "EDGE_TRACE_INTERNAL_BINDING resolved %s type=%d\n",
+                   name.c_str(),
+                   static_cast<int>(resolved_type));
+    }
     if (!name.empty() && ShouldCacheInternalBinding(name) && !IsUndefinedValue(env, resolved)) {
       napi_value cached = CacheInternalBinding(state, env, name.c_str(), resolved);
       if (cached != nullptr) {

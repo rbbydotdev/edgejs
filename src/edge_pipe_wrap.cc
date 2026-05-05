@@ -761,14 +761,22 @@ void SetNamedU32(napi_env env, napi_value obj, const char* key, uint32_t value) 
 }  // namespace
 
 uv_stream_t* EdgePipeWrapGetStream(napi_env env, napi_value value) {
+  EdgeStreamBase* base = EdgePipeWrapGetStreamBase(env, value);
+  return base != nullptr ? reinterpret_cast<uv_stream_t*>(&FromBase(base)->handle) : nullptr;
+}
+
+EdgeStreamBase* EdgePipeWrapGetStreamBase(napi_env env, napi_value value) {
   if (env == nullptr || value == nullptr) return nullptr;
   napi_valuetype type = napi_undefined;
-  if (napi_typeof(env, value, &type) != napi_ok || type != napi_object) return nullptr;
+  if (napi_typeof(env, value, &type) != napi_ok ||
+      (type != napi_object && type != napi_function && type != napi_external)) {
+    return nullptr;
+  }
   PipeWrap* wrap = nullptr;
   if (napi_unwrap(env, value, reinterpret_cast<void**>(&wrap)) != napi_ok || wrap == nullptr) return nullptr;
   uv_handle_t* handle = reinterpret_cast<uv_handle_t*>(&wrap->handle);
   if (handle->data != wrap || handle->type != UV_NAMED_PIPE) return nullptr;
-  return reinterpret_cast<uv_stream_t*>(&wrap->handle);
+  return &wrap->base;
 }
 
 bool EdgePipeWrapPushStreamListener(uv_stream_t* stream, EdgeStreamListener* listener) {

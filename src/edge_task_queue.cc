@@ -90,7 +90,7 @@ static napi_value TaskQueueSetPromiseRejectCallback(napi_env env, napi_callback_
   napi_value argv[1] = {nullptr};
   if (napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr) != napi_ok || argc < 1) return nullptr;
 
-#if defined(EDGE_BUNDLED_NAPI_V8)
+#if defined(EDGE_EMBEDDED_NAPI_PROVIDER)
   (void)unofficial_napi_set_promise_reject_callback(env, argv[0]);
 #endif
 

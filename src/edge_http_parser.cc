@@ -55,6 +55,10 @@ constexpr uint32_t kLenientAll = kLenientHeaders | kLenientChunkedLength | kLeni
 
 struct Parser;
 
+bool TraceNetEnabled() {
+  return std::getenv("EDGE_TRACE_NET") != nullptr;
+}
+
 struct ConnectionsList {
   napi_env env = nullptr;
   napi_ref wrapper_ref = nullptr;
@@ -169,7 +173,17 @@ bool ParserConsumedListenerOnAlloc(EdgeStreamListener* listener,
   if (listener == nullptr || out == nullptr) return false;
   auto* p = static_cast<Parser*>(listener->data);
   if (p == nullptr) return false;
-  return AcquireParserReadBuffer(p->env, suggested_size, out);
+  bool ok = AcquireParserReadBuffer(p->env, suggested_size, out);
+  if (TraceNetEnabled()) {
+    std::fprintf(stderr,
+                 "EDGE_TRACE_NET http_parser consumed_alloc parser=%p suggested=%zu ok=%d buf=%p len=%zu\n",
+                 static_cast<void*>(p),
+                 suggested_size,
+                 ok,
+                 ok ? static_cast<void*>(out->base) : nullptr,
+                 ok ? static_cast<size_t>(out->len) : 0);
+  }
+  return ok;
 }
 
 bool ParserConsumedListenerOnRead(EdgeStreamListener* listener,
@@ -178,6 +192,16 @@ bool ParserConsumedListenerOnRead(EdgeStreamListener* listener,
   if (listener == nullptr) return false;
   auto* p = static_cast<Parser*>(listener->data);
   if (p == nullptr) return false;
+
+  if (TraceNetEnabled()) {
+    std::fprintf(stderr,
+                 "EDGE_TRACE_NET http_parser consumed_read parser=%p nread=%zd buf=%p len=%zu consumed_stream=%p\n",
+                 static_cast<void*>(p),
+                 nread,
+                 buf != nullptr ? static_cast<void*>(buf->base) : nullptr,
+                 buf != nullptr ? static_cast<size_t>(buf->len) : 0,
+                 static_cast<void*>(p->consumed_stream));
+  }
 
   auto release = [&]() {
     if (buf != nullptr && buf->base != nullptr) {
@@ -197,15 +221,29 @@ bool ParserConsumedListenerOnRead(EdgeStreamListener* listener,
   napi_value parser_obj = GetWrappedObject(p->env, p->wrapper_ref);
   if (parser_obj != nullptr) {
     if (ParserShouldIgnoreConsumedRead(p, parser_obj)) {
+      if (TraceNetEnabled()) {
+        std::fprintf(stderr,
+                     "EDGE_TRACE_NET http_parser consumed_ignore parser=%p\n",
+                     static_cast<void*>(p));
+      }
       release();
       ClearConsumedStreamBinding(p);
       return true;
     }
-    (void)DispatchConsumedParserRead(
+    bool dispatched = DispatchConsumedParserRead(
         p,
         parser_obj,
         buf->base,
         static_cast<size_t>(nread));
+    if (TraceNetEnabled()) {
+      bool pending = false;
+      (void)napi_is_exception_pending(p->env, &pending);
+      std::fprintf(stderr,
+                   "EDGE_TRACE_NET http_parser consumed_dispatched parser=%p dispatched=%d pending_exception=%d\n",
+                   static_cast<void*>(p),
+                   dispatched,
+                   pending);
+    }
     (void)EdgeHandlePendingExceptionNow(p->env, nullptr);
   }
   release();
@@ -813,6 +851,13 @@ napi_value ParserInitialize(napi_env env, napi_callback_info info) {
 }
 
 napi_value ParserExecuteCommon(Parser* p, const char* data, size_t len) {
+  if (TraceNetEnabled()) {
+    std::fprintf(stderr,
+                 "EDGE_TRACE_NET http_parser execute parser=%p len=%zu finish=%d\n",
+                 static_cast<void*>(p),
+                 len,
+                 data == nullptr);
+  }
   p->current_buffer_data = data;
   p->current_buffer_len = len;
   p->got_exception = false;
@@ -833,6 +878,11 @@ napi_value ParserExecuteCommon(Parser* p, const char* data, size_t len) {
   p->current_buffer_data = nullptr;
   p->current_buffer_len = 0;
   if (p->got_exception) {
+    if (TraceNetEnabled()) {
+      std::fprintf(stderr,
+                   "EDGE_TRACE_NET http_parser execute_exception parser=%p\n",
+                   static_cast<void*>(p));
+    }
     napi_value pending = nullptr;
     if (napi_get_and_clear_last_exception(p->env, &pending) == napi_ok && pending != nullptr) {
       napi_throw(p->env, pending);
@@ -840,6 +890,13 @@ napi_value ParserExecuteCommon(Parser* p, const char* data, size_t len) {
     return nullptr;
   }
   if (llhttp_get_upgrade(&p->parser) == 0 && err != HPE_OK) {
+    if (TraceNetEnabled()) {
+      std::fprintf(stderr,
+                   "EDGE_TRACE_NET http_parser execute_error parser=%p err=%s nread=%zu\n",
+                   static_cast<void*>(p),
+                   llhttp_errno_name(err) != nullptr ? llhttp_errno_name(err) : "<unknown>",
+                   nread);
+    }
     const char* raw_reason = llhttp_get_error_reason(&p->parser);
     std::string reason = (raw_reason != nullptr) ? raw_reason : "Unknown error";
     std::string code = llhttp_errno_name(err) != nullptr ? llhttp_errno_name(err) : "HPE_UNKNOWN";
@@ -870,6 +927,13 @@ napi_value ParserExecuteCommon(Parser* p, const char* data, size_t len) {
   }
   napi_value nread_v = nullptr;
   napi_create_uint32(p->env, static_cast<uint32_t>(nread), &nread_v);
+  if (TraceNetEnabled()) {
+    std::fprintf(stderr,
+                 "EDGE_TRACE_NET http_parser execute_done parser=%p nread=%zu headers_completed=%d\n",
+                 static_cast<void*>(p),
+                 nread,
+                 p->headers_completed);
+  }
   return nread_v;
 }
 
@@ -890,6 +954,12 @@ bool DispatchConsumedParserRead(Parser* p,
   napi_valuetype onexecute_type = napi_undefined;
   if (napi_typeof(p->env, onexecute, &onexecute_type) != napi_ok ||
       onexecute_type != napi_function) {
+    if (TraceNetEnabled()) {
+      std::fprintf(stderr,
+                   "EDGE_TRACE_NET http_parser no_onexecute parser=%p type=%d\n",
+                   static_cast<void*>(p),
+                   static_cast<int>(onexecute_type));
+    }
     return true;
   }
 
@@ -900,6 +970,14 @@ bool DispatchConsumedParserRead(Parser* p,
   napi_value argv[1] = {ret};
   napi_value ignored = nullptr;
   EdgeMakeCallback(p->env, parser_obj, onexecute, 1, argv, &ignored);
+  if (TraceNetEnabled()) {
+    bool pending = false;
+    (void)napi_is_exception_pending(p->env, &pending);
+    std::fprintf(stderr,
+                 "EDGE_TRACE_NET http_parser onexecute_done parser=%p pending_exception=%d\n",
+                 static_cast<void*>(p),
+                 pending);
+  }
   p->current_buffer_data = nullptr;
   p->current_buffer_len = 0;
   return true;
@@ -1016,6 +1094,19 @@ napi_value ParserConsume(napi_env env, napi_callback_info info) {
       }
       if (EdgeStreamBasePushListener(stream, &p->consumed_listener)) {
         p->consumed_stream = stream;
+        if (TraceNetEnabled()) {
+          std::fprintf(stderr,
+                       "EDGE_TRACE_NET http_parser consume parser=%p stream=%p listener=%p ok=1\n",
+                       static_cast<void*>(p),
+                       static_cast<void*>(stream),
+                       static_cast<void*>(&p->consumed_listener));
+        }
+      } else if (TraceNetEnabled()) {
+        std::fprintf(stderr,
+                     "EDGE_TRACE_NET http_parser consume parser=%p stream=%p listener=%p ok=0\n",
+                     static_cast<void*>(p),
+                     static_cast<void*>(stream),
+                     static_cast<void*>(&p->consumed_listener));
       }
     }
   }
