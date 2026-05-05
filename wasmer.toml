@@ -2,7 +2,7 @@
 entrypoint = "edgejs-quickjs"
 name = "sadhbh-c0d3/edgejs-quickjs"
 description = "Edge.js with an embedded QuickJS N-API provider"
-version = "0.0.2"
+version = "0.0.4"
 
 # [fs]
 # "/node-lib" = "./lib"

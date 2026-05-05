@@ -69,6 +69,19 @@ Astro and Vite, described the Next.js App Router adapter, dynamic shell
 generation, table route fix, `.dist` staging, verification commands, and the
 remaining boundaries between static serving and full framework SSR.
 
+### [dev_007.md](dev_007.md): Edge QuickJS framework standalone builds
+
+Why: move Astro, Vite, and Next.js from app-owned router glue toward
+framework-standard standalone build outputs.
+
+What was done: documented Astro's standalone Node adapter output, the
+`vite-plugin-standalone` path for Vite, and Next.js official standalone output;
+reduced the QuickJS Next standalone failure to `require("v8")` and an empty
+QuickJS `internalBinding("serdes")`; confirmed the Edge V8 inspector failure was
+not a branch regression; and adjusted native builtin failure handling so extra
+builtin context is printed without replacing the original JS exception
+formatting.
+
 ## Current state
 
 The development path now supports:
@@ -78,9 +91,10 @@ The development path now supports:
 - WASIX Edge QuickJS package startup under Wasmer;
 - HTTP server request parsing and response writing under Wasmer;
 - static Astro and Vite app serving through small CJS adapters;
-- Next.js static App Router artifacts plus generated dynamic HTML/RSC shells.
+- Next.js static App Router artifacts plus generated dynamic HTML/RSC shells;
+- standard Next.js standalone build layout understood, with the remaining
+  QuickJS runtime blocker narrowed to `v8` / `serdes`.
 
 The main unresolved runtime item remains proper QuickJS teardown: `JS_FreeRuntime`
 is still disabled in the N-API QuickJS env release path until GC-owned object
 lifetime issues are fixed.
-
