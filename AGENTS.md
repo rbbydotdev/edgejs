@@ -36,6 +36,24 @@ Current useful state:
 - Framework app notes use anonymized paths: `~/src/astro-app`,
   `~/src/vite-app`, and `~/src/next-app`.
 
+## Astro SSR Troubleshooting Plans
+
+For each new Astro SSR troubleshooting issue, write an action plan before
+changing code:
+
+```text
+plans/quickjs-wasm/troubleshooting/astro-ssr/plan-<name-of-the-issue>.md
+```
+
+After creating a new plan, always update this `AGENTS.md` section so the most
+recent plan location points at the new file.
+
+Most recent Astro SSR troubleshooting plan:
+
+```text
+plans/quickjs-wasm/troubleshooting/astro-ssr/plan-depd-callsite-methods.md
+```
+
 Important commands:
 
 ```sh

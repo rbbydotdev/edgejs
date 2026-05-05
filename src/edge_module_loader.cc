@@ -1357,25 +1357,14 @@ static bool ThrowNativeBuiltinExecutionError(napi_env env,
   return false;
 }
 
-static std::string DescribeAndClearPendingException(napi_env env) {
+static bool PreservePendingNativeBuiltinExceptionWithContext(napi_env env, const std::string& id) {
   bool has_exception = false;
   if (napi_is_exception_pending(env, &has_exception) != napi_ok || !has_exception) {
-    return {};
+    return ThrowNativeBuiltinExecutionError(env, id, "builtin threw");
   }
 
-  napi_value exc = nullptr;
-  if (napi_get_and_clear_last_exception(env, &exc) != napi_ok || exc == nullptr) {
-    return {};
-  }
-
-  napi_value stack = nullptr;
-  if (napi_get_named_property(env, exc, "stack", &stack) == napi_ok && stack != nullptr) {
-    const std::string stack_text = ValueToUtf8(env, stack);
-    if (!stack_text.empty()) return stack_text;
-  }
-
-  const std::string text = ValueToUtf8(env, exc);
-  return text.empty() ? "unknown exception" : text;
+  std::fprintf(stderr, "Failed to execute builtin '%s':\n", id.c_str());
+  return false;
 }
 
 static std::string LastNapiErrorMessage(napi_env env) {
@@ -1560,9 +1549,7 @@ static bool ExecuteBuiltinFromNative(napi_env env, ModuleLoaderState* state, con
 
   napi_value call_result = nullptr;
   if (napi_call_function(env, undefined, compiled_fn, argv.size(), argv.data(), &call_result) != napi_ok) {
-    const std::string exception = DescribeAndClearPendingException(env);
-    return ThrowNativeBuiltinExecutionError(
-        env, id, exception.empty() ? "builtin threw" : exception);
+    return PreservePendingNativeBuiltinExceptionWithContext(env, id);
   }
 
   if (out != nullptr) {

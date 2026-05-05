@@ -918,7 +918,7 @@ ReqKind ParseReq(napi_env env, napi_value candidate, napi_value* oncomplete) {
   }
 
   napi_valuetype t = napi_undefined;
-  if (napi_typeof(env, candidate, &t) == napi_ok && t == napi_object) {
+  if (napi_typeof(env, candidate, &t) == napi_ok && (t == napi_object || t == napi_external)) {
     napi_value fn = nullptr;
     napi_valuetype fn_t = napi_undefined;
     if (napi_get_named_property(env, candidate, "oncomplete", &fn) == napi_ok &&
