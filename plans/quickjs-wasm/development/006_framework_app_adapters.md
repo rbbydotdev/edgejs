@@ -2,7 +2,7 @@
 
 ## Context
 
-`dev_001.md` through `dev_005.md` cover the
+`001_merge_analysis.md` through `005_wasix_wasmer_http.md` cover the
 provider integration, bootstrap debugging, REPL microtasks, WASIX atomics, and
 the HTTP stream listener bug that prevented a simple echo server from handling
 requests under Wasmer.
@@ -113,7 +113,7 @@ The REPL investigation showed that bytes reached the JS stream layer, but some
 promise continuations did not run. The missing piece was QuickJS promise hook
 integration plus proper microtask/job draining.
 
-The fix is described in `dev_004.md` and involved:
+The fix is described in `004_promise_hooks_microtasks.md` and involved:
 
 ```text
 ~/src/edgejs/quickjs/quickjs.c
@@ -140,7 +140,7 @@ continuations even when the final adapter looks like a simple static server.
 Wasmer startup initially failed in `internal/per_context/primordials` because
 QuickJS disabled atomics for every `__wasi__` target.
 
-The fix is described in `dev_005.md` and lives in the QuickJS
+The fix is described in `005_wasix_wasmer_http.md` and lives in the QuickJS
 submodule:
 
 ```text
@@ -162,7 +162,7 @@ Without this, Node bootstrap can fail before any app adapter gets to run.
 The echo-server hang under Wasmer was caused by the HTTP parser listener being
 attached to the wrapper address instead of the wrapper's `EdgeStreamBase`.
 
-The fix is described in `dev_005.md` and touched:
+The fix is described in `005_wasix_wasmer_http.md` and touched:
 
 ```text
 ~/src/edgejs/src/edge_tcp_wrap.h

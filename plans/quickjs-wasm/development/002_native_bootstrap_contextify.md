@@ -5,7 +5,7 @@ Date: 2026-05-04
 ## Scope
 
 This note records the execution and troubleshooting work done after
-`dev_001.md`.
+`001_merge_analysis.md`.
 
 Goal for this pass:
 

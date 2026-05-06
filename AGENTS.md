@@ -19,12 +19,14 @@ plans/quickjs-wasm/development/index.md
 
 That file indexes the development phases:
 
-- `dev_001.md`: comparison with the other QuickJS branch and integration plan.
-- `dev_002.md`: native Edge QuickJS bootstrap and `ContextifyScript` fix.
-- `dev_003.md`: REPL TTY/readline troubleshooting.
-- `dev_004.md`: QuickJS promise hooks and microtask/job draining.
-- `dev_005.md`: WASIX/Wasmer bootstrap, Atomics, and HTTP stream listener fix.
-- `dev_006.md`: Astro, Vite, and Next.js app adapter notes.
+- `001_merge_analysis.md`: comparison with the other QuickJS branch and integration plan.
+- `002_native_bootstrap_contextify.md`: native Edge QuickJS bootstrap and `ContextifyScript` fix.
+- `003_repl_tty_readline.md`: REPL TTY/readline troubleshooting.
+- `004_promise_hooks_microtasks.md`: QuickJS promise hooks and microtask/job draining.
+- `005_wasix_wasmer_http.md`: WASIX/Wasmer bootstrap, Atomics, and HTTP stream listener fix.
+- `006_framework_app_adapters.md`: Astro, Vite, and Next.js app adapter notes.
+- `007_framework_standalone_builds.md`: framework standalone build notes and remaining runtime
+  blockers.
 
 Current useful state:
 
@@ -36,36 +38,70 @@ Current useful state:
 - Framework app notes use anonymized paths: `~/src/astro-app`,
   `~/src/vite-app`, and `~/src/next-app`.
 
-## Framework Troubleshooting Plans
+## Plans Documentation Workflow
 
-For each new Astro SSR, Vite app, or Next app troubleshooting issue, write an
-action plan before changing code:
+Before starting a new task, always list the plan tree recursively and look for
+existing information:
 
-```text
-plans/quickjs-wasm/troubleshooting/astro-ssr/plan-<name-of-the-issue>.md
-plans/quickjs-wasm/troubleshooting/vite-app/plan-<name-of-the-issue>.md
-plans/quickjs-wasm/troubleshooting/next-app/plan-<name-of-the-issue>.md
+```sh
+find /Users/sadhbh/src/dev/edgejs/plans -type f -print
+rg -n "<relevant terms>" /Users/sadhbh/src/dev/edgejs/plans
 ```
 
-After creating a new plan, always update this `AGENTS.md` section so the most
-recent plan location for that app points at the new file.
+Read the relevant existing plan, development note, or troubleshooting note
+before changing code. While working, keep existing information current: if the
+task discovers new facts about an existing topic, update the existing note
+instead of creating a duplicate.
+
+Use this heuristic when deciding where documentation belongs:
+
+- Development task: broad implementation progress, integration work, runtime
+  design, refactors, or milestone notes. Write or update a numbered development
+  note under:
+
+```text
+plans/quickjs-wasm/development/NNN_<meaningful_name>.md
+```
+
+- Troubleshooting issue: an observed failure, crash, regression, compatibility
+  gap, or focused diagnostic trail. Write or update a numbered issue note under
+  the app-specific troubleshooting directory:
+
+```text
+plans/quickjs-wasm/development/troubleshooting/astro-ssr/NNN_<issue_name>.md
+plans/quickjs-wasm/development/troubleshooting/vite-app/NNN_<issue_name>.md
+plans/quickjs-wasm/development/troubleshooting/next-app/NNN_<issue_name>.md
+```
+
+Choose `astro-ssr`, `vite-app`, or `next-app` based on the app where the issue
+is reproduced. If a failure affects shared QuickJS runtime behavior, still file
+the troubleshooting note under the app that exposed it, then cross-reference any
+shared development note it updates.
+
+For each new troubleshooting issue, write the action plan before changing code.
+After creating or renaming a note, update the troubleshooting registry and the
+most recent note pointer in this `AGENTS.md` section.
+
+```text
+plans/quickjs-wasm/development/troubleshooting/index.md
+```
 
 Most recent Astro SSR troubleshooting plan:
 
 ```text
-plans/quickjs-wasm/troubleshooting/astro-ssr/plan-cjs-reexport-named-exports.md
+plans/quickjs-wasm/development/troubleshooting/astro-ssr/003_cjs_reexport_named_exports.md
 ```
 
 Most recent Vite app troubleshooting note:
 
 ```text
-plans/quickjs-wasm/troubleshooting/vite-app/findings_standalone-build.md
+plans/quickjs-wasm/development/troubleshooting/vite-app/001_standalone_build.md
 ```
 
 Most recent Next app troubleshooting note:
 
 ```text
-plans/quickjs-wasm/troubleshooting/next-app/findings-standalone-v8-serdes.md
+plans/quickjs-wasm/development/troubleshooting/next-app/001_standalone_v8_serdes.md
 ```
 
 Important commands:

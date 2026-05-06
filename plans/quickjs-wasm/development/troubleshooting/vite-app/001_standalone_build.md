@@ -1,12 +1,15 @@
 # Vite App Standalone Build Findings
 
+Status: findings note; create or update a numbered `NNN_<issue_name>.md` note
+in this directory before the next Vite app troubleshooting code change.
+
 ## Query
 
 Can a plain Vite app use a standalone build shape like the Astro app, so the app
 does not provide its own `server/router.cjs` and the server entry is produced as
 part of the standard build?
 
-## Finding
+## Summary
 
 Not in the same way as the Astro app by default, but
 `vite-plugin-standalone` is a relevant candidate if the Vite app has, or is
@@ -76,7 +79,7 @@ HTTP/static adapter that Vite's SPA build does not generate:
 - fall back to `/dist/index.html` for client-side routes;
 - send explicit content types and cache headers.
 
-## Options
+## Options For Next Work
 
 1. Keep an app-owned `server/router.cjs`.
    This is the simplest shape and matches the current Vite static SPA adapter

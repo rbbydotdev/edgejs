@@ -1,5 +1,7 @@
 # Astro SSR: CommonJS Re-Export Named Exports
 
+Status: planned CommonJS/ESM facade compatibility fix.
+
 ## Issue
 
 The Astro standalone SSR entry for `stackmachine.com` starts under native Node
@@ -47,7 +49,7 @@ LLDB confirmed the failure is thrown before `QuickjsCommonJsModuleInit(...)`
 runs, so this must be fixed in export-name declaration rather than later
 evaluation.
 
-## Proposed Fix
+## Plan
 
 Move CommonJS named export discovery out of `unofficial_napi.cc` into a small
 QuickJS source/helper file. Preserve the existing direct export patterns and add

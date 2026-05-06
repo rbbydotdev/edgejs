@@ -2,7 +2,7 @@
 
 ## Context
 
-`dev_006.md` captured the first working framework-app path for Edge QuickJS:
+`006_framework_app_adapters.md` captured the first working framework-app path for Edge QuickJS:
 small app-owned adapters for Astro, Vite, and Next.js outputs.
 
 The next goal was to remove as much app-specific server/router glue as possible
@@ -92,7 +92,7 @@ by the Vite plugin instead of custom Edge staging scripts.
 More detail is captured in:
 
 ```text
-plans/quickjs-wasm/troubleshooting/vite-app/findings_standalone-build.md
+plans/quickjs-wasm/development/troubleshooting/vite-app/001_standalone_build.md
 ```
 
 ### Native CLI static-root caveat
@@ -350,7 +350,7 @@ structured clone helpers based on `JS_WriteObject(...)` and
 More detail is captured in:
 
 ```text
-plans/quickjs-wasm/troubleshooting/next-app/findings-standalone-v8-serdes.md
+plans/quickjs-wasm/development/troubleshooting/next-app/001_standalone_v8_serdes.md
 ```
 
 ## Builtin error formatting
