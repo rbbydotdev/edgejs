@@ -79,8 +79,40 @@ the troubleshooting note under the app that exposed it, then cross-reference any
 shared development note it updates.
 
 For each new troubleshooting issue, write the action plan before changing code.
+Each issue note must include a Jira-style metadata table immediately after the
+title:
+
+```md
+| | | Remarks |
+| --- | --- | --- |
+| **Status** | ▶️ | Planned investigation or active work. |
+| **Severity** | High | Blocks the app unless fixed or worked around. |
+```
+
+Use these status icons consistently:
+
+- `▶️`: open or in progress.
+- `🟢`: done.
+- `🟠`: done with known issues, caveats, or incomplete compatibility.
+- `🔴`: unresolved blocker.
+
+Set severity from the impact observed during investigation:
+
+- `High`: must be fixed or worked around, otherwise the target app does not
+  work.
+- `Medium`: must be fixed in some way to enable the app, but the current fix may
+  be incomplete or inaccurate.
+- `Low`: known issue or documentation/runtime caveat that does not make the app
+  break significantly.
+
 After creating or renaming a note, update the troubleshooting registry and the
-most recent note pointer in this `AGENTS.md` section.
+most recent note pointer in this `AGENTS.md` section. The troubleshooting
+registry heading must include the same status icon before the linked filename,
+for example:
+
+```md
+### 🟢 [002_depd_callsite_methods.md](astro-ssr/002_depd_callsite_methods.md): depd CallSite method compatibility
+```
 
 ```text
 plans/quickjs-wasm/development/troubleshooting/index.md
@@ -89,7 +121,7 @@ plans/quickjs-wasm/development/troubleshooting/index.md
 Most recent Astro SSR troubleshooting plan:
 
 ```text
-plans/quickjs-wasm/development/troubleshooting/astro-ssr/011_route_stack_overflow.md
+plans/quickjs-wasm/development/troubleshooting/astro-ssr/013_lucide_react_chevrondown_export.md
 ```
 
 Most recent Vite app troubleshooting note:
@@ -109,10 +141,14 @@ Important commands:
 ```sh
 make build-edge-quickjs-cli JOBS=4
 cmake --build build-edge-quickjs-cli --target edge -j4
-quickjs-wasm/build.sh
+cd /Users/sadhbh/src/dev/edgejs/quickjs-wasm/ && ./build.sh
 wasmer package build --check .
 wasmer run --net .
 ```
+
+When working on WASIX-impacting changes under `src/`, `lib/`, or
+`napi/quickjs/`, use the `cd /Users/sadhbh/src/dev/edgejs/quickjs-wasm/ &&
+./build.sh` form for the rebuild.
 
 For QuickJS WASIX smoke testing:
 

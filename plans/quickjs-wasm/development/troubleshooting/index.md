@@ -152,6 +152,27 @@ What was fixed: Edge-created QuickJS runtimes now use a 4 MiB stack guard. The
 Astro/React SSR render path; 2 MiB fixed module evaluation, and 4 MiB allowed
 the full `/` route to render.
 
+### 🟢 [012_wasix_pnpm_symlink_resolution.md](astro-ssr/012_wasix_pnpm_symlink_resolution.md): WASIX pnpm symlink resolution
+
+Why: the Wasmer-packaged Astro standalone entry reaches
+`dist/server/renderers.mjs`, but the QuickJS C++ module resolver cannot load
+bare `react` from the app's pnpm symlinked `/app/node_modules` tree.
+
+What was fixed: shared QuickJS module path helpers now canonicalize symlink
+components during CommonJS and ESM resolution, and the fs binding retries
+`stat` through resolved symlink components for Node's JS `realpathSync()`.
+
+### 🟢 [013_lucide_react_chevrondown_export.md](astro-ssr/013_lucide_react_chevrondown_export.md): Lucide React ChevronDown export
+
+Why: after the pnpm symlink fix, the Astro standalone server starts, but
+rendering `/` fails because QuickJS does not declare the `ChevronDown` named
+export on the synthetic ESM facade for `lucide-react`.
+
+What was fixed: `.js` CJS/ESM classification now reads parsed package metadata
+and only treats a package as ESM for top-level `"type": "module"`, avoiding the
+false positive from `lucide-react`'s `"repository": { "type": "git" }` plus
+top-level `"module"` entry.
+
 ## Vite App
 
 For each new Vite app troubleshooting issue, create a plan under

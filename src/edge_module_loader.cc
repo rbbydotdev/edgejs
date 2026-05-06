@@ -50,6 +50,7 @@
 #include <vector>
 
 #include "simdjson/simdjson.h"
+#include "unofficial_module_loader.h"
 #include "uv.h"
 #include "unofficial_napi.h"
 
@@ -222,8 +223,43 @@ static void FinalizeModuleLoaderState(napi_env env) {
   EdgeEnvironmentClearOpaqueSlot(env, kEdgeEnvironmentSlotModuleLoaderState);
 }
 
+fs::path ResolveSymlinkComponents(const fs::path& path) {
+  fs::path current;
+  for (const fs::path& part : path.lexically_normal()) {
+    if (part == "." || part.empty()) continue;
+    if (part == "..") {
+      current /= part;
+      continue;
+    }
+    if (part == path.root_name() || part == path.root_directory()) {
+      current /= part;
+      continue;
+    }
+
+    fs::path candidate = current.empty() ? part : current / part;
+    std::error_code ec;
+    if (fs::is_symlink(candidate, ec) && !ec) {
+      fs::path target = fs::read_symlink(candidate, ec);
+      if (!ec) {
+        current = target.is_absolute() ? target : candidate.parent_path() / target;
+        current = current.lexically_normal();
+        continue;
+      }
+    }
+    current = candidate;
+  }
+  return current.lexically_normal();
+}
+
 std::string ReadTextFile(const fs::path& path) {
   std::ifstream in(path);
+  if (!in.is_open()) {
+    const fs::path resolved = ResolveSymlinkComponents(path);
+    if (resolved != path.lexically_normal()) {
+      in.clear();
+      in.open(resolved);
+    }
+  }
   if (!in.is_open()) {
     return "";
   }
@@ -421,12 +457,18 @@ std::string ValueToUtf8(napi_env env, napi_value value) {
 
 bool PathExistsRegularFile(const fs::path& path) {
   std::error_code ec;
-  return fs::exists(path, ec) && fs::is_regular_file(path, ec);
+  if (fs::exists(path, ec) && fs::is_regular_file(path, ec)) return true;
+  const fs::path resolved = ResolveSymlinkComponents(path);
+  ec.clear();
+  return resolved != path.lexically_normal() && fs::exists(resolved, ec) && fs::is_regular_file(resolved, ec);
 }
 
 bool PathExistsDirectory(const fs::path& path) {
   std::error_code ec;
-  return fs::exists(path, ec) && fs::is_directory(path, ec);
+  if (fs::exists(path, ec) && fs::is_directory(path, ec)) return true;
+  const fs::path resolved = ResolveSymlinkComponents(path);
+  ec.clear();
+  return resolved != path.lexically_normal() && fs::exists(resolved, ec) && fs::is_directory(resolved, ec);
 }
 
 bool ResolveAsFile(const fs::path& candidate, fs::path* out) {
@@ -567,12 +609,21 @@ ParsePackageStatus ParseSerializedPackageConfig(const fs::path& package_json_pat
                                                 SerializedPackageConfigData* out) {
   if (out == nullptr) return ParsePackageStatus::kInvalid;
 
+  fs::path resolved_package_json_path = package_json_path;
   std::error_code ec;
-  if (!fs::is_regular_file(package_json_path, ec) || ec) {
-    return ParsePackageStatus::kMissing;
+  if (!fs::is_regular_file(resolved_package_json_path, ec) || ec) {
+    const fs::path resolved = ResolveSymlinkComponents(package_json_path);
+    if (resolved == package_json_path.lexically_normal()) {
+      return ParsePackageStatus::kMissing;
+    }
+    resolved_package_json_path = resolved;
+    ec.clear();
+    if (!fs::is_regular_file(resolved_package_json_path, ec) || ec) {
+      return ParsePackageStatus::kMissing;
+    }
   }
 
-  std::ifstream in(package_json_path, std::ios::binary);
+  std::ifstream in(resolved_package_json_path, std::ios::binary);
   if (!in.is_open()) return ParsePackageStatus::kMissing;
   std::ostringstream ss;
   ss << in.rdbuf();
@@ -588,7 +639,7 @@ ParsePackageStatus ParseSerializedPackageConfig(const fs::path& package_json_pat
   }
 
   SerializedPackageConfigData parsed;
-  parsed.file_path = package_json_path.lexically_normal().string();
+  parsed.file_path = resolved_package_json_path.lexically_normal().string();
 
   for (auto field : main_object) {
     simdjson::ondemand::raw_json_string key;
@@ -804,18 +855,8 @@ bool ResolveAsDirectory(const fs::path& candidate, fs::path* out) {
 }
 
 std::string CanonicalPathKey(const fs::path& path) {
-  std::error_code ec;
-  fs::path absolute = path;
-  if (!absolute.is_absolute()) {
-    absolute = fs::absolute(path, ec);
-    if (ec) {
-      absolute = path;
-      ec.clear();
-    }
-  }
-  const fs::path canonical = fs::weakly_canonical(absolute, ec);
-  if (!ec) return edge_path::FromNamespacedPath(canonical.lexically_normal().string());
-  return edge_path::FromNamespacedPath(absolute.lexically_normal().string());
+  return edge_path::FromNamespacedPath(
+      edge_quickjs::module_loader::NormalizeResolvedPath(path).string());
 }
 
 // True if request is relative (./, ../, ., ..) or absolute (starts with /).
@@ -4351,26 +4392,7 @@ static napi_value NativeGetInternalBindingCallback(napi_env env, napi_callback_i
 }
 
 bool ResolveModulePath(const std::string& specifier, const std::string& base_dir, fs::path* out) {
-  std::string resolved_specifier;
-  if (specifier.empty()) {
-    return false;
-  }
-  if (!specifier.empty() && specifier[0] == '/') {
-    resolved_specifier = edge_path::PathResolve({specifier});
-  } else if (specifier.rfind("./", 0) == 0 || specifier.rfind("../", 0) == 0 || specifier == "." ||
-             specifier == "..") {
-    resolved_specifier = edge_path::PathResolve({base_dir, specifier});
-  } else {
-    return false;
-  }
-
-  const fs::path normalized = fs::path(edge_path::FromNamespacedPath(resolved_specifier));
-  fs::path resolved;
-  if (ResolveAsFile(normalized, &resolved) || ResolveAsDirectory(normalized, &resolved)) {
-    *out = fs::path(edge_path::FromNamespacedPath(resolved.lexically_normal().string()));
-    return true;
-  }
-  return false;
+  return edge_quickjs::module_loader::ResolveCommonJSPath(specifier, base_dir, out);
 }
 
 napi_value MakeError(napi_env env, const char* code, const std::string& message) {
@@ -4469,8 +4491,7 @@ napi_value CreateResolvedPathString(napi_env env, const fs::path& resolved_path)
 napi_value ResolveSpecifierForContext(napi_env env, RequireContext* context, const std::string& specifier, bool throw_on_error) {
   fs::path resolved_path;
   if (ResolveBuiltinPath(specifier, context->base_dir, &resolved_path) ||
-      ResolveModulePath(specifier, context->base_dir, &resolved_path) ||
-      ResolveNodeModules(specifier, context->base_dir, &resolved_path)) {
+      ResolveModulePath(specifier, context->base_dir, &resolved_path)) {
     return CreateResolvedPathString(env, resolved_path);
   }
   if (throw_on_error) {

@@ -81,6 +81,34 @@ FsBindingState& EnsureState(napi_env env) {
       env, kEdgeEnvironmentSlotFsBindingState);
 }
 
+std::filesystem::path ResolveSymlinkComponentsForModuleResolution(const std::filesystem::path& path) {
+  std::filesystem::path current;
+  for (const std::filesystem::path& part : path.lexically_normal()) {
+    if (part == "." || part.empty()) continue;
+    if (part == "..") {
+      current /= part;
+      continue;
+    }
+    if (part == path.root_name() || part == path.root_directory()) {
+      current /= part;
+      continue;
+    }
+
+    std::filesystem::path candidate = current.empty() ? part : current / part;
+    std::error_code ec;
+    if (std::filesystem::is_symlink(candidate, ec) && !ec) {
+      std::filesystem::path target = std::filesystem::read_symlink(candidate, ec);
+      if (!ec) {
+        current = target.is_absolute() ? target : candidate.parent_path() / target;
+        current = current.lexically_normal();
+        continue;
+      }
+    }
+    current = candidate;
+  }
+  return current.lexically_normal();
+}
+
 napi_value GetRefValue(napi_env env, napi_ref ref) {
   if (ref == nullptr) return nullptr;
   napi_value out = nullptr;
@@ -2750,6 +2778,30 @@ napi_value FsStatCommon(napi_env env,
   napi_value raw_out = nullptr;
   napi_value err = nullptr;
   if (!CallRaw(env, raw_name, 1, call_argv, &raw_out, &err)) {
+    if (std::strcmp(raw_name, "stat") == 0 &&
+        (ErrorCodeEquals(env, err, "ENOENT") || ErrorCodeEquals(env, err, "ENOTDIR"))) {
+      std::string path;
+      if (ValueToPathString(env, argc >= 1 ? argv[0] : nullptr, &path)) {
+        const std::filesystem::path resolved = ResolveSymlinkComponentsForModuleResolution(path);
+        if (resolved != std::filesystem::path(path).lexically_normal()) {
+          napi_value resolved_arg = nullptr;
+          const std::string resolved_path = resolved.string();
+          napi_create_string_utf8(env, resolved_path.c_str(), resolved_path.size(), &resolved_arg);
+          napi_value retry_out = nullptr;
+          napi_value retry_err = nullptr;
+          napi_value retry_argv[1] = {resolved_arg != nullptr ? resolved_arg : call_argv[0]};
+          if (CallRaw(env, raw_name, 1, retry_argv, &retry_out, &retry_err)) {
+            raw_out = retry_out;
+            err = nullptr;
+          } else if (retry_err != nullptr) {
+            err = retry_err;
+          }
+        }
+      }
+    }
+  }
+
+  if (raw_out == nullptr && err != nullptr) {
     if (!throw_if_no_entry &&
         (ErrorCodeEquals(env, err, "ENOENT") || ErrorCodeEquals(env, err, "ENOTDIR"))) {
       if (req_kind == ReqKind::kPromise) return MakeDeferredResolvedPromise(env, Undefined(env));
@@ -3996,7 +4048,14 @@ napi_value FsInternalModuleStat(napi_env env, napi_callback_info info) {
   if (argc < 1 || !ValueToUtf8(env, argv[0], &path)) return Undefined(env);
 
   std::error_code ec;
-  const auto status = std::filesystem::status(path, ec);
+  auto status = std::filesystem::status(path, ec);
+  if (ec) {
+    const std::filesystem::path resolved = ResolveSymlinkComponentsForModuleResolution(path);
+    if (resolved != std::filesystem::path(path).lexically_normal()) {
+      ec.clear();
+      status = std::filesystem::status(resolved, ec);
+    }
+  }
   int32_t out_value = -1;
   if (!ec) {
     if (std::filesystem::is_directory(status)) out_value = 1;
