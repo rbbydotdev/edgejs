@@ -1,5 +1,7 @@
 # Astro SSR: depd CallSite Method Compatibility
 
+Status: planned runtime compatibility investigation.
+
 ## Issue
 
 After aliasing `es-module-lexer` to its pure-JS export, the Astro SSR native ESM
@@ -49,7 +51,7 @@ The existing bundled CJS Astro path has already avoided this dependency behavior
 by using `edge-depd-stub.cjs`, but the native ESM SSR entry currently imports
 the real `depd` package.
 
-## Proposed Fix
+## Plan
 
 Investigate QuickJS stack trace preparation and CallSite compatibility before
 changing code.
@@ -61,9 +63,9 @@ Likely options:
 - or add a narrow QuickJS resolver compatibility alias/stub for `depd` if the
   dependency is only used for deprecation warnings in this SSR path.
 
-Prefer a runtime-compatible CallSite fix if it is small and does not broaden
-QuickJS/V8 assumptions incorrectly. Prefer a package-specific stub only if the
-CallSite emulation would be large or fragile.
+Prefer a runtime-compatible CallSite fix if it is small and matches existing
+QuickJS stack-frame data. Prefer a package-specific stub only if CallSite
+emulation would be large, fragile, or misleading for embedders.
 
 ## Constraints
 

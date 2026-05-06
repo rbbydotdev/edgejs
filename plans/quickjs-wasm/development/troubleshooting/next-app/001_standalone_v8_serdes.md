@@ -1,5 +1,8 @@
 # Next App Standalone: `require("v8")` / Serdes Findings
 
+Status: findings note; create or update a numbered `NNN_<issue_name>.md` note
+in this directory before the next Next app troubleshooting code change.
+
 ## Context
 
 The `next-app` project was switched to the standard Next.js standalone output:
@@ -127,13 +130,20 @@ The observed usage is heap telemetry:
 v8.getHeapStatistics()
 ```
 
-So the app-level standalone build is valid and works under Node. The blocker is Edge QuickJS compatibility with Node's `v8` builtin, specifically the incomplete QuickJS `serdes` internal binding.
+So the app-level standalone build is valid and works under Node. The blocker is
+Edge QuickJS compatibility with Node's `v8` builtin, specifically the incomplete
+QuickJS `serdes` internal binding.
 
-## Likely Fix
+## Likely Runtime Fix
 
-Implement a minimal QuickJS-backed `internalBinding("serdes")` that exports stable `Serializer` and `Deserializer` constructors.
+Implement a minimal QuickJS-backed `internalBinding("serdes")` that exports
+stable `Serializer` and `Deserializer` constructors.
 
-For the immediate Next standalone path, it may be enough that `require("v8")` loads cleanly and `getHeapStatistics()` continues to work. Full `v8.serialize()` / `v8.deserialize()` behavior can be added using the existing QuickJS structured clone helpers based on `JS_WriteObject` / `JS_ReadObject`.
+For the immediate Next standalone path, it may be enough that `require("v8")`
+loads cleanly and `getHeapStatistics()` continues to work. Full
+`v8.serialize()` / `v8.deserialize()` behavior can be added using the existing
+QuickJS structured clone helpers based on `JS_WriteObject` /
+`JS_ReadObject`.
 
 Candidate implementation area:
 
@@ -150,4 +160,8 @@ Relevant existing helpers:
 
 ## Current Conclusion
 
-The `next-app` standalone setup itself is correct. The failure under Edge QuickJS is caused by `require("v8")` loading `lib/v8.js`, which assumes `internalBinding("serdes").Serializer` exists. QuickJS currently returns an empty serdes binding, so the builtin throws before Next's standalone server can start.
+The `next-app` standalone setup itself is correct. The failure under Edge
+QuickJS is caused by `require("v8")` loading `lib/v8.js`, which assumes
+`internalBinding("serdes").Serializer` exists. QuickJS currently returns an
+empty serdes binding, so the builtin throws before Next's standalone server can
+start.
