@@ -2,7 +2,7 @@
 
 | | | Remarks |
 | --- | --- | --- |
-| **Status** | 🟠 | Findings captured for Next standalone require("v8") and serdes compatibility. |
+| **Status** | 🟢 | QuickJS serdes constructors implemented and verified. |
 | **Severity** | High | The Next standalone server cannot start until the v8 serdes surface is handled. |
 
 ## Context
@@ -167,3 +167,10 @@ QuickJS is caused by `require("v8")` loading `lib/v8.js`, which assumes
 `internalBinding("serdes").Serializer` exists. QuickJS currently returns an
 empty serdes binding, so the builtin throws before Next's standalone server can
 start.
+
+## Resolution
+
+`napi/quickjs/src/unofficial_napi.cc` now exports QuickJS-backed `Serializer`
+and `Deserializer` constructors from `internalBinding("serdes")`. Native and
+WASIX smoke tests verified that `require("v8")` loads and that
+`v8.serialize()` / `v8.deserialize()` can round-trip a plain object.

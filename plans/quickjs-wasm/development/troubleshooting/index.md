@@ -12,7 +12,8 @@ adapters.
 
 ## Workflow
 
-For every new Astro SSR, Vite app, or Next app troubleshooting issue:
+For every new Astro SSR, Vite app, Next app, or Wasmer deploy troubleshooting
+issue:
 
 - write an issue-specific plan in the matching subdirectory before changing
   code;
@@ -173,6 +174,20 @@ and only treats a package as ESM for top-level `"type": "module"`, avoiding the
 false positive from `lucide-react`'s `"repository": { "type": "git" }` plus
 top-level `"module"` entry.
 
+### 🟢 [014_pnpm_deploy_externalized_runtime_links.md](astro-ssr/014_pnpm_deploy_externalized_runtime_links.md): pnpm deploy externalized runtime links
+
+Why: the full `stackmachine.com` source tree runs under Wasmer, but the pruned
+`.deploy` artifact built from `pnpm deploy --prod --legacy` failed at startup
+because Astro's generated server chunks bare-imported externalized packages
+such as `piccolore` that existed only inside pnpm's virtual store.
+
+What was fixed: the app's `edge:prepare-deploy` script now scans
+`.deploy/dist/server` for bare runtime imports and makes those packages
+addressable from the deploy root `node_modules`; `graphql` was also moved to
+production dependencies because `graphql-ws` imports it at runtime. Later
+Wasmer deploy packaging work materialized this graph into a symlink-free
+artifact.
+
 ## Vite App
 
 For each new Vite app troubleshooting issue, create a plan under
@@ -192,11 +207,50 @@ or different framework/runtime shape.
 For each new Next app troubleshooting issue, create a plan under
 [`next-app/`](next-app/) before changing code.
 
-### 🟠 [001_standalone_v8_serdes.md](next-app/001_standalone_v8_serdes.md): `require("v8")` / serdes findings
+### 🟢 [001_standalone_v8_serdes.md](next-app/001_standalone_v8_serdes.md): `require("v8")` / serdes findings
 
 Why: the standard Next.js standalone server reaches `require("v8")`, and the
 QuickJS `internalBinding("serdes")` currently returns an empty object.
 
-What was found: `lib/v8.js` expects `Serializer` and `Deserializer`
-constructors. A minimal QuickJS-backed serdes binding should let the public
-`v8` builtin load cleanly before deeper standalone Next compatibility work.
+What changed: QuickJS now exports `Serializer` and `Deserializer` constructors
+from `internalBinding("serdes")`; native and WASIX smoke tests verified
+`require("v8")` and a plain object `v8.serialize()` / `v8.deserialize()`
+round-trip.
+
+### 🟢 [002_standalone_inspector_stub.md](next-app/002_standalone_inspector_stub.md): `require("inspector")` unavailable-inspector stub
+
+Why: after the QuickJS serdes fix, the `private-poker` Next.js standalone server
+advances to `require("inspector")`, where `lib/inspector.js` currently throws
+`ERR_INSPECTOR_NOT_AVAILABLE` during module load.
+
+What changed: real inspector support remains disabled, but passive consumers can
+import the public builtin and receive no-op `url()`, `close()`, and network
+hooks while active inspector APIs continue to report inspector-unavailable
+errors.
+
+### ▶️ [003_route_stack_exhausted.md](next-app/003_route_stack_exhausted.md): route request stack exhaustion
+
+Why: after the serdes and inspector startup fixes, the `private-poker` Next.js
+standalone server starts under Wasmer, but the first request to `/` exits with
+`RuntimeError: call stack exhausted`.
+
+Plan: isolate whether the exhaustion is in HTTP dispatch, module loading,
+React/Next rendering, user app code, or WASIX/QuickJS stack sizing, then apply a
+narrow runtime fix.
+
+## Wasmer Deploy
+
+For each new Wasmer deploy troubleshooting issue, create a plan under
+[`wasmer-deploy/`](wasmer-deploy/) before changing deploy packaging code.
+
+### 🟠 [001_pnpm_directory_symlinks_webc.md](wasmer-deploy/001_pnpm_directory_symlinks_webc.md): pnpm directory symlinks in WEBC package
+
+Why: the prepared `.deploy` directory works with local `wasmer run --net .`,
+but the app deployed to wasmer.io exits during startup because `/app` cannot
+resolve bare `react` from the serialized package.
+
+What was changed: the app deploy preparation now emits a flattened,
+symlink-free `.deploy` tree. It builds a runtime import closure, prunes
+unimported packages, materializes the remaining package links, removes `.pnpm`,
+rewrites virtual-store source imports, copies `wasmer.toml` and optional
+`app.yaml`, and validates the final artifact before `wasmer deploy`.
