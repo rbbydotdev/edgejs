@@ -1,5 +1,10 @@
 # Edge QuickJS framework troubleshooting
 
+| | | Remarks |
+| --- | --- | --- |
+| **Status** | ▶️ | Active registry for framework troubleshooting issue notes. |
+| **Severity** | Low | Documentation registry only; it does not block runtime behavior. |
+
 This registry lives under the QuickJS WASIX development notes so framework
 compatibility work stays attached to the development timeline. Use it to find
 existing plans and findings before changing QuickJS runtime code or framework
@@ -37,9 +42,9 @@ known to work.
 Why: after moving past the `es-module-lexer` issue, Astro SSR reached `depd`,
 which expects Node/V8-style structured stack CallSite methods.
 
-What to investigate: whether QuickJS stack trace preparation should provide the
-missing CallSite methods, or whether the Astro SSR path should continue using a
-targeted `depd` compatibility stub.
+What was fixed: QuickJS stack construction now honors the public
+`Error.prepareStackTrace` property, and the native `CallSite` prototype exposes
+the Node/V8-compatible methods needed by `depd`.
 
 ### [003_cjs_reexport_named_exports.md](astro-ssr/003_cjs_reexport_named_exports.md): CommonJS re-export named exports
 
@@ -50,6 +55,102 @@ before module linking.
 What to investigate: conservative recursive named-export discovery for literal
 CommonJS re-export patterns, using the discovered names both for QuickJS export
 declaration and evaluated export assignment.
+
+### [004_missing_intl.md](astro-ssr/004_missing_intl.md): missing Intl global
+
+Why: after the `depd` CallSite fix, the Astro SSR entry reaches the generated
+Astro server adapter chunk, which creates `new Intl.DateTimeFormat(...)` during
+module evaluation.
+
+What was fixed: EdgeJS now installs a deliberately minimal runtime-level
+`Intl.DateTimeFormat` fallback when no real implementation exists. It covers
+simple framework bootstrap time formatting and is not a full ECMA-402 Intl
+implementation.
+
+### [005_listen_eperm.md](astro-ssr/005_listen_eperm.md): listen EPERM on localhost
+
+Why: after the minimal Intl fallback, the Astro SSR entry reaches server
+startup and logs `listen EPERM: operation not permitted ::1:4321`.
+
+What to investigate: whether the listen failure is sandbox policy, app
+configuration, or an EdgeJS TCP/listen runtime behavior difference.
+
+### [006_floating_ui_utils_dom.md](astro-ssr/006_floating_ui_utils_dom.md): Floating UI utils DOM subpath
+
+Why: once the Astro server starts and a browser requests `/`, route rendering
+fails because QuickJS cannot load `@floating-ui/utils/dom`.
+
+What was fixed: QuickJS package subpath resolution now keeps trying runtime
+conditions when a nested condition key such as `types` does not resolve to a
+file, allowing `@floating-ui/utils/dom` to reach its nested `default` import
+target.
+
+### [007_react_remove_scroll_bar_constants.md](astro-ssr/007_react_remove_scroll_bar_constants.md): React Remove Scroll Bar constants subpath
+
+Why: after the Floating UI subpath fix, route rendering reaches
+`react-remove-scroll-bar/constants` and QuickJS cannot load that package
+subpath.
+
+What was fixed: QuickJS package subpath resolution now tries a subpath
+directory's own `package.json` entry metadata after parent `exports` do not
+resolve it, matching the CommonJS-compatible shape used by this package.
+
+### [008_zustand_ind_create_export.md](astro-ssr/008_zustand_ind_create_export.md): Zustand ind create export
+
+Why: after the React Remove Scroll Bar constants fix, route rendering reaches
+Zustand and QuickJS reports that the resolved `zustand/ind` module does not
+export `create`.
+
+What to investigate: whether the resolved module path is truncated, whether a
+CommonJS re-export pattern is missing from synthetic named export discovery, or
+whether the generated app import is invalid.
+
+What was fixed: QuickJS package exports scanning now handles nested condition
+objects, root `"."` exports, and the simple `"./*"` wildcard shape so Zustand
+resolves to its ESM import targets.
+
+### [009_zustand_esm_default_export.md](astro-ssr/009_zustand_esm_default_export.md): Zustand ESM default export
+
+Why: after the Zustand package exports fix, route rendering reaches a new module
+linking failure where an import expects a `default` export from the resolved
+`zustand/esm` module.
+
+What to investigate: whether the generated app import is valid, whether
+`zustand/esm` directory resolution should be allowed, and whether QuickJS's
+export declarations match the resolved module.
+
+What was fixed: QuickJS now canonicalizes resolved module filenames through
+symlinks, so pnpm symlinked packages resolve their own dependency graph from
+the real `.pnpm/.../node_modules` path.
+
+### [010_use_gesture_controller_export.md](astro-ssr/010_use_gesture_controller_export.md): Use Gesture Controller export
+
+Why: after pnpm symlink canonicalization, route rendering reaches a new module
+linking failure where an import expects `Controller` from a truncated
+`.pnpm/@use-...` package path.
+
+What to investigate: identify the full package/module path and determine
+whether QuickJS is missing a valid export declaration or resolving the wrong
+package entry.
+
+What was fixed: QuickJS now prefers package export runtime conditions in
+`import`, `module`, `default` order, so bundler-oriented packages like
+`@use-gesture/core` resolve to their ESM `module` target.
+
+### [011_route_stack_overflow.md](astro-ssr/011_route_stack_overflow.md): Route stack overflow
+
+Why: after the Use Gesture export fix, route rendering reaches a runtime
+`Maximum call stack size exceeded` failure without a detailed stack in Astro's
+router log.
+
+What to investigate: capture the real thrown stack and identify whether the
+recursion is in module resolution, CommonJS facade evaluation, framework
+rendering, or a runtime polyfill.
+
+What was fixed: Edge-created QuickJS runtimes now use a 4 MiB stack guard. The
+1 MiB default was too tight for Relay's CommonJS dependency graph plus the
+Astro/React SSR render path; 2 MiB fixed module evaluation, and 4 MiB allowed
+the full `/` route to render.
 
 ## Vite App
 

@@ -88,7 +88,10 @@ reduced the QuickJS Next standalone failure to `require("v8")` and an empty
 QuickJS `internalBinding("serdes")`; confirmed the Edge V8 inspector failure was
 not a branch regression; and adjusted native builtin failure handling so extra
 builtin context is printed without replacing the original JS exception
-formatting.
+formatting. Later Astro SSR work also added a deliberately minimal
+`Intl.DateTimeFormat` fallback for QuickJS runtimes without a real Intl object,
+covering framework bootstrap time formatting without claiming full ECMA-402
+support.
 
 ## Troubleshooting
 
@@ -99,7 +102,8 @@ to the development timeline while preserving the rule that new issues get a
 written action plan before runtime or adapter changes.
 
 What is tracked: Astro SSR ESM dependency compatibility, Vite standalone build
-shape, and Next.js standalone `v8` / `serdes` compatibility.
+shape, Astro's minimal QuickJS `Intl.DateTimeFormat` fallback, and Next.js
+standalone `v8` / `serdes` compatibility.
 
 ## Current State
 

@@ -1,7 +1,9 @@
 # Vite App Standalone Build Findings
 
-Status: findings note; create or update a numbered `NNN_<issue_name>.md` note
-in this directory before the next Vite app troubleshooting code change.
+| | | Remarks |
+| --- | --- | --- |
+| **Status** | 🟠 | Findings captured for the plain Vite standalone build shape. |
+| **Severity** | Low | This is an architecture note; the current custom static server path remains viable. |
 
 ## Query
 

@@ -89,7 +89,7 @@ plans/quickjs-wasm/development/troubleshooting/index.md
 Most recent Astro SSR troubleshooting plan:
 
 ```text
-plans/quickjs-wasm/development/troubleshooting/astro-ssr/003_cjs_reexport_named_exports.md
+plans/quickjs-wasm/development/troubleshooting/astro-ssr/011_route_stack_overflow.md
 ```
 
 Most recent Vite app troubleshooting note:

@@ -1,6 +1,9 @@
 # Astro SSR: depd CallSite Method Compatibility
 
-Status: planned runtime compatibility investigation.
+| | | Remarks |
+| --- | --- | --- |
+| **Status** | 🟢 | Fixed in the vendored QuickJS CallSite and stack trace implementation. |
+| **Severity** | High | Astro SSR stopped during startup when depd could not use Node-style CallSite methods. |
 
 ## Issue
 
@@ -20,10 +23,16 @@ TypeError: not a function
     at depd (<input>:111:31)
 ```
 
-The failure was reproduced from:
+The failure was first reproduced from:
 
 ```text
 /Users/sadhbh/src/dev/christoph/astro-app
+```
+
+It was later reproduced from:
+
+```text
+/Users/sadhbh/src/dev/stackmachine.com
 ```
 
 ## Diagnosis
@@ -42,30 +51,51 @@ callSite.getEvalOrigin()
 callSite.getFunctionName()
 ```
 
-The QuickJS-backed runtime appears to provide enough stack information for the
-dependency to enter this path, but at least one expected CallSite method is not
-callable. This is separate from the earlier `es-module-lexer` WebAssembly issue,
-which no longer appears after the resolver alias.
+The QuickJS-backed runtime had two compatibility gaps:
+
+- Node bootstrap replaces `Error.prepareStackTrace` with a writable data
+  property, but QuickJS stack construction still read only its hidden
+  `ctx->error_prepare_stack` slot. Userland assignments such as `depd`'s
+  temporary `Error.prepareStackTrace = prepareObjectStackTrace` were ignored,
+  so `Error.captureStackTrace(obj)` produced a string instead of `CallSite[]`.
+- The native QuickJS `CallSite` prototype exposed only a small method subset.
+  `depd` also expects methods such as `isEval()`, `getEvalOrigin()`,
+  `getThis()`, `getTypeName()`, and `getMethodName()`.
+
+This is separate from the earlier `es-module-lexer` WebAssembly issue, which no
+longer appears after the resolver alias.
 
 The existing bundled CJS Astro path has already avoided this dependency behavior
 by using `edge-depd-stub.cjs`, but the native ESM SSR entry currently imports
 the real `depd` package.
 
-## Plan
+## Fix
 
-Investigate QuickJS stack trace preparation and CallSite compatibility before
-changing code.
+Updated `quickjs/quickjs.c` so `build_backtrace(...)` reads the public
+`Error.prepareStackTrace` property at stack-build time, falling back to the
+hidden QuickJS slot only when the public property is not callable.
 
-Likely options:
+Also extended the native QuickJS `CallSite` prototype with conservative
+Node/V8-compatible methods:
 
-- provide missing Node/V8-compatible CallSite methods in the QuickJS error stack
-  implementation if the runtime already models structured frames;
-- or add a narrow QuickJS resolver compatibility alias/stub for `depd` if the
-  dependency is only used for deprecation warnings in this SSR path.
+```text
+isEval
+isConstructor
+isToplevel
+isAsync
+isPromiseAll
+getMethodName
+getTypeName
+getThis
+getEvalOrigin
+getScriptNameOrSourceURL
+getPromiseIndex
+toString
+```
 
-Prefer a runtime-compatible CallSite fix if it is small and matches existing
-QuickJS stack-frame data. Prefer a package-specific stub only if CallSite
-emulation would be large, fragile, or misleading for embedders.
+Where QuickJS does not currently track the exact V8 metadata, these methods
+return stable conservative values (`false`, `null`, or `undefined`) instead of
+throwing.
 
 ## Constraints
 
@@ -84,19 +114,34 @@ Rebuild:
 cmake --build build-edge-quickjs-cli --target edge -j4
 ```
 
+Focused `depd` check:
+
+```sh
+cd /Users/sadhbh/src/dev/stackmachine.com
+/Users/sadhbh/src/dev/edgejs/build-edge-quickjs-cli/edge \
+  -e "try { require('depd')('x'); console.log('depd ok') } catch(e) { console.error(e && (e.stack || e.message || e)); process.exitCode=1 }"
+```
+
+Observed result after the fix:
+
+```text
+depd ok
+```
+
 Rerun the focused import:
 
 ```sh
-cd /Users/sadhbh/src/dev/christoph/astro-app
+cd /Users/sadhbh/src/dev/stackmachine.com
 /Users/sadhbh/src/dev/edgejs/build-edge-quickjs-cli/edge \
-  -e "import('./dist/server/entry.mjs').then(()=>console.log('loaded')).catch(e=>{ console.error(e && (e.stack || e.message || e)); process.exitCode = 1; })"
+  ./dist/server/entry.mjs
 ```
 
-Expected result for this issue:
+Observed result after the fix:
 
 ```text
-loaded
+ReferenceError: Intl is not defined
+    at /Users/sadhbh/src/dev/stackmachine.com/dist/server/chunks/_@astrojs-ssr-adapter_BqW-NUXY.mjs:734:28
 ```
 
-or a later, different Astro SSR failure that should be captured in a new
-issue-specific plan before further code changes.
+This is a later, different Astro SSR failure captured in
+`004_missing_intl.md`.
