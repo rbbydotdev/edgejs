@@ -51,7 +51,7 @@ recent plan location points at the new file.
 Most recent Astro SSR troubleshooting plan:
 
 ```text
-plans/quickjs-wasm/troubleshooting/astro-ssr/plan-depd-callsite-methods.md
+plans/quickjs-wasm/troubleshooting/astro-ssr/plan-cjs-reexport-named-exports.md
 ```
 
 Important commands:
