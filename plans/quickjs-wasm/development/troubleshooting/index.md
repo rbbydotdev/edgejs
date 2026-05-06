@@ -27,7 +27,7 @@ For every new Astro SSR, Vite app, or Next app troubleshooting issue:
 For each new Astro SSR troubleshooting issue, create a plan under
 [`astro-ssr/`](astro-ssr/) before changing code.
 
-### [001_es_module_lexer_webassembly.md](astro-ssr/001_es_module_lexer_webassembly.md): es-module-lexer WebAssembly import
+### ▶️ [001_es_module_lexer_webassembly.md](astro-ssr/001_es_module_lexer_webassembly.md): es-module-lexer WebAssembly import
 
 Why: the Astro SSR native ESM entry resolved `es-module-lexer` to its default
 WASM-backed build, which expects `globalThis.WebAssembly` and fails under the
@@ -37,7 +37,7 @@ What to investigate: QuickJS-only resolver compatibility for the bare
 `es-module-lexer` specifier so it can resolve to the pure JS export already
 known to work.
 
-### [002_depd_callsite_methods.md](astro-ssr/002_depd_callsite_methods.md): depd CallSite method compatibility
+### 🟢 [002_depd_callsite_methods.md](astro-ssr/002_depd_callsite_methods.md): depd CallSite method compatibility
 
 Why: after moving past the `es-module-lexer` issue, Astro SSR reached `depd`,
 which expects Node/V8-style structured stack CallSite methods.
@@ -46,7 +46,7 @@ What was fixed: QuickJS stack construction now honors the public
 `Error.prepareStackTrace` property, and the native `CallSite` prototype exposes
 the Node/V8-compatible methods needed by `depd`.
 
-### [003_cjs_reexport_named_exports.md](astro-ssr/003_cjs_reexport_named_exports.md): CommonJS re-export named exports
+### ▶️ [003_cjs_reexport_named_exports.md](astro-ssr/003_cjs_reexport_named_exports.md): CommonJS re-export named exports
 
 Why: React's public CommonJS entry delegates to another file, so QuickJS's
 synthetic ESM facade did not declare named exports such as `createElement`
@@ -56,7 +56,7 @@ What to investigate: conservative recursive named-export discovery for literal
 CommonJS re-export patterns, using the discovered names both for QuickJS export
 declaration and evaluated export assignment.
 
-### [004_missing_intl.md](astro-ssr/004_missing_intl.md): missing Intl global
+### 🟠 [004_missing_intl.md](astro-ssr/004_missing_intl.md): missing Intl global
 
 Why: after the `depd` CallSite fix, the Astro SSR entry reaches the generated
 Astro server adapter chunk, which creates `new Intl.DateTimeFormat(...)` during
@@ -67,7 +67,7 @@ What was fixed: EdgeJS now installs a deliberately minimal runtime-level
 simple framework bootstrap time formatting and is not a full ECMA-402 Intl
 implementation.
 
-### [005_listen_eperm.md](astro-ssr/005_listen_eperm.md): listen EPERM on localhost
+### 🟠 [005_listen_eperm.md](astro-ssr/005_listen_eperm.md): listen EPERM on localhost
 
 Why: after the minimal Intl fallback, the Astro SSR entry reaches server
 startup and logs `listen EPERM: operation not permitted ::1:4321`.
@@ -75,7 +75,7 @@ startup and logs `listen EPERM: operation not permitted ::1:4321`.
 What to investigate: whether the listen failure is sandbox policy, app
 configuration, or an EdgeJS TCP/listen runtime behavior difference.
 
-### [006_floating_ui_utils_dom.md](astro-ssr/006_floating_ui_utils_dom.md): Floating UI utils DOM subpath
+### 🟢 [006_floating_ui_utils_dom.md](astro-ssr/006_floating_ui_utils_dom.md): Floating UI utils DOM subpath
 
 Why: once the Astro server starts and a browser requests `/`, route rendering
 fails because QuickJS cannot load `@floating-ui/utils/dom`.
@@ -85,7 +85,7 @@ conditions when a nested condition key such as `types` does not resolve to a
 file, allowing `@floating-ui/utils/dom` to reach its nested `default` import
 target.
 
-### [007_react_remove_scroll_bar_constants.md](astro-ssr/007_react_remove_scroll_bar_constants.md): React Remove Scroll Bar constants subpath
+### 🟢 [007_react_remove_scroll_bar_constants.md](astro-ssr/007_react_remove_scroll_bar_constants.md): React Remove Scroll Bar constants subpath
 
 Why: after the Floating UI subpath fix, route rendering reaches
 `react-remove-scroll-bar/constants` and QuickJS cannot load that package
@@ -95,7 +95,7 @@ What was fixed: QuickJS package subpath resolution now tries a subpath
 directory's own `package.json` entry metadata after parent `exports` do not
 resolve it, matching the CommonJS-compatible shape used by this package.
 
-### [008_zustand_ind_create_export.md](astro-ssr/008_zustand_ind_create_export.md): Zustand ind create export
+### 🟢 [008_zustand_ind_create_export.md](astro-ssr/008_zustand_ind_create_export.md): Zustand ind create export
 
 Why: after the React Remove Scroll Bar constants fix, route rendering reaches
 Zustand and QuickJS reports that the resolved `zustand/ind` module does not
@@ -109,7 +109,7 @@ What was fixed: QuickJS package exports scanning now handles nested condition
 objects, root `"."` exports, and the simple `"./*"` wildcard shape so Zustand
 resolves to its ESM import targets.
 
-### [009_zustand_esm_default_export.md](astro-ssr/009_zustand_esm_default_export.md): Zustand ESM default export
+### 🟢 [009_zustand_esm_default_export.md](astro-ssr/009_zustand_esm_default_export.md): Zustand ESM default export
 
 Why: after the Zustand package exports fix, route rendering reaches a new module
 linking failure where an import expects a `default` export from the resolved
@@ -123,7 +123,7 @@ What was fixed: QuickJS now canonicalizes resolved module filenames through
 symlinks, so pnpm symlinked packages resolve their own dependency graph from
 the real `.pnpm/.../node_modules` path.
 
-### [010_use_gesture_controller_export.md](astro-ssr/010_use_gesture_controller_export.md): Use Gesture Controller export
+### 🟢 [010_use_gesture_controller_export.md](astro-ssr/010_use_gesture_controller_export.md): Use Gesture Controller export
 
 Why: after pnpm symlink canonicalization, route rendering reaches a new module
 linking failure where an import expects `Controller` from a truncated
@@ -137,7 +137,7 @@ What was fixed: QuickJS now prefers package export runtime conditions in
 `import`, `module`, `default` order, so bundler-oriented packages like
 `@use-gesture/core` resolve to their ESM `module` target.
 
-### [011_route_stack_overflow.md](astro-ssr/011_route_stack_overflow.md): Route stack overflow
+### 🟢 [011_route_stack_overflow.md](astro-ssr/011_route_stack_overflow.md): Route stack overflow
 
 Why: after the Use Gesture export fix, route rendering reaches a runtime
 `Maximum call stack size exceeded` failure without a detailed stack in Astro's
@@ -157,7 +157,7 @@ the full `/` route to render.
 For each new Vite app troubleshooting issue, create a plan under
 [`vite-app/`](vite-app/) before changing code.
 
-### [001_standalone_build.md](vite-app/001_standalone_build.md): standalone build findings
+### 🟠 [001_standalone_build.md](vite-app/001_standalone_build.md): standalone build findings
 
 Why: plain Vite SPA builds do not emit an Astro-style standalone HTTP server
 entry, so the existing `server/router.cjs` adapter is real runtime plumbing.
@@ -171,7 +171,7 @@ or different framework/runtime shape.
 For each new Next app troubleshooting issue, create a plan under
 [`next-app/`](next-app/) before changing code.
 
-### [001_standalone_v8_serdes.md](next-app/001_standalone_v8_serdes.md): `require("v8")` / serdes findings
+### 🟠 [001_standalone_v8_serdes.md](next-app/001_standalone_v8_serdes.md): `require("v8")` / serdes findings
 
 Why: the standard Next.js standalone server reaches `require("v8")`, and the
 QuickJS `internalBinding("serdes")` currently returns an empty object.
