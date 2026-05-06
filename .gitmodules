@@ -10,11 +10,11 @@
 	url = git@github.com:wasmerio/examples.git
 [submodule "napi"]
 	path = napi
-	url = git@github.com:sadhbh-c0d3/napi.git
+	url = git@github.com:wasmerio/napi.git
 	branch = main
 [submodule "ssl-certs"]
 	path = ssl-certs
 	url = https://github.com/wasix-org/ssl-certs.git
 [submodule "quickjs"]
 	path = quickjs
-	url = git@github.com:sadhbh-c0d3/quickjs.git
+	url = git@github.com:wasmerio/quickjs.git
