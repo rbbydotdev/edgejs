@@ -12,7 +12,8 @@ adapters.
 
 ## Workflow
 
-For every new Astro SSR, Vite app, or Next app troubleshooting issue:
+For every new Astro SSR, Vite app, Next app, or Wasmer deploy troubleshooting
+issue:
 
 - write an issue-specific plan in the matching subdirectory before changing
   code;
@@ -173,6 +174,20 @@ and only treats a package as ESM for top-level `"type": "module"`, avoiding the
 false positive from `lucide-react`'s `"repository": { "type": "git" }` plus
 top-level `"module"` entry.
 
+### 🟢 [014_pnpm_deploy_externalized_runtime_links.md](astro-ssr/014_pnpm_deploy_externalized_runtime_links.md): pnpm deploy externalized runtime links
+
+Why: the full `stackmachine.com` source tree runs under Wasmer, but the pruned
+`.deploy` artifact built from `pnpm deploy --prod --legacy` failed at startup
+because Astro's generated server chunks bare-imported externalized packages
+such as `piccolore` that existed only inside pnpm's virtual store.
+
+What was fixed: the app's `edge:prepare-deploy` script now scans
+`.deploy/dist/server` for bare runtime imports and makes those packages
+addressable from the deploy root `node_modules`; `graphql` was also moved to
+production dependencies because `graphql-ws` imports it at runtime. Later
+Wasmer deploy packaging work materialized this graph into a symlink-free
+artifact.
+
 ## Vite App
 
 For each new Vite app troubleshooting issue, create a plan under
@@ -200,3 +215,20 @@ QuickJS `internalBinding("serdes")` currently returns an empty object.
 What was found: `lib/v8.js` expects `Serializer` and `Deserializer`
 constructors. A minimal QuickJS-backed serdes binding should let the public
 `v8` builtin load cleanly before deeper standalone Next compatibility work.
+
+## Wasmer Deploy
+
+For each new Wasmer deploy troubleshooting issue, create a plan under
+[`wasmer-deploy/`](wasmer-deploy/) before changing deploy packaging code.
+
+### 🟠 [001_pnpm_directory_symlinks_webc.md](wasmer-deploy/001_pnpm_directory_symlinks_webc.md): pnpm directory symlinks in WEBC package
+
+Why: the prepared `.deploy` directory works with local `wasmer run --net .`,
+but the app deployed to wasmer.io exits during startup because `/app` cannot
+resolve bare `react` from the serialized package.
+
+What was changed: the app deploy preparation now emits a flattened,
+symlink-free `.deploy` tree. It builds a runtime import closure, prunes
+unimported packages, materializes the remaining package links, removes `.pnpm`,
+rewrites virtual-store source imports, copies `wasmer.toml` and optional
+`app.yaml`, and validates the final artifact before `wasmer deploy`.

@@ -71,12 +71,14 @@ plans/quickjs-wasm/development/NNN_<meaningful_name>.md
 plans/quickjs-wasm/development/troubleshooting/astro-ssr/NNN_<issue_name>.md
 plans/quickjs-wasm/development/troubleshooting/vite-app/NNN_<issue_name>.md
 plans/quickjs-wasm/development/troubleshooting/next-app/NNN_<issue_name>.md
+plans/quickjs-wasm/development/troubleshooting/wasmer-deploy/NNN_<issue_name>.md
 ```
 
-Choose `astro-ssr`, `vite-app`, or `next-app` based on the app where the issue
-is reproduced. If a failure affects shared QuickJS runtime behavior, still file
-the troubleshooting note under the app that exposed it, then cross-reference any
-shared development note it updates.
+Choose `astro-ssr`, `vite-app`, `next-app`, or `wasmer-deploy` based on the app
+or deployment path where the issue is reproduced. If a failure affects shared
+QuickJS runtime behavior, still file the troubleshooting note under the app or
+deploy path that exposed it, then cross-reference any shared development note it
+updates.
 
 For each new troubleshooting issue, write the action plan before changing code.
 Each issue note must include a Jira-style metadata table immediately after the
@@ -121,7 +123,7 @@ plans/quickjs-wasm/development/troubleshooting/index.md
 Most recent Astro SSR troubleshooting plan:
 
 ```text
-plans/quickjs-wasm/development/troubleshooting/astro-ssr/013_lucide_react_chevrondown_export.md
+plans/quickjs-wasm/development/troubleshooting/astro-ssr/014_pnpm_deploy_externalized_runtime_links.md
 ```
 
 Most recent Vite app troubleshooting note:
@@ -134,6 +136,12 @@ Most recent Next app troubleshooting note:
 
 ```text
 plans/quickjs-wasm/development/troubleshooting/next-app/001_standalone_v8_serdes.md
+```
+
+Most recent Wasmer deploy troubleshooting note:
+
+```text
+plans/quickjs-wasm/development/troubleshooting/wasmer-deploy/001_pnpm_directory_symlinks_webc.md
 ```
 
 Important commands:
