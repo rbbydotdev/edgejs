@@ -135,7 +135,7 @@ plans/quickjs-wasm/development/troubleshooting/vite-app/001_standalone_build.md
 Most recent Next app troubleshooting note:
 
 ```text
-plans/quickjs-wasm/development/troubleshooting/next-app/001_standalone_v8_serdes.md
+plans/quickjs-wasm/development/troubleshooting/next-app/003_route_stack_exhausted.md
 ```
 
 Most recent Wasmer deploy troubleshooting note:
