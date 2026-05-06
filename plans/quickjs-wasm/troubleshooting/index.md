@@ -41,6 +41,10 @@ declaration and evaluated export assignment.
 
 ## Vite App
 
+For each new Vite app troubleshooting issue, create a plan under
+[`vite-app/`](vite-app/) before changing code, then update the most recent plan
+pointer in the repo root `AGENTS.md`.
+
 ### [findings_standalone-build.md](vite-app/findings_standalone-build.md): standalone build findings
 
 Why: plain Vite SPA builds do not emit an Astro-style standalone HTTP server
@@ -51,6 +55,10 @@ but a plain SPA still needs server semantics from an adapter, generated entry,
 or different framework/runtime shape.
 
 ## Next App
+
+For each new Next app troubleshooting issue, create a plan under
+[`next-app/`](next-app/) before changing code, then update the most recent plan
+pointer in the repo root `AGENTS.md`.
 
 ### [findings-standalone-v8-serdes.md](next-app/findings-standalone-v8-serdes.md): `require("v8")` / serdes findings
 

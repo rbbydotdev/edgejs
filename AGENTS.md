@@ -14,7 +14,7 @@ work has been in the `napi` submodule/worktree, especially:
 When resuming this work, start with:
 
 ```text
-plans/quickjs-wasm/development/dev.md
+plans/quickjs-wasm/development/index.md
 ```
 
 That file indexes the development phases:
@@ -36,22 +36,36 @@ Current useful state:
 - Framework app notes use anonymized paths: `~/src/astro-app`,
   `~/src/vite-app`, and `~/src/next-app`.
 
-## Astro SSR Troubleshooting Plans
+## Framework Troubleshooting Plans
 
-For each new Astro SSR troubleshooting issue, write an action plan before
-changing code:
+For each new Astro SSR, Vite app, or Next app troubleshooting issue, write an
+action plan before changing code:
 
 ```text
 plans/quickjs-wasm/troubleshooting/astro-ssr/plan-<name-of-the-issue>.md
+plans/quickjs-wasm/troubleshooting/vite-app/plan-<name-of-the-issue>.md
+plans/quickjs-wasm/troubleshooting/next-app/plan-<name-of-the-issue>.md
 ```
 
 After creating a new plan, always update this `AGENTS.md` section so the most
-recent plan location points at the new file.
+recent plan location for that app points at the new file.
 
 Most recent Astro SSR troubleshooting plan:
 
 ```text
 plans/quickjs-wasm/troubleshooting/astro-ssr/plan-cjs-reexport-named-exports.md
+```
+
+Most recent Vite app troubleshooting note:
+
+```text
+plans/quickjs-wasm/troubleshooting/vite-app/findings_standalone-build.md
+```
+
+Most recent Next app troubleshooting note:
+
+```text
+plans/quickjs-wasm/troubleshooting/next-app/findings-standalone-v8-serdes.md
 ```
 
 Important commands:
