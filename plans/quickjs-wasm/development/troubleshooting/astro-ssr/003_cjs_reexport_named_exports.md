@@ -1,6 +1,9 @@
 # Astro SSR: CommonJS Re-Export Named Exports
 
-Status: planned CommonJS/ESM facade compatibility fix.
+| | | Remarks |
+| --- | --- | --- |
+| **Status** | ▶️ | Planned CommonJS and ESM facade compatibility fix. |
+| **Severity** | High | React named exports fail to link without this compatibility behavior. |
 
 ## Issue
 

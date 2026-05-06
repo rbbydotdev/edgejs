@@ -1,6 +1,9 @@
 # Astro SSR: es-module-lexer WebAssembly Import
 
-Status: planned runtime compatibility investigation.
+| | | Remarks |
+| --- | --- | --- |
+| **Status** | ▶️ | Planned runtime compatibility investigation. |
+| **Severity** | High | The Astro SSR entry cannot start if the WebAssembly-dependent lexer path is selected. |
 
 ## Issue
 

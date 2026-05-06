@@ -1,7 +1,9 @@
 # Next App Standalone: `require("v8")` / Serdes Findings
 
-Status: findings note; create or update a numbered `NNN_<issue_name>.md` note
-in this directory before the next Next app troubleshooting code change.
+| | | Remarks |
+| --- | --- | --- |
+| **Status** | 🟠 | Findings captured for Next standalone require("v8") and serdes compatibility. |
+| **Severity** | High | The Next standalone server cannot start until the v8 serdes surface is handled. |
 
 ## Context
 

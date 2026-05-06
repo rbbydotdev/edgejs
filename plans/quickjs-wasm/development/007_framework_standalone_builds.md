@@ -431,8 +431,11 @@ the builtin failure path no longer replaces the original pending exception.
 
 - Astro has a framework-owned standalone server output and works with EdgeJS
   when the emitted `.mjs` server is bundled to CJS. The `.mjs` entry itself is
-  not the working path yet. Astro apps that pull in `sharp` can still fail on
-  the `sharp` native / WebAssembly dependency shape.
+  not the working path yet. The native QuickJS runtime now includes a minimal
+  `Intl.DateTimeFormat` fallback for framework bootstrap code that only needs
+  simple time formatting, such as Astro's SSR logger. This is deliberately not
+  a full ECMA-402 Intl implementation. Astro apps that pull in `sharp` can still
+  fail on the `sharp` native / WebAssembly dependency shape.
 - Vite can keep a standalone build path with `vite-plugin-standalone`, provided
   the project supplies the server semantics the plugin packages. This path is
   believed to work for the tested Vite app shape.
