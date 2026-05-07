@@ -254,3 +254,15 @@ symlink-free `.deploy` tree. It builds a runtime import closure, prunes
 unimported packages, materializes the remaining package links, removes `.pnpm`,
 rewrites virtual-store source imports, copies `wasmer.toml` and optional
 `app.yaml`, and validates the final artifact before `wasmer deploy`.
+
+### 🟢 [002_quickjs_wasix_napi_import_module_mismatch.md](wasmer-deploy/002_quickjs_wasix_napi_import_module_mismatch.md): QuickJS WASIX N-API import module mismatch
+
+Why: `quickjs-wasm/build.sh` reached the final WASM link but failed because
+`edge_environment_core` declared `napi_*` calls as imports from the `napi`
+module while other QuickJS Edge objects referenced the same symbols through
+`env`.
+
+What was fixed: the QuickJS provider now compiles `edge_environment_core` with
+`NAPI_EXTERN=`, matching the embedded `napi_quickjs` linkage. The WASIX build
+now emits `edge.wasm` and `edgejs.wasm`, and the script's final no-N-API-imports
+check passes.

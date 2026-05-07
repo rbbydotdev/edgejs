@@ -99,10 +99,12 @@ Why: restore shared runtime directories from the upstream `wasmer-io/edgejs`
 tree and keep QuickJS-only compatibility changes out of `lib/`, `napi/v8/`,
 `napi/src/`, and `napi/include/`.
 
-What is planned: copy those directories back from the donor tree, remove files
-that only exist in the QuickJS worktree under those paths, then rebuild and move
-any required QuickJS compatibility into `napi/quickjs/` or, if genuinely shared
-native runtime glue is needed, `src/`.
+What was done: copied those directories back from the donor tree, moved required
+QuickJS compatibility into native/runtime code, kept the common N-API headers
+upstream-clean, and recorded the embedded QuickJS WASIX linkage rule that Edge
+targets including N-API headers must compile with `NAPI_EXTERN=`. This avoided
+`wasm-ld` import module mismatches for `napi_*` symbols and restored
+`quickjs-wasm/build.sh`.
 
 ## Troubleshooting
 
@@ -113,8 +115,9 @@ to the development timeline while preserving the rule that new issues get a
 written action plan before runtime or adapter changes.
 
 What is tracked: Astro SSR ESM dependency compatibility, Vite standalone build
-shape, Astro's minimal QuickJS `Intl.DateTimeFormat` fallback, and Next.js
-standalone `v8` / `serdes` compatibility.
+shape, Astro's minimal QuickJS `Intl.DateTimeFormat` fallback, Next.js
+standalone `v8` / `serdes` compatibility, and Wasmer/QuickJS WASIX packaging
+or link failures.
 
 ## Current State
 
@@ -128,6 +131,8 @@ The QuickJS WASIX development path now supports:
 - Next.js static App Router artifacts plus generated dynamic HTML/RSC shells;
 - standard Next.js standalone build layout understood, with the remaining
   QuickJS runtime blocker narrowed to `v8` / `serdes`.
+- QuickJS WASIX rebuilds with the embedded provider and passes the final
+  no-N-API-imports check in `quickjs-wasm/build.sh`.
 
 The main unresolved runtime item remains proper QuickJS teardown: `JS_FreeRuntime`
 is still disabled in the N-API QuickJS env release path until GC-owned object

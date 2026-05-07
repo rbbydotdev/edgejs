@@ -317,6 +317,12 @@ The important implementation lessons are:
    `napi_unwrap(...)` first when a known wrapper type is possible.
 3. The HTTP parser consume path depends on the listener being attached to the
    exact `EdgeStreamBase` used by the libuv read callbacks.
+4. Embedded QuickJS WASIX targets that include N-API headers must compile with
+   the embedded-provider declaration mode (`NAPI_EXTERN=`). If one static
+   library sees default `__wasm__` N-API imports from module `napi` while
+   another sees the same unresolved calls through `env`, the final `wasm-ld`
+   link fails with an import module mismatch. The concrete fixed case was
+   `edge_environment_core`.
 
 Longer term, it may be cleaner for the QuickJS N-API implementation to avoid
 representing constructed N-API class instances with the same QuickJS class id as

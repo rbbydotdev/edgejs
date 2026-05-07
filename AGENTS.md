@@ -27,12 +27,16 @@ That file indexes the development phases:
 - `006_framework_app_adapters.md`: Astro, Vite, and Next.js app adapter notes.
 - `007_framework_standalone_builds.md`: framework standalone build notes and remaining runtime
   blockers.
+- `008_runtime_change_containment_rollback.md`: shared runtime rollback containment, native
+  compatibility relocation, and QuickJS WASIX build/linkage notes.
 
 Current useful state:
 
 - Native QuickJS-backed Edge CLI can bootstrap and run the HTTP echo server.
 - REPL input works with persistent history after the promise hook/microtask fix.
 - WASIX Edge QuickJS can run under Wasmer and handle HTTP requests with `--net`.
+- `quickjs-wasm/build.sh` currently builds `build-quickjs-wasix/edge.wasm` and
+  `edgejs.wasm`, and its final no-N-API-imports check passes.
 - The root `wasmer.toml` publishes/uses `sadhbh-c0d3/edgejs-quickjs` at
   `0.0.1`, module `edge`, source `build-quickjs-wasix/edgejs.wasm`.
 - Framework app notes use anonymized paths: `~/src/astro-app`,
@@ -168,7 +172,7 @@ plans/quickjs-wasm/development/troubleshooting/next-app/003_route_stack_exhauste
 Most recent Wasmer deploy troubleshooting note:
 
 ```text
-plans/quickjs-wasm/development/troubleshooting/wasmer-deploy/001_pnpm_directory_symlinks_webc.md
+plans/quickjs-wasm/development/troubleshooting/wasmer-deploy/002_quickjs_wasix_napi_import_module_mismatch.md
 ```
 
 Important commands:
@@ -184,6 +188,11 @@ wasmer run --net .
 When working on WASIX-impacting changes under `src/`, `lib/`, or
 `napi/quickjs/`, use the `cd /Users/sadhbh/src/dev/edgejs/quickjs-wasm/ &&
 ./build.sh` form for the rebuild.
+
+For embedded QuickJS WASIX builds, targets that include N-API headers before
+linking `napi_quickjs` must compile with `NAPI_EXTERN=`. Without that, wasm
+objects can disagree on the import module for unresolved `napi_*` calls
+(`napi` versus `env`) and fail at the final `wasm-ld` step.
 
 For QuickJS WASIX smoke testing:
 

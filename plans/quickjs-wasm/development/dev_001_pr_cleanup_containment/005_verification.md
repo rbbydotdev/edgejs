@@ -7,14 +7,17 @@ compile-time trace diagnostics.
 
 ## Current Build State
 
-A native QuickJS rebuild is currently running:
+The focused rebuilds have passed after the structured-clone API split and the
+QuickJS WASIX `NAPI_EXTERN=` target fix:
 
 ```sh
-cmake --build build-edge-quickjs-cli --target edge -j4
+make build
+make build-edge-quickjs-cli
+cd /Users/sadhbh/src/dev/edgejs/quickjs-wasm && ./build.sh
 ```
 
-Earlier rebuilds passed before the Intl split and trace macro changes. The
-current rebuild should be checked before final response.
+The WASIX build produced `build-quickjs-wasix/edge.wasm` and `edgejs.wasm`, and
+the script's final no-N-API-imports check passed.
 
 ## Required Smoke Tests
 
@@ -28,6 +31,11 @@ Run after rebuild:
 ```
 
 Also rerun the donor-tree comparisons from `001_shared_runtime_rollback.md`.
+
+When touching targets that include N-API headers and link into the embedded
+QuickJS WASIX binary, verify the target gets `NAPI_EXTERN=` for
+`EDGE_NAPI_PROVIDER=quickjs`; otherwise the final wasm link can fail with
+`napi` versus `env` import module mismatches.
 
 ## Known Unrelated Dirty State
 

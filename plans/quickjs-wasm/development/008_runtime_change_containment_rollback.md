@@ -82,6 +82,28 @@ the JavaScript library layer.
    on the import module for the same `napi_*` symbols (`napi` versus `env`) and
    fail at the final `wasm-ld` link.
 
+## Current Result
+
+The structured-clone API split required Edge messaging call sites to use the
+three-argument `unofficial_napi_structured_clone(...)` for no-transfer clones
+and `unofficial_napi_structured_clone_with_transfer(...)` when a transfer list
+is present. After that source fix, the native root build and native QuickJS CLI
+build passed.
+
+The QuickJS WASIX build then failed at the final link because
+`edge_environment_core` saw default WASM N-API imports from the common header.
+Adding `NAPI_EXTERN=` for that target under `EDGE_NAPI_PROVIDER=quickjs`
+resolved the mismatch. Verified:
+
+```sh
+make build
+make build-edge-quickjs-cli
+cd /Users/sadhbh/src/dev/edgejs/quickjs-wasm && ./build.sh
+```
+
+`quickjs-wasm/build.sh` produced `build-quickjs-wasix/edge.wasm` and
+`build-quickjs-wasix/edgejs.wasm`, and its final no-N-API-imports check passed.
+
 ## Working Rule
 
 From this rollback onward, changes needed only for Edge QuickJS should not be
