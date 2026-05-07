@@ -68,6 +68,30 @@ Include all information needed to continue the current task: user requests,
 review comments being addressed, files changed, verification already run,
 known failures, and the next concrete steps.
 
+### Generate PDF Documentation
+
+When asked to "Generate PDF documentation", build a polished white-paper/book
+PDF from `plans/quickjs-wasm` and all of its subdirectories.
+
+Use this process:
+
+1. List the plan tree recursively and search the plans for relevant context
+   before generating the document.
+2. Generate temporary Markdown and LaTeX under `/private/tmp`, leaving the
+   source plan notes untouched.
+3. Organize the book by knowledge structure, not raw file order: program
+   definition, chronological development narrative, cleanup/containment
+   subtasks, troubleshooting registry, Astro SSR, Vite app, Next.js, and Wasmer
+   deploy/WASIX packaging.
+4. Preserve all source-note information as chapters or chapter sections, and
+   include source paths for traceability.
+5. Use the title `EdgeJS QuickJS WASIX`, author
+   `Sonia Sadhbh Kolasinska in collaboration with Christoph Herzog, Wasmer`,
+   the current date, and an abstract.
+6. Render through temporary LaTeX with Pandoc and XeLaTeX, rerunning XeLaTeX as
+   needed for the table of contents.
+7. Write the final PDF into `plans/quickjs-wasm/`.
+
 ## Experimental Rules
 
 ### Experimental 001: Parallel Development Subtasks
