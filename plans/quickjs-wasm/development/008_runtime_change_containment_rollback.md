@@ -75,6 +75,13 @@ the JavaScript library layer.
    cd /Users/sadhbh/src/dev/edgejs/quickjs-wasm/ && ./build.sh
    ```
 
+   The QuickJS WASIX target links the embedded QuickJS N-API implementation into
+   the final wasm. Edge targets that include N-API headers before linking
+   `napi_quickjs`, such as `edge_environment_core`, must still define
+   `NAPI_EXTERN=` for the QuickJS provider. Otherwise wasm objects can disagree
+   on the import module for the same `napi_*` symbols (`napi` versus `env`) and
+   fail at the final `wasm-ld` link.
+
 ## Working Rule
 
 From this rollback onward, changes needed only for Edge QuickJS should not be

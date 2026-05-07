@@ -651,7 +651,7 @@ target_link_libraries(edge_environment_core PUBLIC uv_a)
 if(EDGE_NAPI_PROVIDER STREQUAL "bundled-v8")
   target_compile_definitions(edge_environment_core PUBLIC EDGE_BUNDLED_NAPI_V8=1 EDGE_EMBEDDED_NAPI_PROVIDER=1)
 elseif(EDGE_NAPI_PROVIDER STREQUAL "quickjs")
-  target_compile_definitions(edge_environment_core PUBLIC EDGE_EMBEDDED_NAPI_PROVIDER=1)
+  target_compile_definitions(edge_environment_core PUBLIC EDGE_EMBEDDED_NAPI_PROVIDER=1 NAPI_EXTERN=)
 endif()
 
 set(EDGE_ICU_ROOT "${PROJECT_ROOT}/deps/icu-small")
