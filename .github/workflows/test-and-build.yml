@@ -282,60 +282,60 @@ jobs:
   #           --token "${WASMER_TOKEN}" \
   #           --version="${EDGE_VERSION}"
 
-  # build-macos:
-  #   name: build-macos
-  #   runs-on: macos-latest
-  #   env:
-  #     NAPI_V8_BUILD_METHOD: prebuilt
-  #     SCCACHE_GHA_ENABLED: "true"
-  #   steps:
-  #     - uses: actions/checkout@v4
-  #       with:
-  #         submodules: recursive
-  #     - name: Setup sccache
-  #       uses: mozilla-actions/sccache-action@v0.0.9
-  #     - name: Ensure submodules are initialized
-  #       shell: bash
-  #       run: |
-  #         set -euo pipefail
-  #         git submodule sync --recursive
-  #         git -c protocol.version=2 submodule update --init --recursive --depth=1
-  #         test -f node/src/node_api_types.h
+  build-macos:
+    name: build-macos
+    runs-on: macos-latest
+    env:
+      NAPI_V8_BUILD_METHOD: prebuilt
+      SCCACHE_GHA_ENABLED: "true"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Setup sccache
+        uses: mozilla-actions/sccache-action@v0.0.9
+      - name: Ensure submodules are initialized
+        shell: bash
+        run: |
+          set -euo pipefail
+          git submodule sync --recursive
+          git -c protocol.version=2 submodule update --init --recursive --depth=1
+          test -f node/src/node_api_types.h
 
-  #     - name: Validate public N-API headers stay V8-agnostic
-  #       run: |
-  #         ! grep -nE "v8::|<v8.h>|\"v8.h\"" napi/include/js_native_api.h napi/include/node_api.h
+      - name: Validate public N-API headers stay V8-agnostic
+        run: |
+          ! grep -nE "v8::|<v8.h>|\"v8.h\"" napi/include/js_native_api.h napi/include/node_api.h
 
-  #     - name: Build napi-v8
-  #       run: make build-napi CMAKE_BUILD_TYPE=Release JOBS=4
+      - name: Build napi-v8
+        run: make build-napi CMAKE_BUILD_TYPE=Release JOBS=4
 
-  #     - name: Test napi-v8
-  #       run: make test-napi-only TEST_JOBS=4
+      - name: Test napi-v8
+        run: make test-napi-only TEST_JOBS=4
 
-  #     - name: Build edge
-  #       run: |
-  #         make build CMAKE_BUILD_TYPE=Release JOBS=4
+      - name: Build edge
+        run: |
+          make build CMAKE_BUILD_TYPE=Release JOBS=4
 
-  #     - name: Generate dist
-  #       shell: bash
-  #       run: |
-  #         set -euo pipefail
-  #         make dist-only JOBS=4 ZIP_NAME=edge-darwin-arm64.zip
+      - name: Generate dist
+        shell: bash
+        run: |
+          set -euo pipefail
+          make dist-only JOBS=4 ZIP_NAME=edge-darwin-arm64.zip
 
-  #     - name: Upload artifact edge
-  #       uses: actions/upload-artifact@v4
-  #       with:
-  #         name: edge-darwin-arm64
-  #         path: edge-darwin-arm64.zip
-  #         if-no-files-found: error
+      - name: Upload artifact edge
+        uses: actions/upload-artifact@v4
+        with:
+          name: edge-darwin-arm64
+          path: edge-darwin-arm64.zip
+          if-no-files-found: error
 
-  #     - name: Test edge
-  #       run: |
-  #         make test-only TEST_JOBS=4
+      - name: Test edge
+        run: |
+          make test-only TEST_JOBS=4
 
-  #     - name: sccache stats
-  #       if: always()
-  #       run: sccache --show-stats || true
+      - name: sccache stats
+        if: always()
+        run: sccache --show-stats || true
 
   # build-windows-smoke:
   #   name: build-windows-smoke
