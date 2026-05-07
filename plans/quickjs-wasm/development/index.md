@@ -106,6 +106,18 @@ targets including N-API headers must compile with `NAPI_EXTERN=`. This avoided
 `wasm-ld` import module mismatches for `napi_*` symbols and restored
 `quickjs-wasm/build.sh`.
 
+### [009_node_test_failures_analysis.md](009_node_test_failures_analysis.md): Node compatibility test failure analysis
+
+Why: explain the `make test-only TEST_JOBS=4` failure clusters in the Node
+compatibility categories and separate shared root causes from downstream test
+noise.
+
+What was done: reproduced the failing command locally, compared it with the
+pasted CI signatures, and grouped the failures around profiler/config mismatch,
+global console output, `--print` result handling, `File` structured clone,
+deprecation stack classification, unsupported inspector/profiler features,
+debug-output shape, and string-decoder maximum string handling.
+
 ## Troubleshooting
 
 ### [troubleshooting/index.md](troubleshooting/index.md): framework troubleshooting registry
