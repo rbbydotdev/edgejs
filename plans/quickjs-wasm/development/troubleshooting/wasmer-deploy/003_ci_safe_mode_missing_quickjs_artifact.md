@@ -98,3 +98,27 @@ make test-only BUILD_DIR=build-edge-quickjs-cli TEST_JOBS=4
 
 `make build-edge-quickjs-cli` now builds both the `edge` and `edgeenv` targets
 so native dist packaging has the executables expected by `dist-only`.
+
+### May 7, 2026 Native QuickJS N-API Release Build Follow-Up
+
+The Linux `make build-napi-quickjs CMAKE_BUILD_TYPE=Release JOBS=4` job failed
+under Ubuntu 24.04 / Clang 18.1.3 because
+`napi/quickjs/src/js_native_api_quickjs.cc` used `INT_MAX` without directly
+including `<climits>`. The V8 backend already includes `<climits>` for the same
+`INT_MAX` checks, so the QuickJS backend now includes it explicitly.
+
+Reproducing the job in an Ubuntu 24.04 Docker container with Clang 18.1.3 also
+exposed a second libstdc++/Clang compile issue in
+`napi/quickjs/src/unofficial_module_loader.cc`: the recursive `JsonValue` type
+instantiated `std::vector<std::pair<std::string, JsonValue>>` special-member
+machinery while `JsonValue` was still incomplete. `JsonValue` now declares its
+special members and `Get(...)` in the struct and defaults/defines them
+out-of-line after the type is complete.
+
+Verification:
+
+```sh
+CC=clang CXX=clang++ make build-napi-quickjs CMAKE_BUILD_TYPE=Release JOBS=4
+```
+
+Result: passed in the Ubuntu 24.04 / Clang 18.1.3 Docker container.
