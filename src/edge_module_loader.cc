@@ -51,7 +51,6 @@
 #include <vector>
 
 #include "simdjson/simdjson.h"
-#include "unofficial_module_loader.h"
 #include "uv.h"
 #include "unofficial_napi.h"
 
@@ -250,6 +249,25 @@ fs::path ResolveSymlinkComponents(const fs::path& path) {
     current = candidate;
   }
   return current.lexically_normal();
+}
+
+fs::path NormalizeResolvedPath(const fs::path& path) {
+  std::error_code ec;
+  fs::path absolute = path;
+  if (!absolute.is_absolute()) {
+    absolute = fs::absolute(path, ec);
+    if (ec) {
+      absolute = path;
+      ec.clear();
+    }
+  }
+
+  fs::path canonical = fs::weakly_canonical(absolute, ec);
+  if (!ec) return canonical.lexically_normal();
+
+  fs::path resolved = ResolveSymlinkComponents(absolute);
+  if (resolved != absolute.lexically_normal()) return resolved.lexically_normal();
+  return absolute.lexically_normal();
 }
 
 std::string ReadTextFile(const fs::path& path) {
@@ -856,8 +874,7 @@ bool ResolveAsDirectory(const fs::path& candidate, fs::path* out) {
 }
 
 std::string CanonicalPathKey(const fs::path& path) {
-  return edge_path::FromNamespacedPath(
-      edge_quickjs::module_loader::NormalizeResolvedPath(path).string());
+  return edge_path::FromNamespacedPath(NormalizeResolvedPath(path).string());
 }
 
 // True if request is relative (./, ../, ., ..) or absolute (starts with /).
@@ -4398,7 +4415,27 @@ static napi_value NativeGetInternalBindingCallback(napi_env env, napi_callback_i
 }
 
 bool ResolveModulePath(const std::string& specifier, const std::string& base_dir, fs::path* out) {
-  return edge_quickjs::module_loader::ResolveCommonJSPath(specifier, base_dir, out);
+  if (out == nullptr || specifier.empty()) return false;
+
+  fs::path base = base_dir.empty() ? fs::current_path() : fs::path(base_dir);
+  base = NormalizeResolvedPath(base);
+
+  fs::path resolved;
+  if (!IsRelativeOrAbsoluteRequest(specifier)) {
+    if (!ResolveNodeModules(specifier, base.string(), &resolved)) {
+      return false;
+    }
+    *out = NormalizeResolvedPath(resolved);
+    return true;
+  }
+
+  const fs::path candidate = specifier[0] == '/' ? fs::path(specifier) : base / specifier;
+  if (!ResolveAsFile(candidate, &resolved) && !ResolveAsDirectory(candidate, &resolved)) {
+    return false;
+  }
+
+  *out = NormalizeResolvedPath(resolved);
+  return true;
 }
 
 napi_value MakeError(napi_env env, const char* code, const std::string& message) {
