@@ -671,21 +671,25 @@ bool IsCloneableTransferableValue(napi_env env, napi_value value) {
 
   napi_value transfer_mode_symbol = GetUtilPrivateSymbol(env, "transfer_mode_private_symbol");
   napi_value clone_symbol = GetMessagingSymbol(env, "messaging_clone_symbol");
-  if (transfer_mode_symbol == nullptr || clone_symbol == nullptr) return false;
+  if (clone_symbol == nullptr) return false;
+
+  napi_value clone_method = nullptr;
+  if (napi_get_property(env, value, clone_symbol, &clone_method) != napi_ok || !IsFunction(env, clone_method)) {
+    return false;
+  }
+  if (transfer_mode_symbol == nullptr) return true;
 
   bool has_mode = false;
-  if (napi_has_property(env, value, transfer_mode_symbol, &has_mode) != napi_ok || !has_mode) return false;
+  if (napi_has_property(env, value, transfer_mode_symbol, &has_mode) != napi_ok || !has_mode) return true;
 
   napi_value transfer_mode = nullptr;
   if (napi_get_property(env, value, transfer_mode_symbol, &transfer_mode) != napi_ok || transfer_mode == nullptr) {
-    return false;
+    return true;
   }
 
   uint32_t mode = 0;
   if (napi_get_value_uint32(env, transfer_mode, &mode) != napi_ok || (mode & 2u) == 0) return false;
-
-  napi_value clone_method = nullptr;
-  return napi_get_property(env, value, clone_symbol, &clone_method) == napi_ok && IsFunction(env, clone_method);
+  return true;
 }
 
 bool IsTransferableValue(napi_env env, napi_value value) {
@@ -967,6 +971,7 @@ bool PrepareJSTransferableCloneData(
     napi_env env, napi_value value, napi_value* data_out, napi_value* deserialize_info_out);
 napi_value CreateJSTransferableCloneMarker(napi_env env, napi_value value);
 napi_value DeserializeJSTransferableCloneMarker(napi_env env, napi_value data, napi_value deserialize_info);
+napi_value CallJSTransferableCloneFallback(napi_env env, napi_value value);
 napi_value CloneRootJSTransferableValueForQueue(napi_env env, napi_value value);
 bool IsPlainObjectContainer(napi_env env, napi_value value);
 napi_value CreateGlobalInstance(napi_env env, const char* ctor_name);
@@ -1317,18 +1322,23 @@ bool PrepareJSTransferableCloneData(
     napi_env env, napi_value value, napi_value* data_out, napi_value* deserialize_info_out) {
   if (data_out != nullptr) *data_out = nullptr;
   if (deserialize_info_out != nullptr) *deserialize_info_out = nullptr;
-  if (!IsCloneableTransferableValue(env, value)) return false;
-
-  napi_value clone_symbol = GetMessagingSymbol(env, "messaging_clone_symbol");
-  napi_value clone_method = nullptr;
-  if (clone_symbol == nullptr ||
-      napi_get_property(env, value, clone_symbol, &clone_method) != napi_ok ||
-      !IsFunction(env, clone_method)) {
-    return false;
-  }
 
   napi_value clone_result = nullptr;
-  if (napi_call_function(env, value, clone_method, 0, nullptr, &clone_result) != napi_ok || clone_result == nullptr) {
+  napi_value clone_symbol = GetMessagingSymbol(env, "messaging_clone_symbol");
+  napi_value clone_method = nullptr;
+  if (clone_symbol != nullptr &&
+      napi_get_property(env, value, clone_symbol, &clone_method) == napi_ok &&
+      IsFunction(env, clone_method)) {
+    if (napi_call_function(env, value, clone_method, 0, nullptr, &clone_result) != napi_ok) {
+      clone_result = nullptr;
+    }
+  }
+  if (clone_result == nullptr) {
+    ClearPendingException(env);
+    clone_result = CallJSTransferableCloneFallback(env, value);
+  }
+  if (clone_result == nullptr || IsUndefinedValue(env, clone_result)) {
+    ClearPendingException(env);
     return false;
   }
 
@@ -1342,6 +1352,48 @@ bool PrepareJSTransferableCloneData(
   if (data_out != nullptr) *data_out = prepared_data;
   if (deserialize_info_out != nullptr) *deserialize_info_out = deserialize_info;
   return true;
+}
+
+napi_value CallJSTransferableCloneFallback(napi_env env, napi_value value) {
+  if (env == nullptr || value == nullptr) return nullptr;
+
+  napi_value internal_binding = EdgeGetInternalBinding(env);
+  if (!IsFunction(env, internal_binding)) {
+    napi_value global = GetGlobal(env);
+    internal_binding = GetNamed(env, global, "internalBinding");
+  }
+  if (!IsFunction(env, internal_binding)) return nullptr;
+
+  static const char kSource[] =
+      "(function(value, internalBinding) {"
+      "  if ((typeof value !== 'object' && typeof value !== 'function') || value === null) return undefined;"
+      "  const symbols = internalBinding('symbols');"
+      "  const util = internalBinding('util');"
+      "  const clone = value[symbols.messaging_clone_symbol];"
+      "  if (typeof clone !== 'function') return undefined;"
+      "  const mode = value[util.privateSymbols.transfer_mode_private_symbol];"
+      "  if (mode !== undefined && (mode & util.constants.kCloneable) === 0) return undefined;"
+      "  return clone.call(value);"
+      "})";
+
+  napi_value source = nullptr;
+  napi_value fn = nullptr;
+  if (napi_create_string_utf8(env, kSource, NAPI_AUTO_LENGTH, &source) != napi_ok ||
+      source == nullptr ||
+      napi_run_script(env, source, &fn) != napi_ok ||
+      !IsFunction(env, fn)) {
+    ClearPendingException(env);
+    return nullptr;
+  }
+
+  napi_value undefined = Undefined(env);
+  napi_value argv[2] = {value, internal_binding};
+  napi_value out = nullptr;
+  if (napi_call_function(env, undefined, fn, 2, argv, &out) != napi_ok) {
+    ClearPendingException(env);
+    return nullptr;
+  }
+  return out;
 }
 
 bool PrepareJSTransferableTransferData(napi_env env,
@@ -2682,6 +2734,11 @@ napi_value CloneMessageValueWithTransfers(napi_env env, napi_value value, napi_v
   std::vector<ValueTransformPair> seen_pairs;
   napi_value transformed_value =
       TransformTransferredPortsForQueue(env, transferred_value, transferred_ports, &seen_pairs);
+  if (transformed_value == nullptr) {
+    DeleteTransferredPortRefs(env, &transferred_ports);
+    return nullptr;
+  }
+  transformed_value = PrepareTransferableDataForStructuredClone(env, transformed_value, false);
   if (transformed_value == nullptr) {
     DeleteTransferredPortRefs(env, &transferred_ports);
     return nullptr;

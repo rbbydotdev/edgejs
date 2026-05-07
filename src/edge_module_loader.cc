@@ -1422,6 +1422,10 @@ static bool PreservePendingNativeBuiltinExceptionWithContext(napi_env env, const
     return ThrowNativeBuiltinExecutionError(env, id, "builtin threw");
   }
 
+  if (auto* environment = EdgeEnvironmentGet(env); environment != nullptr && environment->exiting()) {
+    return false;
+  }
+
   std::fprintf(stderr, "Failed to execute builtin '%s':\n", id.c_str());
   return false;
 }

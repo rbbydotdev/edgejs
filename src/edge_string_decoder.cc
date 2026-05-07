@@ -19,6 +19,8 @@ constexpr int kBufferedBytes = 5;
 constexpr int kEncodingField = 6;
 constexpr int kSize = 7;
 constexpr int kNumFields = 7;
+constexpr size_t kMaxStringLength =
+    sizeof(void*) == 4 ? static_cast<size_t>(0x18ffffe8) : static_cast<size_t>(0x1fffffe8);
 
 using edge::encoding_ids::kEncAscii;
 using edge::encoding_ids::kEncBase64;
@@ -506,6 +508,12 @@ napi_value DecodeBinding(napi_env env, napi_callback_info info) {
 
   const uint8_t enc = state[kEncodingField];
   const bool variable = (enc == kEncUtf8 || enc == kEncUtf16Le || enc == kEncBase64 || enc == kEncBase64Url);
+  const size_t max_input_for_string =
+      enc == kEncUtf16Le ? kMaxStringLength * 2 : kMaxStringLength;
+  if (nread > max_input_for_string) {
+    napi_throw_range_error(env, "ERR_STRING_TOO_LONG", "Cannot create a string longer than the maximum allowed length");
+    return nullptr;
+  }
   if (!variable) {
     return MakeStringFromBytes(env, data, nread, enc);
   }
