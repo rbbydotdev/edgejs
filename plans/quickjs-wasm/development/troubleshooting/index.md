@@ -12,8 +12,8 @@ adapters.
 
 ## Workflow
 
-For every new Astro SSR, Vite app, Next app, Node test, or Wasmer deploy troubleshooting
-issue:
+For every new Astro SSR, Vite app, Next app, Node test, hacks/debt, or Wasmer
+deploy troubleshooting issue:
 
 - write an issue-specific plan in the matching subdirectory before changing
   code;
@@ -22,6 +22,32 @@ issue:
 - keep the plan focused on one observed failure or behavior;
 - update the most recent plan pointer in the repo root `AGENTS.md`;
 - rerun the targeted reproduction before broadening the fix.
+
+## Hacks And Debt
+
+Use [`hacks/`](hacks/) for compatibility debt that is intentionally suspect:
+fallbacks, stubs, V8-shaped bridges, package resolver shortcuts, and other
+things that helped bring-up but should be replaced with a cleaner design.
+
+### Active [001_hacks_ledger.md](hacks/001_hacks_ledger.md): QuickJS compatibility debt ledger
+
+Why: QuickJS bring-up has accumulated several useful but incomplete
+compatibility bridges, including minimal `Intl`, inspector, `v8` serdes,
+CommonJS/ESM facades, resolver heuristics, disabled runtime teardown, and WASIX
+linkage patches. This ledger records what is suspicious and how to do it
+better.
+
+### ▶️ [006_promise_hooks_microtask_draining.md](hacks/006_promise_hooks_microtask_draining.md): promise hooks and microtask draining
+
+Why: QuickJS currently relies on a patched promise hook path plus scattered
+microtask/job draining checkpoints; this needs a coherent scheduler and
+async-context design.
+
+### ▶️ [007_commonjs_esm_facades.md](hacks/007_commonjs_esm_facades.md): CommonJS ESM facades
+
+Why: QuickJS currently predeclares CommonJS named exports through scanner-based
+synthetic ESM facades; this needs a real loader bridge instead of accumulating
+CJS special cases.
 
 ## Node Test
 
