@@ -128,6 +128,7 @@ plans/quickjs-wasm/development/NNN_<meaningful_name>.md
 plans/quickjs-wasm/development/troubleshooting/astro-ssr/NNN_<issue_name>.md
 plans/quickjs-wasm/development/troubleshooting/vite-app/NNN_<issue_name>.md
 plans/quickjs-wasm/development/troubleshooting/next-app/NNN_<issue_name>.md
+plans/quickjs-wasm/development/troubleshooting/node-test/NNN_<issue_name>.md
 plans/quickjs-wasm/development/troubleshooting/wasmer-deploy/NNN_<issue_name>.md
 ```
 
@@ -193,6 +194,12 @@ Most recent Next app troubleshooting note:
 
 ```text
 plans/quickjs-wasm/development/troubleshooting/next-app/003_route_stack_exhausted.md
+```
+
+Most recent Node test troubleshooting note:
+
+```text
+plans/quickjs-wasm/development/troubleshooting/node-test/016_whatwg_url_inspect_and_searchparams.md
 ```
 
 Most recent Wasmer deploy troubleshooting note:
