@@ -373,3 +373,70 @@ build-edge/edge --test-reporter=test/common/test-error-reporter.js --test-report
 ```
 
 Then rerun the original `make test-only TEST_JOBS=4` command.
+
+## May 7, 2026 QuickJS Native CI Follow-Up
+
+A later `test-and-build-quickjs / build-macos` run showed a newer failure shape
+against `build-edge-quickjs-cli/edge`. The largest new clusters had two shared
+causes:
+
+1. HTTP/2 sessions failed during native handle setup with:
+
+   ```text
+   TypeError: no setter for property
+       at Http2Session (native)
+       at setupHandle (...)
+   ```
+
+   `src/internal_binding/binding_http2.cc` defined `fields` as a getter-only
+   class accessor. The native constructor also attempted to assign
+   `self.fields = fields_ta`. V8 tolerates the surrounding Node shape, but
+   QuickJS reports an inherited accessor-without-setter assignment as a pending
+   exception. Removing the constructor-side assignment keeps the getter-backed
+   `fields` property and avoids poisoning all HTTP/2 session construction.
+
+2. Several byte-oriented paths produced comma-separated decimal bytes instead
+   of Buffer strings. Examples included `test-dgram-pingpong` observing
+   `"80,73,78,71"` instead of `"PING"` and TLS off-thread certificate-loading
+   tests matching stderr against byte lists instead of text.
+
+   QuickJS `napi_create_buffer*()` returned a marked `Uint8Array`, but it did
+   not adopt the runtime `Buffer.prototype`. Once Node bootstrap has called
+   `internalBinding('buffer').setBufferPrototype(Buffer.prototype)`, native
+   N-API buffers should use that prototype so JS-visible methods such as
+   `toString()` behave like Node Buffers. The QuickJS backend now installs
+   `globalThis.Buffer.prototype` on native-created buffers when available.
+
+   This prototype install is intentionally best-effort. Native buffer creation
+   has already succeeded by the time this compatibility step runs. During early
+   bootstrap, or if user code has replaced or damaged `globalThis.Buffer`, the
+   N-API call should still return a usable Uint8Array-backed buffer. QuickJS
+   keeps exceptions pending, so failures in this optional lookup/prototype path
+   are cleared instead of being returned and causing an otherwise successful
+   `napi_create_buffer*()` call to fail.
+
+Focused verification after the fixes:
+
+```sh
+cmake --build build-edge-quickjs-cli --target edge -j4
+build-edge-quickjs-cli/edge -e "console.log(Buffer.from('PING').toString()); console.log(Buffer.isBuffer(Buffer.alloc(1)));"
+build-edge-quickjs-cli/edge test/sequential/test-dgram-pingpong.js
+build-edge-quickjs-cli/edge test/parallel/test-http2-too-many-settings.js
+build-edge-quickjs-cli/edge test/parallel/test-tls-off-thread-cert-loading.js
+build-edge-quickjs-cli/edge test/parallel/test-tls-off-thread-cert-loading-system.js
+```
+
+The local sandbox blocks socket binds with `EPERM`, so the dgram and HTTP/2
+focused tests were rerun outside the sandbox. They passed after the native
+QuickJS rebuild.
+
+Residual failures seen during the same triage:
+
+- `test-buffer-isascii` and `test-buffer-isutf8` still fail because
+  `structuredClone(arrayBuffer, { transfer: [arrayBuffer] })` does not detach
+  the original ArrayBuffer under the current QuickJS path. A direct probe showed
+  `ab.byteLength` remains nonzero and `new Uint8Array(ab)` still succeeds after
+  transfer.
+- `test-buffer-creation-regression`, `test-buffer-alloc`, and
+  `test-buffer-constants` still expose QuickJS built-in allocation limit and
+  error-message differences rather than the native Buffer prototype issue.

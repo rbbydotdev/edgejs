@@ -38,304 +38,304 @@ jobs:
             echo "release_name=${release_name}"
           } >> "${GITHUB_OUTPUT}"
 
-  build-linux:
-    name: build-linux
-    runs-on: ubuntu-latest
-    env:
-      NAPI_V8_BUILD_METHOD: prebuilt
-      SCCACHE_GHA_ENABLED: "true"
-      CC: clang
-      CXX: clang++
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-      - name: Setup sccache
-        uses: mozilla-actions/sccache-action@v0.0.9
-      - name: Ensure submodules are initialized
-        shell: bash
-        run: |
-          set -euo pipefail
-          git submodule sync --recursive
-          git -c protocol.version=2 submodule update --init --recursive --depth=1
-          test -f node/src/node_api_types.h
+  # build-linux:
+  #   name: build-linux
+  #   runs-on: ubuntu-latest
+  #   env:
+  #     NAPI_V8_BUILD_METHOD: prebuilt
+  #     SCCACHE_GHA_ENABLED: "true"
+  #     CC: clang
+  #     CXX: clang++
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #       with:
+  #         submodules: recursive
+  #     - name: Setup sccache
+  #       uses: mozilla-actions/sccache-action@v0.0.9
+  #     - name: Ensure submodules are initialized
+  #       shell: bash
+  #       run: |
+  #         set -euo pipefail
+  #         git submodule sync --recursive
+  #         git -c protocol.version=2 submodule update --init --recursive --depth=1
+  #         test -f node/src/node_api_types.h
 
-      - name: Install Linux build dependencies
-        shell: bash
-        run: |
-          set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y libicu-dev
+  #     - name: Install Linux build dependencies
+  #       shell: bash
+  #       run: |
+  #         set -euo pipefail
+  #         sudo apt-get update
+  #         sudo apt-get install -y libicu-dev
 
-      - name: Validate public N-API headers stay V8-agnostic
-        run: |
-          ! grep -nE "v8::|<v8.h>|\"v8.h\"" napi/include/js_native_api.h napi/include/node_api.h
+  #     - name: Validate public N-API headers stay V8-agnostic
+  #       run: |
+  #         ! grep -nE "v8::|<v8.h>|\"v8.h\"" napi/include/js_native_api.h napi/include/node_api.h
 
-      - name: Build napi-v8
-        run: make build-napi CMAKE_BUILD_TYPE=Release JOBS=4
+  #     - name: Build napi-v8
+  #       run: make build-napi CMAKE_BUILD_TYPE=Release JOBS=4
 
-      - name: Test napi-v8
-        run: make test-napi-only TEST_JOBS=4
+  #     - name: Test napi-v8
+  #       run: make test-napi-only TEST_JOBS=4
 
-      - name: Build edge
-        run: |
-          make build CMAKE_BUILD_TYPE=Release JOBS=4
+  #     - name: Build edge
+  #       run: |
+  #         make build CMAKE_BUILD_TYPE=Release JOBS=4
 
-      - name: Generate dist
-        shell: bash
-        run: |
-          set -euo pipefail
-          make dist-only JOBS=4 ZIP_NAME=edge-linux-amd64.zip
+  #     - name: Generate dist
+  #       shell: bash
+  #       run: |
+  #         set -euo pipefail
+  #         make dist-only JOBS=4 ZIP_NAME=edge-linux-amd64.zip
 
-      - name: Upload artifact edge
-        uses: actions/upload-artifact@v4
-        with:
-          name: edge-linux-amd64
-          path: edge-linux-amd64.zip
-          if-no-files-found: error
+  #     - name: Upload artifact edge
+  #       uses: actions/upload-artifact@v4
+  #       with:
+  #         name: edge-linux-amd64
+  #         path: edge-linux-amd64.zip
+  #         if-no-files-found: error
 
-      - name: Test edge
-        run: |
-          make test-only TEST_JOBS=4
+  #     - name: Test edge
+  #       run: |
+  #         make test-only TEST_JOBS=4
 
-      - name: sccache stats
-        if: always()
-        run: sccache --show-stats || true
+  #     - name: sccache stats
+  #       if: always()
+  #       run: sccache --show-stats || true
 
-  publish-nightly:
-    name: publish-nightly
-    runs-on: ubuntu-latest
-    needs:
-      - metadata
-      - build-linux
-      - build-macos
-      - build-wasix-linux
-    if: ${{ always() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
-    env:
-      GH_TOKEN: ${{ secrets.RELEASE_PLEASE_GH_TOKEN }}
-      TARGET_REPO: wasmerio/edgejs-nightlies
-      RELEASE_TAG: ${{ needs.metadata.outputs.release_tag }}
-      RELEASE_NAME: ${{ needs.metadata.outputs.release_name }}
-      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-    steps:
-      - name: Download Linux artifact
-        uses: actions/download-artifact@v4
-        continue-on-error: true
-        with:
-          name: edge-linux-amd64
-          path: release-assets/linux
+  # publish-nightly:
+  #   name: publish-nightly
+  #   runs-on: ubuntu-latest
+  #   needs:
+  #     - metadata
+  #     - build-linux
+  #     - build-macos
+  #     - build-wasix-linux
+  #   if: ${{ always() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+  #   env:
+  #     GH_TOKEN: ${{ secrets.RELEASE_PLEASE_GH_TOKEN }}
+  #     TARGET_REPO: wasmerio/edgejs-nightlies
+  #     RELEASE_TAG: ${{ needs.metadata.outputs.release_tag }}
+  #     RELEASE_NAME: ${{ needs.metadata.outputs.release_name }}
+  #     RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+  #   steps:
+  #     - name: Download Linux artifact
+  #       uses: actions/download-artifact@v4
+  #       continue-on-error: true
+  #       with:
+  #         name: edge-linux-amd64
+  #         path: release-assets/linux
 
-      - name: Download macOS artifact
-        uses: actions/download-artifact@v4
-        continue-on-error: true
-        with:
-          name: edge-darwin-arm64
-          path: release-assets/macos
+  #     - name: Download macOS artifact
+  #       uses: actions/download-artifact@v4
+  #       continue-on-error: true
+  #       with:
+  #         name: edge-darwin-arm64
+  #         path: release-assets/macos
 
-      - name: Download WASIX artifact
-        uses: actions/download-artifact@v4
-        continue-on-error: true
-        with:
-          name: edge-wasix
-          path: release-assets/wasix
+  #     - name: Download WASIX artifact
+  #       uses: actions/download-artifact@v4
+  #       continue-on-error: true
+  #       with:
+  #         name: edge-wasix
+  #         path: release-assets/wasix
 
-      - name: Collect release assets
-        id: assets
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p release-assets
-          mapfile -t files < <(find release-assets -type f -name '*.zip' | sort)
-          {
-            echo "asset_count=${#files[@]}"
-            echo "asset_list<<EOF"
-            printf '%s\n' "${files[@]}"
-            echo "EOF"
-          } >> "${GITHUB_OUTPUT}"
-          printf 'Discovered %s release asset(s)\n' "${#files[@]}"
-          printf '%s\n' "${files[@]}"
+  #     - name: Collect release assets
+  #       id: assets
+  #       shell: bash
+  #       run: |
+  #         set -euo pipefail
+  #         mkdir -p release-assets
+  #         mapfile -t files < <(find release-assets -type f -name '*.zip' | sort)
+  #         {
+  #           echo "asset_count=${#files[@]}"
+  #           echo "asset_list<<EOF"
+  #           printf '%s\n' "${files[@]}"
+  #           echo "EOF"
+  #         } >> "${GITHUB_OUTPUT}"
+  #         printf 'Discovered %s release asset(s)\n' "${#files[@]}"
+  #         printf '%s\n' "${files[@]}"
 
-      - name: Prepare Wasmer publish assets
-        id: wasmer
-        shell: bash
-        run: |
-          set -euo pipefail
+  #     - name: Prepare Wasmer publish assets
+  #       id: wasmer
+  #       shell: bash
+  #       run: |
+  #         set -euo pipefail
 
-          linux_zip="$(find release-assets/linux -type f -name '*.zip' | head -n 1)"
-          wasix_zip="$(find release-assets/wasix -type f -name '*.zip' | head -n 1)"
+  #         linux_zip="$(find release-assets/linux -type f -name '*.zip' | head -n 1)"
+  #         wasix_zip="$(find release-assets/wasix -type f -name '*.zip' | head -n 1)"
 
-          if [[ -z "${linux_zip}" || ! -f "${linux_zip}" ]]; then
-            echo "Missing Linux artifact zip" >&2
-            exit 1
-          fi
-          if [[ -z "${wasix_zip}" || ! -f "${wasix_zip}" ]]; then
-            echo "Missing WASIX artifact zip" >&2
-            exit 1
-          fi
+  #         if [[ -z "${linux_zip}" || ! -f "${linux_zip}" ]]; then
+  #           echo "Missing Linux artifact zip" >&2
+  #           exit 1
+  #         fi
+  #         if [[ -z "${wasix_zip}" || ! -f "${wasix_zip}" ]]; then
+  #           echo "Missing WASIX artifact zip" >&2
+  #           exit 1
+  #         fi
 
-          linux_dir="release-assets/linux/unpacked"
-          wasix_dir="release-assets/wasix/unpacked"
-          rm -rf "${linux_dir}" "${wasix_dir}"
-          mkdir -p "${linux_dir}" "${wasix_dir}"
+  #         linux_dir="release-assets/linux/unpacked"
+  #         wasix_dir="release-assets/wasix/unpacked"
+  #         rm -rf "${linux_dir}" "${wasix_dir}"
+  #         mkdir -p "${linux_dir}" "${wasix_dir}"
 
-          unzip -q "${linux_zip}" -d "${linux_dir}"
-          unzip -q "${wasix_zip}" -d "${wasix_dir}"
+  #         unzip -q "${linux_zip}" -d "${linux_dir}"
+  #         unzip -q "${wasix_zip}" -d "${wasix_dir}"
 
-          edge_bin="${linux_dir}/bin/edge"
-          if [[ ! -x "${edge_bin}" ]]; then
-            echo "Expected packaged edge binary at ${edge_bin}" >&2
-            exit 1
-          fi
+  #         edge_bin="${linux_dir}/bin/edge"
+  #         if [[ ! -x "${edge_bin}" ]]; then
+  #           echo "Expected packaged edge binary at ${edge_bin}" >&2
+  #           exit 1
+  #         fi
 
-          edge_version="$("${edge_bin}" -p "process.versions.edge")"
-          if [[ -z "${edge_version}" ]]; then
-            echo "Failed to determine EDGE version from packaged binary" >&2
-            exit 1
-          fi
+  #         edge_version="$("${edge_bin}" -p "process.versions.edge")"
+  #         if [[ -z "${edge_version}" ]]; then
+  #           echo "Failed to determine EDGE version from packaged binary" >&2
+  #           exit 1
+  #         fi
 
-          if [[ ! -f "${wasix_dir}/wasmer.toml" ]]; then
-            echo "Expected wasmer.toml in ${wasix_dir}" >&2
-            exit 1
-          fi
+  #         if [[ ! -f "${wasix_dir}/wasmer.toml" ]]; then
+  #           echo "Expected wasmer.toml in ${wasix_dir}" >&2
+  #           exit 1
+  #         fi
 
-          {
-            echo "edge_version=${edge_version}"
-            echo "wasix_dist_dir=${wasix_dir}"
-          } >> "${GITHUB_OUTPUT}"
+  #         {
+  #           echo "edge_version=${edge_version}"
+  #           echo "wasix_dist_dir=${wasix_dir}"
+  #         } >> "${GITHUB_OUTPUT}"
 
-      - name: Create release notes
-        shell: bash
-        run: |
-          set -euo pipefail
-          {
-            echo "Automated nightly build for EDGE ${{ steps.wasmer.outputs.edge_version }}."
-            echo
-            echo "- Source repo: ${GITHUB_REPOSITORY}"
-            echo "- Commit: ${GITHUB_SHA}"
-            echo "- Workflow run: ${RUN_URL}"
-            echo "- Uploaded assets: ${{ steps.assets.outputs.asset_count }}"
-          } > release-notes.md
+  #     - name: Create release notes
+  #       shell: bash
+  #       run: |
+  #         set -euo pipefail
+  #         {
+  #           echo "Automated nightly build for EDGE ${{ steps.wasmer.outputs.edge_version }}."
+  #           echo
+  #           echo "- Source repo: ${GITHUB_REPOSITORY}"
+  #           echo "- Commit: ${GITHUB_SHA}"
+  #           echo "- Workflow run: ${RUN_URL}"
+  #           echo "- Uploaded assets: ${{ steps.assets.outputs.asset_count }}"
+  #         } > release-notes.md
 
-      - name: Ensure nightly release exists
-        shell: bash
-        run: |
-          set -euo pipefail
-          target_ref="$(gh repo view "${TARGET_REPO}" --json defaultBranchRef --jq '.defaultBranchRef.name')"
-          if [[ -z "${target_ref}" ]]; then
-            echo "Failed to resolve default branch for ${TARGET_REPO}" >&2
-            exit 1
-          fi
-          if ! gh release view "${RELEASE_TAG}" --repo "${TARGET_REPO}" >/dev/null 2>&1; then
-            gh release create "${RELEASE_TAG}" \
-              --repo "${TARGET_REPO}" \
-              --target "${target_ref}" \
-              --title "${RELEASE_NAME}" \
-              --notes-file release-notes.md \
-              --prerelease \
-              --latest=false
-          fi
-          release_id="$(gh api "repos/${TARGET_REPO}/releases/tags/${RELEASE_TAG}" --jq '.id')"
-          gh api \
-            --method PATCH \
-            "repos/${TARGET_REPO}/releases/${release_id}" \
-            -f name="${RELEASE_NAME}" \
-            -F prerelease=true \
-            -F make_latest=false \
-            -F body=@release-notes.md \
-            >/dev/null
+  #     - name: Ensure nightly release exists
+  #       shell: bash
+  #       run: |
+  #         set -euo pipefail
+  #         target_ref="$(gh repo view "${TARGET_REPO}" --json defaultBranchRef --jq '.defaultBranchRef.name')"
+  #         if [[ -z "${target_ref}" ]]; then
+  #           echo "Failed to resolve default branch for ${TARGET_REPO}" >&2
+  #           exit 1
+  #         fi
+  #         if ! gh release view "${RELEASE_TAG}" --repo "${TARGET_REPO}" >/dev/null 2>&1; then
+  #           gh release create "${RELEASE_TAG}" \
+  #             --repo "${TARGET_REPO}" \
+  #             --target "${target_ref}" \
+  #             --title "${RELEASE_NAME}" \
+  #             --notes-file release-notes.md \
+  #             --prerelease \
+  #             --latest=false
+  #         fi
+  #         release_id="$(gh api "repos/${TARGET_REPO}/releases/tags/${RELEASE_TAG}" --jq '.id')"
+  #         gh api \
+  #           --method PATCH \
+  #           "repos/${TARGET_REPO}/releases/${release_id}" \
+  #           -f name="${RELEASE_NAME}" \
+  #           -F prerelease=true \
+  #           -F make_latest=false \
+  #           -F body=@release-notes.md \
+  #           >/dev/null
 
-      - name: Upload nightly assets
-        if: ${{ steps.assets.outputs.asset_count != '0' }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          mapfile -t files < <(printf '%s\n' "${{ steps.assets.outputs.asset_list }}" | sed '/^$/d')
-          gh release upload "${RELEASE_TAG}" \
-            --repo "${TARGET_REPO}" \
-            --clobber \
-            "${files[@]}"
+  #     - name: Upload nightly assets
+  #       if: ${{ steps.assets.outputs.asset_count != '0' }}
+  #       shell: bash
+  #       run: |
+  #         set -euo pipefail
+  #         mapfile -t files < <(printf '%s\n' "${{ steps.assets.outputs.asset_list }}" | sed '/^$/d')
+  #         gh release upload "${RELEASE_TAG}" \
+  #           --repo "${TARGET_REPO}" \
+  #           --clobber \
+  #           "${files[@]}"
 
-      - name: Install Wasmer CLI
-        uses: wasmerio/setup-wasmer@v3
+  #     - name: Install Wasmer CLI
+  #       uses: wasmerio/setup-wasmer@v3
 
-      - name: Publish to wasmer.wtf
-        env:
-          WASMER_TOKEN: ${{ secrets.DEV_BACKEND_CIUSER_TOKEN }}
-          EDGE_VERSION: ${{ steps.wasmer.outputs.edge_version }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          wasmer publish "${{ steps.wasmer.outputs.wasix_dist_dir }}" \
-            --registry wasmer.wtf \
-            --token "${WASMER_TOKEN}" \
-            --version="${EDGE_VERSION}"
+  #     - name: Publish to wasmer.wtf
+  #       env:
+  #         WASMER_TOKEN: ${{ secrets.DEV_BACKEND_CIUSER_TOKEN }}
+  #         EDGE_VERSION: ${{ steps.wasmer.outputs.edge_version }}
+  #       shell: bash
+  #       run: |
+  #         set -euo pipefail
+  #         wasmer publish "${{ steps.wasmer.outputs.wasix_dist_dir }}" \
+  #           --registry wasmer.wtf \
+  #           --token "${WASMER_TOKEN}" \
+  #           --version="${EDGE_VERSION}"
 
-      - name: Publish to wasmer.io
-        env:
-          WASMER_TOKEN: ${{ secrets.PROD_BACKEND_CIUSER_TOKEN }}
-          EDGE_VERSION: ${{ steps.wasmer.outputs.edge_version }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          wasmer publish "${{ steps.wasmer.outputs.wasix_dist_dir }}" \
-            --registry wasmer.io \
-            --token "${WASMER_TOKEN}" \
-            --version="${EDGE_VERSION}"
+  #     - name: Publish to wasmer.io
+  #       env:
+  #         WASMER_TOKEN: ${{ secrets.PROD_BACKEND_CIUSER_TOKEN }}
+  #         EDGE_VERSION: ${{ steps.wasmer.outputs.edge_version }}
+  #       shell: bash
+  #       run: |
+  #         set -euo pipefail
+  #         wasmer publish "${{ steps.wasmer.outputs.wasix_dist_dir }}" \
+  #           --registry wasmer.io \
+  #           --token "${WASMER_TOKEN}" \
+  #           --version="${EDGE_VERSION}"
 
-  build-macos:
-    name: build-macos
-    runs-on: macos-latest
-    env:
-      NAPI_V8_BUILD_METHOD: prebuilt
-      SCCACHE_GHA_ENABLED: "true"
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-      - name: Setup sccache
-        uses: mozilla-actions/sccache-action@v0.0.9
-      - name: Ensure submodules are initialized
-        shell: bash
-        run: |
-          set -euo pipefail
-          git submodule sync --recursive
-          git -c protocol.version=2 submodule update --init --recursive --depth=1
-          test -f node/src/node_api_types.h
+  # build-macos:
+  #   name: build-macos
+  #   runs-on: macos-latest
+  #   env:
+  #     NAPI_V8_BUILD_METHOD: prebuilt
+  #     SCCACHE_GHA_ENABLED: "true"
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #       with:
+  #         submodules: recursive
+  #     - name: Setup sccache
+  #       uses: mozilla-actions/sccache-action@v0.0.9
+  #     - name: Ensure submodules are initialized
+  #       shell: bash
+  #       run: |
+  #         set -euo pipefail
+  #         git submodule sync --recursive
+  #         git -c protocol.version=2 submodule update --init --recursive --depth=1
+  #         test -f node/src/node_api_types.h
 
-      - name: Validate public N-API headers stay V8-agnostic
-        run: |
-          ! grep -nE "v8::|<v8.h>|\"v8.h\"" napi/include/js_native_api.h napi/include/node_api.h
+  #     - name: Validate public N-API headers stay V8-agnostic
+  #       run: |
+  #         ! grep -nE "v8::|<v8.h>|\"v8.h\"" napi/include/js_native_api.h napi/include/node_api.h
 
-      - name: Build napi-v8
-        run: make build-napi CMAKE_BUILD_TYPE=Release JOBS=4
+  #     - name: Build napi-v8
+  #       run: make build-napi CMAKE_BUILD_TYPE=Release JOBS=4
 
-      - name: Test napi-v8
-        run: make test-napi-only TEST_JOBS=4
+  #     - name: Test napi-v8
+  #       run: make test-napi-only TEST_JOBS=4
 
-      - name: Build edge
-        run: |
-          make build CMAKE_BUILD_TYPE=Release JOBS=4
+  #     - name: Build edge
+  #       run: |
+  #         make build CMAKE_BUILD_TYPE=Release JOBS=4
 
-      - name: Generate dist
-        shell: bash
-        run: |
-          set -euo pipefail
-          make dist-only JOBS=4 ZIP_NAME=edge-darwin-arm64.zip
+  #     - name: Generate dist
+  #       shell: bash
+  #       run: |
+  #         set -euo pipefail
+  #         make dist-only JOBS=4 ZIP_NAME=edge-darwin-arm64.zip
 
-      - name: Upload artifact edge
-        uses: actions/upload-artifact@v4
-        with:
-          name: edge-darwin-arm64
-          path: edge-darwin-arm64.zip
-          if-no-files-found: error
+  #     - name: Upload artifact edge
+  #       uses: actions/upload-artifact@v4
+  #       with:
+  #         name: edge-darwin-arm64
+  #         path: edge-darwin-arm64.zip
+  #         if-no-files-found: error
 
-      - name: Test edge
-        run: |
-          make test-only TEST_JOBS=4
+  #     - name: Test edge
+  #       run: |
+  #         make test-only TEST_JOBS=4
 
-      - name: sccache stats
-        if: always()
-        run: sccache --show-stats || true
+  #     - name: sccache stats
+  #       if: always()
+  #       run: sccache --show-stats || true
 
   # build-windows-smoke:
   #   name: build-windows-smoke

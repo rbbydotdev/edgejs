@@ -1851,6 +1851,22 @@ int RunEventLoopUntilQuiescent(napi_env env, std::string* error_out) {
   };
 
   int idle_drain_turns = 0;
+  auto drain_runtime_task_queues = [&]() -> int {
+    (void)EdgeRuntimePlatformDrainTasks(env);
+    if (DrainProcessTickCallback(env) != napi_ok) {
+      if (error_out != nullptr) {
+        *error_out = "Failed to drain process tick callback";
+      }
+      return 1;
+    }
+    if (unofficial_napi_process_microtasks(env) != napi_ok) {
+      if (error_out != nullptr) {
+        *error_out = "Failed to process microtasks";
+      }
+      return 1;
+    }
+    return -1;
+  };
   while (true) {
     if (IsProcessExiting(env)) {
       break;
@@ -1935,7 +1951,10 @@ int RunEventLoopUntilQuiescent(napi_env env, std::string* error_out) {
     // a short grace window before declaring the loop quiescent.
     if (idle_drain_turns < 8) {
       idle_drain_turns++;
-      (void)EdgeRuntimePlatformDrainTasks(env);
+      const int drain_status = drain_runtime_task_queues();
+      if (drain_status >= 0) {
+        return drain_status;
+      }
       async_status = HandlePendingExceptionAfterLoopStep(env, error_out);
       if (async_status >= 0) {
         return async_status;
@@ -1950,7 +1969,10 @@ int RunEventLoopUntilQuiescent(napi_env env, std::string* error_out) {
 
     const int before_exit_code = GetProcessExitCodeOrZero(env);
     EmitProcessLifecycleEvent(env, "beforeExit", before_exit_code);
-    (void)EdgeRuntimePlatformDrainTasks(env);
+    const int drain_status = drain_runtime_task_queues();
+    if (drain_status >= 0) {
+      return drain_status;
+    }
 
     async_status = HandlePendingExceptionAfterLoopStep(env, error_out);
     if (async_status >= 0) {

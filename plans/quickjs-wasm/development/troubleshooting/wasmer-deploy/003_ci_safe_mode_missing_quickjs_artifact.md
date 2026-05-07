@@ -2,7 +2,7 @@
 
 | | | Remarks |
 | --- | --- | --- |
-| **Status** | 🟠 | CI wiring fixed locally; full WASIX execution still needs the GitHub Actions toolchain. |
+| **Status** | 🟠 | QuickJS-specific CI wiring fixed locally; full WASIX execution still needs the GitHub Actions toolchain. |
 | **Severity** | High | Blocks the WASIX Linux job before the safe-mode smoke tests can start. |
 
 ## Issue
@@ -19,13 +19,14 @@ That writes:
 build-wasix/edgejs.wasm
 ```
 
-The root `wasmer.toml` now describes the embedded QuickJS package and points at:
+At the time this issue was first diagnosed, the active workflow/package path had
+the root `wasmer.toml` describing the embedded QuickJS package and pointing at:
 
 ```text
 build-quickjs-wasix/edgejs.wasm
 ```
 
-The safe-mode smoke test therefore fails before executing JavaScript:
+The safe-mode smoke test therefore failed before executing JavaScript:
 
 ```text
 Unable to read the "edge" module's file from "./build-quickjs-wasix/edgejs.wasm"
@@ -48,6 +49,11 @@ No such file or directory
 
 ## Fix
 
+The root `wasmer.toml` has since been restored to the main V8 Edge package and
+must stay that way. QuickJS packaging now belongs to the separate
+`.github/workflows/test-and-build-quickjs.yml` workflow and the
+`quickjs-wasm/wasmer.toml` manifest.
+
 The Makefile now exposes:
 
 ```sh
@@ -55,13 +61,18 @@ make build-quickjs-wasix
 ```
 
 That target runs `quickjs-wasm/build.sh`, producing the
-`build-quickjs-wasix/edgejs.wasm` artifact referenced by the active root
+`build-quickjs-wasix/edgejs.wasm` artifact referenced by the QuickJS package
 manifest.
 
-The `build-wasix-linux` workflow now builds the QuickJS WASIX artifact before
-the safe-mode smoke test and packages `BUILD_DIR=build-quickjs-wasix` for the
-WASIX zip. The legacy `napi_wasmer` smoke path was removed from this job because
-it tests the host-import N-API artifact, not the embedded QuickJS package.
+The QuickJS `build-wasix-linux` workflow now builds the QuickJS WASIX artifact
+before the safe-mode smoke test and packages `BUILD_DIR=build-quickjs-wasix` for
+the WASIX zip. The pre-packaging smoke test uses
+`WASIX_PACKAGE_DIR="$(pwd)/quickjs-wasm"`, and the packaged WASIX dist is
+rehydrated with `quickjs-wasm/wasmer.toml`, then rewrites the module source to
+`./bin/edgejs` and the SSL certificate mount to `./ssl-certs`, so the root V8
+manifest is not used for the QuickJS artifact. The legacy `napi_wasmer` smoke
+path was removed from this job because it tests the host-import N-API artifact,
+not the embedded QuickJS package.
 
 `make dist-only` now treats both `build-wasix` and `build-quickjs-wasix` as
 WASIX distribution directories, so it copies `edgejs.wasm`, `wasmer.toml`, and
@@ -84,9 +95,9 @@ run locally because it depends on the WASIX/Wasmer CI toolchain.
 
 ## Follow-Up: Native Linux Job
 
-The native `build-linux` job still built the V8 N-API test target and default
-V8-backed Edge binary. It now follows the same provider direction as the WASIX
-job:
+The native `build-linux` job in the QuickJS workflow still built the V8 N-API
+test target and default V8-backed Edge binary. It now follows the same provider
+direction as the WASIX job:
 
 ```sh
 make build-napi-quickjs CMAKE_BUILD_TYPE=Release JOBS=4
@@ -122,3 +133,24 @@ CC=clang CXX=clang++ make build-napi-quickjs CMAKE_BUILD_TYPE=Release JOBS=4
 ```
 
 Result: passed in the Ubuntu 24.04 / Clang 18.1.3 Docker container.
+
+### May 7, 2026 QuickJS Workflow Split Follow-Up
+
+The main `.github/workflows/test-and-build.yml` workflow and root `wasmer.toml`
+were restored to their main/V8 behavior. The QuickJS-specific copy at
+`.github/workflows/test-and-build-quickjs.yml` now keeps all active build/test
+targets on the QuickJS provider:
+
+```sh
+make build-napi-quickjs CMAKE_BUILD_TYPE=Release JOBS=4
+make test-napi-quickjs-only TEST_JOBS=4
+make build-edge-quickjs-cli CMAKE_BUILD_TYPE=Release JOBS=4
+make dist-only BUILD_DIR=build-edge-quickjs-cli JOBS=4 ZIP_NAME=edge-<platform>.zip
+make test-only BUILD_DIR=build-edge-quickjs-cli TEST_JOBS=4
+make build-quickjs-wasix
+make dist-only BUILD_DIR=build-quickjs-wasix JOBS=4 ZIP_NAME=edge-wasix.zip
+```
+
+The macOS job was updated to match the Linux QuickJS native job. The inactive
+Windows smoke scaffold was also changed to use `-DEDGE_NAPI_PROVIDER=quickjs`
+if it is re-enabled later.

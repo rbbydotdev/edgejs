@@ -272,14 +272,28 @@ check passes.
 
 ### 🟠 [003_ci_safe_mode_missing_quickjs_artifact.md](wasmer-deploy/003_ci_safe_mode_missing_quickjs_artifact.md): CI safe-mode missing QuickJS artifact
 
-Why: `build-wasix-linux` built the legacy `build-wasix/edgejs.wasm` artifact,
-but the active root `wasmer.toml` points at
-`build-quickjs-wasix/edgejs.wasm`, so `wasmer run .` failed while loading the
-manifest before the safe-mode JavaScript cases could execute.
+Why: the QuickJS `build-wasix-linux` path must build
+`build-quickjs-wasix/edgejs.wasm` and package it with the
+`quickjs-wasm/wasmer.toml` manifest. The root `wasmer.toml` has been restored to
+the main V8 package and is not used for QuickJS WASIX artifacts.
 
-What changed: added a QuickJS WASIX Makefile target, pointed CI at it, packaged
-`build-quickjs-wasix` as the WASIX dist, and skipped the legacy host-N-API
-`napi_wasmer` smoke path in this embedded-QuickJS job. Local structural checks
-passed; full execution still needs the CI WASIX/Wasmer toolchain. The native
-`build-linux` job was also switched from V8 N-API/default Edge builds to the
-QuickJS N-API and QuickJS Edge build directory.
+What changed: added a QuickJS WASIX Makefile target, pointed the QuickJS CI
+workflow at it, ran the pre-packaging safe-mode smoke test against
+`quickjs-wasm/`, packaged `build-quickjs-wasix` as the WASIX dist with
+`quickjs-wasm/wasmer.toml`, and skipped the legacy host-N-API `napi_wasmer`
+smoke path in this embedded-QuickJS job. Local structural checks passed; full
+execution still needs the CI WASIX/Wasmer toolchain. The native Linux and macOS
+jobs in `.github/workflows/test-and-build-quickjs.yml` now build/test QuickJS
+N-API and use `BUILD_DIR=build-edge-quickjs-cli` for Edge tests and native
+dist packaging.
+
+### 🟢 [004_wasix_safe_mode_https_exit.md](wasmer-deploy/004_wasix_safe_mode_https_exit.md): WASIX safe-mode HTTPS exits before callbacks
+
+Why: the main V8/imports `build-wasix-linux` job passed the early safe-mode
+smoke tests but failed on HTTPS fetch with empty stdout and callback trampoline
+errors reporting `RuntimeError: WASI exited with code: ExitCode::0`.
+
+What changed: `RunEventLoopUntilQuiescent(...)` now drains platform tasks,
+process ticks, and microtasks during idle shutdown and after `beforeExit`.
+`make build-wasix` completed in native arm64 Ubuntu Docker, and the safe-mode
+suite passed under CI-matching Linux `amd64` Docker with Wasmer 7.1.0.

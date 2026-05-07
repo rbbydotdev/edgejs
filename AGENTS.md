@@ -90,7 +90,9 @@ Use this process:
    the current date, and an abstract.
 6. Render through temporary LaTeX with Pandoc and XeLaTeX, rerunning XeLaTeX as
    needed for the table of contents.
-7. Write the final PDF into `plans/quickjs-wasm/`.
+7. Preserve literal tilde characters in paths and code examples; do not rewrite
+   `~` as math such as `$\sim$`.
+8. Write the final PDF into `plans/quickjs-wasm/`.
 
 ## Experimental Rules
 
@@ -196,7 +198,7 @@ plans/quickjs-wasm/development/troubleshooting/next-app/003_route_stack_exhauste
 Most recent Wasmer deploy troubleshooting note:
 
 ```text
-plans/quickjs-wasm/development/troubleshooting/wasmer-deploy/003_ci_safe_mode_missing_quickjs_artifact.md
+plans/quickjs-wasm/development/troubleshooting/wasmer-deploy/004_wasix_safe_mode_https_exit.md
 ```
 
 Important commands:
@@ -213,6 +215,14 @@ wasmer run --net .
 When working on WASIX-impacting changes under `src/`, `lib/`, or
 `napi/quickjs/`, use the `cd /Users/sadhbh/src/dev/edgejs/quickjs-wasm/ &&
 ./build.sh` form for the rebuild.
+
+For Linux-only WASIX failures, use Docker from macOS to reproduce the Linux
+environment. On Apple Silicon, prefer native Ubuntu arm64 Docker first instead
+of forcing `--platform linux/amd64`; amd64 emulation is much slower. The May 7,
+2026 `build-wasix-linux` safe-mode HTTPS failure was investigated by building
+inside native arm64 `ubuntu:latest` with the aarch64 `wasixcc` v0.4.2 release
+and sysroot tag `v2026-02-16.1`, then running the final CI-matching safe-mode
+smoke suite under Linux amd64 Docker with Wasmer 7.1.0.
 
 For embedded QuickJS WASIX builds, targets that include N-API headers before
 linking `napi_quickjs` must compile with `NAPI_EXTERN=`. Without that, wasm
