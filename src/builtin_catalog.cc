@@ -132,8 +132,6 @@ BuiltinCategories BuildBuiltinCategories(const std::vector<std::string>& ids) {
       "internal/main/",
   };
 
-  cannot_be_required.insert("inspector");
-  cannot_be_required.insert("inspector/promises");
   cannot_be_required.insert("internal/util/inspector");
   cannot_be_required.insert("internal/inspector/network");
   cannot_be_required.insert("internal/inspector/network_http");

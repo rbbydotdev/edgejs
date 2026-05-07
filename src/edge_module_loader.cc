@@ -22,6 +22,7 @@
 #include "edge_tcp_wrap.h"
 #include "edge_tls_wrap.h"
 #include "edge_timers_host.h"
+#include "edge_trace.h"
 #include "edge_tty_wrap.h"
 #include "edge_udp_wrap.h"
 #include "edge_url.h"
@@ -1015,7 +1016,7 @@ static napi_value BuiltinsCompileFunctionCallback(napi_env env, napi_callback_in
   }
 
   const std::string id = ValueToUtf8(env, argv[0]);
-  if (std::getenv("EDGE_TRACE_BUILTINS") != nullptr) {
+  if (EDGE_TRACE_ENABLED("EDGE_TRACE_BUILTINS")) {
     std::fprintf(stderr, "EDGE_TRACE_BUILTINS compile %s\n", id.c_str());
   }
   if (id.empty()) {
@@ -3968,7 +3969,7 @@ static napi_value ResolveContextifyBinding(napi_env env) {
   napi_get_undefined(env, &undefined);
 
   ModuleLoaderState* state = GetModuleLoaderState(env);
-  if (std::getenv("EDGE_TRACE_INTERNAL_BINDING") != nullptr) {
+  if (EDGE_TRACE_ENABLED("EDGE_TRACE_INTERNAL_BINDING")) {
     std::fprintf(stderr,
                  "EDGE_TRACE_INTERNAL_BINDING contextify state=%p finalized=%s\n",
                  static_cast<void*>(state),
@@ -4095,7 +4096,7 @@ static napi_value ResolveContextifyBinding(napi_env env) {
 
   DeleteRefIfPresent(env, &state->contextify_binding_ref);
   (void)napi_create_reference(env, out, 1, &state->contextify_binding_ref);
-  if (std::getenv("EDGE_TRACE_INTERNAL_BINDING") != nullptr) {
+  if (EDGE_TRACE_ENABLED("EDGE_TRACE_INTERNAL_BINDING")) {
     std::fprintf(stderr, "EDGE_TRACE_INTERNAL_BINDING contextify resolved\n");
   }
   return out;
@@ -4324,6 +4325,21 @@ static napi_value DispatchGetOrCreateTraceEvents(napi_env env) {
   return GetOrCreateTraceEventsBinding(env);
 }
 
+static internal_binding::ResolveOptions CreateInternalBindingResolveOptions(ModuleLoaderState* state) {
+  internal_binding::ResolveOptions options;
+  options.state = state;
+  options.callbacks.get_or_create_builtins = DispatchGetOrCreateBuiltins;
+  options.callbacks.get_or_create_task_queue = DispatchGetOrCreateTaskQueue;
+  options.callbacks.get_or_create_errors = DispatchGetOrCreateErrors;
+  options.callbacks.get_or_create_trace_events = DispatchGetOrCreateTraceEvents;
+  options.callbacks.resolve_binding = DispatchResolveBinding;
+  options.callbacks.resolve_uv = ResolveUvBinding;
+  options.callbacks.resolve_contextify = ResolveContextifyBinding;
+  options.callbacks.resolve_modules = ResolveModulesBinding;
+  options.callbacks.resolve_options = ResolveOptionsBinding;
+  return options;
+}
+
 static napi_value NativeGetInternalBindingCallback(napi_env env, napi_callback_info info) {
   size_t argc = 1;
   napi_value argv[1] = {nullptr};
@@ -4340,34 +4356,24 @@ static napi_value NativeGetInternalBindingCallback(napi_env env, napi_callback_i
     return undefined;
   }
   const std::string name = ValueToUtf8(env, argv[0]);
-  if (std::getenv("EDGE_TRACE_INTERNAL_BINDING") != nullptr) {
+  if (EDGE_TRACE_ENABLED("EDGE_TRACE_INTERNAL_BINDING")) {
     std::fprintf(stderr, "EDGE_TRACE_INTERNAL_BINDING request %s\n", name.c_str());
   }
   if (!name.empty() && ShouldCacheInternalBinding(name)) {
     napi_value cached = GetCachedInternalBinding(state, env, name.c_str());
     if (cached != nullptr) {
-      if (std::getenv("EDGE_TRACE_INTERNAL_BINDING") != nullptr) {
+      if (EDGE_TRACE_ENABLED("EDGE_TRACE_INTERNAL_BINDING")) {
         std::fprintf(stderr, "EDGE_TRACE_INTERNAL_BINDING cache-hit %s\n", name.c_str());
       }
       return cached;
     }
   }
 
-  internal_binding::ResolveOptions options;
-  options.state = state;
-  options.callbacks.get_or_create_builtins = DispatchGetOrCreateBuiltins;
-  options.callbacks.get_or_create_task_queue = DispatchGetOrCreateTaskQueue;
-  options.callbacks.get_or_create_errors = DispatchGetOrCreateErrors;
-  options.callbacks.get_or_create_trace_events = DispatchGetOrCreateTraceEvents;
-  options.callbacks.resolve_binding = DispatchResolveBinding;
-  options.callbacks.resolve_uv = ResolveUvBinding;
-  options.callbacks.resolve_contextify = ResolveContextifyBinding;
-  options.callbacks.resolve_modules = ResolveModulesBinding;
-  options.callbacks.resolve_options = ResolveOptionsBinding;
+  internal_binding::ResolveOptions options = CreateInternalBindingResolveOptions(state);
 
   napi_value resolved = internal_binding::Resolve(env, name, options);
   if (resolved != nullptr) {
-    if (std::getenv("EDGE_TRACE_INTERNAL_BINDING") != nullptr) {
+    if (EDGE_TRACE_ENABLED("EDGE_TRACE_INTERNAL_BINDING")) {
       napi_valuetype resolved_type = napi_undefined;
       (void)napi_typeof(env, resolved, &resolved_type);
       std::fprintf(stderr,

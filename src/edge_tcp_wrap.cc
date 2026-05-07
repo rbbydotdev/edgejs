@@ -19,6 +19,7 @@
 #include "edge_runtime.h"
 #include "edge_stream_base.h"
 #include "edge_stream_listener.h"
+#include "edge_trace.h"
 
 namespace {
 
@@ -74,7 +75,7 @@ TcpWrap* FromBase(EdgeStreamBase* base) {
 }
 
 bool TraceNetEnabled() {
-  return std::getenv("EDGE_TRACE_NET") != nullptr;
+  return EDGE_TRACE_ENABLED("EDGE_TRACE_NET");
 }
 
 const char* SocketTypeName(int socket_type) {

@@ -85,7 +85,7 @@ napi_value ResolveConfig(napi_env env, const ResolveOptions& /*options*/) {
   if (napi_create_object(env, &out) != napi_ok || out == nullptr) return Undefined(env);
 
   const bool has_intl = RuntimeHasIntl(env);
-  const bool has_inspector = false;
+  const bool has_inspector = true;
   const bool has_tracing = true;
 #ifdef OPENSSL_VERSION_NUMBER
   const bool has_openssl = true;

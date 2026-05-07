@@ -1,11 +1,9 @@
 [package]
-entrypoint = "edgejs-quickjs"
 name = "sadhbh-c0d3/edgejs-quickjs"
+version = "0.0.5"
 description = "Edge.js with an embedded QuickJS N-API provider"
-version = "0.0.4"
+entrypoint = "edgejs-quickjs"
 
-# [fs]
-# "/node-lib" = "./lib"
 [fs]
 "/usr/local/ssl" = "./ssl-certs"
 
@@ -20,4 +18,3 @@ runner = "https://webc.org/runner/wasi"
 
 [command.annotations.wasi]
 atom = "edge"
-# env = ["EDGEJS_LIB_DIR=/node-lib"]

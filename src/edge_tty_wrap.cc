@@ -14,6 +14,7 @@
 #include "edge_environment.h"
 #include "edge_env_loop.h"
 #include "edge_stream_base.h"
+#include "edge_trace.h"
 
 namespace {
 
@@ -134,7 +135,7 @@ void OnAlloc(uv_handle_t* handle, size_t suggested_size, uv_buf_t* buf) {
 
 void OnRead(uv_stream_t* stream, ssize_t nread, const uv_buf_t* buf) {
   auto* wrap = stream != nullptr ? static_cast<TtyWrap*>(stream->data) : nullptr;
-  if (std::getenv("EDGE_TRACE_TTY") != nullptr) {
+  if (EDGE_TRACE_ENABLED("EDGE_TRACE_TTY")) {
     std::fprintf(stderr,
                  "EDGE_TRACE_TTY onread fd=%d nread=%zd len=%zu\n",
                  wrap != nullptr ? wrap->fd : -1,
@@ -244,7 +245,7 @@ napi_value TtySetRawMode(napi_env env, napi_callback_info info) {
   if (rc == 0) {
     wrap->raw_mode = flag;
   }
-  if (std::getenv("EDGE_TRACE_TTY") != nullptr) {
+  if (EDGE_TRACE_ENABLED("EDGE_TRACE_TTY")) {
     std::fprintf(stderr,
                  "EDGE_TRACE_TTY setRawMode fd=%d flag=%s rc=%d\n",
                  wrap->fd,
@@ -281,7 +282,7 @@ napi_value TtyReadStart(napi_env env, napi_callback_info info) {
 
   int rc = uv_read_start(reinterpret_cast<uv_stream_t*>(&wrap->handle), OnAlloc, OnRead);
   if (rc == UV_EALREADY) rc = 0;
-  if (std::getenv("EDGE_TRACE_TTY") != nullptr) {
+  if (EDGE_TRACE_ENABLED("EDGE_TRACE_TTY")) {
     std::fprintf(stderr,
                  "EDGE_TRACE_TTY readStart fd=%d rc=%d has_ref=%d loop_alive=%d\n",
                  wrap->fd,
@@ -301,7 +302,7 @@ napi_value TtyReadStop(napi_env env, napi_callback_info info) {
   }
 
   if (wrap->fd == 0 && wrap->raw_mode) {
-    if (std::getenv("EDGE_TRACE_TTY") != nullptr) {
+    if (EDGE_TRACE_ENABLED("EDGE_TRACE_TTY")) {
       std::fprintf(stderr, "EDGE_TRACE_TTY readStop ignored fd=0 raw_mode=true\n");
     }
     return EdgeStreamBaseMakeInt32(env, 0);
@@ -309,7 +310,7 @@ napi_value TtyReadStop(napi_env env, napi_callback_info info) {
 
   int rc = uv_read_stop(reinterpret_cast<uv_stream_t*>(&wrap->handle));
   if (rc == UV_EALREADY) rc = 0;
-  if (std::getenv("EDGE_TRACE_TTY") != nullptr) {
+  if (EDGE_TRACE_ENABLED("EDGE_TRACE_TTY")) {
     std::fprintf(stderr,
                  "EDGE_TRACE_TTY readStop fd=%d rc=%d has_ref=%d loop_alive=%d\n",
                  wrap->fd,

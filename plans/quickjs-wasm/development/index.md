@@ -93,6 +93,17 @@ formatting. Later Astro SSR work also added a deliberately minimal
 covering framework bootstrap time formatting without claiming full ECMA-402
 support.
 
+### [008_runtime_change_containment_rollback.md](008_runtime_change_containment_rollback.md): Edge QuickJS runtime change containment rollback
+
+Why: restore shared runtime directories from the upstream `wasmer-io/edgejs`
+tree and keep QuickJS-only compatibility changes out of `lib/`, `napi/v8/`,
+`napi/src/`, and `napi/include/`.
+
+What is planned: copy those directories back from the donor tree, remove files
+that only exist in the QuickJS worktree under those paths, then rebuild and move
+any required QuickJS compatibility into `napi/quickjs/` or, if genuinely shared
+native runtime glue is needed, `src/`.
+
 ## Troubleshooting
 
 ### [troubleshooting/index.md](troubleshooting/index.md): framework troubleshooting registry

@@ -19,6 +19,7 @@
 #include "edge_pipe_wrap.h"
 #include "edge_stream_base.h"
 #include "edge_tcp_wrap.h"
+#include "edge_trace.h"
 #include "edge_stream_listener.h"
 
 extern "C" {
@@ -56,7 +57,7 @@ constexpr uint32_t kLenientAll = kLenientHeaders | kLenientChunkedLength | kLeni
 struct Parser;
 
 bool TraceNetEnabled() {
-  return std::getenv("EDGE_TRACE_NET") != nullptr;
+  return EDGE_TRACE_ENABLED("EDGE_TRACE_NET");
 }
 
 struct ConnectionsList {

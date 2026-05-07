@@ -795,6 +795,7 @@ endif()
 add_library(edge_runtime STATIC
   src/builtin_catalog.cc
   src/edge_environment_runtime.cc
+  src/edge_intl_fallback.cc
   src/edge_runtime.cc
   src/edge_runtime_platform_v8.cc
   src/edge_node_compat.cc
@@ -968,6 +969,7 @@ target_compile_definitions(edge_runtime
   PRIVATE
     EDGE_HAS_ICU=1
     EDGE_HAS_SMALL_ICU=1
+    EDGE_ENABLE_TRACE_DIAGNOSTICS=$<IF:$<CONFIG:Debug>,1,0>
     EDGE_NODE_SHARED_OPENSSL=${EDGE_NODE_SHARED_OPENSSL}
     EDGE_EMBEDDED_V8_VERSION="${EDGE_EMBEDDED_V8_VERSION}"
     EDGE_VERSION_COMMIT="${EDGE_VERSION_COMMIT}"

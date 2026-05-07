@@ -53,6 +53,33 @@ before changing code. While working, keep existing information current: if the
 task discovers new facts about an existing topic, update the existing note
 instead of creating a duplicate.
 
+If the context window reaches 90% while work is in progress, create a new
+development task note under:
+
+```text
+plans/quickjs-wasm/development/NNN_<meaningful_name>.md
+```
+
+Include all information needed to continue the current task: user requests,
+review comments being addressed, files changed, verification already run,
+known failures, and the next concrete steps.
+
+## Experimental Rules
+
+### Experimental 001: Parallel Development Subtasks
+
+For larger development work, split the task into a development task directory:
+
+```text
+plans/quickjs-wasm/development/dev_<number>_<meaningful-name>/<subtask-number>_<meaningful-name>.md
+```
+
+Each subtask note should record scope, dependencies, write ownership, status,
+verification expectations, and enough context for an independent worker to
+continue safely. Spawn workers intelligently based on dependency order: only run
+parallel workers for subtasks with disjoint write sets or read-only checks, and
+make each worker aware that others may be active in the same codebase.
+
 Use this heuristic when deciding where documentation belongs:
 
 - Development task: broad implementation progress, integration work, runtime

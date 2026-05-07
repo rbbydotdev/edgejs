@@ -1,5 +1,7 @@
 #include "internal_binding/dispatch.h"
 
+#include "edge_trace.h"
+
 #include <algorithm>
 #include <cstddef>
 #include <cerrno>
@@ -1836,7 +1838,7 @@ void FinishFileHandleClose(FileHandleCloseReq* close_req, int result) {
   if (close_req == nullptr) return;
   FileHandleWrap* wrap = close_req->wrap;
   napi_env env = close_req->env;
-  if (std::getenv("EDGE_TRACE_TTY") != nullptr) {
+  if (EDGE_TRACE_ENABLED("EDGE_TRACE_TTY")) {
     std::fprintf(stderr,
                  "EDGE_TRACE_TTY fs FileHandleClose finish fd=%d result=%d deferred=%p\n",
                  wrap != nullptr ? wrap->fd : -1,
@@ -1921,7 +1923,7 @@ void FinishFileHandleClose(FileHandleCloseReq* close_req, int result) {
 void AfterFileHandleClose(uv_fs_t* req) {
   auto* close_req = static_cast<FileHandleCloseReq*>(req != nullptr ? req->data : nullptr);
   if (close_req == nullptr) return;
-  if (std::getenv("EDGE_TRACE_TTY") != nullptr) {
+  if (EDGE_TRACE_ENABLED("EDGE_TRACE_TTY")) {
     auto* wrap = close_req->wrap;
     std::fprintf(stderr,
                  "EDGE_TRACE_TTY fs FileHandleClose after fd=%d result=%zd\n",
@@ -2289,7 +2291,7 @@ napi_value FileHandleClose(napi_env env, napi_callback_info info) {
   uv_loop_t* loop = EdgeGetEnvLoop(env);
   const int rc = loop != nullptr ? uv_fs_close(loop, &close_req->req, wrap->fd, AfterFileHandleClose)
                                  : UV_EINVAL;
-  if (std::getenv("EDGE_TRACE_TTY") != nullptr) {
+  if (EDGE_TRACE_ENABLED("EDGE_TRACE_TTY")) {
     std::fprintf(stderr,
                  "EDGE_TRACE_TTY fs FileHandleClose start fd=%d rc=%d loop=%p\n",
                  wrap->fd,
