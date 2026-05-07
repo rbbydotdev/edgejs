@@ -65,11 +65,12 @@ default import from `@react-three/fiber` failed during module linking.
 
 ## Fix
 
-Updated `napi/quickjs/src/unofficial_napi.cc` so resolved module filenames are
+Updated the QuickJS module path helpers so resolved module filenames are
 canonicalized with `std::filesystem::weakly_canonical(...)` before they are
-returned to QuickJS. That makes later relative and package resolution use the
-real pnpm package path, matching Node's dependency lookup behavior for symlinked
-packages.
+returned to QuickJS. The current shared implementation lives in
+`napi/quickjs/src/unofficial_module_loader.cc`. That makes later relative and
+package resolution use the real pnpm package path, matching Node's dependency
+lookup behavior for symlinked packages.
 
 The considered causes were:
 

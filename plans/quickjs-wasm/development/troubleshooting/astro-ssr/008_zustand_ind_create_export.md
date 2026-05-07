@@ -70,8 +70,9 @@ resolving the package to its CommonJS fallback instead of the ESM import target.
 
 ## Fix
 
-Updated `napi/quickjs/src/unofficial_napi.cc` so the lightweight package
-exports scanner handles the Zustand export shape:
+Updated the QuickJS package exports scanner so it handles the Zustand export
+shape. The current shared implementation lives in
+`napi/quickjs/src/unofficial_module_loader.cc`:
 
 - when a condition value is an object, choose its nested `default` runtime
   target instead of treating nested metadata keys like `types` as targets;

@@ -47,15 +47,18 @@ What was fixed: QuickJS stack construction now honors the public
 `Error.prepareStackTrace` property, and the native `CallSite` prototype exposes
 the Node/V8-compatible methods needed by `depd`.
 
-### ▶️ [003_cjs_reexport_named_exports.md](astro-ssr/003_cjs_reexport_named_exports.md): CommonJS re-export named exports
+### 🟢 [003_cjs_reexport_named_exports.md](astro-ssr/003_cjs_reexport_named_exports.md): CommonJS re-export named exports
 
 Why: React's public CommonJS entry delegates to another file, so QuickJS's
 synthetic ESM facade did not declare named exports such as `createElement`
 before module linking.
 
-What to investigate: conservative recursive named-export discovery for literal
-CommonJS re-export patterns, using the discovered names both for QuickJS export
-declaration and evaluated export assignment.
+What was fixed: QuickJS now discovers conservative recursive CommonJS
+re-export names in `quickjs_cjs_exports.cc`, declares those names before ESM
+linking, and assigns the evaluated `require(...)` properties onto the synthetic
+facade. This exists because Node's V8 path already has native
+`ModuleWrap`/loader integration; QuickJS needs an equivalent compatibility
+bridge until more of that flow can be delegated back to Node's JS loaders.
 
 ### 🟠 [004_missing_intl.md](astro-ssr/004_missing_intl.md): missing Intl global
 

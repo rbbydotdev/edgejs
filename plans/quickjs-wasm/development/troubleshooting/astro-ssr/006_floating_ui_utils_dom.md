@@ -62,11 +62,11 @@ runtime target.
 
 ## Fix
 
-Updated `napi/quickjs/src/unofficial_napi.cc` so
-`TryResolvePackageSubpath(...)` does not stop after the first condition string
-if that candidate does not resolve to a runtime file. It now tries `import`,
-`default`, and `module` targets in order, returning the first runtime target
-that resolves.
+Updated the QuickJS package resolver so `TryResolvePackageSubpath(...)` does
+not stop after the first condition string if that candidate does not resolve to
+a runtime file. The current shared implementation lives in
+`napi/quickjs/src/unofficial_module_loader.cc` and tries runtime condition
+targets in order, returning the first target that resolves.
 
 This keeps the fix narrow: it does not add a full JSON parser or a complete
 Node package exports implementation, but it handles the nested condition shape

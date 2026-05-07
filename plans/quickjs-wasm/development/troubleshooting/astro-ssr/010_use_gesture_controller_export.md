@@ -64,8 +64,9 @@ legacy `module` condition as the ESM target.
 
 ## Fix
 
-Updated `napi/quickjs/src/unofficial_napi.cc` so the lightweight package
-exports scanner prefers runtime targets in this order:
+Updated the QuickJS package exports scanner so it prefers runtime targets in
+this order. The current shared implementation lives in
+`napi/quickjs/src/unofficial_module_loader.cc`:
 
 ```text
 import, module, default

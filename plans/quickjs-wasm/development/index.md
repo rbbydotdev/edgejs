@@ -140,6 +140,9 @@ The QuickJS WASIX development path now supports:
 - WASIX Edge QuickJS package startup under Wasmer;
 - HTTP server request parsing and response writing under Wasmer;
 - static Astro and Vite app serving through small CJS adapters;
+- QuickJS CommonJS/ESM facade compatibility for real package graphs, including
+  recursive CommonJS named export discovery and shared package/path resolution
+  helpers;
 - Next.js static App Router artifacts plus generated dynamic HTML/RSC shells;
 - standard Next.js standalone build layout understood, with the remaining
   QuickJS runtime blocker narrowed to `v8` / `serdes`.

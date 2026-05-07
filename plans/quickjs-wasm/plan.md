@@ -192,7 +192,10 @@ Implement APIs in the order Edge is likely to hit them:
    - async work hooks needed by timers and libuv.
 6. Module support:
    - CommonJS first;
-   - ESM/source text module support only after CJS is stable;
+   - ESM/source text module support once enough `ModuleWrap` behavior exists;
+   - CommonJS/ESM facades for Node compatibility, because Node's V8 path
+     already has mature loader integration while QuickJS must expose equivalent
+     V8-shaped `unofficial_napi` hooks;
    - synthetic modules and cached data can initially be unsupported unless tests
      or bootstrap require them.
 
@@ -303,8 +306,11 @@ const fs = require("fs"); console.log(typeof fs.readFileSync)
   redesigned, or isolated for QuickJS instead of copied literally.
 - Workers and structured clone are likely to be expensive because they require
   cross-context value transfer semantics.
-- Full ESM support may require a deeper QuickJS module-loader integration than
-  CommonJS.
+- Full ESM support requires a deeper QuickJS module-loader integration than
+  simple CommonJS execution. QuickJS itself does not lack CommonJS more than V8
+  does; Node implements CJS/ESM around the engine. The QuickJS risk is
+  implementing enough `ModuleWrap`, package resolution, dynamic import, and
+  CJS facade behavior so Node's JS loaders can drive the same semantics.
 - WASIX threading, atomics, and exceptions must stay aligned with the existing
   `wasix/build-wasix.sh` flags.
 
@@ -318,4 +324,3 @@ The first complete version is successful when:
 - simple file execution works;
 - the implemented N-API surface is documented;
 - unsupported runtime features fail clearly rather than crashing.
-
