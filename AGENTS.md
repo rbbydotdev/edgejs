@@ -180,6 +180,7 @@ Important commands:
 ```sh
 make build-edge-quickjs-cli JOBS=4
 cmake --build build-edge-quickjs-cli --target edge -j4
+~/src/dev/edgejs/napi/cargo-standalone.sh test --lib -- --nocapture
 cd /Users/sadhbh/src/dev/edgejs/quickjs-wasm/ && ./build.sh
 wasmer package build --check .
 wasmer run --net .
@@ -193,6 +194,14 @@ For embedded QuickJS WASIX builds, targets that include N-API headers before
 linking `napi_quickjs` must compile with `NAPI_EXTERN=`. Without that, wasm
 objects can disagree on the import module for unresolved `napi_*` calls
 (`napi` versus `env`) and fail at the final `wasm-ld` step.
+
+For the standalone N-API Cargo workflow, `napi/Cargo.standalone.toml` is pinned
+to the crates.io `0.701` / `7.1` dependency family so it runs on the default
+Rust 1.91 toolchain. Do not update that standalone manifest to Wasmer
+`7.2.0-alpha.2` / WASIX `0.702.0-alpha.2` just to match the vendored path
+manifest; those crates require Rust 1.92 and make
+`~/src/dev/edgejs/napi/cargo-standalone.sh test --lib -- --nocapture` fail
+before tests start.
 
 For QuickJS WASIX smoke testing:
 

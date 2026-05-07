@@ -104,6 +104,15 @@ cd ~/src/dev/edgejs/quickjs-wasm && ./build.sh
 `quickjs-wasm/build.sh` produced `build-quickjs-wasix/edge.wasm` and
 `build-quickjs-wasix/edgejs.wasm`, and its final no-N-API-imports check passed.
 
+The standalone N-API Cargo workflow also needs to stay on the standalone
+release family instead of following the vendored path manifest blindly. The
+vendored `napi/Cargo.toml` tracks local `0.702` / `7.2` path crates, but the
+crates.io `7.2.0-alpha.2` graph requires Rust 1.92. With the default Rust 1.91
+toolchain, `~/src/dev/edgejs/napi/cargo-standalone.sh test --lib -- --nocapture`
+failed before tests started. Pinning `napi/Cargo.standalone.toml` to Wasmer
+`7.1.0` and WASIX/virtual-fs `0.701.0` restores the standalone crates.io graph
+and the library tests pass.
+
 ## Working Rule
 
 From this rollback onward, changes needed only for Edge QuickJS should not be
