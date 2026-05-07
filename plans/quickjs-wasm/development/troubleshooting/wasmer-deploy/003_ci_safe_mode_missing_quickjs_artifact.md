@@ -1,0 +1,100 @@
+# Wasmer Deploy: CI safe-mode missing QuickJS artifact
+
+| | | Remarks |
+| --- | --- | --- |
+| **Status** | 🟠 | CI wiring fixed locally; full WASIX execution still needs the GitHub Actions toolchain. |
+| **Severity** | High | Blocks the WASIX Linux job before the safe-mode smoke tests can start. |
+
+## Issue
+
+The `build-wasix-linux` workflow builds the legacy WASIX artifact through:
+
+```sh
+make build-wasix
+```
+
+That writes:
+
+```text
+build-wasix/edgejs.wasm
+```
+
+The root `wasmer.toml` now describes the embedded QuickJS package and points at:
+
+```text
+build-quickjs-wasix/edgejs.wasm
+```
+
+The safe-mode smoke test therefore fails before executing JavaScript:
+
+```text
+Unable to read the "edge" module's file from "./build-quickjs-wasix/edgejs.wasm"
+No such file or directory
+```
+
+## Action Plan
+
+1. Add a Makefile target for the current QuickJS WASIX build script so CI does
+   not need to know the script path directly.
+2. Update the `build-wasix-linux` workflow to build the embedded QuickJS WASIX
+   artifact before running `wasmer run .`.
+3. Update WASIX dist packaging so `BUILD_DIR=build-quickjs-wasix` is treated as
+   a wasm distribution directory, not as a native Edge build.
+4. Remove or bypass the legacy `napi_wasmer` smoke path from this job because it
+   belongs to `EDGE_NAPI_PROVIDER=imports`, while this package now embeds the
+   QuickJS provider.
+5. Verify the edited Makefile targets and safe-mode test script syntax locally;
+   full WASIX execution still requires the CI Wasmer/WASIX toolchain.
+
+## Fix
+
+The Makefile now exposes:
+
+```sh
+make build-quickjs-wasix
+```
+
+That target runs `quickjs-wasm/build.sh`, producing the
+`build-quickjs-wasix/edgejs.wasm` artifact referenced by the active root
+manifest.
+
+The `build-wasix-linux` workflow now builds the QuickJS WASIX artifact before
+the safe-mode smoke test and packages `BUILD_DIR=build-quickjs-wasix` for the
+WASIX zip. The legacy `napi_wasmer` smoke path was removed from this job because
+it tests the host-import N-API artifact, not the embedded QuickJS package.
+
+`make dist-only` now treats both `build-wasix` and `build-quickjs-wasix` as
+WASIX distribution directories, so it copies `edgejs.wasm`, `wasmer.toml`, and
+certificates instead of looking for native `edge` and `edgeenv` binaries.
+
+## Verification
+
+Local structural checks passed:
+
+```sh
+make -n build-quickjs-wasix
+make -n dist-only BUILD_DIR=build-quickjs-wasix ZIP_NAME=edge-wasix.zip
+python3 -m py_compile scripts/test-wasix-safe-mode.py
+ruby -e "require 'yaml'; YAML.load_file('.github/workflows/test-and-build.yml')"
+git diff --check
+```
+
+The full `make build-quickjs-wasix` and `make test-wasix-safe-mode` flow was not
+run locally because it depends on the WASIX/Wasmer CI toolchain.
+
+## Follow-Up: Native Linux Job
+
+The native `build-linux` job still built the V8 N-API test target and default
+V8-backed Edge binary. It now follows the same provider direction as the WASIX
+job:
+
+```sh
+make build-napi-quickjs CMAKE_BUILD_TYPE=Release JOBS=4
+make test-napi-quickjs-only TEST_JOBS=4
+make build-edge-quickjs-cli CMAKE_BUILD_TYPE=Release JOBS=4
+make dist-only BUILD_DIR=build-edge-quickjs-cli JOBS=4 ZIP_NAME=edge-linux-amd64.zip
+make test-only BUILD_DIR=build-edge-quickjs-cli TEST_JOBS=4
+```
+
+`make build-edge-quickjs-cli` now builds both the `edge` and `edgeenv` targets
+so native dist packaging has the executables expected by `dist-only`.

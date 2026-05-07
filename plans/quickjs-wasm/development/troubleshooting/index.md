@@ -269,3 +269,17 @@ What was fixed: the QuickJS provider now compiles `edge_environment_core` with
 `NAPI_EXTERN=`, matching the embedded `napi_quickjs` linkage. The WASIX build
 now emits `edge.wasm` and `edgejs.wasm`, and the script's final no-N-API-imports
 check passes.
+
+### 🟠 [003_ci_safe_mode_missing_quickjs_artifact.md](wasmer-deploy/003_ci_safe_mode_missing_quickjs_artifact.md): CI safe-mode missing QuickJS artifact
+
+Why: `build-wasix-linux` built the legacy `build-wasix/edgejs.wasm` artifact,
+but the active root `wasmer.toml` points at
+`build-quickjs-wasix/edgejs.wasm`, so `wasmer run .` failed while loading the
+manifest before the safe-mode JavaScript cases could execute.
+
+What changed: added a QuickJS WASIX Makefile target, pointed CI at it, packaged
+`build-quickjs-wasix` as the WASIX dist, and skipped the legacy host-N-API
+`napi_wasmer` smoke path in this embedded-QuickJS job. Local structural checks
+passed; full execution still needs the CI WASIX/Wasmer toolchain. The native
+`build-linux` job was also switched from V8 N-API/default Edge builds to the
+QuickJS N-API and QuickJS Edge build directory.

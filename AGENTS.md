@@ -172,7 +172,7 @@ plans/quickjs-wasm/development/troubleshooting/next-app/003_route_stack_exhauste
 Most recent Wasmer deploy troubleshooting note:
 
 ```text
-plans/quickjs-wasm/development/troubleshooting/wasmer-deploy/002_quickjs_wasix_napi_import_module_mismatch.md
+plans/quickjs-wasm/development/troubleshooting/wasmer-deploy/003_ci_safe_mode_missing_quickjs_artifact.md
 ```
 
 Important commands:

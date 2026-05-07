@@ -42,7 +42,6 @@ jobs:
     name: build-linux
     runs-on: ubuntu-latest
     env:
-      NAPI_V8_BUILD_METHOD: prebuilt
       SCCACHE_GHA_ENABLED: "true"
       CC: clang
       CXX: clang++
@@ -71,21 +70,21 @@ jobs:
         run: |
           ! grep -nE "v8::|<v8.h>|\"v8.h\"" napi/include/js_native_api.h napi/include/node_api.h
 
-      - name: Build napi-v8
-        run: make build-napi CMAKE_BUILD_TYPE=Release JOBS=4
+      - name: Build napi-quickjs
+        run: make build-napi-quickjs CMAKE_BUILD_TYPE=Release JOBS=4
 
-      - name: Test napi-v8
-        run: make test-napi-only TEST_JOBS=4
+      - name: Test napi-quickjs
+        run: make test-napi-quickjs-only TEST_JOBS=4
 
-      - name: Build edge
+      - name: Build edge (QuickJS)
         run: |
-          make build CMAKE_BUILD_TYPE=Release JOBS=4
+          make build-edge-quickjs-cli CMAKE_BUILD_TYPE=Release JOBS=4
 
       - name: Generate dist
         shell: bash
         run: |
           set -euo pipefail
-          make dist-only JOBS=4 ZIP_NAME=edge-linux-amd64.zip
+          make dist-only BUILD_DIR=build-edge-quickjs-cli JOBS=4 ZIP_NAME=edge-linux-amd64.zip
 
       - name: Upload artifact edge
         uses: actions/upload-artifact@v4
@@ -96,7 +95,7 @@ jobs:
 
       - name: Test edge
         run: |
-          make test-only TEST_JOBS=4
+          make test-only BUILD_DIR=build-edge-quickjs-cli TEST_JOBS=4
 
       - name: sccache stats
         if: always()
@@ -369,18 +368,10 @@ jobs:
   build-wasix-linux:
     name: build-wasix-linux
     runs-on: ubuntu-latest
-    env:
-      LLVM_DIR: llvm
-      SCCACHE_GHA_ENABLED: "true"
-      RUSTC_WRAPPER: sccache
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
-      - name: Setup sccache
-        uses: mozilla-actions/sccache-action@v0.0.9
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
 
       - name: Install wasixcc
         uses: wasix-org/wasixcc@v0.4.2
@@ -389,59 +380,11 @@ jobs:
           sysroot-tag: v2026-02-16.1
           version: v0.4.2
 
-      - name: Install wasm-tools
-        run: |
-          cargo install --locked wasm-tools
-
-      - name: Build edge (WASIX)
+      - name: Build edge (QuickJS WASIX)
         shell: bash
         run: |
           set -euo pipefail
-          make build-wasix
-
-      - name: Install LLVM
-        shell: bash
-        run: |
-          set -euo pipefail
-          curl -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
-            --retry 3 --proto '=https' --tlsv1.2 -sSf \
-            "https://github.com/wasmerio/llvm-custom-builds/releases/download/21.x/llvm-linux-amd64.tar.xz" \
-            -L -o llvm.tar.xz
-          LLVM_DIR="$(pwd)/${LLVM_DIR}"
-          mkdir -p "${LLVM_DIR}"
-          tar xf llvm.tar.xz --strip-components=1 -C "${LLVM_DIR}"
-          echo "${LLVM_DIR}/bin" >> "$GITHUB_PATH"
-          echo "${LLVM_DIR}/usr/bin" >> "$GITHUB_PATH"
-          echo "LLVM_SYS_211_PREFIX=${LLVM_DIR}" >> "$GITHUB_ENV"
-          echo "ENABLE_LLVM=1" >> "$GITHUB_ENV"
-
-      - name: Setup Prebuilt V8
-        shell: bash
-        run: |
-          set -euo pipefail
-          V8_VERSION="11.9.2"
-          ASSET="v8-linux-amd64.tar.xz"
-          V8_ROOT="$PWD/.ci/v8/${V8_VERSION}/linux-amd64"
-          mkdir -p "$V8_ROOT"
-          curl -fsSL "https://github.com/wasmerio/v8-custom-builds/releases/download/${V8_VERSION}/${ASSET}" -o "$V8_ROOT/${ASSET}"
-          tar -xJf "$V8_ROOT/${ASSET}" -C "$V8_ROOT"
-
-          echo "V8_INCLUDE_DIR=$V8_ROOT/include" >> "$GITHUB_ENV"
-          echo "V8_LIB_DIR=$V8_ROOT/lib" >> "$GITHUB_ENV"
-          echo "V8_DEFINES=V8_COMPRESS_POINTERS" >> "$GITHUB_ENV"
-          echo "LD_LIBRARY_PATH=$V8_ROOT/lib:${LD_LIBRARY_PATH:-}" >> "$GITHUB_ENV"
-
-      - name: Build napi_wasmer CLI
-        shell: bash
-        run: |
-          set -euo pipefail
-          make build-napi-wasmer-cli
-
-      - name: Smoke test edgejs.wasm via napi_wasmer
-        shell: bash
-        run: |
-          set -euo pipefail
-          make test-wasix-napi-cli
+          make build-quickjs-wasix
 
       - name: Install Wasmer CLI
         uses: wasmerio/setup-wasmer@v3
@@ -456,7 +399,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          make dist-only BUILD_DIR=build-wasix JOBS=4 ZIP_NAME=edge-wasix.zip
+          make dist-only BUILD_DIR=build-quickjs-wasix JOBS=4 ZIP_NAME=edge-wasix.zip
 
       - name: Smoke test packaged WASIX dist via Wasmer CLI
         shell: bash
@@ -470,7 +413,3 @@ jobs:
           name: edge-wasix
           path: edge-wasix.zip
           if-no-files-found: error
-
-      - name: sccache stats
-        if: always()
-        run: sccache --show-stats || true

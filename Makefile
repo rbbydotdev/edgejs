@@ -1,10 +1,11 @@
-.PHONY: build build-edge-quickjs-cli build-wasix build-napi-wasmer-cli test-wasix-napi-cli test-wasix-safe-mode test test-only check-portability clean-edge-quickjs-cli clean-dist dist dist-only framework-test framework-test-reset
+.PHONY: build build-edge-quickjs-cli build-wasix build-quickjs-wasix build-napi-wasmer-cli test-wasix-napi-cli test-wasix-safe-mode test test-only check-portability clean-edge-quickjs-cli clean-dist dist dist-only framework-test framework-test-reset
 
 UNAME_S := $(shell uname -s)
 BUILD_NAPI_DIR ?= build-v8-napi
 BUILD_NAPI_QUICKJS_DIR ?= build-quickjs-napi
 BUILD_DIR ?= build-edge
 BUILD_EDGE_QUICKJS_CLI_DIR ?= build-edge-quickjs-cli
+BUILD_QUICKJS_WASIX_DIR ?= build-quickjs-wasix
 DIST_DIR ?= dist
 DIST_BIN_DIR ?= $(DIST_DIR)/bin
 DIST_BIN_COMPAT_DIR ?= $(DIST_DIR)/bin-compat
@@ -73,10 +74,13 @@ build:
 
 build-edge-quickjs-cli:
 	$(BUILD_ENV) cmake -S . -B $(BUILD_EDGE_QUICKJS_CLI_DIR) -DCMAKE_BUILD_TYPE=$(CMAKE_BUILD_TYPE) -DEDGE_DEFAULT_WASMER_PACKAGE=$(EDGE_WASMER_PACKAGE) -DEDGE_NAPI_PROVIDER=quickjs $(EXTRA_CMAKE_ARGS) $(CMAKE_ARGS)
-	$(BUILD_ENV) cmake --build $(BUILD_EDGE_QUICKJS_CLI_DIR) --target edge -j$(JOBS)
+	$(BUILD_ENV) cmake --build $(BUILD_EDGE_QUICKJS_CLI_DIR) --target edge edgeenv -j$(JOBS)
 
 build-wasix:
 	./wasix/build-wasix.sh
+
+build-quickjs-wasix:
+	./quickjs-wasm/build.sh
 
 build-napi-wasmer-cli:
 	cd $(NAPI_WASMER_DIR) && ./cargo-standalone.sh build --features cli --bin napi_wasmer
@@ -150,7 +154,7 @@ dist-only:
 	rm -rf $(DIST_DIR)
 	rm -f $(ZIP_NAME)
 	mkdir -p $(DIST_BIN_DIR)
-	if [ "$(BUILD_DIR)" = "build-wasix" ]; then \
+	if [ "$(BUILD_DIR)" = "build-wasix" ] || [ "$(BUILD_DIR)" = "$(BUILD_QUICKJS_WASIX_DIR)" ]; then \
 		cp "$(BUILD_DIR)/edgejs.wasm" "$(DIST_BIN_DIR)/edgejs"; \
 		cp wasmer.toml "$(DIST_DIR)/wasmer.toml"; \
 		mkdir -p "$(DIST_DIR)/ssl-certs"; \
@@ -164,7 +168,7 @@ dist-only:
 	fi
 	cp -R bin-compat $(DIST_BIN_COMPAT_DIR)
 	cp README.md $(DIST_DIR)/README.md
-	if [ "$(UNAME_S)" = "Darwin" ] && [ "$(BUILD_DIR)" != "build-wasix" ]; then \
+	if [ "$(UNAME_S)" = "Darwin" ] && [ "$(BUILD_DIR)" != "build-wasix" ] && [ "$(BUILD_DIR)" != "$(BUILD_QUICKJS_WASIX_DIR)" ]; then \
 		for bin in $(DIST_BIN_DIR)/edge $(DIST_BIN_DIR)/edgeenv; do \
 			deps=$$(otool -L "$$bin" | tail -n +2 | awk '{print $$1}' | grep '^/' | grep -Ev '^(/System/Library/|/usr/lib/)' || true); \
 			if [ -n "$$deps" ]; then \
@@ -175,7 +179,7 @@ dist-only:
 			fi; \
 		done; \
 	fi
-	if [ "$(BUILD_DIR)" = "build-wasix" ]; then \
+	if [ "$(BUILD_DIR)" = "build-wasix" ] || [ "$(BUILD_DIR)" = "$(BUILD_QUICKJS_WASIX_DIR)" ]; then \
 		cd $(DIST_DIR) && zip -r ../$(ZIP_NAME) bin bin-compat README.md wasmer.toml ssl-certs; \
 	else \
 		cd $(DIST_DIR) && zip -r ../$(ZIP_NAME) bin bin-compat README.md; \
