@@ -115,7 +115,7 @@ the packaged app assets are available.
 It does not work the same way when running the host native QuickJS CLI directly:
 
 ```sh
-/Users/sadhbh/src/dev/edgejs/build-edge-quickjs-cli/edge ./dist/server/standalone-entry.js
+~/src/dev/edgejs/build-edge-quickjs-cli/edge ./dist/server/standalone-entry.js
 ```
 
 In that mode, `/dist` means the host machine's absolute `/dist`, not the app's
@@ -126,7 +126,7 @@ through to `fs.readFileSync("/dist/index.html")`, which fails in
 Two useful native-CLI fixes are:
 
 ```sh
-STATIC_ROOT="$PWD/dist" /Users/sadhbh/src/dev/edgejs/build-edge-quickjs-cli/edge ./dist/server/standalone-entry.js
+STATIC_ROOT="$PWD/dist" ~/src/dev/edgejs/build-edge-quickjs-cli/edge ./dist/server/standalone-entry.js
 ```
 
 or make the entry default relative to the emitted server file:
@@ -171,7 +171,7 @@ When copied into a test folder, the Edge QuickJS repro shape was:
 ```sh
 cp -rf ./.next/standalone ./.testing/app/
 cd ./.testing
-/Users/sadhbh/src/dev/edgejs/build-edge-quickjs-cli/edge ./app/server.js
+~/src/dev/edgejs/build-edge-quickjs-cli/edge ./app/server.js
 ```
 
 That failed before the server could start.
@@ -198,7 +198,7 @@ const { startServer } = require('next/dist/server/lib/start-server')
 So this command is not fixed by pointing `STATIC_ROOT` at `.testing`:
 
 ```sh
-STATIC_ROOT="$PWD/.testing" /Users/sadhbh/src/dev/edgejs/build-edge-quickjs-cli/edge .next/standalone/server.js
+STATIC_ROOT="$PWD/.testing" ~/src/dev/edgejs/build-edge-quickjs-cli/edge .next/standalone/server.js
 ```
 
 The observed native QuickJS CLI failure was:
@@ -269,7 +269,7 @@ required.
 The concrete native V8 standalone repro was:
 
 ```sh
-/Users/sadhbh/src/dev/edgejs/build-edge/edge .next/standalone/server.js
+~/src/dev/edgejs/build-edge/edge .next/standalone/server.js
 ```
 
 with:

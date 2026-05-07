@@ -21,7 +21,7 @@ undefinedError: Inspector is not available
 The app is mounted through:
 
 ```text
-/Users/sadhbh/src/ImperfectProtocol/private-poker/wasmer.toml
+~/src/ImperfectProtocol/private-poker/wasmer.toml
 ```
 
 which runs:

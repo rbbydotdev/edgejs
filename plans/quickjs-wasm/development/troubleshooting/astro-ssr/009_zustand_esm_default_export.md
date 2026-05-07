@@ -13,7 +13,7 @@ failure:
 
 ```text
 13:24:35 [ERROR] [router] Error while trying to render the route /
-13:24:35 [ERROR] SyntaxError: Could not find export 'default' in module '/Users/sadhbh/src/dev/stackmachine.com/node_modules/zustand/esm'
+13:24:35 [ERROR] SyntaxError: Could not find export 'default' in module '~/src/dev/stackmachine.com/node_modules/zustand/esm'
     at runMicrotasks (native)
     at processTicksAndRejections (<input>:105:5)
 ```
@@ -29,7 +29,7 @@ focused `import('zustand')` resolves to the ESM entry and exposes `create`.
 The new failing resolved module path is:
 
 ```text
-/Users/sadhbh/src/dev/stackmachine.com/node_modules/zustand/esm
+~/src/dev/stackmachine.com/node_modules/zustand/esm
 ```
 
 The import site that exposed the failure is in `@react-three/fiber`:
@@ -103,9 +103,9 @@ Investigated with narrow checks before changing runtime code:
 Focused import check:
 
 ```sh
-cd /Users/sadhbh/src/dev/stackmachine.com
+cd ~/src/dev/stackmachine.com
 EDGE_TRACE_QUICKJS_MODULES=1 \
-  /Users/sadhbh/src/dev/edgejs/build-edge-quickjs-cli/edge \
+  ~/src/dev/edgejs/build-edge-quickjs-cli/edge \
   -e "import('@react-three/fiber').then(m=>console.log('fiber loaded', Object.keys(m).length))"
 ```
 
@@ -120,8 +120,8 @@ fiber loaded 31
 Then rerun the server and request `/`:
 
 ```sh
-cd /Users/sadhbh/src/dev/stackmachine.com
-PORT=4322 /Users/sadhbh/src/dev/edgejs/build-edge-quickjs-cli/edge ./dist/server/entry.mjs
+cd ~/src/dev/stackmachine.com
+PORT=4322 ~/src/dev/edgejs/build-edge-quickjs-cli/edge ./dist/server/entry.mjs
 curl -i http://localhost:4322/
 ```
 

@@ -11,14 +11,14 @@ The Astro standalone SSR entry for `stackmachine.com` starts under native Node
 and native V8 EdgeJS, but fails under native QuickJS EdgeJS:
 
 ```sh
-/Users/sadhbh/src/dev/edgejs/build-edge-quickjs-cli/edge ./dist/server/entry.mjs
+~/src/dev/edgejs/build-edge-quickjs-cli/edge ./dist/server/entry.mjs
 ```
 
 Focused reproduction:
 
 ```sh
-cd /Users/sadhbh/src/dev/stackmachine.com
-/Users/sadhbh/src/dev/edgejs/build-edge-quickjs-cli/edge \
+cd ~/src/dev/stackmachine.com
+~/src/dev/edgejs/build-edge-quickjs-cli/edge \
   -e "import('./dist/server/entry.mjs').catch(e=>{ console.error(e && e.message); process.exitCode=1; })"
 ```
 
@@ -26,7 +26,7 @@ Observed error:
 
 ```text
 Could not find export 'createElement' in module
-'/Users/sadhbh/src/dev/stackmachine.com/node_modules/react/index'
+'~/src/dev/stackmachine.com/node_modules/react/index'
 ```
 
 ## Diagnosis
@@ -85,15 +85,15 @@ cmake --build build-edge-quickjs-cli --target edge -j4
 Check the focused namespace behavior:
 
 ```sh
-cd /Users/sadhbh/src/dev/stackmachine.com
-/Users/sadhbh/src/dev/edgejs/build-edge-quickjs-cli/edge \
+cd ~/src/dev/stackmachine.com
+~/src/dev/edgejs/build-edge-quickjs-cli/edge \
   -e "import('react').then(m=>console.log(Object.prototype.hasOwnProperty.call(m,'createElement')))"
 ```
 
 Then rerun the Astro SSR entry:
 
 ```sh
-/Users/sadhbh/src/dev/edgejs/build-edge-quickjs-cli/edge ./dist/server/entry.mjs
+~/src/dev/edgejs/build-edge-quickjs-cli/edge ./dist/server/entry.mjs
 ```
 
 Expected result for this issue: `createElement` links successfully. Any later

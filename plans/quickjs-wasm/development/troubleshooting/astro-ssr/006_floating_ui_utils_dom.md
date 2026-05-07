@@ -11,8 +11,8 @@ After the Astro standalone SSR server starts successfully outside the Codex
 local-bind sandbox, opening the site in Firefox triggers a route render failure:
 
 ```sh
-cd /Users/sadhbh/src/dev/stackmachine.com
-/Users/sadhbh/src/dev/edgejs/build-edge-quickjs-cli/edge ./dist/server/entry.mjs
+cd ~/src/dev/stackmachine.com
+~/src/dev/edgejs/build-edge-quickjs-cli/edge ./dist/server/entry.mjs
 ```
 
 Observed server output:
@@ -84,8 +84,8 @@ that exposed this issue.
 Focused import check:
 
 ```sh
-cd /Users/sadhbh/src/dev/stackmachine.com
-/Users/sadhbh/src/dev/edgejs/build-edge-quickjs-cli/edge \
+cd ~/src/dev/stackmachine.com
+~/src/dev/edgejs/build-edge-quickjs-cli/edge \
   -e "import('@floating-ui/utils/dom').then(m=>console.log('loaded', Object.keys(m).length)).catch(e=>{ console.error(e && (e.stack || e.message || e)); process.exitCode = 1; })"
 ```
 
@@ -98,8 +98,8 @@ loaded 20
 Then rerun the server and request `/`:
 
 ```sh
-cd /Users/sadhbh/src/dev/stackmachine.com
-/Users/sadhbh/src/dev/edgejs/build-edge-quickjs-cli/edge ./dist/server/entry.mjs
+cd ~/src/dev/stackmachine.com
+~/src/dev/edgejs/build-edge-quickjs-cli/edge ./dist/server/entry.mjs
 ```
 
 Expected result for this issue: the `@floating-ui/utils/dom` module loads, or

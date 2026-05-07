@@ -13,7 +13,7 @@ QuickJS WASIX `NAPI_EXTERN=` target fix:
 ```sh
 make build
 make build-edge-quickjs-cli
-cd /Users/sadhbh/src/dev/edgejs/quickjs-wasm && ./build.sh
+cd ~/src/dev/edgejs/quickjs-wasm && ./build.sh
 ```
 
 The WASIX build produced `build-quickjs-wasix/edge.wasm` and `edgejs.wasm`, and

@@ -12,7 +12,7 @@ tree, but the smaller `.deploy` directory prepared with `pnpm deploy --prod`
 failed immediately:
 
 ```sh
-cd /Users/sadhbh/src/dev/stackmachine.com
+cd ~/src/dev/stackmachine.com
 npm run edge:prepare-deploy
 cd .deploy
 wasmer run --net .
@@ -90,14 +90,14 @@ omits dev dependencies, the deploy artifact did not include `graphql`.
 
 ## Resolution
 
-`/Users/sadhbh/src/dev/stackmachine.com/scripts/prepare-edge-deploy.cjs` first
+`~/src/dev/stackmachine.com/scripts/prepare-edge-deploy.cjs` first
 fixed this local `.deploy` failure by building the Astro app, running
 `pnpm deploy --prod --legacy`, assembling `.deploy`, and making externalized
 runtime packages from the generated server bundle addressable at the deploy
 root `node_modules`.
 
 `graphql` was moved from `devDependencies` to `dependencies` in
-`/Users/sadhbh/src/dev/stackmachine.com/package.json`, because it is imported
+`~/src/dev/stackmachine.com/package.json`, because it is imported
 at runtime through `stackmachine` / `graphql-ws`.
 
 The first fixed prepare run added access to:
@@ -118,7 +118,7 @@ contains no symlinks or nested module stores.
 The current deploy directory is:
 
 ```text
-347M	/Users/sadhbh/src/dev/stackmachine.com/.deploy
+347M	~/src/dev/stackmachine.com/.deploy
 ```
 
 ## Validation
@@ -126,14 +126,14 @@ The current deploy directory is:
 Prepare command:
 
 ```sh
-cd /Users/sadhbh/src/dev/stackmachine.com
+cd ~/src/dev/stackmachine.com
 npm run edge:prepare-deploy
 ```
 
 Runtime check:
 
 ```sh
-cd /Users/sadhbh/src/dev/stackmachine.com/.deploy
+cd ~/src/dev/stackmachine.com/.deploy
 wasmer run --net --env PORT=3311 --env HOST=127.0.0.1 .
 curl -i http://127.0.0.1:3311/
 ```

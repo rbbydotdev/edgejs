@@ -9,7 +9,7 @@ contained in:
 - `napi/quickjs/`
 - optionally `src/`
 
-The directories to restore from `/Users/sadhbh/src/dev/wasmer-io/edgejs` are:
+The directories to restore from `~/src/dev/wasmer-io/edgejs` are:
 
 - `lib/`
 - `napi/v8/`
@@ -72,7 +72,7 @@ the JavaScript library layer.
    using:
 
    ```sh
-   cd /Users/sadhbh/src/dev/edgejs/quickjs-wasm/ && ./build.sh
+   cd ~/src/dev/edgejs/quickjs-wasm/ && ./build.sh
    ```
 
    The QuickJS WASIX target links the embedded QuickJS N-API implementation into
@@ -98,7 +98,7 @@ resolved the mismatch. Verified:
 ```sh
 make build
 make build-edge-quickjs-cli
-cd /Users/sadhbh/src/dev/edgejs/quickjs-wasm && ./build.sh
+cd ~/src/dev/edgejs/quickjs-wasm && ./build.sh
 ```
 
 `quickjs-wasm/build.sh` produced `build-quickjs-wasix/edge.wasm` and

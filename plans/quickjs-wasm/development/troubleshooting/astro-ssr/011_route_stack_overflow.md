@@ -29,8 +29,8 @@ The first focused reproduction showed that importing the page module failed
 before rendering:
 
 ```sh
-cd /Users/sadhbh/src/dev/stackmachine.com
-/Users/sadhbh/src/dev/edgejs/build-edge-quickjs-cli/edge -e "import('./dist/server/pages/index.astro.mjs')"
+cd ~/src/dev/stackmachine.com
+~/src/dev/edgejs/build-edge-quickjs-cli/edge -e "import('./dist/server/pages/index.astro.mjs')"
 ```
 
 The failure narrowed to the page's `stackmachine` dependency. That package
@@ -75,8 +75,8 @@ The default Edge QuickJS stack guard is now `4 * 1024 * 1024` bytes.
 Focused checks after the fix:
 
 ```sh
-cd /Users/sadhbh/src/dev/stackmachine.com
-/Users/sadhbh/src/dev/edgejs/build-edge-quickjs-cli/edge -e "const r=require('relay-runtime'); console.log('require relay', Object.keys(r).length)"
+cd ~/src/dev/stackmachine.com
+~/src/dev/edgejs/build-edge-quickjs-cli/edge -e "const r=require('relay-runtime'); console.log('require relay', Object.keys(r).length)"
 ```
 
 Result:
@@ -86,7 +86,7 @@ require relay 93
 ```
 
 ```sh
-/Users/sadhbh/src/dev/edgejs/build-edge-quickjs-cli/edge -e "import('relay-runtime').then(m=>console.log('import relay', Object.keys(m).length))"
+~/src/dev/edgejs/build-edge-quickjs-cli/edge -e "import('relay-runtime').then(m=>console.log('import relay', Object.keys(m).length))"
 ```
 
 Result:
@@ -96,7 +96,7 @@ import relay 104
 ```
 
 ```sh
-/Users/sadhbh/src/dev/edgejs/build-edge-quickjs-cli/edge -e "import('stackmachine').then(m=>console.log('stackmachine', Object.keys(m).join(',')))"
+~/src/dev/edgejs/build-edge-quickjs-cli/edge -e "import('stackmachine').then(m=>console.log('stackmachine', Object.keys(m).join(',')))"
 ```
 
 Result:
@@ -106,7 +106,7 @@ stackmachine StackMachine,createZip
 ```
 
 ```sh
-/Users/sadhbh/src/dev/edgejs/build-edge-quickjs-cli/edge -e "import('./dist/server/pages/index.astro.mjs').then(m=>console.log('page', Object.keys(m).join(',')))"
+~/src/dev/edgejs/build-edge-quickjs-cli/edge -e "import('./dist/server/pages/index.astro.mjs').then(m=>console.log('page', Object.keys(m).join(',')))"
 ```
 
 Result:
@@ -118,8 +118,8 @@ page page,renderers
 Then rerun the server and request `/`:
 
 ```sh
-cd /Users/sadhbh/src/dev/stackmachine.com
-PORT=4323 /Users/sadhbh/src/dev/edgejs/build-edge-quickjs-cli/edge ./dist/server/entry.mjs
+cd ~/src/dev/stackmachine.com
+PORT=4323 ~/src/dev/edgejs/build-edge-quickjs-cli/edge ./dist/server/entry.mjs
 curl -i http://localhost:4323/
 ```
 

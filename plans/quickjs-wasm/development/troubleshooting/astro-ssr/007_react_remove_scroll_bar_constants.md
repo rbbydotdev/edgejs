@@ -75,7 +75,7 @@ the compatibility fallback narrow:
 Investigated with narrow import checks before changing runtime code:
 
 - inspected `react-remove-scroll-bar` package metadata and files in
-  `/Users/sadhbh/src/dev/stackmachine.com/node_modules`;
+  `~/src/dev/stackmachine.com/node_modules`;
 - ran a focused QuickJS Edge import check for
   `react-remove-scroll-bar/constants`;
 - compared against native Node CommonJS and ESM resolution;
@@ -94,16 +94,16 @@ Investigated with narrow import checks before changing runtime code:
 Focused import check:
 
 ```sh
-cd /Users/sadhbh/src/dev/stackmachine.com
-/Users/sadhbh/src/dev/edgejs/build-edge-quickjs-cli/edge \
+cd ~/src/dev/stackmachine.com
+~/src/dev/edgejs/build-edge-quickjs-cli/edge \
   -e "import('react-remove-scroll-bar/constants').then(m=>console.log('loaded', Object.keys(m).length)).catch(e=>{ console.error(e && (e.stack || e.message || e)); process.exitCode = 1; })"
 ```
 
 Then rerun the server and request `/`:
 
 ```sh
-cd /Users/sadhbh/src/dev/stackmachine.com
-PORT=4322 /Users/sadhbh/src/dev/edgejs/build-edge-quickjs-cli/edge ./dist/server/entry.mjs
+cd ~/src/dev/stackmachine.com
+PORT=4322 ~/src/dev/edgejs/build-edge-quickjs-cli/edge ./dist/server/entry.mjs
 curl -i http://localhost:4322/
 ```
 
@@ -121,5 +121,5 @@ string string
 With module tracing enabled, the resolver selected:
 
 ```text
-/Users/sadhbh/src/dev/stackmachine.com/node_modules/react-remove-scroll-bar/dist/es2015/constants.js
+~/src/dev/stackmachine.com/node_modules/react-remove-scroll-bar/dist/es2015/constants.js
 ```

@@ -13,7 +13,7 @@ failure:
 
 ```text
 13:28:38 [ERROR] [router] Error while trying to render the route /
-13:28:38 [ERROR] SyntaxError: Could not find export 'Controller' in module '/Users/sadhbh/src/dev/stackmachine.com/node_modules/.pnpm/@use-'
+13:28:38 [ERROR] SyntaxError: Could not find export 'Controller' in module '~/src/dev/stackmachine.com/node_modules/.pnpm/@use-'
     at runMicrotasks (native)
     at processTicksAndRejections (<input>:105:5)
 ```
@@ -29,7 +29,7 @@ This is separate from the Zustand default export issue: focused
 The displayed module path was truncated at:
 
 ```text
-/Users/sadhbh/src/dev/stackmachine.com/node_modules/.pnpm/@use-
+~/src/dev/stackmachine.com/node_modules/.pnpm/@use-
 ```
 
 The full package behind the path is `@use-gesture/core`. The import site that
@@ -98,9 +98,9 @@ Investigated with narrow checks before changing runtime code:
 Focused import check:
 
 ```sh
-cd /Users/sadhbh/src/dev/stackmachine.com
+cd ~/src/dev/stackmachine.com
 EDGE_TRACE_QUICKJS_MODULES=1 \
-  /Users/sadhbh/src/dev/edgejs/build-edge-quickjs-cli/edge \
+  ~/src/dev/edgejs/build-edge-quickjs-cli/edge \
   -e "import('@use-gesture/core').then(m=>{ console.log('core', Object.keys(m).join(',')); console.log('Controller', typeof m.Controller); })"
 ```
 
@@ -119,8 +119,8 @@ Controller function
 Then rerun the server and request `/`:
 
 ```sh
-cd /Users/sadhbh/src/dev/stackmachine.com
-PORT=4322 /Users/sadhbh/src/dev/edgejs/build-edge-quickjs-cli/edge ./dist/server/entry.mjs
+cd ~/src/dev/stackmachine.com
+PORT=4322 ~/src/dev/edgejs/build-edge-quickjs-cli/edge ./dist/server/entry.mjs
 curl -i http://localhost:4322/
 ```
 

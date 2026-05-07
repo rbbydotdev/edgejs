@@ -2,7 +2,7 @@
 
 ## Scope
 
-Restore these directories from `/Users/sadhbh/src/dev/wasmer-io/edgejs`:
+Restore these directories from `~/src/dev/wasmer-io/edgejs`:
 
 - `lib/`
 - `napi/v8/`
@@ -21,10 +21,10 @@ Done locally.
 These comparisons passed after rollback:
 
 ```sh
-diff -qr /Users/sadhbh/src/dev/wasmer-io/edgejs/lib /Users/sadhbh/src/dev/edgejs/lib
-diff -qr /Users/sadhbh/src/dev/wasmer-io/edgejs/napi/v8 /Users/sadhbh/src/dev/edgejs/napi/v8
-diff -qr /Users/sadhbh/src/dev/wasmer-io/edgejs/napi/src /Users/sadhbh/src/dev/edgejs/napi/src
-diff -qr /Users/sadhbh/src/dev/wasmer-io/edgejs/napi/include /Users/sadhbh/src/dev/edgejs/napi/include
+diff -qr ~/src/dev/wasmer-io/edgejs/lib ~/src/dev/edgejs/lib
+diff -qr ~/src/dev/wasmer-io/edgejs/napi/v8 ~/src/dev/edgejs/napi/v8
+diff -qr ~/src/dev/wasmer-io/edgejs/napi/src ~/src/dev/edgejs/napi/src
+diff -qr ~/src/dev/wasmer-io/edgejs/napi/include ~/src/dev/edgejs/napi/include
 ```
 
 ## Notes

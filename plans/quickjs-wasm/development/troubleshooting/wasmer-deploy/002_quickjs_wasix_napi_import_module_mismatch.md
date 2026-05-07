@@ -7,7 +7,7 @@
 
 ## Issue
 
-`/Users/sadhbh/src/dev/edgejs/quickjs-wasm/build.sh` reached the final WASM
+`~/src/dev/edgejs/quickjs-wasm/build.sh` reached the final WASM
 link and failed with `wasm-ld` import module mismatches for several `napi_*`
 symbols:
 
@@ -56,14 +56,14 @@ without changing the shared common N-API headers.
 The fixed build was verified with:
 
 ```sh
-cd /Users/sadhbh/src/dev/edgejs/quickjs-wasm
+cd ~/src/dev/edgejs/quickjs-wasm
 ./build.sh
 ```
 
 Result:
 
 ```text
-Built QuickJS WASIX targets at /Users/sadhbh/src/dev/edgejs/build-quickjs-wasix/edge.wasm and /Users/sadhbh/src/dev/edgejs/build-quickjs-wasix/edgejs.wasm
+Built QuickJS WASIX targets at ~/src/dev/edgejs/build-quickjs-wasix/edge.wasm and ~/src/dev/edgejs/build-quickjs-wasix/edgejs.wasm
 ```
 
 The script also completed its final no-N-API-imports check.

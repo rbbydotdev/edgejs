@@ -19,7 +19,7 @@ The failing Edge QuickJS repro copied the standalone output into a test folder:
 ```sh
 cp -rf ./.next/standalone ./.testing/app/
 cd ./.testing
-/Users/sadhbh/src/dev/edgejs/build-edge-quickjs-cli/edge ./app/server.js
+~/src/dev/edgejs/build-edge-quickjs-cli/edge ./app/server.js
 ```
 
 The failure looked like:
@@ -51,7 +51,7 @@ require("v8")
 The smaller reproducer is:
 
 ```sh
-/Users/sadhbh/src/dev/edgejs/build-edge-quickjs-cli/edge /private/tmp/edge-repro-v8.js
+~/src/dev/edgejs/build-edge-quickjs-cli/edge /private/tmp/edge-repro-v8.js
 ```
 
 with `/private/tmp/edge-repro-v8.js` containing:

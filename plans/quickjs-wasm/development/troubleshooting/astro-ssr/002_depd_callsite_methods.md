@@ -11,7 +11,7 @@ After aliasing `es-module-lexer` to its pure-JS export, the Astro SSR native ESM
 entry advances to a new failure under the QuickJS Edge CLI:
 
 ```sh
-/Users/sadhbh/src/dev/edgejs/build-edge-quickjs-cli/edge \
+~/src/dev/edgejs/build-edge-quickjs-cli/edge \
   -e "import('./dist/server/entry.mjs')"
 ```
 
@@ -26,13 +26,13 @@ TypeError: not a function
 The failure was first reproduced from:
 
 ```text
-/Users/sadhbh/src/dev/christoph/astro-app
+~/src/dev/christoph/astro-app
 ```
 
 It was later reproduced from:
 
 ```text
-/Users/sadhbh/src/dev/stackmachine.com
+~/src/dev/stackmachine.com
 ```
 
 ## Diagnosis
@@ -117,8 +117,8 @@ cmake --build build-edge-quickjs-cli --target edge -j4
 Focused `depd` check:
 
 ```sh
-cd /Users/sadhbh/src/dev/stackmachine.com
-/Users/sadhbh/src/dev/edgejs/build-edge-quickjs-cli/edge \
+cd ~/src/dev/stackmachine.com
+~/src/dev/edgejs/build-edge-quickjs-cli/edge \
   -e "try { require('depd')('x'); console.log('depd ok') } catch(e) { console.error(e && (e.stack || e.message || e)); process.exitCode=1 }"
 ```
 
@@ -131,8 +131,8 @@ depd ok
 Rerun the focused import:
 
 ```sh
-cd /Users/sadhbh/src/dev/stackmachine.com
-/Users/sadhbh/src/dev/edgejs/build-edge-quickjs-cli/edge \
+cd ~/src/dev/stackmachine.com
+~/src/dev/edgejs/build-edge-quickjs-cli/edge \
   ./dist/server/entry.mjs
 ```
 
@@ -140,7 +140,7 @@ Observed result after the fix:
 
 ```text
 ReferenceError: Intl is not defined
-    at /Users/sadhbh/src/dev/stackmachine.com/dist/server/chunks/_@astrojs-ssr-adapter_BqW-NUXY.mjs:734:28
+    at ~/src/dev/stackmachine.com/dist/server/chunks/_@astrojs-ssr-adapter_BqW-NUXY.mjs:734:28
 ```
 
 This is a later, different Astro SSR failure captured in

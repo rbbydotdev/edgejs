@@ -10,7 +10,7 @@
 The prepared `stackmachine.com` deploy directory works locally:
 
 ```sh
-cd /Users/sadhbh/src/dev/stackmachine.com
+cd ~/src/dev/stackmachine.com
 npm run edge:prepare-deploy
 cd .deploy
 wasmer run --net .
@@ -36,7 +36,7 @@ Wasmer has two different deploy/package paths that matter here.
 Remote autobuild ZIP creation lives in:
 
 ```text
-/Users/sadhbh/src/dev/wasmer/lib/sdk/src/app/deploy_remote_build.rs
+~/src/dev/wasmer/lib/sdk/src/app/deploy_remote_build.rs
 ```
 
 `create_zip_archive(...)` configures the ignore walker with
@@ -56,9 +56,9 @@ The local package publish path is used when the app manifest points at a local
 package and a `wasmer.toml` is present. That path is in:
 
 ```text
-/Users/sadhbh/src/dev/wasmer/lib/cli/src/commands/app/deploy.rs
-/Users/sadhbh/src/dev/wasmer/lib/sdk/src/package/publish.rs
-/Users/sadhbh/src/dev/wasmer/lib/package/src/package/package.rs
+~/src/dev/wasmer/lib/cli/src/commands/app/deploy.rs
+~/src/dev/wasmer/lib/sdk/src/package/publish.rs
+~/src/dev/wasmer/lib/package/src/package/package.rs
 ```
 
 The package walker uses `standard_filters(false)`, `.follow_links(false)`,
@@ -72,7 +72,7 @@ The important remaining behavior is symlink handling. Package volumes are
 created through:
 
 ```text
-/Users/sadhbh/src/dev/wasmer/lib/package/src/package/volume/fs.rs
+~/src/dev/wasmer/lib/package/src/package/volume/fs.rs
 ```
 
 That calls WEBC's `Directory::from_path_with_walker(...)` with the same walker.
@@ -148,7 +148,7 @@ node_modules/<package>
 - Verify the deploy artifact before upload:
 
 ```sh
-cd /Users/sadhbh/src/dev/stackmachine.com/.deploy
+cd ~/src/dev/stackmachine.com/.deploy
 find . -type l -print
 find . -type d -name node_modules -print
 find . -type d -name .pnpm -print
@@ -157,7 +157,7 @@ rg -n 'node_modules/\.pnpm/.+/node_modules/' .
 
 ## Resolution
 
-`/Users/sadhbh/src/dev/stackmachine.com/scripts/prepare-edge-deploy.cjs` now
+`~/src/dev/stackmachine.com/scripts/prepare-edge-deploy.cjs` now
 creates a flattened deploy artifact:
 
 - builds Astro and runs `pnpm deploy --prod --legacy` into a temporary
@@ -179,7 +179,7 @@ The fresh local artifact now reports:
 Runtime package closure: 488 package(s)
 Pruned 34 unimported top-level packages
 Materialized 488 package links
-347M	/Users/sadhbh/src/dev/stackmachine.com/.deploy
+347M	~/src/dev/stackmachine.com/.deploy
 ```
 
 ## Validation
@@ -187,32 +187,32 @@ Materialized 488 package links
 Fresh prepare:
 
 ```sh
-cd /Users/sadhbh/src/dev/stackmachine.com
+cd ~/src/dev/stackmachine.com
 npm run edge:prepare-deploy
 ```
 
 Final artifact checks:
 
 ```sh
-find /Users/sadhbh/src/dev/stackmachine.com/.deploy -type l -print
-find /Users/sadhbh/src/dev/stackmachine.com/.deploy -type d -name node_modules -print
-find /Users/sadhbh/src/dev/stackmachine.com/.deploy -type d -name .pnpm -print
-rg -n 'node_modules/\.pnpm/.+/node_modules/' /Users/sadhbh/src/dev/stackmachine.com/.deploy
+find ~/src/dev/stackmachine.com/.deploy -type l -print
+find ~/src/dev/stackmachine.com/.deploy -type d -name node_modules -print
+find ~/src/dev/stackmachine.com/.deploy -type d -name .pnpm -print
+rg -n 'node_modules/\.pnpm/.+/node_modules/' ~/src/dev/stackmachine.com/.deploy
 ```
 
 Observed:
 
 - no symlinks;
-- only `/Users/sadhbh/src/dev/stackmachine.com/.deploy/node_modules`;
+- only `~/src/dev/stackmachine.com/.deploy/node_modules`;
 - no `.pnpm` directory;
 - no pnpm virtual-store import paths;
-- `/Users/sadhbh/src/dev/stackmachine.com/.deploy/app.yaml` exists when the
+- `~/src/dev/stackmachine.com/.deploy/app.yaml` exists when the
   source app has `app.yaml`, and matches the source file.
 
 Runtime check:
 
 ```sh
-cd /Users/sadhbh/src/dev/stackmachine.com/.deploy
+cd ~/src/dev/stackmachine.com/.deploy
 wasmer run --net .
 curl -m 30 -s -o /tmp/stackmachine-deploy-check.html \
   -w '%{http_code} %{content_type} %{size_download}\n' \
