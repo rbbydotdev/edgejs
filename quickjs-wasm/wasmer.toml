@@ -1,6 +1,6 @@
 [package]
-name = "sadhbh/edgejs-quickjs"
-version = "0.0.0"
+name = "sadhbh-c0d3/edgejs-quickjs"
+version = "0.0.5"
 description = "Edge.js with an embedded QuickJS N-API provider"
 entrypoint = "edge"
 
