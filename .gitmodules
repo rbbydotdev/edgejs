@@ -15,6 +15,3 @@
 [submodule "ssl-certs"]
 	path = ssl-certs
 	url = https://github.com/wasix-org/ssl-certs.git
-[submodule "quickjs"]
-	path = quickjs
-	url = git@github.com:wasmerio/quickjs.git
