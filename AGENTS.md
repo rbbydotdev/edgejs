@@ -231,12 +231,15 @@ When working on WASIX-impacting changes under `src/`, `lib/`, or
 ./build.sh` form for the rebuild.
 
 For Linux-only WASIX failures, use Docker from macOS to reproduce the Linux
-environment. On Apple Silicon, prefer native Ubuntu arm64 Docker first instead
-of forcing `--platform linux/amd64`; amd64 emulation is much slower. The May 7,
-2026 `build-wasix-linux` safe-mode HTTPS failure was investigated by building
-inside native arm64 `ubuntu:latest` with the aarch64 `wasixcc` v0.4.2 release
-and sysroot tag `v2026-02-16.1`, then running the final CI-matching safe-mode
-smoke suite under Linux amd64 Docker with Wasmer 7.1.0.
+environment. Before starting Docker-based troubleshooting, remind Sadhbh to
+launch the Docker daemon. Check the host's native architecture first; on
+Sadhbh's Apple Silicon machine that means native Linux aarch64. Prefer
+`ubuntu:latest` containers for the native architecture before forcing
+`--platform linux/amd64`; amd64 emulation is much slower. The May 7, 2026
+`build-wasix-linux` safe-mode HTTPS failure was investigated by building inside
+native arm64 `ubuntu:latest` with the aarch64 `wasixcc` v0.4.2 release and
+sysroot tag `v2026-02-16.1`, then running the final CI-matching safe-mode smoke
+suite under Linux amd64 Docker with Wasmer 7.1.0.
 
 For embedded QuickJS WASIX builds, targets that include N-API headers before
 linking `napi_quickjs` must compile with `NAPI_EXTERN=`. Without that, wasm
@@ -249,7 +252,12 @@ Rust 1.91 toolchain. Do not update that standalone manifest to Wasmer
 `7.2.0-alpha.2` / WASIX `0.702.0-alpha.2` just to match the vendored path
 manifest; those crates require Rust 1.92 and make
 `~/src/dev/edgejs/napi/cargo-standalone.sh test --lib -- --nocapture` fail
-before tests start.
+before tests start. The standalone wrapper must run from a temporary sibling
+Cargo project, not by rewriting `napi/Cargo.toml` in place; the in-place swap can
+make CI observe the vendored `wasmer-types = 7.2.0-alpha.2` constraint while
+resolving the standalone `7.1.0` graph. Do not copy the vendored `Cargo.lock`
+into the temporary standalone project, because that lockfile may also come from
+the vendored alpha graph.
 
 For QuickJS WASIX smoke testing:
 

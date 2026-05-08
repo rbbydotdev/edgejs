@@ -59,6 +59,10 @@ option(EDGE_PREFER_REPO_LOCAL_V8
   "Prefer the repo-local V8 dist bundle when it exists"
   ON
 )
+option(EDGE_BUILD_NAPI_TESTS
+  "Build the selected embedded N-API provider tests as part of the Edge build"
+  OFF
+)
 option(EDGE_SHARED_OPENSSL
   "Link against a shared/system OpenSSL instead of the vendored OpenSSL"
   OFF
@@ -221,7 +225,7 @@ if(EDGE_NAPI_PROVIDER STREQUAL "bundled-v8")
       endif()
     endif()
   endif()
-  set(NAPI_V8_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+  set(NAPI_V8_BUILD_TESTS "${EDGE_BUILD_NAPI_TESTS}" CACHE BOOL "" FORCE)
   add_subdirectory("${NAPI_V8_ROOT}" "${CMAKE_CURRENT_BINARY_DIR}/napi-v8")
 elseif(EDGE_NAPI_PROVIDER STREQUAL "imports")
   add_library(edge_napi_headers INTERFACE)
@@ -234,7 +238,7 @@ elseif(EDGE_NAPI_PROVIDER STREQUAL "quickjs")
   add_subdirectory("${EDGE_QUICKJS_ROOT}" "${CMAKE_CURRENT_BINARY_DIR}/quickjs" EXCLUDE_FROM_ALL)
   set(NAPI_QUICKJS_INCLUDE_DIR "${EDGE_QUICKJS_ROOT}" CACHE PATH
     "Path to QuickJS headers" FORCE)
-  set(NAPI_QUICKJS_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+  set(NAPI_QUICKJS_BUILD_TESTS "${EDGE_BUILD_NAPI_TESTS}" CACHE BOOL "" FORCE)
   add_subdirectory("${PROJECT_ROOT}/napi/quickjs" "${CMAKE_CURRENT_BINARY_DIR}/napi-quickjs")
 endif()
 

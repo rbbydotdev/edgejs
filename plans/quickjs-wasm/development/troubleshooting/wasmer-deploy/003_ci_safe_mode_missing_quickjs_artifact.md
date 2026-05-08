@@ -74,9 +74,20 @@ manifest is not used for the QuickJS artifact. The legacy `napi_wasmer` smoke
 path was removed from this job because it tests the host-import N-API artifact,
 not the embedded QuickJS package.
 
-The separate `.github/workflows/napi-wasmer-quickjs.yml` workflow also follows
-the QuickJS path: native jobs build and test `napi-quickjs`, and its WASIX job
-builds `build-quickjs-wasix` before running Wasmer directly against
+The separate NAPI-owned `.github/workflows/napi-wasmer-quickjs.yml` workflow
+now builds NAPI in isolation rather than checking out EdgeJS as a harness. The
+NAPI repository has its own `Makefile` targets matching the EdgeJS root target
+names: `build-napi` / `test-napi` for native V8, `build-napi-quickjs` /
+`test-napi-quickjs` for native QuickJS, `build-wasix-napi` /
+`test-wasix-napi` for the V8-backed WASIX `napi_wasmer` runner, and
+`build-wasix-napi-quickjs` for the WASIX QuickJS static-library build. When
+invoked from EdgeJS, `test-napi` builds and tests in `build-edge`, while
+`test-napi-quickjs` builds and tests in `build-edge-quickjs-cli`. When invoked
+from `napi`, `test-napi` builds and tests in the sibling
+`../build-napi-v8`, while `test-napi-quickjs` builds and tests in the sibling
+`../build-napi-quickjs`. The QuickJS WASIX job verifies the NAPI QuickJS
+provider can be compiled with the WASIX toolchain; EdgeJS package-level smoke
+coverage remains in the EdgeJS QuickJS workflow that owns
 `quickjs-wasm/wasmer.toml`.
 
 `make dist-only` now treats both `build-wasix` and `build-quickjs-wasix` as
