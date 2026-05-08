@@ -1,17 +1,19 @@
-# Hacks Ledger: QuickJS compatibility debt
+# Compatibility Adapters Ledger: QuickJS compatibility debt
 
 | | | Remarks |
 | --- | --- | --- |
-| **Status** | Active | Living list of landed hacks and suspicious compatibility bridges. |
-| **Severity** | Medium | The hacks are useful, but each one risks hiding a real Node/V8 compatibility gap. |
+| **Status** | Active | Living list of landed compatibility adapters and incomplete compatibility bridges. |
+| **Severity** | Medium | The compatibility adapters are useful, but each one risks hiding a real Node/V8 compatibility gap. |
+
+Implementation note: the QuickJS Node compatibility adapter code described here has been extracted into `napi/quickjs/src/compat`, with separate source/header pairs by concern.
 
 This is the uncomfortable list. It is based on the current development notes
-and should be updated whenever a new workaround is added or one of these is
-replaced with a real design.
+and should be updated whenever a new compatibility adaptation is added or one of
+these is replaced with a real design.
 
 The goal is not to shame the work. Most of these were reasonable pressure-valve
 changes while bringing up a new QuickJS N-API backend. The problem starts only
-if we forget which parts are scaffolding.
+if we forget which parts are transitional adapters.
 
 ## Summary
 
@@ -28,7 +30,7 @@ Highest cleanup value:
 5. Move every lingering shared-`lib/` diagnostic or behavioral patch into
    provider-owned native code or prove it is provider-neutral.
 
-## Landed Hacks And Better Designs
+## Landed Compatibility Adapters And Better Designs
 
 ### 1. `JS_FreeRuntime(...)` disabled to avoid teardown aborts
 
@@ -45,7 +47,7 @@ GC-owned objects:
 Assertion failed: list_empty(&rt->gc_obj_list)
 ```
 
-Why this is a hack: it converts a real ownership/lifetime bug into a leak so
+Why this is a compatibility adapter: it converts a real ownership/lifetime bug into a leak so
 successful runs can exit. That was useful for app bring-up, but it means
 teardown tests are not proving runtime correctness.
 
@@ -70,7 +72,7 @@ What happened: Edge QuickJS installs a deliberately tiny
 `globalThis.Intl.DateTimeFormat` when no real `Intl` exists. It supports enough
 for Astro logger timestamps and some framework bootstrap paths.
 
-Why this is a hack: it looks like `Intl`, but it is not ECMA-402. It has no real
+Why this is a compatibility adapter: it looks like `Intl`, but it is not ECMA-402. It has no real
 locale negotiation, calendar behavior, numbering systems, time-zone support, or
 ICU-backed formatting. Any code past the narrow timestamp path can be misled.
 
@@ -95,7 +97,7 @@ return a native fallback even though `internalBinding("config").hasInspector`
 and `process.features.inspector` remain false. Passive APIs such as `url()`
 work as no-ops; active APIs throw unavailable errors.
 
-Why this is a hack: the public module is loadable while builtin metadata still
+Why this is a compatibility adapter: the public module is loadable while builtin metadata still
 partly says it cannot be required. `Session` is intentionally smaller than
 Node's real implementation and does not fully inherit from `EventEmitter`.
 
@@ -120,7 +122,7 @@ What happened: QuickJS now exports `Serializer` and `Deserializer` constructors
 so `require("v8")` can load and `v8.serialize()` / `v8.deserialize()` can
 round-trip plain objects through QuickJS object write/read helpers.
 
-Why this is a hack: the public builtin is named `v8`, but QuickJS cannot and
+Why this is a compatibility adapter: the public builtin is named `v8`, but QuickJS cannot and
 should not pretend to expose real V8 serializer, heap, coverage, or profiling
 internals. Plain object serdes is useful, but the surface area is much larger
 than the implementation.
@@ -154,7 +156,7 @@ before/after promise hook events. The N-API layer then captures and restores
 `continuation_preserved_embedder_data` for promise continuations so REPL
 history, `await`, and `AsyncLocalStorage` can work.
 
-Why this is a hack: it is not one cohesive scheduler design yet. It is a series
+Why this is a compatibility adapter: it is not one cohesive scheduler design yet. It is a series
 of pressure fixes added where the next symptom appeared: REPL history stuck
 after `await hnd.close()`, microtasks not draining, safe-mode HTTPS callbacks
 exiting before completion, and diagnostics-channel async context still showing
@@ -178,7 +180,7 @@ Better design:
 - Add async-context tests that cross promises, `await`, timers, I/O callbacks,
   and diagnostics-channel tracing before declaring the hook path done.
 
-### 6. CommonJS hacks: named-export scanner and synthetic ESM facades
+### 6. CommonJS compatibility adapters: named-export scanner and synthetic ESM facades
 
 Source notes:
 
@@ -189,7 +191,7 @@ What happened: QuickJS predeclares named exports for CommonJS facades by
 statically scanning export patterns and following simple literal re-export
 forms such as `module.exports = require("./target.js")`.
 
-Why this is a hack: it exists because QuickJS must know ESM export names before
+Why this is a compatibility adapter: it exists because QuickJS must know ESM export names before
 link time, while CommonJS export objects are only known after evaluation. The
 scanner is conservative, but it is still a parallel approximation of Node's
 mature CJS/ESM translator path.
@@ -228,7 +230,7 @@ What happened: the QuickJS resolver learned several compatibility behaviors:
 - parse package metadata to avoid false `.js` ESM classification from unrelated
   keys like repository `"type": "git"`.
 
-Why this is a hack: each fix was narrow and test-driven, but together they are
+Why this is a compatibility adapter: each fix was narrow and test-driven, but together they are
 becoming a hand-built Node/package-manager resolver. That is dangerous because
 package resolution has many edge cases and tiny differences can choose the wrong
 runtime file.
@@ -255,7 +257,7 @@ What happened: QuickJS module resolution and fs stat behavior were adjusted to
 canonicalize pnpm symlinked package paths and retry through resolved symlink
 components.
 
-Why this is a hack: the fix is necessary for pnpm graphs, but symlink handling
+Why this is a compatibility adapter: the fix is necessary for pnpm graphs, but symlink handling
 is now spread across resolver and fs behavior. It can hide differences between
 host filesystems, WASIX package filesystems, and materialized deploy artifacts.
 
@@ -280,7 +282,7 @@ stream conversion path treated a wrapped `TCP` object as a raw external pointer.
 The fix was to try TCP/Pipe/TTY wrapper-specific `napi_unwrap(...)` paths before
 falling back to raw external data.
 
-Why this is a hack: the stream fix is careful and validated, but it works around
+Why this is a compatibility adapter: the stream fix is careful and validated, but it works around
 a deeper N-API identity problem. A JavaScript class instance should not be
 ambiguous with a raw external in the first place.
 
@@ -305,7 +307,7 @@ What happened: vendored QuickJS was patched so WASIX builds can expose
 `Atomics` and `SharedArrayBuffer` when `__wasm_atomics__` is defined, instead
 of excluding all `__wasi__` targets unconditionally.
 
-Why this is a hack: it is a local engine patch. It may be correct, but it is
+Why this is a compatibility adapter: it is a local engine patch. It may be correct, but it is
 still a fork delta that must be preserved and revalidated whenever QuickJS is
 updated.
 
@@ -329,7 +331,7 @@ What happened: Edge-created QuickJS runtimes use a larger stack guard, with
 Astro validation showing that 4 MiB allowed a route render that overflowed at
 the default.
 
-Why this is a hack: increasing stack gives real apps room to run, but it does
+Why this is a compatibility adapter: increasing stack gives real apps room to run, but it does
 not explain whether the depth is normal framework recursion, inefficient
 CommonJS facade evaluation, resolver recursion, or QuickJS stack accounting.
 
@@ -354,7 +356,7 @@ What happened: QuickJS stack construction learned to honor public
 `Error.prepareStackTrace`, and native `CallSite` objects gained a conservative
 set of Node/V8-style methods needed by packages such as `depd`.
 
-Why this is a hack: V8's CallSite API is not a neutral JavaScript standard.
+Why this is a compatibility adapter: V8's CallSite API is not a neutral JavaScript standard.
 QuickJS does not naturally track all the same metadata, so some methods are
 approximations.
 
@@ -377,7 +379,7 @@ Source notes:
 What happened: QuickJS needed environment initialization and contextify compile
 behavior shaped enough for Node's bootstrap and `ContextifyScript` paths.
 
-Why this is a hack: contextify is a V8-shaped unofficial N-API surface. The
+Why this is a compatibility adapter: contextify is a V8-shaped unofficial N-API surface. The
 QuickJS implementation can easily become a set of special cases for whatever
 bootstrap path fails next.
 
@@ -401,7 +403,7 @@ What happened: the module loader special-cases public `inspector` imports, and
 the new node-test notes identify missing builtin ESM export declarations such
 as `describe` from `node:test`.
 
-Why this is a hack: every builtin that needs special casing makes the loader
+Why this is a compatibility adapter: every builtin that needs special casing makes the loader
 less predictable. Builtins should have one metadata source that controls
 CommonJS require, ESM import, `node:` aliases, public named exports, and
 category metadata.
@@ -425,7 +427,7 @@ What happened: targets that include N-API headers before linking
 `napi_quickjs` must compile with `NAPI_EXTERN=` so wasm objects do not disagree
 about whether unresolved `napi_*` symbols import from `napi` or `env`.
 
-Why this is a hack: it is a build-system fix for a real linkage requirement,
+Why this is a compatibility adapter: it is a build-system fix for a real linkage requirement,
 but it is easy to miss on a future target. The rule lives as tribal knowledge
 unless it is encoded centrally.
 
@@ -449,7 +451,7 @@ Source notes:
 What happened: Astro and Vite validation used small server adapters or static
 serving shapes to get framework output running under Edge QuickJS.
 
-Why this is a hack: these adapters prove runtime capability, but they are not a
+Why this is a compatibility adapter: these adapters prove runtime capability, but they are not a
 general framework integration story. They can accidentally bypass the actual
 framework server semantics that users expect.
 
@@ -473,7 +475,7 @@ What happened: deployment preparation scans runtime imports, materializes pnpm
 package links, removes `.pnpm`, rewrites virtual-store source imports, and
 validates a symlink-free artifact.
 
-Why this is a hack: it is pragmatic and may be the right packaging direction,
+Why this is a compatibility adapter: it is pragmatic and may be the right packaging direction,
 but it is also a custom package graph transformer. That can go stale as pnpm,
 framework bundlers, and package export patterns change.
 

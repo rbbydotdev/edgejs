@@ -1,16 +1,18 @@
-# Hack: Native unavailable `inspector` stub
+# Compatibility Adapter: Native unavailable `inspector` stub
 
 | | | Remarks |
 | --- | --- | --- |
 | **Status** | ▶️ | Open cleanup issue. |
 | **Severity** | Medium | Makes imports work while the runtime still has no real inspector. |
 
+Implementation note: the QuickJS Node compatibility adapter code described here has been extracted into `napi/quickjs/src/compat`, with separate source/header pairs by concern.
+
 ## Source Notes
 
 - `plans/quickjs-wasm/development/troubleshooting/next-app/002_standalone_inspector_stub.md`
 - `plans/quickjs-wasm/development/dev_001_pr_cleanup_containment/002_native_inspector_fallback.md`
 
-## What Is The Hack
+## What Is The Compatibility Adapter
 
 `require("inspector")` and `require("node:inspector")` return a native fallback
 object even though `internalBinding("config").hasInspector` and

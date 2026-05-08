@@ -1,16 +1,18 @@
-# Hack: `NAPI_EXTERN=` WASIX linkage rule
+# Compatibility Adapter: `NAPI_EXTERN=` WASIX linkage rule
 
 | | | Remarks |
 | --- | --- | --- |
 | **Status** | ▶️ | Open cleanup issue. |
 | **Severity** | Medium | Correct but easy to forget on future targets. |
 
+Implementation note: the QuickJS Node compatibility adapter code described here has been extracted into `napi/quickjs/src/compat`, with separate source/header pairs by concern.
+
 ## Source Notes
 
 - `plans/quickjs-wasm/development/008_runtime_change_containment_rollback.md`
 - `plans/quickjs-wasm/development/troubleshooting/wasmer-deploy/002_quickjs_wasix_napi_import_module_mismatch.md`
 
-## What Is The Hack
+## What Is The Compatibility Adapter
 
 Targets that include N-API headers before linking `napi_quickjs` must compile
 with `NAPI_EXTERN=` so wasm objects agree that `napi_*` symbols are provided by

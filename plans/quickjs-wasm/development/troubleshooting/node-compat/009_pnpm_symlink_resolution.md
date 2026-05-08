@@ -1,9 +1,11 @@
-# Hack: pnpm symlink canonicalization and fs stat fallback
+# Compatibility Adapter: pnpm symlink canonicalization and fs stat fallback
 
 | | | Remarks |
 | --- | --- | --- |
 | **Status** | ▶️ | Open cleanup issue. |
 | **Severity** | Medium | Makes pnpm graphs work but spreads symlink behavior across layers. |
+
+Implementation note: the QuickJS Node compatibility adapter code described here has been extracted into `napi/quickjs/src/compat`, with separate source/header pairs by concern.
 
 ## Source Notes
 
@@ -11,7 +13,7 @@
 - `plans/quickjs-wasm/development/troubleshooting/astro-ssr/012_wasix_pnpm_symlink_resolution.md`
 - `plans/quickjs-wasm/development/troubleshooting/wasmer-deploy/001_pnpm_directory_symlinks_webc.md`
 
-## What Is The Hack
+## What Is The Compatibility Adapter
 
 QuickJS module resolution and fs stat behavior were adjusted to canonicalize
 pnpm symlinked paths and retry through resolved symlink components.

@@ -1,9 +1,11 @@
-# Hack: QuickJS WASIX atomics guard patch
+# Compatibility Adapter: QuickJS WASIX atomics guard patch
 
 | | | Remarks |
 | --- | --- | --- |
 | **Status** | ▶️ | Open cleanup issue. |
 | **Severity** | Medium | Local engine patch must be preserved across QuickJS updates. |
+
+Implementation note: the QuickJS Node compatibility adapter code described here has been extracted into `napi/quickjs/src/compat`, with separate source/header pairs by concern.
 
 ## Source Notes
 
@@ -11,7 +13,7 @@
 - `plans/quickjs-wasm/development/006_framework_app_adapters.md`
 - `AGENTS.md`
 
-## What Is The Hack
+## What Is The Compatibility Adapter
 
 Vendored QuickJS was patched so WASIX builds expose `Atomics` and
 `SharedArrayBuffer` when `__wasm_atomics__` is defined, instead of excluding all

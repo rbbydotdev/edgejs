@@ -1,16 +1,18 @@
-# Hack: Minimal `v8` serdes binding
+# Compatibility Adapter: Minimal `v8` serdes binding
 
 | | | Remarks |
 | --- | --- | --- |
 | **Status** | ▶️ | Open cleanup issue. |
 | **Severity** | Medium | Allows `require("v8")`, but the surface name implies real V8 internals. |
 
+Implementation note: the QuickJS Node compatibility adapter code described here has been extracted into `napi/quickjs/src/compat`, with separate source/header pairs by concern.
+
 ## Source Notes
 
 - `plans/quickjs-wasm/development/troubleshooting/next-app/001_standalone_v8_serdes.md`
 - `plans/quickjs-wasm/development/007_framework_standalone_builds.md`
 
-## What Is The Hack
+## What Is The Compatibility Adapter
 
 QuickJS exports `Serializer` and `Deserializer` from
 `internalBinding("serdes")` so `require("v8")` can load and basic

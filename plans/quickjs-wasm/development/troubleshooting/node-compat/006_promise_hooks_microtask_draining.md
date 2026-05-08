@@ -1,9 +1,11 @@
-# Hack: Promise hooks and microtask draining patchwork
+# Compatibility Adapter: Promise hooks and microtask draining patchwork
 
 | | | Remarks |
 | --- | --- | --- |
 | **Status** | ▶️ | Open cleanup issue. |
 | **Severity** | High | Scheduler ordering and async context are core runtime semantics. |
+
+Implementation note: the QuickJS Node compatibility adapter code described here has been extracted into `napi/quickjs/src/compat`, with separate source/header pairs by concern.
 
 ## Source Notes
 
@@ -12,7 +14,7 @@
 - `plans/quickjs-wasm/development/troubleshooting/wasmer-deploy/004_wasix_safe_mode_https_exit.md`
 - `plans/quickjs-wasm/development/troubleshooting/node-test/005_diagnostics_channel_async_context.md`
 
-## What Is The Hack
+## What Is The Compatibility Adapter
 
 QuickJS now has local promise hook integration, explicit
 `JS_ExecutePendingJob(...)` draining, real `JS_EnqueueJob(...)` microtask

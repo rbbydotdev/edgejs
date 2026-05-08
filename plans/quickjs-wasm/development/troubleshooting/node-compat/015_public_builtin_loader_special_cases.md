@@ -1,16 +1,18 @@
-# Hack: Public builtin loader special cases
+# Compatibility Adapter: Public builtin loader special cases
 
 | | | Remarks |
 | --- | --- | --- |
 | **Status** | ▶️ | Open cleanup issue. |
 | **Severity** | Medium | Special-cased builtins make module behavior hard to reason about. |
 
+Implementation note: the QuickJS Node compatibility adapter code described here has been extracted into `napi/quickjs/src/compat`, with separate source/header pairs by concern.
+
 ## Source Notes
 
 - `plans/quickjs-wasm/development/dev_001_pr_cleanup_containment/002_native_inspector_fallback.md`
 - `plans/quickjs-wasm/development/troubleshooting/node-test/003_node_test_public_api_exports.md`
 
-## What Is The Hack
+## What Is The Compatibility Adapter
 
 The module loader special-cases public `inspector` imports, and current Node
 test failures show missing builtin ESM export declarations such as `describe`

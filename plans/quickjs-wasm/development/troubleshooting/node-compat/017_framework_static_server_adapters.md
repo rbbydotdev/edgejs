@@ -1,9 +1,11 @@
-# Hack: Framework static and ad hoc server adapters
+# Compatibility Adapter: Framework static and ad hoc server adapters
 
 | | | Remarks |
 | --- | --- | --- |
 | **Status** | ▶️ | Open cleanup issue. |
 | **Severity** | Low | Useful for bring-up, but not a general framework integration model. |
+
+Implementation note: the QuickJS Node compatibility adapter code described here has been extracted into `napi/quickjs/src/compat`, with separate source/header pairs by concern.
 
 ## Source Notes
 
@@ -11,7 +13,7 @@
 - `plans/quickjs-wasm/development/007_framework_standalone_builds.md`
 - `plans/quickjs-wasm/development/troubleshooting/vite-app/001_standalone_build.md`
 
-## What Is The Hack
+## What Is The Compatibility Adapter
 
 Astro and Vite validation used small static or ad hoc server adapters to get
 framework output running under Edge QuickJS.

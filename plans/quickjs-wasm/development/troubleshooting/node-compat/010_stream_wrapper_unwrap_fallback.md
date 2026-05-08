@@ -1,16 +1,18 @@
-# Hack: Stream wrapper-specific unwrap fallback
+# Compatibility Adapter: Stream wrapper-specific unwrap fallback
 
 | | | Remarks |
 | --- | --- | --- |
 | **Status** | ▶️ | Open cleanup issue. |
 | **Severity** | High | Works around a deeper N-API object identity problem. |
 
+Implementation note: the QuickJS Node compatibility adapter code described here has been extracted into `napi/quickjs/src/compat`, with separate source/header pairs by concern.
+
 ## Source Notes
 
 - `plans/quickjs-wasm/development/005_wasix_wasmer_http.md`
 - `AGENTS.md`
 
-## What Is The Hack
+## What Is The Compatibility Adapter
 
 QuickJS class instances could look like `napi_external`, so stream conversion
 treated a wrapped `TCP` object as a raw external pointer. The fix tries
@@ -20,7 +22,7 @@ fallback.
 ## Why It Is Suspect
 
 The stream fix is careful, but a wrapped object should not be ambiguous with a
-raw external. This workaround keeps HTTP working while leaving the N-API type
+raw external. This compatibility adaptation keeps HTTP working while leaving the N-API type
 model blurry.
 
 ## How To Do It Better

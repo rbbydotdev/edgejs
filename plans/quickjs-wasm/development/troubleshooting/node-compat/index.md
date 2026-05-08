@@ -1,20 +1,22 @@
-# QuickJS Compatibility Hacks
+# QuickJS Node Compatibility Adapters
 
 | | | Remarks |
 | --- | --- | --- |
-| **Status** | Active | Compatibility-debt registry for QuickJS workarounds that should be revisited. |
+| **Status** | Active | Compatibility-debt registry for QuickJS Node adapters that should be revisited. |
 | **Severity** | Medium | These do not all block current demos, but they can hide correctness debt and future regressions. |
 
-This directory tracks the weird, rushed, or V8-shaped compatibility work that
-helped Edge QuickJS move forward but should not be mistaken for finished
-architecture.
+Implementation note: the QuickJS Node compatibility adapter code described here has been extracted into `napi/quickjs/src/compat`, with separate source/header pairs by concern.
+
+This directory tracks V8-shaped and Node-shaped compatibility adaptations that
+helped Edge QuickJS move forward and now live in the dedicated QuickJS compat
+layer.
 
 ## Overview
 
-### [001_hacks_ledger.md](001_hacks_ledger.md): current compatibility-debt ledger
+### [001_compatibility_adapters_ledger.md](001_compatibility_adapters_ledger.md): current compatibility-debt ledger
 
 What it captures: landed runtime fallbacks, native stubs, promise hook and
-microtask draining patches, CommonJS/ESM facade hacks, resolver heuristics,
+microtask draining patches, CommonJS/ESM facade compatibility adapters, resolver heuristics,
 QuickJS patches, and blunt compatibility knobs, with ideas for replacing each
 one with a better design.
 

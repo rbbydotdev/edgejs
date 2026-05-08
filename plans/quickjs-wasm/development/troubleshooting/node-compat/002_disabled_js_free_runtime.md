@@ -1,16 +1,18 @@
-# Hack: Disabled `JS_FreeRuntime(...)`
+# Compatibility Adapter: Disabled `JS_FreeRuntime(...)`
 
 | | | Remarks |
 | --- | --- | --- |
 | **Status** | ▶️ | Open cleanup issue. |
 | **Severity** | High | Masks QuickJS object lifetime leaks during teardown. |
 
+Implementation note: the QuickJS Node compatibility adapter code described here has been extracted into `napi/quickjs/src/compat`, with separate source/header pairs by concern.
+
 ## Source Notes
 
 - `plans/quickjs-wasm/development/006_framework_app_adapters.md`
 - `AGENTS.md`
 
-## What Is The Hack
+## What Is The Compatibility Adapter
 
 `JS_FreeRuntime(...)` is disabled in the QuickJS N-API env release path because
 runtime teardown still hits:

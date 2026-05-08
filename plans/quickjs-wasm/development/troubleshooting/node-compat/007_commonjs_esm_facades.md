@@ -1,16 +1,18 @@
-# Hack: CommonJS named-export facades
+# Compatibility Adapter: CommonJS named-export facades
 
 | | | Remarks |
 | --- | --- | --- |
 | **Status** | ▶️ | Open cleanup issue. |
 | **Severity** | High | Affects all CJS-to-ESM package and builtin interop. |
 
+Implementation note: the QuickJS Node compatibility adapter code described here has been extracted into `napi/quickjs/src/compat`, with separate source/header pairs by concern.
+
 ## Source Notes
 
 - `plans/quickjs-wasm/development/troubleshooting/astro-ssr/003_cjs_reexport_named_exports.md`
 - `plans/quickjs-wasm/development/troubleshooting/node-test/003_node_test_public_api_exports.md`
 
-## What Is The Hack
+## What Is The Compatibility Adapter
 
 QuickJS predeclares named exports for CommonJS facades by statically scanning
 export patterns and following simple literal re-export forms such as:

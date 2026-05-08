@@ -129,7 +129,7 @@ plans/quickjs-wasm/development/troubleshooting/astro-ssr/NNN_<issue_name>.md
 plans/quickjs-wasm/development/troubleshooting/vite-app/NNN_<issue_name>.md
 plans/quickjs-wasm/development/troubleshooting/next-app/NNN_<issue_name>.md
 plans/quickjs-wasm/development/troubleshooting/node-test/NNN_<issue_name>.md
-plans/quickjs-wasm/development/troubleshooting/hacks/NNN_<issue_name>.md
+plans/quickjs-wasm/development/troubleshooting/node-compat/NNN_<issue_name>.md
 plans/quickjs-wasm/development/troubleshooting/wasmer-deploy/NNN_<issue_name>.md
 ```
 
@@ -203,10 +203,10 @@ Most recent Node test troubleshooting note:
 plans/quickjs-wasm/development/troubleshooting/node-test/016_whatwg_url_inspect_and_searchparams.md
 ```
 
-Most recent hacks/debt troubleshooting note:
+Most recent Node compatibility troubleshooting note:
 
 ```text
-plans/quickjs-wasm/development/troubleshooting/hacks/018_pnpm_deploy_graph_materialization.md
+plans/quickjs-wasm/development/troubleshooting/node-compat/018_pnpm_deploy_graph_materialization.md
 ```
 
 Most recent Wasmer deploy troubleshooting note:

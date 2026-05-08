@@ -1,9 +1,11 @@
-# Hack: Package resolver heuristics
+# Compatibility Adapter: Package resolver heuristics
 
 | | | Remarks |
 | --- | --- | --- |
 | **Status** | ▶️ | Open cleanup issue. |
 | **Severity** | High | Tiny resolver differences can pick the wrong runtime file. |
+
+Implementation note: the QuickJS Node compatibility adapter code described here has been extracted into `napi/quickjs/src/compat`, with separate source/header pairs by concern.
 
 ## Source Notes
 
@@ -13,7 +15,7 @@
 - `plans/quickjs-wasm/development/troubleshooting/astro-ssr/010_use_gesture_controller_export.md`
 - `plans/quickjs-wasm/development/troubleshooting/astro-ssr/013_lucide_react_chevrondown_export.md`
 
-## What Is The Hack
+## What Is The Compatibility Adapter
 
 The QuickJS resolver learned a stack of narrow package fixes: skip `types`,
 inspect subpath-directory `package.json`, support simple wildcard exports,

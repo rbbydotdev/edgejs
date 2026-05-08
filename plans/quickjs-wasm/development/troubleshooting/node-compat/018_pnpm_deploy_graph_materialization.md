@@ -1,16 +1,18 @@
-# Hack: pnpm deploy graph materialization
+# Compatibility Adapter: pnpm deploy graph materialization
 
 | | | Remarks |
 | --- | --- | --- |
 | **Status** | ▶️ | Open cleanup issue. |
 | **Severity** | Medium | Custom package graph rewriting can drift from pnpm and bundler behavior. |
 
+Implementation note: the QuickJS Node compatibility adapter code described here has been extracted into `napi/quickjs/src/compat`, with separate source/header pairs by concern.
+
 ## Source Notes
 
 - `plans/quickjs-wasm/development/troubleshooting/astro-ssr/014_pnpm_deploy_externalized_runtime_links.md`
 - `plans/quickjs-wasm/development/troubleshooting/wasmer-deploy/001_pnpm_directory_symlinks_webc.md`
 
-## What Is The Hack
+## What Is The Compatibility Adapter
 
 Deploy preparation scans runtime imports, materializes pnpm package links,
 removes `.pnpm`, rewrites virtual-store imports, and validates a symlink-free
