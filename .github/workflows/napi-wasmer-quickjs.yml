@@ -1,0 +1,96 @@
+name: napi-wasmer-quickjs
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  quickjs-napi-linux:
+    name: quickjs-napi-linux
+    runs-on: ubuntu-latest
+    env:
+      SCCACHE_GHA_ENABLED: "true"
+      CC: clang
+      CXX: clang++
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup sccache
+        uses: mozilla-actions/sccache-action@v0.0.9
+
+      - name: Build napi-quickjs
+        run: make build-napi-quickjs CMAKE_BUILD_TYPE=Release JOBS=4
+
+      - name: Test napi-quickjs
+        run: make test-napi-quickjs-only TEST_JOBS=4
+
+      - name: sccache stats
+        if: always()
+        run: sccache --show-stats || true
+
+  quickjs-napi-macos:
+    name: quickjs-napi-macos
+    runs-on: macos-latest
+    env:
+      SCCACHE_GHA_ENABLED: "true"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup sccache
+        uses: mozilla-actions/sccache-action@v0.0.9
+
+      - name: Build napi-quickjs
+        run: make build-napi-quickjs CMAKE_BUILD_TYPE=Release JOBS=4
+
+      - name: Test napi-quickjs
+        run: make test-napi-quickjs-only TEST_JOBS=4
+
+      - name: sccache stats
+        if: always()
+        run: sccache --show-stats || true
+
+  quickjs-wasix-linux:
+    name: quickjs-wasix-linux
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install wasixcc
+        uses: wasix-org/wasixcc@v0.4.2
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          sysroot-tag: v2026-02-16.1
+          version: v0.4.2
+
+      - name: Build edge (QuickJS WASIX)
+        shell: bash
+        run: |
+          set -euo pipefail
+          make build-quickjs-wasix
+
+      - name: Install Wasmer CLI
+        uses: wasmerio/setup-wasmer@v3
+
+      - name: Smoke test QuickJS WASIX manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          WASMER_MANIFEST="$(pwd)/quickjs-wasm/wasmer.toml"
+          test -f "${WASMER_MANIFEST}"
+          wasmer run "${WASMER_MANIFEST}" -- --version
+          wasmer run "${WASMER_MANIFEST}" -- -e "console.log('hello from quickjs')"
+
+      - name: Smoke test WASIX safe mode via Wasmer CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          make test-wasix-safe-mode WASMER_BIN=wasmer WASIX_PACKAGE_DIR="$(pwd)/quickjs-wasm"

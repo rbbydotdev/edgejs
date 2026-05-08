@@ -104,6 +104,12 @@ cd ~/src/dev/edgejs/quickjs-wasm && ./build.sh
 `quickjs-wasm/build.sh` produced `build-quickjs-wasix/edge.wasm` and
 `build-quickjs-wasix/edgejs.wasm`, and its final no-N-API-imports check passed.
 
+The QuickJS source submodule now lives under the N-API project at
+`napi/quickjs/src/quickjs`, not at the EdgeJS repository root. The root
+`EDGE_NAPI_PROVIDER=quickjs` CMake path should add that nested QuickJS CMake
+project and force `NAPI_QUICKJS_INCLUDE_DIR` to the same directory so old build
+caches do not keep pointing at the removed root `quickjs/` path.
+
 The standalone N-API Cargo workflow also needs to stay on the standalone
 release family instead of following the vendored path manifest blindly. The
 vendored `napi/Cargo.toml` tracks local `0.702` / `7.2` path crates, but the

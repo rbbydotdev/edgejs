@@ -74,6 +74,11 @@ manifest is not used for the QuickJS artifact. The legacy `napi_wasmer` smoke
 path was removed from this job because it tests the host-import N-API artifact,
 not the embedded QuickJS package.
 
+The separate `.github/workflows/napi-wasmer-quickjs.yml` workflow also follows
+the QuickJS path: native jobs build and test `napi-quickjs`, and its WASIX job
+builds `build-quickjs-wasix` before running Wasmer directly against
+`quickjs-wasm/wasmer.toml`.
+
 `make dist-only` now treats both `build-wasix` and `build-quickjs-wasix` as
 WASIX distribution directories, so it copies `edgejs.wasm`, `wasmer.toml`, and
 certificates instead of looking for native `edge` and `edgeenv` binaries.

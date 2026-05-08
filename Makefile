@@ -1,8 +1,9 @@
-.PHONY: build build-edge-quickjs-cli build-wasix build-quickjs-wasix build-napi-wasmer-cli test-wasix-napi-cli test-wasix-safe-mode test test-only check-portability clean-edge-quickjs-cli clean-dist dist dist-only framework-test framework-test-reset
+.PHONY: build build-edge-quickjs-cli build-wasix build-quickjs-wasix build-napi-wasmer-cli test-wasix-napi-cli test-wasix-safe-mode test test-only check-portability clean clean-napi-quickjs clean-edge-quickjs-cli clean-dist dist dist-only framework-test framework-test-reset
 
 UNAME_S := $(shell uname -s)
 BUILD_NAPI_DIR ?= build-v8-napi
 BUILD_NAPI_QUICKJS_DIR ?= build-quickjs-napi
+QUICKJS_SRC_DIR ?= napi/quickjs/src/quickjs
 BUILD_DIR ?= build-edge
 BUILD_EDGE_QUICKJS_CLI_DIR ?= build-edge-quickjs-cli
 BUILD_QUICKJS_WASIX_DIR ?= build-quickjs-wasix
@@ -46,8 +47,11 @@ endif
 clean-napi-quickjs:
 	rm -rf $(BUILD_NAPI_QUICKJS_DIR)
 
+clean:
+	find . -maxdepth 1 -type d -name 'build-*' -exec rm -rf {} +
+
 build-quickjs:
-	$(BUILD_ENV) cmake -S quickjs -B $(BUILD_NAPI_QUICKJS_DIR)/quickjs -DCMAKE_BUILD_TYPE=$(CMAKE_BUILD_TYPE) $(EXTRA_CMAKE_ARGS) $(CMAKE_ARGS)
+	$(BUILD_ENV) cmake -S $(QUICKJS_SRC_DIR) -B $(BUILD_NAPI_QUICKJS_DIR)/quickjs -DCMAKE_BUILD_TYPE=$(CMAKE_BUILD_TYPE) $(EXTRA_CMAKE_ARGS) $(CMAKE_ARGS)
 	$(BUILD_ENV) cmake --build $(BUILD_NAPI_QUICKJS_DIR)/quickjs -j$(JOBS)
 
 build-napi-quickjs: build-quickjs
