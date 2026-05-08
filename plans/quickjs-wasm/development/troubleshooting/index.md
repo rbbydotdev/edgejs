@@ -23,31 +23,30 @@ deploy troubleshooting issue:
 - update the most recent plan pointer in the repo root `AGENTS.md`;
 - rerun the targeted reproduction before broadening the fix.
 
-## Compatibility Adapters And Debt
+## Node Compatibility
 
-Use [`node-compat/`](node-compat/) for QuickJS Node compatibility adapter debt:
-fallbacks, stubs, V8-shaped bridges, package resolver shortcuts, and other
-things that helped bring-up but should be replaced with a cleaner design.
+Use [`node-compat/`](node-compat/) for QuickJS Node compatibility adaptations.
+The notes are sorted by implementation home: N-API adapters, EdgeJS runtime
+source, and deployment/package-layout behavior.
 
-### Active [001_compatibility_adapters_ledger.md](node-compat/001_compatibility_adapters_ledger.md): QuickJS compatibility debt ledger
+### ▶️ [node-compat/index.md](node-compat/index.md): Node compatibility registry
 
 Why: QuickJS bring-up has accumulated several useful but incomplete
-compatibility bridges, including minimal `Intl`, inspector, `v8` serdes,
-CommonJS/ESM facades, resolver heuristics, disabled runtime teardown, and WASIX
-linkage patches. This ledger records what is incomplete and how to do it
-better.
+compatibility bridges, including runtime fallbacks, V8-shaped bridges, package
+resolver shortcuts, and deployment adaptations. The registry records where each
+one lives and how to replace it with a cleaner design.
 
-### ▶️ [006_promise_hooks_microtask_draining.md](node-compat/006_promise_hooks_microtask_draining.md): promise hooks and microtask draining
+### ▶️ [napi/006_microtasks.md](node-compat/napi/006_microtasks.md): promise hooks and microtask draining
 
-Why: QuickJS currently relies on a patched promise hook path plus scattered
+Why: QuickJS currently relies on a patched promise hook path plus explicit
 microtask/job draining checkpoints; this needs a coherent scheduler and
-async-context design.
+async-context design in the N-API layer.
 
-### ▶️ [007_commonjs_esm_facades.md](node-compat/007_commonjs_esm_facades.md): CommonJS ESM facades
+### ▶️ [napi/007_module_loading.md](node-compat/napi/007_module_loading.md): CommonJS, ESM, and package loading
 
-Why: QuickJS currently predeclares CommonJS named exports through scanner-based
-synthetic ESM facades; this needs a real loader bridge instead of accumulating
-CJS special cases.
+Why: QuickJS module loading currently approximates Node resolver and translator
+behavior in C++; the better direction is to route through Node's JavaScript
+loaders and translators instead of accumulating parallel special cases.
 
 ## Node Test
 

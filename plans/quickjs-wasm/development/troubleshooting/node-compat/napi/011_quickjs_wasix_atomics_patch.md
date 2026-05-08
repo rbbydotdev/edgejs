@@ -5,7 +5,9 @@
 | **Status** | ▶️ | Open cleanup issue. |
 | **Severity** | Medium | Local engine patch must be preserved across QuickJS updates. |
 
-Implementation note: the QuickJS Node compatibility adapter code described here has been extracted into `napi/quickjs/src/compat`, with separate source/header pairs by concern.
+## Implementation Home
+
+This note tracks a QuickJS engine-level compatibility change that supports the N-API QuickJS runtime. The extracted adapter source/header pairs live under `napi/quickjs/src/compat` and are documented separately in this directory.
 
 ## Source Notes
 

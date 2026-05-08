@@ -5,7 +5,9 @@
 | **Status** | ▶️ | Open cleanup issue. |
 | **Severity** | High | Works around a deeper N-API object identity problem. |
 
-Implementation note: the QuickJS Node compatibility adapter code described here has been extracted into `napi/quickjs/src/compat`, with separate source/header pairs by concern.
+## Implementation Home
+
+This note tracks compatibility behavior implemented in EdgeJS runtime source under `src/`. The related N-API compatibility adapters from this cleanup effort have been extracted into `napi/quickjs/src/compat` and are documented under `node-compat/napi`.
 
 ## Source Notes
 

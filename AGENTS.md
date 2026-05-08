@@ -129,12 +129,17 @@ plans/quickjs-wasm/development/troubleshooting/astro-ssr/NNN_<issue_name>.md
 plans/quickjs-wasm/development/troubleshooting/vite-app/NNN_<issue_name>.md
 plans/quickjs-wasm/development/troubleshooting/next-app/NNN_<issue_name>.md
 plans/quickjs-wasm/development/troubleshooting/node-test/NNN_<issue_name>.md
-plans/quickjs-wasm/development/troubleshooting/node-compat/NNN_<issue_name>.md
+plans/quickjs-wasm/development/troubleshooting/node-compat/napi/NNN_<issue_name>.md
+plans/quickjs-wasm/development/troubleshooting/node-compat/edgejs/NNN_<issue_name>.md
+plans/quickjs-wasm/development/troubleshooting/node-compat/deploy/NNN_<issue_name>.md
 plans/quickjs-wasm/development/troubleshooting/wasmer-deploy/NNN_<issue_name>.md
 ```
 
 Choose `astro-ssr`, `vite-app`, `next-app`, or `wasmer-deploy` based on the app
-or deployment path where the issue is reproduced. If a failure affects shared
+or deployment path where the issue is reproduced. Use `node-compat/napi`,
+`node-compat/edgejs`, or `node-compat/deploy` when the issue is primarily a
+shared Node compatibility adaptation owned by the QuickJS N-API layer, EdgeJS
+runtime source, or deployment/package layout. If a failure affects shared
 QuickJS runtime behavior, still file the troubleshooting note under the app or
 deploy path that exposed it, then cross-reference any shared development note it
 updates.
@@ -206,7 +211,7 @@ plans/quickjs-wasm/development/troubleshooting/node-test/016_whatwg_url_inspect_
 Most recent Node compatibility troubleshooting note:
 
 ```text
-plans/quickjs-wasm/development/troubleshooting/node-compat/018_pnpm_deploy_graph_materialization.md
+plans/quickjs-wasm/development/troubleshooting/node-compat/deploy/018_pnpm_deploy_graph_materialization.md
 ```
 
 Most recent Wasmer deploy troubleshooting note:

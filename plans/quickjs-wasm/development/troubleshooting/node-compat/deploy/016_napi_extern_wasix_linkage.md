@@ -5,7 +5,9 @@
 | **Status** | ▶️ | Open cleanup issue. |
 | **Severity** | Medium | Correct but easy to forget on future targets. |
 
-Implementation note: the QuickJS Node compatibility adapter code described here has been extracted into `napi/quickjs/src/compat`, with separate source/header pairs by concern.
+## Implementation Home
+
+This note tracks deployment, build, or package-layout compatibility behavior. The related N-API compatibility adapters from this cleanup effort have been extracted into `napi/quickjs/src/compat` and are documented under `node-compat/napi`.
 
 ## Source Notes
 
