@@ -15,9 +15,9 @@ Avoid restating issue details in index pages. Link to the issue page instead.
 
 ## Canonical Issue Registries
 
-- [Troubleshooting registry](troubleshooting/index.md)
-- [Node compatibility known issues](troubleshooting/node-compat/index.md)
-- [Node test known issues](troubleshooting/node-test/index.md)
+- [Troubleshooting registry](troubleshooting/README.md)
+- [Node compatibility known issues](troubleshooting/node-compat/README.md)
+- [Node test known issues](troubleshooting/node-test/README.md)
 - [Astro SSR issues](troubleshooting/astro-ssr/)
 - [Vite app issues](troubleshooting/vite-app/)
 - [Next app issues](troubleshooting/next-app/)

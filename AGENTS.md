@@ -14,7 +14,7 @@ work has been in the `napi` submodule/worktree, especially:
 When resuming this work, start with:
 
 ```text
-plans/quickjs-wasm/development/index.md
+plans/quickjs-wasm/development/README.md
 ```
 
 That file indexes the development phases:
@@ -181,7 +181,7 @@ for example:
 ```
 
 ```text
-plans/quickjs-wasm/development/troubleshooting/index.md
+plans/quickjs-wasm/development/troubleshooting/README.md
 ```
 
 Most recent Astro SSR troubleshooting plan:

@@ -16,11 +16,11 @@ internals.
 
 ## Areas
 
-- [N-API known issues](napi/index.md): QuickJS N-API behavior, intentional
+- [N-API known issues](napi/README.md): QuickJS N-API behavior, intentional
   non-Node behavior, and focused internal subsystems under `napi/quickjs/src/internal`.
-- [EdgeJS runtime](edgejs/index.md): work that belongs in EdgeJS runtime source
+- [EdgeJS runtime](edgejs/README.md): work that belongs in EdgeJS runtime source
   or JavaScript bootstrap code under `src/` and `lib/`.
-- [Deploy and packaging](deploy/index.md): build, packaging, npm graph, and
+- [Deploy and packaging](deploy/README.md): build, packaging, npm graph, and
   deployment issues.
 
 ## Current Status
