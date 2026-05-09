@@ -68,7 +68,7 @@ That CommonJS file re-exports values dynamically through
 does not currently declare. The missing `create` export was therefore caused by
 resolving the package to its CommonJS fallback instead of the ESM import target.
 
-## Fix
+## Current Status
 
 Updated the QuickJS package exports scanner so it handles the Zustand export
 shape. The current shared implementation lives in
@@ -93,7 +93,7 @@ The considered causes were:
 The actual cause was package export condition/wildcard resolution selecting the
 CommonJS fallback.
 
-## Plan
+## Status Notes
 
 Investigated with the narrowest checks before changing runtime code:
 

@@ -1,5 +1,10 @@
 # Compile-time trace diagnostics
 
+| | | Remarks |
+| --- | --- | --- |
+| **Status** | 🟢 | Historical trace macro cleanup task. |
+| **Severity** | Low | Diagnostic naming does not block runtime behavior. |
+
 ## Scope
 
 Preserve the native C/C++ tracing that helped diagnose QuickJS TTY, HTTP, stream,
@@ -27,7 +32,7 @@ Known trace switches currently covered:
 - `EDGE_TRACE_QUICKJS_MODULES`
 - `EDGE_TRACE_TTY`
 
-## Verification Needed
+## Verification Status
 
 After rebuild, check that there are no raw `std::getenv("EDGE_TRACE_...")`
 checks left in `src/` or `napi/quickjs/src/`:
@@ -44,7 +49,7 @@ set to `0` and the QuickJS smoke tests still pass.
 Code ownership for this subtask spans trace call sites in `src/` and
 `napi/quickjs/src/`, plus the new trace headers and CMake compile definitions.
 
-## Review 2026-05-07
+## Status Notes 2026-05-07
 
 Lightweight read-only review checked:
 

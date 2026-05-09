@@ -69,7 +69,7 @@ The existing bundled CJS Astro path has already avoided this dependency behavior
 by using `edge-depd-stub.cjs`, but the native ESM SSR entry currently imports
 the real `depd` package.
 
-## Fix
+## Current Status
 
 Updated `quickjs/quickjs.c` so `build_backtrace(...)` reads the public
 `Error.prepareStackTrace` property at stack-build time, falling back to the

@@ -1,15 +1,31 @@
 # Node Compatibility Troubleshooting
 
-This directory is the compatibility-adaptation registry for the QuickJS WASIX work. The old flat compatibility notes have been sorted by implementation home so a future reader can jump from documentation to code without guessing where the behavior lives.
+| | | Remarks |
+| --- | --- | --- |
+| **Status** | ▶️ | Node compatibility known-issue registry. |
+| **Severity** | Low | Documentation registry only; individual issue pages carry runtime severity. |
 
-The N-API QuickJS compatibility adapter code has been extracted into `napi/quickjs/src/compat`, with separate source/header pairs by concern. The per-pair rationale articles are in [napi](napi/index.md).
+This directory is the known-issue registry for Node compatibility in the
+QuickJS WASIX work. It does not describe a C++ compatibility layer. Each page
+records the current incompatibility, status, and ownership boundary.
+
+Some issues are intentionally accepted for now because the QuickJS N-API backend
+is not trying to be a full Node runtime. Others are active work items for
+EdgeJS bootstrap/runtime code, deployment tooling, or focused QuickJS N-API
+internals.
 
 ## Areas
 
-- [N-API adapters](napi/index.md): behavior implemented under `napi/quickjs/src/compat` or closely tied to the QuickJS N-API runtime.
-- [EdgeJS runtime](edgejs/index.md): behavior implemented under `src/`.
-- [Deploy and packaging](deploy/index.md): build, packaging, npm graph, and deployment adaptations.
+- [N-API known issues](napi/index.md): QuickJS N-API behavior, intentional
+  non-Node behavior, and focused internal subsystems under `napi/quickjs/src/internal`.
+- [EdgeJS runtime](edgejs/index.md): work that belongs in EdgeJS runtime source
+  or JavaScript bootstrap code under `src/` and `lib/`.
+- [Deploy and packaging](deploy/index.md): build, packaging, npm graph, and
+  deployment issues.
 
-## Current Focus
+## Current Status
 
-The main cleanup direction is to keep compatibility behavior organized by concern, route module loading through Node's JavaScript loaders/translators where possible, and avoid reintroducing broad runtime patches when a focused adapter or proper Node-compatible implementation is available.
+The cleanup direction is to keep QuickJS N-API small and explicit, keep real
+Node-runtime behavior in EdgeJS itself when it is required, and route module
+loading through Node's JavaScript loaders/translators instead of rebuilding
+Node's loader policy in C++.

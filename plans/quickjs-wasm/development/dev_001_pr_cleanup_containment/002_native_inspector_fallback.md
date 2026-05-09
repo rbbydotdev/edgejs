@@ -1,9 +1,14 @@
 # Native inspector fallback
 
+| | | Remarks |
+| --- | --- | --- |
+| **Status** | 🟠 | Native unavailable-inspector fallback exists with known shape limits. |
+| **Severity** | Medium | Public inspector import behavior can affect framework startup and metadata expectations. |
+
 ## Scope
 
-Address Syrus's review comment on `lib/inspector.js`: do not patch the shared JS
-module. Instead, provide a fake/native inspector fallback from C/C++.
+Keep `lib/inspector.js` donor-clean. Provide the unavailable inspector behavior
+from C/C++ instead of patching the shared JavaScript module.
 
 ## Dependencies
 
@@ -48,7 +53,7 @@ Expected:
 false false
 ```
 
-## Review Findings
+## Status Notes
 
 - `require("inspector")` and `require("node:inspector")` return the same native
   fallback object, and `internalBinding("config").hasInspector` /
@@ -64,7 +69,7 @@ false false
   special-case. That is a contract mismatch to resolve or explicitly document if
   any tests or embedders consume the category metadata.
 
-Lightweight probes run during review:
+Lightweight probes:
 
 ```sh
 ./build-edge-quickjs-cli/edge -e "const a=require('inspector'); const b=require('inspector'); const c=require('node:inspector'); console.log(typeof a.Session, a.url()); console.log(a===b, a===c); console.log(process.features.inspector, internalBinding('config').hasInspector);"

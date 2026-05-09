@@ -1,23 +1,25 @@
-# N-API Node Compatibility Adapters
+# N-API Node Compatibility Known Issues
 
-This directory documents the compatibility adapter source pairs under `napi/quickjs/src/compat`. Each article maps one `.h/.cc` pair to the Node behavior it preserves, why QuickJS needs an adapter, and what a better long-term design would look like.
+| | | Remarks |
+| --- | --- | --- |
+| **Status** | ▶️ | Registry for QuickJS N-API compatibility issues and internal subsystem notes. |
+| **Severity** | Low | Documentation registry only; individual issue pages carry runtime severity. |
 
-## Adapter Source Pairs
+This directory records known Node-compatibility issues for the QuickJS N-API
+backend. The issue pages are canonical; this index only carries status,
+severity, and links.
 
-- [Buffer](001_buffer.md): `buffer.{h,cc}`
-- [Console](002_console.md): `console.{h,cc}`
-- [Contextify](003_contextify.md): `contextify.{h,cc}`
-- [Environment](004_environment.md): `environment.{h,cc}`
-- [Global shims](005_global_shims.md): `global_shims.{h,cc}`
-- [Microtasks](006_microtasks.md): `microtasks.{h,cc}`
-- [Module loading](007_module_loading.md): `module_loading.{h,cc}`
-- [Properties](008_properties.md): `properties.{h,cc}`
-- [QuickJS utilities](009_quickjs_utilities.md): `quickjs_utilities.{h,cc}`
-- [Serdes](010_serdes.md): `serdes.{h,cc}`
-
-## Related Engine-Level Notes
-
-These notes also live under the N-API compatibility area because they affect the QuickJS-backed N-API runtime, but they are not one of the extracted adapter source pairs:
-
-- [QuickJS WASIX atomics patch](011_quickjs_wasix_atomics_patch.md)
-- [V8-shaped CallSite methods](013_v8_shaped_callsite_methods.md)
+| Status | Severity | Issue | Topic |
+| --- | --- | --- | --- |
+| 🟠 | Medium | [001_buffer.md](001_buffer.md) | Buffer |
+| 🟠 | Medium | [002_console.md](002_console.md) | Console bootstrap binding |
+| 🟢 | High | [003_contextify.md](003_contextify.md) | Contextify diagnostics |
+| 🟠 | High | [004_environment.md](004_environment.md) | Environment lifecycle |
+| 🟠 | Medium | [005_global_shims.md](005_global_shims.md) | Global shims |
+| 🟢 | High | [006_microtasks.md](006_microtasks.md) | Promise hooks and microtasks |
+| ▶️ | High | [007_module_loading.md](007_module_loading.md) | Module loading |
+| 🟢 | Medium | [008_properties.md](008_properties.md) | Property setting semantics |
+| 🟢 | Low | [009_quickjs_utilities.md](009_quickjs_utilities.md) | QuickJS utility ownership |
+| 🟢 | Medium | [010_serdes.md](010_serdes.md) | Serialization and deserialization |
+| ▶️ | Medium | [011_quickjs_wasix_atomics_patch.md](011_quickjs_wasix_atomics_patch.md) | QuickJS WASIX atomics guard patch |
+| ▶️ | Medium | [013_v8_shaped_callsite_methods.md](013_v8_shaped_callsite_methods.md) | V8-shaped CallSite methods |

@@ -1,5 +1,10 @@
 # Edge QuickJS runtime change containment rollback
 
+| | | Remarks |
+| --- | --- | --- |
+| **Status** | 🟢 | Historical runtime containment and rollback note. |
+| **Severity** | Low | Current known issues are tracked in the troubleshooting registry. |
+
 ## Goal
 
 Rollback the shared EdgeJS runtime directories so they match the upstream

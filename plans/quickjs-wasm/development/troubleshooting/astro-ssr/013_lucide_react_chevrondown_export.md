@@ -54,7 +54,7 @@ That made QuickJS compile the CommonJS bundle as ESM. The static linker then
 could not see `exports.ChevronDown = ...`, so route linking failed before the
 CommonJS runtime body could execute.
 
-## Plan
+## Status Notes
 
 - Reproduced the failure with a focused import of the generated layout chunk.
 - Confirmed the resolver targets `lucide-react/dist/cjs/lucide-react.js`.

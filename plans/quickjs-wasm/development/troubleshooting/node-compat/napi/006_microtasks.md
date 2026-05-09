@@ -1,27 +1,32 @@
-# N-API Compat: Microtasks
+# Known Issue: Promise hooks and microtasks
 
 | | | Remarks |
 | --- | --- | --- |
-| **Status** | ▶️ | Compatibility adapter documented from `napi/quickjs/src/compat/microtasks.{h,cc}`. |
+| **Status** | 🟢 | Implemented as `napi_promises__` under `napi/quickjs/src/internal`; native suites pass. |
 | **Severity** | High | Promise hooks, async context, and job draining affect nearly every async workload. |
 
-## Source Pair
+## Current State
 
-- `napi/quickjs/src/compat/microtasks.h`
-- `napi/quickjs/src/compat/microtasks.cc`
+Promise hook, rejection tracking, and microtask job logic live in:
 
-## What It Does
+- `napi/quickjs/src/internal/napi_promises.h`
+- `napi/quickjs/src/internal/napi_promises.cc`
 
-The microtasks adapter bridges QuickJS pending jobs to the unofficial N-API microtask and foreground-task APIs. It handles promise-hook callbacks, rejection tracking, async-context preservation, and explicit job draining so the QuickJS runtime can approximate the scheduling points expected by Node internals.
+`napi_env__` owns `napi_promises__` directly. The old separate microtask
+compatibility files are gone.
 
-## Why It Is Needed
+## Known Incompatibility
 
-Node/V8 has a well-defined microtask queue integration with promise hooks, async resources, and embedder task scheduling. QuickJS exposes pending jobs differently, so draining must be coordinated from the N-API layer to keep promises, cleanup callbacks, and framework startup tasks progressing. Without this adapter, async behavior can stall or run outside the expected async context.
+Node/V8 has a well-defined microtask queue integration with promise hooks,
+async resources, and embedder task scheduling. QuickJS exposes pending jobs
+differently, so draining must be coordinated from the N-API layer to keep
+promises, cleanup callbacks, and framework startup tasks progressing.
 
-## Could We Do It Better
+## Current Status
 
-The better design is a single scheduler contract owned by the QuickJS N-API environment, with clear rules for when jobs are enqueued, drained, and associated with async context. The user-facing goal remains to move this logic down into the N-API layer and, where necessary, fix the QuickJS implementations of `unofficial_napi_enqueue_microtask`, `unofficial_napi_process_microtasks`, and `unofficial_napi_set_enqueue_foreground_task_callback` rather than leaving drain loops in higher runtime code.
-
-## Reconciled Notes
-
-This article replaces the previous promise-hook and microtask-draining note. The implementation has been extracted into `napi/quickjs/src/compat` and documented by concern.
+Keep this owned by the QuickJS N-API environment with clear rules for when jobs
+are enqueued, drained, and associated with async context. If promise behavior
+regresses, fix `unofficial_napi_enqueue_microtask`,
+`unofficial_napi_process_microtasks`, and
+`unofficial_napi_set_enqueue_foreground_task_callback` in the N-API layer rather
+than adding drain loops in EdgeJS runtime code.

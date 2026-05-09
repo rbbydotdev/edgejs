@@ -1,5 +1,10 @@
 # Node compatibility test failure analysis
 
+| | | Remarks |
+| --- | --- | --- |
+| **Status** | ▶️ | Historical failure clustering; individual failures have node-test issue pages. |
+| **Severity** | High | Node compatibility failures remain significant until the linked issue pages close. |
+
 Date: 2026-05-07
 
 Command under investigation:

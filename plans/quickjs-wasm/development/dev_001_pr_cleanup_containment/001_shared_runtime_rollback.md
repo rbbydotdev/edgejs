@@ -1,5 +1,10 @@
 # Shared runtime rollback
 
+| | | Remarks |
+| --- | --- | --- |
+| **Status** | 🟢 | Historical containment task. |
+| **Severity** | Low | Current issues are tracked in troubleshooting pages. |
+
 ## Scope
 
 Restore these directories from `~/src/dev/wasmer-io/edgejs`:
@@ -9,12 +14,12 @@ Restore these directories from `~/src/dev/wasmer-io/edgejs`:
 - `napi/src/`
 - `napi/include/`
 
-This addresses the PR cleanup request that QuickJS-only changes should not live
-in shared EdgeJS library code, V8 provider code, or common N-API code.
+This records the containment policy that QuickJS-only changes should not live in
+shared EdgeJS library code, V8 provider code, or common N-API code.
 
 ## Status
 
-Done locally.
+Local status: completed.
 
 ## Verification
 

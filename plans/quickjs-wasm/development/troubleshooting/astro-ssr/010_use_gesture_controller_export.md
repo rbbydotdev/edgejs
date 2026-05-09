@@ -62,7 +62,7 @@ Node also resolves this package to the CJS default because the package does not
 declare an `import` condition, but this Astro/Vite SSR bundle uses the package's
 legacy `module` condition as the ESM target.
 
-## Fix
+## Current Status
 
 Updated the QuickJS package exports scanner so it prefers runtime targets in
 this order. The current shared implementation lives in
@@ -76,7 +76,7 @@ The same order is used for legacy package entry candidates. This keeps the
 runtime compatible with bundler-oriented packages that expose ESM through
 `module` without an explicit `import` condition.
 
-## Plan
+## Status Notes
 
 Investigated with narrow checks before changing runtime code:
 

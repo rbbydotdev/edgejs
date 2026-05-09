@@ -1,23 +1,29 @@
-# N-API Compat: Properties
+# Known Issue: Property setting semantics
 
 | | | Remarks |
 | --- | --- | --- |
-| **Status** | ▶️ | Compatibility adapter documented from `napi/quickjs/src/compat/properties.{h,cc}`. |
+| **Status** | 🟢 | Implemented as focused QuickJS N-API internal property-setting logic. |
 | **Severity** | Medium | Property assignment differences can surface as surprising N-API behavior. |
 
-## Source Pair
+## Current State
 
-- `napi/quickjs/src/compat/properties.h`
-- `napi/quickjs/src/compat/properties.cc`
+Property setting logic lives in:
 
-## What It Does
+- `napi/quickjs/src/internal/napi_set_property.h`
+- `napi/quickjs/src/internal/napi_set_property.cc`
 
-The properties adapter provides Node-compatible assignment behavior for cases where QuickJS would reject a write through the normal property path. In particular, it can define an own property when the inherited property shape would otherwise make a Node/V8-style N-API set operation fail unexpectedly.
+`js_native_api_quickjs.cc` delegates through this focused internal helper rather
+than carrying local property semantics.
 
-## Why It Is Needed
+## Known Incompatibility
 
-N-API callers expect property operations to follow Node/V8 behavior, not raw QuickJS descriptor semantics in every edge case. Libraries that attach state to objects during initialization can trip over inherited readonly or accessor-only properties if the backend simply forwards to QuickJS. This adapter keeps the compatibility rule in one place and documents that the divergence is intentional.
+N-API callers expect property operations to follow Node/V8 behavior, not raw
+QuickJS descriptor semantics in every edge case. Libraries that attach state to
+objects during initialization can trip over inherited readonly or accessor-only
+properties if the backend simply forwards to QuickJS.
 
-## Could We Do It Better
+## Current Status
 
-The cleaner design is to make every public N-API property setter route through a small, tested property semantics layer. That layer should describe when QuickJS behavior is preserved and when V8 compatibility wins. If future QuickJS wrappers model Node object shapes more accurately, this adapter should shrink to only the truly observable V8 differences.
+Keep public N-API property setters routed through this tested property semantics
+layer. The layer should document when QuickJS behavior is preserved and when
+Node/V8 observable behavior is intentionally matched.

@@ -1,5 +1,10 @@
 # Edge QuickJS framework standalone builds
 
+| | | Remarks |
+| --- | --- | --- |
+| **Status** | 🟠 | Historical standalone build findings. |
+| **Severity** | Low | Current standalone issues are tracked under app-specific troubleshooting pages. |
+
 ## Context
 
 `006_framework_app_adapters.md` captured the first working framework-app path for Edge QuickJS:

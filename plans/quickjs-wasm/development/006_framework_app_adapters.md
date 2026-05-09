@@ -1,5 +1,10 @@
 # Edge QuickJS web app enablement for Astro, Vite, and Next.js
 
+| | | Remarks |
+| --- | --- | --- |
+| **Status** | 🟠 | Historical framework adapter exploration. |
+| **Severity** | Low | Current app-specific issues are tracked under `troubleshooting/`. |
+
 ## Context
 
 `001_merge_analysis.md` through `005_wasix_wasmer_http.md` cover the

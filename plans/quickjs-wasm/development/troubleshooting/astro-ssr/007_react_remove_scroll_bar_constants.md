@@ -59,7 +59,7 @@ for bare package entries and subpaths, but its directory handling only tried
 `index` files. It did not inspect a package subpath directory's own
 `package.json`, so it missed this published entrypoint.
 
-## Fix
+## Current Status
 
 Updated the QuickJS package resolver so `TryResolvePackageSubpath(...)` tries a
 subpath directory's own package entry metadata when parent package `exports` do
@@ -71,7 +71,7 @@ fallback narrow:
 - only actual directory subpaths get the nested package entry fallback;
 - normal file and `index` fallback behavior remains unchanged.
 
-## Plan
+## Status Notes
 
 Investigated with narrow import checks before changing runtime code:
 

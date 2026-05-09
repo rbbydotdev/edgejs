@@ -155,7 +155,7 @@ find . -type d -name .pnpm -print
 rg -n 'node_modules/\.pnpm/.+/node_modules/' .
 ```
 
-## Resolution
+## Current Status
 
 `~/src/dev/stackmachine.com/scripts/prepare-edge-deploy.cjs` now
 creates a flattened deploy artifact:

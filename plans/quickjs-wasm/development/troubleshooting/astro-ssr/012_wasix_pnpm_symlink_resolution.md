@@ -58,7 +58,7 @@ path components inside a Wasmer-mounted directory. The runtime should resolve
 symlink components before checking candidate package files, so
 `/app/node_modules/react/index.js` is tested through its real pnpm store path.
 
-## Plan
+## Status Notes
 
 - Keep the fix in the QuickJS runtime module resolver.
 - Add a small path helper that follows symlink components lexically before

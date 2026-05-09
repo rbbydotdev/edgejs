@@ -43,7 +43,7 @@ This is separate from the `depd` stack compatibility issue: a focused
 `require('depd')('x')` check now succeeds, and the Astro entry reaches this
 later import-time failure.
 
-## Fix
+## Current Status
 
 Implemented the narrow runtime-level fallback option in `src/edge_runtime.cc`.
 During early runtime bootstrap, before the `process` object is installed, EdgeJS

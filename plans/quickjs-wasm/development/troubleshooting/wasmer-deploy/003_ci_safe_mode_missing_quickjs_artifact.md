@@ -47,7 +47,7 @@ No such file or directory
 5. Verify the edited Makefile targets and safe-mode test script syntax locally;
    full WASIX execution still requires the CI Wasmer/WASIX toolchain.
 
-## Fix
+## Current Status
 
 The root `wasmer.toml` has since been restored to the main V8 Edge package and
 must stay that way. QuickJS packaging now belongs to the separate

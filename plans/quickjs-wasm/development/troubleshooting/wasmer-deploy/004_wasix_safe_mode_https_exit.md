@@ -40,7 +40,7 @@ process task work after the libuv loop briefly appears idle to the Edge runtime.
 5. Rebuild once inside a Linux Docker container with the CI wasixcc release and
    sysroot tag.
 
-## Fix
+## Current Status
 
 `RunEventLoopUntilQuiescent(...)` now drains all runtime-visible JavaScript task
 queues during its idle grace window and after `beforeExit`, rather than draining

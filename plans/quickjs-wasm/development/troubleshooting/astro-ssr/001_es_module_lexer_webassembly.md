@@ -48,7 +48,7 @@ The existing bundled CJS path already avoids this by aliasing:
 The `es-module-lexer/js` export resolves to the pure JS build and has already
 been verified to import successfully under the QuickJS Edge CLI.
 
-## Plan
+## Status Notes
 
 Implement a QuickJS-only resolver compatibility alias in:
 

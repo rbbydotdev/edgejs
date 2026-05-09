@@ -1,23 +1,30 @@
-# N-API Compat: QuickJS Utilities
+# Known Issue: QuickJS utility ownership
 
 | | | Remarks |
 | --- | --- | --- |
-| **Status** | ▶️ | Compatibility utilities documented from `napi/quickjs/src/compat/quickjs_utilities.{h,cc}`. |
+| **Status** | 🟢 | Shared utilities moved to `napi_util__` under `napi/quickjs/src/internal`. |
 | **Severity** | Low | Shared helpers are not a feature by themselves, but mistakes here spread widely. |
 
-## Source Pair
+## Current State
 
-- `napi/quickjs/src/compat/quickjs_utilities.h`
-- `napi/quickjs/src/compat/quickjs_utilities.cc`
+Shared QuickJS helpers live in:
 
-## What It Does
+- `napi/quickjs/src/internal/napi_util.h`
+- `napi/quickjs/src/internal/napi_util.cc`
 
-The utilities pair holds shared helpers used by the other compatibility adapters. This includes QuickJS value handling, string conversion, file URL and path conversion, source loading, symlink-sensitive path work, and small wrappers that keep adapter code from duplicating fragile QuickJS boilerplate.
+The helpers were renamed to lower_case style, redundant code was removed, and
+call sites now use the internal utility class instead of removed compatibility
+files.
 
-## Why It Is Needed
+## Known Incompatibility
 
-The compatibility layer touches module loading, contextify, serialization, globals, and environment state. All of those areas need similar low-level conversions between C++ strings, filesystem paths, JS values, and QuickJS atoms. A separate utility pair keeps those mechanics out of the concern-specific adapters and reduces the risk that each adapter invents slightly different path or value handling.
+This is not a user-visible Node compatibility issue by itself. The risk is that
+path handling, value conversion, atom handling, or source loading can drift if
+each subsystem invents its own QuickJS boilerplate.
 
-## Could We Do It Better
+## Current Status
 
-This file should remain deliberately boring. Over time, pure helpers that are not compatibility-specific can move into `napi/quickjs/src/internal`, while loader-specific helpers can stay near module loading. The main improvement is to keep drawing the line between general QuickJS utilities and Node-compatibility policy so this file does not become another unstructured dumping ground.
+Keep `napi_util__` deliberately boring. General QuickJS mechanics can live
+there, while Node policy should stay in EdgeJS runtime/bootstrap code or in the
+focused subsystem that owns the behavior. Avoid turning utilities into a policy
+dumping ground.

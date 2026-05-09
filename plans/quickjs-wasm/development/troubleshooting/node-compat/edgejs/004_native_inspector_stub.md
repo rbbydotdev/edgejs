@@ -1,33 +1,33 @@
-# Compatibility Adapter: Native unavailable `inspector` stub
+# Known Issue: Native unavailable `inspector` stub
 
 | | | Remarks |
 | --- | --- | --- |
-| **Status** | ▶️ | Open cleanup issue. |
+| **Status** | 🟠 | Native unavailable-inspector module exists with known shape limits. |
 | **Severity** | Medium | Makes imports work while the runtime still has no real inspector. |
 
-## Implementation Home
+## Current State
 
-This note tracks compatibility behavior implemented in EdgeJS runtime source under `src/`. The related N-API compatibility adapters from this cleanup effort have been extracted into `napi/quickjs/src/compat` and are documented under `node-compat/napi`.
+This issue belongs to EdgeJS runtime/bootstrap code, not QuickJS N-API.
 
 ## Source Notes
 
 - `plans/quickjs-wasm/development/troubleshooting/next-app/002_standalone_inspector_stub.md`
 - `plans/quickjs-wasm/development/dev_001_pr_cleanup_containment/002_native_inspector_fallback.md`
 
-## What Is The Compatibility Adapter
+## Known Incompatibility
 
 `require("inspector")` and `require("node:inspector")` return a native fallback
 object even though `internalBinding("config").hasInspector` and
 `process.features.inspector` remain false. Passive APIs no-op; active APIs throw
 inspector-unavailable errors.
 
-## Why It Is Suspect
+## Risk
 
 The module is publicly loadable while builtin metadata can still say it cannot
 be required. The fallback `Session` is smaller than Node's real object and does
 not fully behave like an `EventEmitter`.
 
-## How To Do It Better
+## Current Status
 
 Define the contract explicitly: absent inspector, or a documented unavailable
 inspector module. If the module is present, make metadata agree with `require()`

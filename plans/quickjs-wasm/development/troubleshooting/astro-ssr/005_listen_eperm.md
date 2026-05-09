@@ -71,7 +71,7 @@ The available V8-backed Edge binary shows the same pattern: sandboxed
 `127.0.0.1` and `::1` binds fail with `EPERM`, while both succeed outside the
 sandbox. That comparison rules out a QuickJS-specific TCP bind regression.
 
-## Plan
+## Status Notes
 
 Investigate with the narrowest server-listen repro before changing runtime code:
 

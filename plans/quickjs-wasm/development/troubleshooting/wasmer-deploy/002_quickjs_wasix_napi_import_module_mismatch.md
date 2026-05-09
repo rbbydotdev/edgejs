@@ -39,7 +39,7 @@ objects that referenced the same unresolved N-API calls through the default
 `env` import module. `wasm-ld` rejects the same symbol being imported from two
 different modules.
 
-## Fix
+## Current Status
 
 For `EDGE_NAPI_PROVIDER=quickjs`, `edge_environment_core` now compiles with:
 

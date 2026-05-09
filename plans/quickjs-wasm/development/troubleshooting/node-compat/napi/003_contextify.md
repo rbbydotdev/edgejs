@@ -1,27 +1,32 @@
-# N-API Compat: Contextify
+# Known Issue: Contextify diagnostics
 
 | | | Remarks |
 | --- | --- | --- |
-| **Status** | ▶️ | Compatibility adapter documented from `napi/quickjs/src/compat/contextify.{h,cc}`. |
+| **Status** | 🟢 | Implemented as `napi_contextify__` under `napi/quickjs/src/internal`. |
 | **Severity** | High | Contextify is central to script compilation, source metadata, and framework bootstraps. |
 
-## Source Pair
+## Current State
 
-- `napi/quickjs/src/compat/contextify.h`
-- `napi/quickjs/src/compat/contextify.cc`
+Contextify helpers and state live in:
 
-## What It Does
+- `napi/quickjs/src/internal/napi_contextify.h`
+- `napi/quickjs/src/internal/napi_contextify.cc`
 
-The contextify adapter carries helper logic for QuickJS-backed script compilation and error annotation. It translates QuickJS compile/runtime failures into the metadata shape expected by the V8-style contextify surface, including filenames, source positions, and source-map-related details used by diagnostics.
+`napi_env__` owns `napi_contextify__`. Source-map settings and callback state
+are kept with that class instead of in removed compatibility files.
 
-## Why It Is Needed
+## Known Incompatibility
 
-Node's contextify APIs sit under `vm`, internal loaders, and framework bootstraps. QuickJS can compile and evaluate scripts, but its diagnostics and context model do not naturally match the V8 objects that Node internal code expects. Keeping this translation in a dedicated adapter makes the mismatch explicit and keeps `unofficial_napi.cc` focused on the public symbol surface.
+Node's contextify APIs sit under `vm`, internal loaders, and framework
+bootstraps. QuickJS can compile and evaluate scripts, but its diagnostics and
+context model do not naturally match V8 objects. Compile-time failures can be
+annotated while QuickJS still exposes useful metadata. A caught `Error` returned
+from JavaScript does not currently provide the same reliable V8-style message
+object for preserved source-map output.
 
-## Could We Do It Better
+## Current Status
 
-A fuller design would model contextify as a small QuickJS subsystem with explicit compiled-script objects, cache-data policy, source-map state, and structured diagnostics. That would be easier to test than one-off translation helpers. It would also make it clearer which V8-specific features are supported, approximated, or intentionally unavailable on QuickJS.
-
-## Reconciled Notes
-
-This article replaces the earlier root-level contextify bootstrap compatibility note. The implementation has been extracted into `napi/quickjs/src/compat` and is now documented by concern.
+A fuller design should keep contextify as a small QuickJS subsystem with
+explicit compiled-script objects, cache-data policy, source-map state, and
+structured diagnostics. The documentation and tests should clearly separate
+supported QuickJS diagnostics from V8-only caught-error formatting.

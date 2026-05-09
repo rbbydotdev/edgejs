@@ -168,7 +168,7 @@ QuickJS is caused by `require("v8")` loading `lib/v8.js`, which assumes
 empty serdes binding, so the builtin throws before Next's standalone server can
 start.
 
-## Resolution
+## Current Status
 
 `napi/quickjs/src/unofficial_napi.cc` now exports QuickJS-backed `Serializer`
 and `Deserializer` constructors from `internalBinding("serdes")`. Native and

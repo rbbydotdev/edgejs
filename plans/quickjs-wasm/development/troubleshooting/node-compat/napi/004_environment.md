@@ -1,27 +1,26 @@
-# N-API Compat: Environment
+# Known Issue: Environment lifecycle
 
 | | | Remarks |
 | --- | --- | --- |
-| **Status** | ▶️ | Compatibility adapter documented from `napi/quickjs/src/compat/environment.{h,cc}`. |
+| **Status** | 🟠 | Removed environment side code; remaining state belongs on `napi_env__` and internal classes. |
 | **Severity** | High | Environment lifecycle state affects cleanup, teardown, stack limits, and runtime stability. |
 
-## Source Pair
+## Current State
 
-- `napi/quickjs/src/compat/environment.h`
-- `napi/quickjs/src/compat/environment.cc`
+Environment state is no longer carried by a separate compatibility directory.
+The current direction is direct ownership on `napi_env__` plus focused internal
+classes such as `napi_promises__`, `napi_contextify__`, and `napi_serdes__`.
 
-## What It Does
+## Known Incompatibility
 
-The environment adapter owns QuickJS-specific side state associated with an N-API environment. It tracks cleanup and destroy callbacks, promise-hook and async-context state, stack-size configuration, and runtime-lifetime decisions that do not fit cleanly in the public `napi_env` entry points.
+Node's N-API assumes a rich environment lifecycle with deterministic cleanup
+hooks and V8-backed runtime services. QuickJS exposes different primitives, so
+cleanup, task draining, stack limits, and release still need careful ownership.
+The disabled `JS_FreeRuntime(...)` path remains a known teardown issue while
+QuickJS GC-owned lifetime problems are unresolved.
 
-## Why It Is Needed
+## Current Status
 
-Node's N-API assumes a rich environment lifecycle with deterministic cleanup hooks and V8-backed runtime services. QuickJS exposes different primitives, so the backend needs a compatibility state object to bridge env creation, cleanup, task draining, and release. This is also where current teardown limitations are contained, including the known disabled `JS_FreeRuntime(...)` path while GC-owned lifetime issues remain unresolved.
-
-## Could We Do It Better
-
-The better endpoint is to move more of this state into the concrete QuickJS `napi_env__` implementation with RAII ownership and a tested teardown sequence. Re-enabling `JS_FreeRuntime(...)` should be treated as a lifecycle fix, not as a local cleanup toggle. Stack sizing and callback queues should also become explicit environment configuration rather than loosely coupled compatibility state.
-
-## Reconciled Notes
-
-This article reconciles the previous disabled-runtime-free and stack-guard notes. The relevant compatibility behavior is now represented by the environment adapter under `napi/quickjs/src/compat`.
+Re-enable `JS_FreeRuntime(...)` only as part of a tested lifecycle fix. Stack
+sizing, cleanup queues, task queues, and internal subsystem ownership should be
+explicit environment configuration or RAII state, not side tables.

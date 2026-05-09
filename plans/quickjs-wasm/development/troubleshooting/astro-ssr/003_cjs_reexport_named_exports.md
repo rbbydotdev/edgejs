@@ -83,7 +83,7 @@ flow back to Node's JS loaders/translators. The behavior is valid runtime
 plumbing; the older ad hoc JSON/package parsing and broad CJS heuristics are
 the pieces that should be treated as technical debt.
 
-## Fix
+## Current Status
 
 CommonJS named export discovery was moved out of `unofficial_napi.cc` into
 `napi/quickjs/src/quickjs_cjs_exports.cc`. The scanner preserves the direct

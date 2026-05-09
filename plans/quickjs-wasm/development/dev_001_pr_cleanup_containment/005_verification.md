@@ -1,5 +1,10 @@
 # Verification and remaining cleanup
 
+| | | Remarks |
+| --- | --- | --- |
+| **Status** | 🟢 | Historical verification note. |
+| **Severity** | Low | Current verification status is captured by the latest issue pages and test runs. |
+
 ## Scope
 
 Tie together the rollback, native inspector fallback, Intl fallback split, and

@@ -60,7 +60,7 @@ picked the nested key name `types` as though it were a target. It tried to
 resolve a file named `types` and stopped before trying the nested `default`
 runtime target.
 
-## Fix
+## Current Status
 
 Updated the QuickJS package resolver so `TryResolvePackageSubpath(...)` does
 not stop after the first condition string if that candidate does not resolve to

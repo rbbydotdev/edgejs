@@ -1,10 +1,14 @@
 # Intl fallback module
 
+| | | Remarks |
+| --- | --- | --- |
+| **Status** | 🟠 | Minimal Intl fallback exists with known ECMA-402 limits. |
+| **Severity** | Medium | Framework bootstrap can depend on `Intl.DateTimeFormat`, but the fallback is partial. |
+
 ## Scope
 
-Address Syrus's review comment on `src/edge_runtime.cc`: move the minimal
-`Intl.DateTimeFormat` fallback into its own module named
-`edge_intl_fallback.cc`, and implement it with N-API instead of raw JavaScript
+Keep the minimal `Intl.DateTimeFormat` fallback isolated in
+`edge_intl_fallback.cc`, implemented with N-API instead of raw JavaScript
 evaluation.
 
 ## Current Implementation
@@ -28,7 +32,7 @@ Otherwise install a deliberately minimal fallback that supports:
 This fallback is only meant to unblock framework bootstrap formatting, not to
 claim full ECMA-402 compatibility.
 
-## Verification Needed
+## Verification Status
 
 After rebuild, run:
 
@@ -47,9 +51,9 @@ string 2-digit
 Code ownership for this subtask is `src/edge_intl_fallback.{h,cc}`,
 `src/edge_runtime.cc`, and the `edge_runtime` source list in `CMakeLists.txt`.
 
-## Review Notes
+## Status Notes
 
-2026-05-07 source review, with no source edits:
+2026-05-07 source inspection, with no source edits:
 
 - The fallback has been split into `src/edge_intl_fallback.{h,cc}` and wired
   into the `edge_runtime` target.

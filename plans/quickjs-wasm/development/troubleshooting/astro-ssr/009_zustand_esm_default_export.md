@@ -63,7 +63,7 @@ selected top-level Zustand 5:
 Zustand 5 has named exports such as `create` but no default export, so the
 default import from `@react-three/fiber` failed during module linking.
 
-## Fix
+## Current Status
 
 Updated the QuickJS module path helpers so resolved module filenames are
 canonicalized with `std::filesystem::weakly_canonical(...)` before they are
@@ -81,7 +81,7 @@ The considered causes were:
 The actual cause was non-canonical symlink paths causing package resolution to
 choose the wrong installed dependency version.
 
-## Plan
+## Status Notes
 
 Investigated with narrow checks before changing runtime code:
 

@@ -1,5 +1,10 @@
 # Edge QuickJS WASIX Wasmer run enablement
 
+| | | Remarks |
+| --- | --- | --- |
+| **Status** | 🟢 | Historical WASIX/Wasmer HTTP bring-up note. |
+| **Severity** | Low | Current deploy and stream issues are tracked in troubleshooting pages. |
+
 ## Context
 
 The goal for this phase was to make the QuickJS-backed Edge WASIX build work

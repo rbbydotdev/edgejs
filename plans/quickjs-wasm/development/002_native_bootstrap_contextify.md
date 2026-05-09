@@ -1,5 +1,10 @@
 # QuickJS N-API EdgeJS execution and bootstrap troubleshooting
 
+| | | Remarks |
+| --- | --- | --- |
+| **Status** | 🟢 | Historical bootstrap and contextify investigation. |
+| **Severity** | Low | Current contextify status is tracked in `troubleshooting/node-compat/napi/003_contextify.md`. |
+
 Date: 2026-05-04
 
 ## Scope
@@ -162,7 +167,7 @@ ContextifyScript.prototype
 was `undefined`, and destructuring from it triggered QuickJS `JS_ToObject()` on
 `undefined`.
 
-### Fix
+### Current Status
 
 Changed `ResolveContextifyBinding()` to create `ContextifyScript` with
 `napi_define_class()` and define prototype methods there:
@@ -214,7 +219,7 @@ Node's primordials therefore captured `SymbolAsyncDispose` as `undefined`.
 Later, `_http_server` passed that `undefined` into `assignFunctionName()`, which
 attempted to read `Symbol.prototype.description` from a non-symbol.
 
-### Fix
+### Current Status
 
 Added a QuickJS env initialization shim in
 `/napi/quickjs/src/unofficial_napi.cc`:

@@ -1,13 +1,13 @@
-# Compatibility Adapter: Framework static and ad hoc server adapters
+# Known Issue: Framework static and ad hoc server adapters
 
 | | | Remarks |
 | --- | --- | --- |
-| **Status** | ▶️ | Open cleanup issue. |
+| **Status** | 🟠 | Useful bring-up adapters exist, but framework support boundaries remain explicit. |
 | **Severity** | Low | Useful for bring-up, but not a general framework integration model. |
 
-## Implementation Home
+## Current State
 
-This note tracks deployment, build, or package-layout compatibility behavior. The related N-API compatibility adapters from this cleanup effort have been extracted into `napi/quickjs/src/compat` and are documented under `node-compat/napi`.
+This is a framework deployment issue, not a QuickJS N-API compatibility file.
 
 ## Source Notes
 
@@ -15,18 +15,18 @@ This note tracks deployment, build, or package-layout compatibility behavior. Th
 - `plans/quickjs-wasm/development/007_framework_standalone_builds.md`
 - `plans/quickjs-wasm/development/troubleshooting/vite-app/001_standalone_build.md`
 
-## What Is The Compatibility Adapter
+## Known Incompatibility
 
 Astro and Vite validation used small static or ad hoc server adapters to get
 framework output running under Edge QuickJS.
 
-## Why It Is Suspect
+## Risk
 
 These adapters prove runtime capability, but they can bypass the actual server
 semantics users expect from each framework: routing, headers, streaming, error
 pages, assets, and environment handling.
 
-## How To Do It Better
+## Current Status
 
 Define supported deployment modes per framework: static assets, standalone Node
 server, generated dynamic shell, or unsupported. Generate adapters as tested

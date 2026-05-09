@@ -1,5 +1,10 @@
 # Edge QuickJS REPL TTY troubleshooting
 
+| | | Remarks |
+| --- | --- | --- |
+| **Status** | 🟢 | Historical REPL TTY/readline investigation. |
+| **Severity** | Low | Current promise/microtask status is tracked in node-compat issue pages. |
+
 ## Context
 
 This note captures the debugging session for the QuickJS-backed Edge REPL hang.

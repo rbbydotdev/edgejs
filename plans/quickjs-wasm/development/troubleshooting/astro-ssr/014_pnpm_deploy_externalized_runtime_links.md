@@ -72,7 +72,7 @@ issue: `graphql-ws` imported `graphql` at runtime, but `graphql` was listed only
 under app `devDependencies`. Since `pnpm deploy --prod --legacy` correctly
 omits dev dependencies, the deploy artifact did not include `graphql`.
 
-## Plan
+## Status Notes
 
 - Keep the standard pnpm deploy flow so the artifact remains much smaller than
   the full project tree.
@@ -88,7 +88,7 @@ omits dev dependencies, the deploy artifact did not include `graphql`.
 - Treat this as app deploy packaging glue rather than an Edge QuickJS runtime
   change.
 
-## Resolution
+## Current Status
 
 `~/src/dev/stackmachine.com/scripts/prepare-edge-deploy.cjs` first
 fixed this local `.deploy` failure by building the Astro app, running

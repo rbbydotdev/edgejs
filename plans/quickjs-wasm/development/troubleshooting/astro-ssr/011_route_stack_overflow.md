@@ -46,7 +46,7 @@ This is not an infinite recursion in the app or in package resolution. It is a
 compatibility difference between the default QuickJS stack guard and the depth
 of modern framework/package evaluation plus React SSR rendering.
 
-## Plan
+## Status Notes
 
 The runtime fix is intentionally narrow:
 
