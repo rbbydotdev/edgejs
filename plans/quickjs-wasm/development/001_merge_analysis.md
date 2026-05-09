@@ -1,5 +1,10 @@
 # QuickJS N-API EdgeJS merge analysis
 
+| | | Remarks |
+| --- | --- | --- |
+| **Status** | 🟢 | Historical merge analysis. |
+| **Severity** | Low | Current runtime issues are tracked in troubleshooting pages. |
+
 Date: 2026-05-04
 
 ## Scope

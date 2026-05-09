@@ -43,6 +43,7 @@
 #include "edge_errors_binding.h"
 #include "edge_buffer.h"
 #include "edge_env_loop.h"
+#include "edge_intl_fallback.h"
 #include "edge_crypto.h"
 #include "edge_encoding.h"
 #include "edge_http_parser.h"
@@ -717,143 +718,6 @@ std::string StatusToString(napi_status status) {
     default:
       return "napi_unknown_error";
   }
-}
-
-bool InstallMinimalIntlFallback(napi_env env, std::string* error_out) {
-  if (env == nullptr) return false;
-  napi_value global = nullptr;
-  if (napi_get_global(env, &global) != napi_ok || global == nullptr) {
-    if (error_out != nullptr) *error_out = "Failed to fetch global object for Intl fallback";
-    return false;
-  }
-
-  bool has_intl = false;
-  if (napi_has_named_property(env, global, "Intl", &has_intl) == napi_ok && has_intl) {
-    napi_value intl = nullptr;
-    if (napi_get_named_property(env, global, "Intl", &intl) == napi_ok && intl != nullptr) {
-      bool has_date_time_format = false;
-      if (napi_has_named_property(env, intl, "DateTimeFormat", &has_date_time_format) == napi_ok &&
-          has_date_time_format) {
-        napi_value date_time_format = nullptr;
-        napi_valuetype type = napi_undefined;
-        if (napi_get_named_property(env, intl, "DateTimeFormat", &date_time_format) == napi_ok &&
-            date_time_format != nullptr &&
-            napi_typeof(env, date_time_format, &type) == napi_ok &&
-            type == napi_function) {
-          return true;
-        }
-      }
-    }
-  }
-
-  static const char kIntlFallbackSource[] = R"JS(
-(() => {
-  if (typeof globalThis.Intl === 'object' &&
-      globalThis.Intl !== null &&
-      typeof globalThis.Intl.DateTimeFormat === 'function') {
-    return;
-  }
-
-  const pad2 = (value) => {
-    value = Math.floor(Math.abs(Number(value))) || 0;
-    return value < 10 ? '0' + value : String(value);
-  };
-
-  function DateTimeFormat(locales, options) {
-    if (!(this instanceof DateTimeFormat)) {
-      return new DateTimeFormat(locales, options);
-    }
-    options = options == null ? {} : Object(options);
-    Object.defineProperty(this, '__edgeIntlOptions', {
-      __proto__: null,
-      configurable: true,
-      value: {
-        __proto__: null,
-        locale: Array.isArray(locales) && locales.length > 0 ? String(locales[0]) :
-          locales == null ? 'en-US' : String(locales),
-        hour: options.hour,
-        minute: options.minute,
-        second: options.second,
-        hour12: options.hour12 === true,
-      },
-    });
-  }
-
-  DateTimeFormat.prototype.format = function format(value) {
-    const date = value === undefined ? new Date() : new Date(value);
-    if (isNaN(date.getTime())) {
-      return 'Invalid Date';
-    }
-    const options = this && this.__edgeIntlOptions || {};
-    if (!options.hour && !options.minute && !options.second) {
-      return date.toString();
-    }
-
-    let hour = date.getHours();
-    const minute = date.getMinutes();
-    const second = date.getSeconds();
-    if (options.hour12) {
-      const suffix = hour >= 12 ? 'PM' : 'AM';
-      hour %= 12;
-      if (hour === 0) hour = 12;
-      return String(hour) + ':' + pad2(minute) + ':' + pad2(second) + ' ' + suffix;
-    }
-    return pad2(hour) + ':' + pad2(minute) + ':' + pad2(second);
-  };
-
-  DateTimeFormat.prototype.resolvedOptions = function resolvedOptions() {
-    const options = this && this.__edgeIntlOptions || {};
-    return {
-      __proto__: null,
-      locale: options.locale || 'en-US',
-      calendar: 'gregory',
-      numberingSystem: 'latn',
-      hourCycle: options.hour12 ? 'h12' : 'h23',
-      hour12: !!options.hour12,
-      hour: options.hour || '2-digit',
-      minute: options.minute || '2-digit',
-      second: options.second || '2-digit',
-    };
-  };
-
-  DateTimeFormat.supportedLocalesOf = function supportedLocalesOf() {
-    return [];
-  };
-
-  Object.defineProperty(DateTimeFormat.prototype, Symbol.toStringTag, {
-    __proto__: null,
-    configurable: true,
-    value: 'Intl.DateTimeFormat',
-  });
-
-  const intl = (typeof globalThis.Intl === 'object' && globalThis.Intl !== null) ||
-    typeof globalThis.Intl === 'function' ? globalThis.Intl : {};
-  Object.defineProperty(intl, 'DateTimeFormat', {
-    __proto__: null,
-    configurable: true,
-    writable: true,
-    value: DateTimeFormat,
-  });
-  Object.defineProperty(globalThis, 'Intl', {
-    __proto__: null,
-    configurable: true,
-    writable: true,
-    value: intl,
-  });
-})();
-)JS";
-
-  napi_value source = nullptr;
-  napi_value result = nullptr;
-  napi_status status = napi_create_string_utf8(env, kIntlFallbackSource, NAPI_AUTO_LENGTH, &source);
-  if (status == napi_ok && source != nullptr) {
-    status = napi_run_script(env, source, &result);
-  }
-  if (status != napi_ok) {
-    if (error_out != nullptr) *error_out = "Failed to install Intl.DateTimeFormat fallback: " + StatusToString(status);
-    return false;
-  }
-  return true;
 }
 
 std::string GetAndClearPendingException(napi_env env, bool* is_process_exit, int* process_exit_code) {
@@ -2753,7 +2617,7 @@ int RunScriptWithGlobals(napi_env env,
     return 1;
   }
 
-  if (!InstallMinimalIntlFallback(env, error_out)) {
+  if (!EdgeInstallMinimalIntlFallback(env, error_out)) {
     if (error_out != nullptr && error_out->empty()) {
       *error_out = "Failed to install Intl.DateTimeFormat fallback";
     }
@@ -3095,7 +2959,6 @@ int RunScriptWithGlobals(napi_env env,
     }
     return 1;
   }
-
   auto delete_global_named = [&](const char* name) {
     if (name == nullptr) return;
     napi_value key = nullptr;

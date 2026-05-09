@@ -14,7 +14,7 @@ work has been in the `napi` submodule/worktree, especially:
 When resuming this work, start with:
 
 ```text
-plans/quickjs-wasm/development/index.md
+plans/quickjs-wasm/development/README.md
 ```
 
 That file indexes the development phases:
@@ -27,12 +27,16 @@ That file indexes the development phases:
 - `006_framework_app_adapters.md`: Astro, Vite, and Next.js app adapter notes.
 - `007_framework_standalone_builds.md`: framework standalone build notes and remaining runtime
   blockers.
+- `008_runtime_change_containment_rollback.md`: shared runtime rollback containment, native
+  compatibility relocation, and QuickJS WASIX build/linkage notes.
 
 Current useful state:
 
 - Native QuickJS-backed Edge CLI can bootstrap and run the HTTP echo server.
 - REPL input works with persistent history after the promise hook/microtask fix.
 - WASIX Edge QuickJS can run under Wasmer and handle HTTP requests with `--net`.
+- `quickjs-wasm/build.sh` currently builds `build-quickjs-wasix/edge.wasm` and
+  `edgejs.wasm`, and its final no-N-API-imports check passes.
 - The root `wasmer.toml` publishes/uses `sadhbh-c0d3/edgejs-quickjs` at
   `0.0.1`, module `edge`, source `build-quickjs-wasix/edgejs.wasm`.
 - Framework app notes use anonymized paths: `~/src/astro-app`,
@@ -53,6 +57,59 @@ before changing code. While working, keep existing information current: if the
 task discovers new facts about an existing topic, update the existing note
 instead of creating a duplicate.
 
+If the context window reaches 90% while work is in progress, create a new
+development task note under:
+
+```text
+plans/quickjs-wasm/development/NNN_<meaningful_name>.md
+```
+
+Include all information needed to continue the current task: user requests,
+review comments being addressed, files changed, verification already run,
+known failures, and the next concrete steps.
+
+### Generate PDF Documentation
+
+When asked to "Generate PDF documentation", build a polished white-paper/book
+PDF from `plans/quickjs-wasm` and all of its subdirectories.
+
+Use this process:
+
+1. List the plan tree recursively and search the plans for relevant context
+   before generating the document.
+2. Generate temporary Markdown and LaTeX under `/private/tmp`, leaving the
+   source plan notes untouched.
+3. Organize the book by knowledge structure, not raw file order: program
+   definition, chronological development narrative, cleanup/containment
+   subtasks, troubleshooting registry, Astro SSR, Vite app, Next.js, and Wasmer
+   deploy/WASIX packaging.
+4. Preserve all source-note information as chapters or chapter sections, and
+   include source paths for traceability.
+5. Use the title `EdgeJS QuickJS WASIX`, author
+   `Sonia Sadhbh Kolasinska in collaboration with Christoph Herzog, Wasmer`,
+   the current date, and an abstract.
+6. Render through temporary LaTeX with Pandoc and XeLaTeX, rerunning XeLaTeX as
+   needed for the table of contents.
+7. Preserve literal tilde characters in paths and code examples; do not rewrite
+   `~` as math such as `$\sim$`.
+8. Write the final PDF into `plans/quickjs-wasm/`.
+
+## Experimental Rules
+
+### Experimental 001: Parallel Development Subtasks
+
+For larger development work, split the task into a development task directory:
+
+```text
+plans/quickjs-wasm/development/dev_<number>_<meaningful-name>/<subtask-number>_<meaningful-name>.md
+```
+
+Each subtask note should record scope, dependencies, write ownership, status,
+verification expectations, and enough context for an independent worker to
+continue safely. Spawn workers intelligently based on dependency order: only run
+parallel workers for subtasks with disjoint write sets or read-only checks, and
+make each worker aware that others may be active in the same codebase.
+
 Use this heuristic when deciding where documentation belongs:
 
 - Development task: broad implementation progress, integration work, runtime
@@ -71,11 +128,18 @@ plans/quickjs-wasm/development/NNN_<meaningful_name>.md
 plans/quickjs-wasm/development/troubleshooting/astro-ssr/NNN_<issue_name>.md
 plans/quickjs-wasm/development/troubleshooting/vite-app/NNN_<issue_name>.md
 plans/quickjs-wasm/development/troubleshooting/next-app/NNN_<issue_name>.md
+plans/quickjs-wasm/development/troubleshooting/node-test/NNN_<issue_name>.md
+plans/quickjs-wasm/development/troubleshooting/node-compat/napi/NNN_<issue_name>.md
+plans/quickjs-wasm/development/troubleshooting/node-compat/edgejs/NNN_<issue_name>.md
+plans/quickjs-wasm/development/troubleshooting/node-compat/deploy/NNN_<issue_name>.md
 plans/quickjs-wasm/development/troubleshooting/wasmer-deploy/NNN_<issue_name>.md
 ```
 
 Choose `astro-ssr`, `vite-app`, `next-app`, or `wasmer-deploy` based on the app
-or deployment path where the issue is reproduced. If a failure affects shared
+or deployment path where the issue is reproduced. Use `node-compat/napi`,
+`node-compat/edgejs`, or `node-compat/deploy` when the issue is primarily a
+shared Node compatibility adaptation owned by the QuickJS N-API layer, EdgeJS
+runtime source, or deployment/package layout. If a failure affects shared
 QuickJS runtime behavior, still file the troubleshooting note under the app or
 deploy path that exposed it, then cross-reference any shared development note it
 updates.
@@ -117,7 +181,7 @@ for example:
 ```
 
 ```text
-plans/quickjs-wasm/development/troubleshooting/index.md
+plans/quickjs-wasm/development/troubleshooting/README.md
 ```
 
 Most recent Astro SSR troubleshooting plan:
@@ -138,10 +202,22 @@ Most recent Next app troubleshooting note:
 plans/quickjs-wasm/development/troubleshooting/next-app/003_route_stack_exhausted.md
 ```
 
+Most recent Node test troubleshooting note:
+
+```text
+plans/quickjs-wasm/development/troubleshooting/node-test/016_whatwg_url_inspect_and_searchparams.md
+```
+
+Most recent Node compatibility troubleshooting note:
+
+```text
+plans/quickjs-wasm/development/troubleshooting/node-compat/deploy/018_pnpm_deploy_graph_materialization.md
+```
+
 Most recent Wasmer deploy troubleshooting note:
 
 ```text
-plans/quickjs-wasm/development/troubleshooting/wasmer-deploy/001_pnpm_directory_symlinks_webc.md
+plans/quickjs-wasm/development/troubleshooting/wasmer-deploy/004_wasix_safe_mode_https_exit.md
 ```
 
 Important commands:
@@ -149,6 +225,7 @@ Important commands:
 ```sh
 make build-edge-quickjs-cli JOBS=4
 cmake --build build-edge-quickjs-cli --target edge -j4
+~/src/dev/edgejs/napi/cargo-standalone.sh test --lib -- --nocapture
 cd /Users/sadhbh/src/dev/edgejs/quickjs-wasm/ && ./build.sh
 wasmer package build --check .
 wasmer run --net .
@@ -157,6 +234,35 @@ wasmer run --net .
 When working on WASIX-impacting changes under `src/`, `lib/`, or
 `napi/quickjs/`, use the `cd /Users/sadhbh/src/dev/edgejs/quickjs-wasm/ &&
 ./build.sh` form for the rebuild.
+
+For Linux-only WASIX failures, use Docker from macOS to reproduce the Linux
+environment. Before starting Docker-based troubleshooting, remind Sadhbh to
+launch the Docker daemon. Check the host's native architecture first; on
+Sadhbh's Apple Silicon machine that means native Linux aarch64. Prefer
+`ubuntu:latest` containers for the native architecture before forcing
+`--platform linux/amd64`; amd64 emulation is much slower. The May 7, 2026
+`build-wasix-linux` safe-mode HTTPS failure was investigated by building inside
+native arm64 `ubuntu:latest` with the aarch64 `wasixcc` v0.4.2 release and
+sysroot tag `v2026-02-16.1`, then running the final CI-matching safe-mode smoke
+suite under Linux amd64 Docker with Wasmer 7.1.0.
+
+For embedded QuickJS WASIX builds, targets that include N-API headers before
+linking `napi_quickjs` must compile with `NAPI_EXTERN=`. Without that, wasm
+objects can disagree on the import module for unresolved `napi_*` calls
+(`napi` versus `env`) and fail at the final `wasm-ld` step.
+
+For the standalone N-API Cargo workflow, `napi/Cargo.standalone.toml` is pinned
+to the crates.io `0.701` / `7.1` dependency family so it runs on the default
+Rust 1.91 toolchain. Do not update that standalone manifest to Wasmer
+`7.2.0-alpha.2` / WASIX `0.702.0-alpha.2` just to match the vendored path
+manifest; those crates require Rust 1.92 and make
+`~/src/dev/edgejs/napi/cargo-standalone.sh test --lib -- --nocapture` fail
+before tests start. The standalone wrapper must run from a temporary sibling
+Cargo project, not by rewriting `napi/Cargo.toml` in place; the in-place swap can
+make CI observe the vendored `wasmer-types = 7.2.0-alpha.2` constraint while
+resolving the standalone `7.1.0` graph. Do not copy the vendored `Cargo.lock`
+into the temporary standalone project, because that lockfile may also come from
+the vendored alpha graph.
 
 For QuickJS WASIX smoke testing:
 

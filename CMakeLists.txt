@@ -59,6 +59,10 @@ option(EDGE_PREFER_REPO_LOCAL_V8
   "Prefer the repo-local V8 dist bundle when it exists"
   ON
 )
+option(EDGE_BUILD_NAPI_TESTS
+  "Build the selected embedded N-API provider tests as part of the Edge build"
+  OFF
+)
 option(EDGE_SHARED_OPENSSL
   "Link against a shared/system OpenSSL instead of the vendored OpenSSL"
   OFF
@@ -221,17 +225,20 @@ if(EDGE_NAPI_PROVIDER STREQUAL "bundled-v8")
       endif()
     endif()
   endif()
-  set(NAPI_V8_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+  set(NAPI_V8_BUILD_TESTS "${EDGE_BUILD_NAPI_TESTS}" CACHE BOOL "" FORCE)
   add_subdirectory("${NAPI_V8_ROOT}" "${CMAKE_CURRENT_BINARY_DIR}/napi-v8")
 elseif(EDGE_NAPI_PROVIDER STREQUAL "imports")
   add_library(edge_napi_headers INTERFACE)
   target_include_directories(edge_napi_headers INTERFACE "${NAPI_INCLUDE_ROOT}")
 elseif(EDGE_NAPI_PROVIDER STREQUAL "quickjs")
+  set(EDGE_QUICKJS_ROOT "${PROJECT_ROOT}/napi/quickjs/src/quickjs")
   set(QJS_ENABLE_INSTALL OFF CACHE BOOL "" FORCE)
   set(QJS_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
   set(QJS_BUILD_CLI_STATIC OFF CACHE BOOL "" FORCE)
-  add_subdirectory("${PROJECT_ROOT}/quickjs" "${CMAKE_CURRENT_BINARY_DIR}/quickjs" EXCLUDE_FROM_ALL)
-  set(NAPI_QUICKJS_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+  add_subdirectory("${EDGE_QUICKJS_ROOT}" "${CMAKE_CURRENT_BINARY_DIR}/quickjs" EXCLUDE_FROM_ALL)
+  set(NAPI_QUICKJS_INCLUDE_DIR "${EDGE_QUICKJS_ROOT}" CACHE PATH
+    "Path to QuickJS headers" FORCE)
+  set(NAPI_QUICKJS_BUILD_TESTS "${EDGE_BUILD_NAPI_TESTS}" CACHE BOOL "" FORCE)
   add_subdirectory("${PROJECT_ROOT}/napi/quickjs" "${CMAKE_CURRENT_BINARY_DIR}/napi-quickjs")
 endif()
 
@@ -651,7 +658,7 @@ target_link_libraries(edge_environment_core PUBLIC uv_a)
 if(EDGE_NAPI_PROVIDER STREQUAL "bundled-v8")
   target_compile_definitions(edge_environment_core PUBLIC EDGE_BUNDLED_NAPI_V8=1 EDGE_EMBEDDED_NAPI_PROVIDER=1)
 elseif(EDGE_NAPI_PROVIDER STREQUAL "quickjs")
-  target_compile_definitions(edge_environment_core PUBLIC EDGE_EMBEDDED_NAPI_PROVIDER=1)
+  target_compile_definitions(edge_environment_core PUBLIC EDGE_EMBEDDED_NAPI_PROVIDER=1 NAPI_EXTERN=)
 endif()
 
 set(EDGE_ICU_ROOT "${PROJECT_ROOT}/deps/icu-small")
@@ -795,6 +802,7 @@ endif()
 add_library(edge_runtime STATIC
   src/builtin_catalog.cc
   src/edge_environment_runtime.cc
+  src/edge_intl_fallback.cc
   src/edge_runtime.cc
   src/edge_runtime_platform_v8.cc
   src/edge_node_compat.cc
@@ -968,6 +976,7 @@ target_compile_definitions(edge_runtime
   PRIVATE
     EDGE_HAS_ICU=1
     EDGE_HAS_SMALL_ICU=1
+    EDGE_ENABLE_TRACE_DIAGNOSTICS=$<IF:$<CONFIG:Debug>,1,0>
     EDGE_NODE_SHARED_OPENSSL=${EDGE_NODE_SHARED_OPENSSL}
     EDGE_EMBEDDED_V8_VERSION="${EDGE_EMBEDDED_V8_VERSION}"
     EDGE_VERSION_COMMIT="${EDGE_VERSION_COMMIT}"

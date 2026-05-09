@@ -1,12 +1,14 @@
 #include "edge_stream_listener.h"
 
+#include "edge_trace.h"
+
 #include <cstdio>
 #include <cstdlib>
 
 namespace {
 
 bool TraceNetEnabled() {
-  return std::getenv("EDGE_TRACE_NET") != nullptr;
+  return EDGE_TRACE_ENABLED("EDGE_TRACE_NET");
 }
 
 }

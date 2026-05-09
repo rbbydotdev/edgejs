@@ -1,5 +1,10 @@
 # Edge QuickJS REPL promise hooks and microtasks
 
+| | | Remarks |
+| --- | --- | --- |
+| **Status** | 🟢 | Historical promise hook and microtask investigation. |
+| **Severity** | Low | Current status is tracked in `troubleshooting/node-compat/napi/006_microtasks.md`. |
+
 ## Context
 
 The QuickJS-backed Edge CLI could enter REPL mode only when persistent REPL
@@ -112,7 +117,7 @@ an engine that exposes before/after promise reaction hooks. Our current
 vendored QuickJS does not, so this repo currently needs the source patch unless
 we move to an upstream version with equivalent behavior.
 
-## Fix in our codebase
+## Current Status
 
 ### QuickJS runtime
 

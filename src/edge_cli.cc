@@ -1,5 +1,7 @@
 #include "edge_cli.h"
 
+#include "edge_trace.h"
+
 #include <cctype>
 #include <csignal>
 #include <cstdlib>
@@ -142,7 +144,7 @@ int RunWithFreshEnv(const std::function<int(napi_env)>& runner, std::string* err
   }
 
   const int exit_code = runner(env);
-  if (std::getenv("EDGE_TRACE_BOOTSTRAP") != nullptr) {
+  if (EDGE_TRACE_ENABLED("EDGE_TRACE_BOOTSTRAP")) {
     std::fprintf(stderr,
                  "EDGE_TRACE_BOOTSTRAP runner exit_code=%d error=%s\n",
                  exit_code,

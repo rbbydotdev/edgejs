@@ -59,23 +59,26 @@ for bare package entries and subpaths, but its directory handling only tried
 `index` files. It did not inspect a package subpath directory's own
 `package.json`, so it missed this published entrypoint.
 
-## Fix
+## Current Status
 
-Updated `napi/quickjs/src/unofficial_napi.cc` so
-`TryResolvePackageSubpath(...)` tries a subpath directory's own package entry
-metadata when parent package `exports` do not resolve the subpath. This keeps
-the compatibility fallback narrow:
+Updated the former QuickJS C++ package resolver so `TryResolvePackageSubpath(...)`
+tried a subpath directory's own package entry metadata when parent package
+`exports` did not resolve the subpath. This kept the compatibility fallback
+narrow:
 
 - parent package `exports` still win first;
 - only actual directory subpaths get the nested package entry fallback;
 - normal file and `index` fallback behavior remains unchanged.
 
-## Plan
+Later cleanup removed the remaining QuickJS C++ CommonJS facade/module-loader
+support, so this note is historical context rather than a pointer to live code.
+
+## Status Notes
 
 Investigated with narrow import checks before changing runtime code:
 
 - inspected `react-remove-scroll-bar` package metadata and files in
-  `/Users/sadhbh/src/dev/stackmachine.com/node_modules`;
+  `~/src/dev/stackmachine.com/node_modules`;
 - ran a focused QuickJS Edge import check for
   `react-remove-scroll-bar/constants`;
 - compared against native Node CommonJS and ESM resolution;
@@ -94,16 +97,16 @@ Investigated with narrow import checks before changing runtime code:
 Focused import check:
 
 ```sh
-cd /Users/sadhbh/src/dev/stackmachine.com
-/Users/sadhbh/src/dev/edgejs/build-edge-quickjs-cli/edge \
+cd ~/src/dev/stackmachine.com
+~/src/dev/edgejs/build-edge-quickjs-cli/edge \
   -e "import('react-remove-scroll-bar/constants').then(m=>console.log('loaded', Object.keys(m).length)).catch(e=>{ console.error(e && (e.stack || e.message || e)); process.exitCode = 1; })"
 ```
 
 Then rerun the server and request `/`:
 
 ```sh
-cd /Users/sadhbh/src/dev/stackmachine.com
-PORT=4322 /Users/sadhbh/src/dev/edgejs/build-edge-quickjs-cli/edge ./dist/server/entry.mjs
+cd ~/src/dev/stackmachine.com
+PORT=4322 ~/src/dev/edgejs/build-edge-quickjs-cli/edge ./dist/server/entry.mjs
 curl -i http://localhost:4322/
 ```
 
@@ -121,5 +124,5 @@ string string
 With module tracing enabled, the resolver selected:
 
 ```text
-/Users/sadhbh/src/dev/stackmachine.com/node_modules/react-remove-scroll-bar/dist/es2015/constants.js
+~/src/dev/stackmachine.com/node_modules/react-remove-scroll-bar/dist/es2015/constants.js
 ```

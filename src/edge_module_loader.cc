@@ -22,6 +22,7 @@
 #include "edge_tcp_wrap.h"
 #include "edge_tls_wrap.h"
 #include "edge_timers_host.h"
+#include "edge_trace.h"
 #include "edge_tty_wrap.h"
 #include "edge_udp_wrap.h"
 #include "edge_url.h"
@@ -50,7 +51,6 @@
 #include <vector>
 
 #include "simdjson/simdjson.h"
-#include "unofficial_module_loader.h"
 #include "uv.h"
 #include "unofficial_napi.h"
 
@@ -249,6 +249,25 @@ fs::path ResolveSymlinkComponents(const fs::path& path) {
     current = candidate;
   }
   return current.lexically_normal();
+}
+
+fs::path NormalizeResolvedPath(const fs::path& path) {
+  std::error_code ec;
+  fs::path absolute = path;
+  if (!absolute.is_absolute()) {
+    absolute = fs::absolute(path, ec);
+    if (ec) {
+      absolute = path;
+      ec.clear();
+    }
+  }
+
+  fs::path canonical = fs::weakly_canonical(absolute, ec);
+  if (!ec) return canonical.lexically_normal();
+
+  fs::path resolved = ResolveSymlinkComponents(absolute);
+  if (resolved != absolute.lexically_normal()) return resolved.lexically_normal();
+  return absolute.lexically_normal();
 }
 
 std::string ReadTextFile(const fs::path& path) {
@@ -855,8 +874,7 @@ bool ResolveAsDirectory(const fs::path& candidate, fs::path* out) {
 }
 
 std::string CanonicalPathKey(const fs::path& path) {
-  return edge_path::FromNamespacedPath(
-      edge_quickjs::module_loader::NormalizeResolvedPath(path).string());
+  return edge_path::FromNamespacedPath(NormalizeResolvedPath(path).string());
 }
 
 // True if request is relative (./, ../, ., ..) or absolute (starts with /).
@@ -1015,7 +1033,7 @@ static napi_value BuiltinsCompileFunctionCallback(napi_env env, napi_callback_in
   }
 
   const std::string id = ValueToUtf8(env, argv[0]);
-  if (std::getenv("EDGE_TRACE_BUILTINS") != nullptr) {
+  if (EDGE_TRACE_ENABLED("EDGE_TRACE_BUILTINS")) {
     std::fprintf(stderr, "EDGE_TRACE_BUILTINS compile %s\n", id.c_str());
   }
   if (id.empty()) {
@@ -1402,6 +1420,10 @@ static bool PreservePendingNativeBuiltinExceptionWithContext(napi_env env, const
   bool has_exception = false;
   if (napi_is_exception_pending(env, &has_exception) != napi_ok || !has_exception) {
     return ThrowNativeBuiltinExecutionError(env, id, "builtin threw");
+  }
+
+  if (auto* environment = EdgeEnvironmentGet(env); environment != nullptr && environment->exiting()) {
+    return false;
   }
 
   std::fprintf(stderr, "Failed to execute builtin '%s':\n", id.c_str());
@@ -3968,7 +3990,7 @@ static napi_value ResolveContextifyBinding(napi_env env) {
   napi_get_undefined(env, &undefined);
 
   ModuleLoaderState* state = GetModuleLoaderState(env);
-  if (std::getenv("EDGE_TRACE_INTERNAL_BINDING") != nullptr) {
+  if (EDGE_TRACE_ENABLED("EDGE_TRACE_INTERNAL_BINDING")) {
     std::fprintf(stderr,
                  "EDGE_TRACE_INTERNAL_BINDING contextify state=%p finalized=%s\n",
                  static_cast<void*>(state),
@@ -4095,7 +4117,7 @@ static napi_value ResolveContextifyBinding(napi_env env) {
 
   DeleteRefIfPresent(env, &state->contextify_binding_ref);
   (void)napi_create_reference(env, out, 1, &state->contextify_binding_ref);
-  if (std::getenv("EDGE_TRACE_INTERNAL_BINDING") != nullptr) {
+  if (EDGE_TRACE_ENABLED("EDGE_TRACE_INTERNAL_BINDING")) {
     std::fprintf(stderr, "EDGE_TRACE_INTERNAL_BINDING contextify resolved\n");
   }
   return out;
@@ -4324,6 +4346,21 @@ static napi_value DispatchGetOrCreateTraceEvents(napi_env env) {
   return GetOrCreateTraceEventsBinding(env);
 }
 
+static internal_binding::ResolveOptions CreateInternalBindingResolveOptions(ModuleLoaderState* state) {
+  internal_binding::ResolveOptions options;
+  options.state = state;
+  options.callbacks.get_or_create_builtins = DispatchGetOrCreateBuiltins;
+  options.callbacks.get_or_create_task_queue = DispatchGetOrCreateTaskQueue;
+  options.callbacks.get_or_create_errors = DispatchGetOrCreateErrors;
+  options.callbacks.get_or_create_trace_events = DispatchGetOrCreateTraceEvents;
+  options.callbacks.resolve_binding = DispatchResolveBinding;
+  options.callbacks.resolve_uv = ResolveUvBinding;
+  options.callbacks.resolve_contextify = ResolveContextifyBinding;
+  options.callbacks.resolve_modules = ResolveModulesBinding;
+  options.callbacks.resolve_options = ResolveOptionsBinding;
+  return options;
+}
+
 static napi_value NativeGetInternalBindingCallback(napi_env env, napi_callback_info info) {
   size_t argc = 1;
   napi_value argv[1] = {nullptr};
@@ -4340,34 +4377,24 @@ static napi_value NativeGetInternalBindingCallback(napi_env env, napi_callback_i
     return undefined;
   }
   const std::string name = ValueToUtf8(env, argv[0]);
-  if (std::getenv("EDGE_TRACE_INTERNAL_BINDING") != nullptr) {
+  if (EDGE_TRACE_ENABLED("EDGE_TRACE_INTERNAL_BINDING")) {
     std::fprintf(stderr, "EDGE_TRACE_INTERNAL_BINDING request %s\n", name.c_str());
   }
   if (!name.empty() && ShouldCacheInternalBinding(name)) {
     napi_value cached = GetCachedInternalBinding(state, env, name.c_str());
     if (cached != nullptr) {
-      if (std::getenv("EDGE_TRACE_INTERNAL_BINDING") != nullptr) {
+      if (EDGE_TRACE_ENABLED("EDGE_TRACE_INTERNAL_BINDING")) {
         std::fprintf(stderr, "EDGE_TRACE_INTERNAL_BINDING cache-hit %s\n", name.c_str());
       }
       return cached;
     }
   }
 
-  internal_binding::ResolveOptions options;
-  options.state = state;
-  options.callbacks.get_or_create_builtins = DispatchGetOrCreateBuiltins;
-  options.callbacks.get_or_create_task_queue = DispatchGetOrCreateTaskQueue;
-  options.callbacks.get_or_create_errors = DispatchGetOrCreateErrors;
-  options.callbacks.get_or_create_trace_events = DispatchGetOrCreateTraceEvents;
-  options.callbacks.resolve_binding = DispatchResolveBinding;
-  options.callbacks.resolve_uv = ResolveUvBinding;
-  options.callbacks.resolve_contextify = ResolveContextifyBinding;
-  options.callbacks.resolve_modules = ResolveModulesBinding;
-  options.callbacks.resolve_options = ResolveOptionsBinding;
+  internal_binding::ResolveOptions options = CreateInternalBindingResolveOptions(state);
 
   napi_value resolved = internal_binding::Resolve(env, name, options);
   if (resolved != nullptr) {
-    if (std::getenv("EDGE_TRACE_INTERNAL_BINDING") != nullptr) {
+    if (EDGE_TRACE_ENABLED("EDGE_TRACE_INTERNAL_BINDING")) {
       napi_valuetype resolved_type = napi_undefined;
       (void)napi_typeof(env, resolved, &resolved_type);
       std::fprintf(stderr,
@@ -4392,7 +4419,27 @@ static napi_value NativeGetInternalBindingCallback(napi_env env, napi_callback_i
 }
 
 bool ResolveModulePath(const std::string& specifier, const std::string& base_dir, fs::path* out) {
-  return edge_quickjs::module_loader::ResolveCommonJSPath(specifier, base_dir, out);
+  if (out == nullptr || specifier.empty()) return false;
+
+  fs::path base = base_dir.empty() ? fs::current_path() : fs::path(base_dir);
+  base = NormalizeResolvedPath(base);
+
+  fs::path resolved;
+  if (!IsRelativeOrAbsoluteRequest(specifier)) {
+    if (!ResolveNodeModules(specifier, base.string(), &resolved)) {
+      return false;
+    }
+    *out = NormalizeResolvedPath(resolved);
+    return true;
+  }
+
+  const fs::path candidate = specifier[0] == '/' ? fs::path(specifier) : base / specifier;
+  if (!ResolveAsFile(candidate, &resolved) && !ResolveAsDirectory(candidate, &resolved)) {
+    return false;
+  }
+
+  *out = NormalizeResolvedPath(resolved);
+  return true;
 }
 
 napi_value MakeError(napi_env env, const char* code, const std::string& message) {

@@ -13,7 +13,7 @@ failure:
 
 ```text
 13:24:35 [ERROR] [router] Error while trying to render the route /
-13:24:35 [ERROR] SyntaxError: Could not find export 'default' in module '/Users/sadhbh/src/dev/stackmachine.com/node_modules/zustand/esm'
+13:24:35 [ERROR] SyntaxError: Could not find export 'default' in module '~/src/dev/stackmachine.com/node_modules/zustand/esm'
     at runMicrotasks (native)
     at processTicksAndRejections (<input>:105:5)
 ```
@@ -29,7 +29,7 @@ focused `import('zustand')` resolves to the ESM entry and exposes `create`.
 The new failing resolved module path is:
 
 ```text
-/Users/sadhbh/src/dev/stackmachine.com/node_modules/zustand/esm
+~/src/dev/stackmachine.com/node_modules/zustand/esm
 ```
 
 The import site that exposed the failure is in `@react-three/fiber`:
@@ -63,13 +63,16 @@ selected top-level Zustand 5:
 Zustand 5 has named exports such as `create` but no default export, so the
 default import from `@react-three/fiber` failed during module linking.
 
-## Fix
+## Current Status
 
-Updated `napi/quickjs/src/unofficial_napi.cc` so resolved module filenames are
-canonicalized with `std::filesystem::weakly_canonical(...)` before they are
-returned to QuickJS. That makes later relative and package resolution use the
-real pnpm package path, matching Node's dependency lookup behavior for symlinked
-packages.
+Updated the former QuickJS C++ module path helpers so resolved module filenames
+were canonicalized with `std::filesystem::weakly_canonical(...)` before they
+were returned to QuickJS. That made later relative and package resolution use
+the real pnpm package path, matching Node's dependency lookup behavior for
+symlinked packages.
+
+Later cleanup removed the remaining QuickJS C++ CommonJS facade/module-loader
+support, so this note is historical context rather than a pointer to live code.
 
 The considered causes were:
 
@@ -80,7 +83,7 @@ The considered causes were:
 The actual cause was non-canonical symlink paths causing package resolution to
 choose the wrong installed dependency version.
 
-## Plan
+## Status Notes
 
 Investigated with narrow checks before changing runtime code:
 
@@ -103,9 +106,9 @@ Investigated with narrow checks before changing runtime code:
 Focused import check:
 
 ```sh
-cd /Users/sadhbh/src/dev/stackmachine.com
+cd ~/src/dev/stackmachine.com
 EDGE_TRACE_QUICKJS_MODULES=1 \
-  /Users/sadhbh/src/dev/edgejs/build-edge-quickjs-cli/edge \
+  ~/src/dev/edgejs/build-edge-quickjs-cli/edge \
   -e "import('@react-three/fiber').then(m=>console.log('fiber loaded', Object.keys(m).length))"
 ```
 
@@ -120,8 +123,8 @@ fiber loaded 31
 Then rerun the server and request `/`:
 
 ```sh
-cd /Users/sadhbh/src/dev/stackmachine.com
-PORT=4322 /Users/sadhbh/src/dev/edgejs/build-edge-quickjs-cli/edge ./dist/server/entry.mjs
+cd ~/src/dev/stackmachine.com
+PORT=4322 ~/src/dev/edgejs/build-edge-quickjs-cli/edge ./dist/server/entry.mjs
 curl -i http://localhost:4322/
 ```
 

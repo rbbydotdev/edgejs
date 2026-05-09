@@ -21,7 +21,7 @@ undefinedError: Inspector is not available
 The app is mounted through:
 
 ```text
-/Users/sadhbh/src/ImperfectProtocol/private-poker/wasmer.toml
+~/src/ImperfectProtocol/private-poker/wasmer.toml
 ```
 
 which runs:
@@ -57,7 +57,7 @@ The immediate startup path only needs `inspector.url()` to be callable and retur
 5. Rebuild native QuickJS and WASIX, then rerun `private-poker` until it reaches
    the next runtime blocker or starts serving.
 
-## Resolution
+## Current Status
 
 `lib/inspector.js` now exports a conservative unavailable-inspector stub when
 `internalBinding("config").hasInspector` is false. Passive consumers can import

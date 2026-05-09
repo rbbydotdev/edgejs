@@ -1,10 +1,11 @@
-.PHONY: build build-edge-quickjs-cli build-wasix build-napi-wasmer-cli test-wasix-napi-cli test-wasix-safe-mode test test-only check-portability clean-edge-quickjs-cli clean-dist dist dist-only framework-test framework-test-reset
+.PHONY: build build-edge-quickjs-cli build-wasix build-quickjs-wasix build-napi build-napi-quickjs build-wasix-napi build-wasix-napi-quickjs build-napi-wasmer-cli test-napi test-napi-only test-napi-quickjs test-napi-quickjs-only test-wasix-napi test-wasix-napi-quickjs test-wasix-napi-cli test-wasix-safe-mode test test-only check-portability clean clean-napi-quickjs clean-edge-quickjs-cli clean-dist dist dist-only framework-test framework-test-reset
 
 UNAME_S := $(shell uname -s)
-BUILD_NAPI_DIR ?= build-v8-napi
-BUILD_NAPI_QUICKJS_DIR ?= build-quickjs-napi
+UNAME_M := $(shell uname -m)
 BUILD_DIR ?= build-edge
 BUILD_EDGE_QUICKJS_CLI_DIR ?= build-edge-quickjs-cli
+BUILD_WASIX_NAPI_DIR ?= build-wasix-napi
+BUILD_QUICKJS_WASIX_DIR ?= build-quickjs-wasix
 DIST_DIR ?= dist
 DIST_BIN_DIR ?= $(DIST_DIR)/bin
 DIST_BIN_COMPAT_DIR ?= $(DIST_DIR)/bin-compat
@@ -17,10 +18,13 @@ EDGEENV_BINARY ?= $(BUILD_DIR)/edgeenv
 CMAKE_ARGS ?=
 BUILD_ENV ?= env
 EXTRA_CMAKE_ARGS ?=
+NAPI_V8_PREBUILT_VERSION ?= 11.9.2
+NAPI_V8_PLATFORM :=
 FRAMEWORK_TEST_SCRIPT := $(CURDIR)/scripts/framework-test.js
 FRAMEWORK_TEST_SELECTOR := $(filter js-%,$(MAKECMDGOALS))
 NAPI_WASMER_DIR ?= napi
-NAPI_WASMER_BINARY ?= ./$(NAPI_WASMER_DIR)/target/debug/napi_wasmer
+NAPI_WASMER_CARGO_TARGET_DIR ?= $(abspath $(BUILD_WASIX_NAPI_DIR)/target)
+NAPI_WASMER_BINARY ?= $(NAPI_WASMER_CARGO_TARGET_DIR)/debug/napi_wasmer
 WASIX_EDGEJS_WASM ?= ./build-wasix/edgejs.wasm
 WASIX_NAPI_SMOKE_JS ?= console.log('hello world!');
 WASMER_BIN ?= wasmer
@@ -41,47 +45,84 @@ EDGE_WASMER_PACKAGE ?= wasmer/edgejs@=$(EDGE_PACKAGE_VERSION)
 ifeq ($(UNAME_S),Darwin)
 BUILD_ENV := env -u CPPFLAGS -u LDFLAGS
 endif
+ifeq ($(UNAME_S),Darwin)
+ifeq ($(UNAME_M),arm64)
+NAPI_V8_PLATFORM := darwin-arm64
+else ifeq ($(UNAME_M),x86_64)
+NAPI_V8_PLATFORM := darwin-amd64
+endif
+else ifeq ($(UNAME_S),Linux)
+ifeq ($(UNAME_M),x86_64)
+NAPI_V8_PLATFORM := linux-amd64
+endif
+endif
+NAPI_V8_DIST_ROOT ?= $(CURDIR)/build-v8-napi/_v8_cache/$(NAPI_V8_PREBUILT_VERSION)/$(NAPI_V8_PLATFORM)
+NAPI_V8_CMAKE_ARGS ?=
+ifneq ($(NAPI_V8_PLATFORM),)
+ifneq ($(wildcard $(NAPI_V8_DIST_ROOT)/include/v8.h),)
+ifneq ($(wildcard $(NAPI_V8_DIST_ROOT)/lib/libv8.a),)
+NAPI_V8_CMAKE_ARGS += -DNAPI_V8_BUILD_METHOD=local
+NAPI_V8_CMAKE_ARGS += -DNAPI_V8_INCLUDE_DIR=$(NAPI_V8_DIST_ROOT)/include
+NAPI_V8_CMAKE_ARGS += -DNAPI_V8_LIBRARY=$(NAPI_V8_DIST_ROOT)/lib/libv8.a
+NAPI_V8_CMAKE_ARGS += -DNAPI_V8_DEFINES=V8_COMPRESS_POINTERS
+ifeq ($(UNAME_S),Darwin)
+NAPI_V8_CMAKE_ARGS += -DNAPI_V8_EXTRA_LIBS=/System/Library/Frameworks/CoreFoundation.framework
+endif
+endif
+endif
+endif
 
 clean-napi-quickjs:
-	rm -rf $(BUILD_NAPI_QUICKJS_DIR)
+	rm -rf $(BUILD_EDGE_QUICKJS_CLI_DIR)
 
-build-quickjs:
-	$(BUILD_ENV) cmake -S quickjs -B $(BUILD_NAPI_QUICKJS_DIR)/quickjs -DCMAKE_BUILD_TYPE=$(CMAKE_BUILD_TYPE) $(EXTRA_CMAKE_ARGS) $(CMAKE_ARGS)
-	$(BUILD_ENV) cmake --build $(BUILD_NAPI_QUICKJS_DIR)/quickjs -j$(JOBS)
-
-build-napi-quickjs: build-quickjs
-	$(BUILD_ENV) cmake -S napi/quickjs -B $(BUILD_NAPI_QUICKJS_DIR) -DCMAKE_BUILD_TYPE=$(CMAKE_BUILD_TYPE) $(EXTRA_CMAKE_ARGS) $(CMAKE_ARGS)
-	$(BUILD_ENV) cmake --build $(BUILD_NAPI_QUICKJS_DIR) -j$(JOBS)
-
-test-napi-quickjs: build-napi-quickjs test-napi-quickjs-only
-
-test-napi-quickjs-only:
-	$(BUILD_ENV) ctest --test-dir $(BUILD_NAPI_QUICKJS_DIR) --output-on-failure -R '^napi_quickjs\.'
+clean:
+	find . -maxdepth 1 -type d -name 'build-*' -exec rm -rf {} +
 
 build-napi:
-	$(BUILD_ENV) cmake -S napi/v8 -B $(BUILD_NAPI_DIR) -DCMAKE_BUILD_TYPE=$(CMAKE_BUILD_TYPE) $(EXTRA_CMAKE_ARGS) $(CMAKE_ARGS)
-	$(BUILD_ENV) cmake --build $(BUILD_NAPI_DIR) -j$(JOBS)
+	$(BUILD_ENV) cmake -S . -B $(BUILD_DIR) -DCMAKE_BUILD_TYPE=$(CMAKE_BUILD_TYPE) -DEDGE_DEFAULT_WASMER_PACKAGE=$(EDGE_WASMER_PACKAGE) -DEDGE_BUILD_NAPI_TESTS=ON $(NAPI_V8_CMAKE_ARGS) $(EXTRA_CMAKE_ARGS) $(CMAKE_ARGS)
+	$(BUILD_ENV) cmake --build $(BUILD_DIR) -j$(JOBS)
 
 test-napi: build-napi test-napi-only
 
 test-napi-only:
-	$(BUILD_ENV) ctest --test-dir $(BUILD_NAPI_DIR) --output-on-failure -R '^napi_v8\.'
+	$(BUILD_ENV) ctest --test-dir $(BUILD_DIR) --output-on-failure -R '^napi_v8\.'
+
+build-napi-quickjs:
+	$(BUILD_ENV) cmake -S . -B $(BUILD_EDGE_QUICKJS_CLI_DIR) -DCMAKE_BUILD_TYPE=$(CMAKE_BUILD_TYPE) -DEDGE_DEFAULT_WASMER_PACKAGE=$(EDGE_WASMER_PACKAGE) -DEDGE_NAPI_PROVIDER=quickjs -DEDGE_BUILD_NAPI_TESTS=ON $(EXTRA_CMAKE_ARGS) $(CMAKE_ARGS)
+	$(BUILD_ENV) cmake --build $(BUILD_EDGE_QUICKJS_CLI_DIR) -j$(JOBS)
+
+test-napi-quickjs: build-napi-quickjs test-napi-quickjs-only
+
+test-napi-quickjs-only:
+	$(BUILD_ENV) ctest --test-dir $(BUILD_EDGE_QUICKJS_CLI_DIR) --output-on-failure -R '^napi_quickjs\.'
 
 build:
-	$(BUILD_ENV) cmake -S . -B $(BUILD_DIR) -DCMAKE_BUILD_TYPE=$(CMAKE_BUILD_TYPE) -DEDGE_DEFAULT_WASMER_PACKAGE=$(EDGE_WASMER_PACKAGE) $(EXTRA_CMAKE_ARGS) $(CMAKE_ARGS)
+	$(BUILD_ENV) cmake -S . -B $(BUILD_DIR) -DCMAKE_BUILD_TYPE=$(CMAKE_BUILD_TYPE) -DEDGE_DEFAULT_WASMER_PACKAGE=$(EDGE_WASMER_PACKAGE) -DEDGE_BUILD_NAPI_TESTS=OFF $(EXTRA_CMAKE_ARGS) $(CMAKE_ARGS)
 	$(BUILD_ENV) cmake --build $(BUILD_DIR) -j$(JOBS)
 
 build-edge-quickjs-cli:
-	$(BUILD_ENV) cmake -S . -B $(BUILD_EDGE_QUICKJS_CLI_DIR) -DCMAKE_BUILD_TYPE=$(CMAKE_BUILD_TYPE) -DEDGE_DEFAULT_WASMER_PACKAGE=$(EDGE_WASMER_PACKAGE) -DEDGE_NAPI_PROVIDER=quickjs $(EXTRA_CMAKE_ARGS) $(CMAKE_ARGS)
-	$(BUILD_ENV) cmake --build $(BUILD_EDGE_QUICKJS_CLI_DIR) --target edge -j$(JOBS)
+	$(BUILD_ENV) cmake -S . -B $(BUILD_EDGE_QUICKJS_CLI_DIR) -DCMAKE_BUILD_TYPE=$(CMAKE_BUILD_TYPE) -DEDGE_DEFAULT_WASMER_PACKAGE=$(EDGE_WASMER_PACKAGE) -DEDGE_NAPI_PROVIDER=quickjs -DEDGE_BUILD_NAPI_TESTS=OFF $(EXTRA_CMAKE_ARGS) $(CMAKE_ARGS)
+	$(BUILD_ENV) cmake --build $(BUILD_EDGE_QUICKJS_CLI_DIR) --target edge edgeenv -j$(JOBS)
 
 build-wasix:
 	./wasix/build-wasix.sh
 
-build-napi-wasmer-cli:
-	cd $(NAPI_WASMER_DIR) && ./cargo-standalone.sh build --features cli --bin napi_wasmer
+build-quickjs-wasix:
+	./quickjs-wasm/build.sh
 
-test-wasix-napi-cli:
+build-wasix-napi: build-wasix build-napi-wasmer-cli
+
+build-wasix-napi-quickjs: build-quickjs-wasix
+
+build-napi-wasmer-cli:
+	cd $(NAPI_WASMER_DIR) && CARGO_TARGET_DIR="$(NAPI_WASMER_CARGO_TARGET_DIR)" ./cargo-standalone.sh build --features cli --bin napi_wasmer
+
+test-wasix-napi: build-wasix-napi test-wasix-napi-cli
+
+test-wasix-napi-quickjs: build-wasix-napi-quickjs
+	$(MAKE) test-wasix-safe-mode WASIX_PACKAGE_DIR="$(CURDIR)/quickjs-wasm"
+
+test-wasix-napi-cli: build-wasix build-napi-wasmer-cli
 	@output="$$($(NAPI_WASMER_BINARY) $(WASIX_EDGEJS_WASM) -e "$(WASIX_NAPI_SMOKE_JS)")"; \
 	printf '%s\n' "$$output"; \
 	printf '%s\n' "$$output" | grep -Fx "hello world!"
@@ -150,7 +191,7 @@ dist-only:
 	rm -rf $(DIST_DIR)
 	rm -f $(ZIP_NAME)
 	mkdir -p $(DIST_BIN_DIR)
-	if [ "$(BUILD_DIR)" = "build-wasix" ]; then \
+	if [ "$(BUILD_DIR)" = "build-wasix" ] || [ "$(BUILD_DIR)" = "$(BUILD_QUICKJS_WASIX_DIR)" ]; then \
 		cp "$(BUILD_DIR)/edgejs.wasm" "$(DIST_BIN_DIR)/edgejs"; \
 		cp wasmer.toml "$(DIST_DIR)/wasmer.toml"; \
 		mkdir -p "$(DIST_DIR)/ssl-certs"; \
@@ -164,7 +205,7 @@ dist-only:
 	fi
 	cp -R bin-compat $(DIST_BIN_COMPAT_DIR)
 	cp README.md $(DIST_DIR)/README.md
-	if [ "$(UNAME_S)" = "Darwin" ] && [ "$(BUILD_DIR)" != "build-wasix" ]; then \
+	if [ "$(UNAME_S)" = "Darwin" ] && [ "$(BUILD_DIR)" != "build-wasix" ] && [ "$(BUILD_DIR)" != "$(BUILD_QUICKJS_WASIX_DIR)" ]; then \
 		for bin in $(DIST_BIN_DIR)/edge $(DIST_BIN_DIR)/edgeenv; do \
 			deps=$$(otool -L "$$bin" | tail -n +2 | awk '{print $$1}' | grep '^/' | grep -Ev '^(/System/Library/|/usr/lib/)' || true); \
 			if [ -n "$$deps" ]; then \
@@ -175,7 +216,7 @@ dist-only:
 			fi; \
 		done; \
 	fi
-	if [ "$(BUILD_DIR)" = "build-wasix" ]; then \
+	if [ "$(BUILD_DIR)" = "build-wasix" ] || [ "$(BUILD_DIR)" = "$(BUILD_QUICKJS_WASIX_DIR)" ]; then \
 		cd $(DIST_DIR) && zip -r ../$(ZIP_NAME) bin bin-compat README.md wasmer.toml ssl-certs; \
 	else \
 		cd $(DIST_DIR) && zip -r ../$(ZIP_NAME) bin bin-compat README.md; \

@@ -4010,7 +4010,6 @@ napi_value SessionCtor(napi_env env, napi_callback_info info) {
     return nullptr;
   }
   (void)napi_create_reference(env, fields_ta, 1, &wrap->fields_ref);
-  (void)napi_set_named_property(env, self, "fields", fields_ta);
   (void)napi_set_named_property(env, self, "ondone", Undefined(env));
   (void)napi_set_named_property(env, self, "ongracefulclosecomplete", Undefined(env));
   (void)napi_set_named_property(env, self, "chunksSentSinceLastWrite", EdgeStreamBaseMakeDouble(env, 0));

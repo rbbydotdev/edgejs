@@ -10,7 +10,7 @@
 Running the Astro SSR native ESM entry directly with the QuickJS Edge CLI fails:
 
 ```sh
-/Users/sadhbh/src/dev/edgejs/build-edge-quickjs-cli/edge ./dist/server/entry.mjs
+~/src/dev/edgejs/build-edge-quickjs-cli/edge ./dist/server/entry.mjs
 ```
 
 Observed error:
@@ -48,7 +48,7 @@ The existing bundled CJS path already avoids this by aliasing:
 The `es-module-lexer/js` export resolves to the pure JS build and has already
 been verified to import successfully under the QuickJS Edge CLI.
 
-## Plan
+## Status Notes
 
 Implement a QuickJS-only resolver compatibility alias in:
 
@@ -92,7 +92,7 @@ cmake --build build-edge-quickjs-cli --target edge -j4
 Smoke test resolver behavior:
 
 ```sh
-/Users/sadhbh/src/dev/edgejs/build-edge-quickjs-cli/edge \
+~/src/dev/edgejs/build-edge-quickjs-cli/edge \
   -e "import('es-module-lexer').then(m=>console.log(typeof m.parse))"
 ```
 
@@ -105,7 +105,7 @@ function
 Then rerun the Astro SSR entry:
 
 ```sh
-/Users/sadhbh/src/dev/edgejs/build-edge-quickjs-cli/edge ./dist/server/entry.mjs
+~/src/dev/edgejs/build-edge-quickjs-cli/edge ./dist/server/entry.mjs
 ```
 
 If a new failure appears, capture it as the next issue-specific plan in this

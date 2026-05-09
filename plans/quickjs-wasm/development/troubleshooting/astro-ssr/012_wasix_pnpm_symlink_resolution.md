@@ -11,7 +11,7 @@ Running the `stackmachine.com` Astro standalone server through the Wasmer
 package fails before the server starts:
 
 ```sh
-cd /Users/sadhbh/src/dev/stackmachine.com
+cd ~/src/dev/stackmachine.com
 wasmer run --net .
 ```
 
@@ -32,8 +32,8 @@ import React__default, { createElement } from 'react';
 Native QuickJS can import `react` from the app:
 
 ```sh
-cd /Users/sadhbh/src/dev/stackmachine.com
-/Users/sadhbh/src/dev/edgejs/build-edge-quickjs-cli/edge \
+cd ~/src/dev/stackmachine.com
+~/src/dev/edgejs/build-edge-quickjs-cli/edge \
   -e "import('react').then(m=>console.log(Object.keys(m).length))"
 ```
 
@@ -58,7 +58,7 @@ path components inside a Wasmer-mounted directory. The runtime should resolve
 symlink components before checking candidate package files, so
 `/app/node_modules/react/index.js` is tested through its real pnpm store path.
 
-## Plan
+## Status Notes
 
 - Keep the fix in the QuickJS runtime module resolver.
 - Add a small path helper that follows symlink components lexically before

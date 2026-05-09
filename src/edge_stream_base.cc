@@ -18,6 +18,7 @@
 #include "edge_js_stream.h"
 #include "edge_stream_wrap.h"
 #include "edge_tcp_wrap.h"
+#include "edge_trace.h"
 #include "edge_tty_wrap.h"
 
 namespace {
@@ -25,7 +26,7 @@ namespace {
 void DeleteRefIfPresent(napi_env env, napi_ref* ref);
 
 bool TraceNetEnabled() {
-  return std::getenv("EDGE_TRACE_NET") != nullptr;
+  return EDGE_TRACE_ENABLED("EDGE_TRACE_NET");
 }
 
 void ClearPendingException(napi_env env) {
@@ -554,7 +555,7 @@ bool CallJsOnRead(EdgeStreamBase* base,
                    static_cast<void*>(callback),
                    static_cast<int>(callback_type));
     }
-    if (std::getenv("EDGE_TRACE_TTY") != nullptr) {
+    if (EDGE_TRACE_ENABLED("EDGE_TRACE_TTY")) {
       std::fprintf(stderr,
                    "EDGE_TRACE_TTY missing onread async_id=%llu nread=%zd\n",
                    static_cast<unsigned long long>(base->async_id),

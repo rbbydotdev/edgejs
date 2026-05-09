@@ -11,15 +11,15 @@ After the `depd` CallSite compatibility fix, the Astro standalone SSR entry for
 `stackmachine.com` advances to a new QuickJS runtime failure:
 
 ```sh
-cd /Users/sadhbh/src/dev/stackmachine.com
-/Users/sadhbh/src/dev/edgejs/build-edge-quickjs-cli/edge ./dist/server/entry.mjs
+cd ~/src/dev/stackmachine.com
+~/src/dev/edgejs/build-edge-quickjs-cli/edge ./dist/server/entry.mjs
 ```
 
 Observed error:
 
 ```text
 ReferenceError: Intl is not defined
-    at /Users/sadhbh/src/dev/stackmachine.com/dist/server/chunks/_@astrojs-ssr-adapter_BqW-NUXY.mjs:734:28
+    at ~/src/dev/stackmachine.com/dist/server/chunks/_@astrojs-ssr-adapter_BqW-NUXY.mjs:734:28
 ```
 
 The generated Astro chunk creates a logger timestamp formatter at module load:
@@ -43,7 +43,7 @@ This is separate from the `depd` stack compatibility issue: a focused
 `require('depd')('x')` check now succeeds, and the Astro entry reaches this
 later import-time failure.
 
-## Fix
+## Current Status
 
 Implemented the narrow runtime-level fallback option in `src/edge_runtime.cc`.
 During early runtime bootstrap, before the `process` object is installed, EdgeJS
@@ -85,7 +85,7 @@ cmake --build build-edge-quickjs-cli --target edge -j4
 Focused Intl check:
 
 ```sh
-/Users/sadhbh/src/dev/edgejs/build-edge-quickjs-cli/edge \
+~/src/dev/edgejs/build-edge-quickjs-cli/edge \
   -e "const f = new Intl.DateTimeFormat([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }); console.log(typeof f.format(new Date(0)))"
 ```
 
@@ -98,8 +98,8 @@ string
 Then rerun the Astro SSR entry:
 
 ```sh
-cd /Users/sadhbh/src/dev/stackmachine.com
-/Users/sadhbh/src/dev/edgejs/build-edge-quickjs-cli/edge ./dist/server/entry.mjs
+cd ~/src/dev/stackmachine.com
+~/src/dev/edgejs/build-edge-quickjs-cli/edge ./dist/server/entry.mjs
 ```
 
 Expected result for this issue: the `Intl is not defined` failure disappears.

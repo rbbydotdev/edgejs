@@ -12,8 +12,8 @@ for `stackmachine.com` advances past module evaluation and reaches server
 startup:
 
 ```sh
-cd /Users/sadhbh/src/dev/stackmachine.com
-/Users/sadhbh/src/dev/edgejs/build-edge-quickjs-cli/edge ./dist/server/entry.mjs
+cd ~/src/dev/stackmachine.com
+~/src/dev/edgejs/build-edge-quickjs-cli/edge ./dist/server/entry.mjs
 ```
 
 Observed output:
@@ -71,7 +71,7 @@ The available V8-backed Edge binary shows the same pattern: sandboxed
 `127.0.0.1` and `::1` binds fail with `EPERM`, while both succeed outside the
 sandbox. That comparison rules out a QuickJS-specific TCP bind regression.
 
-## Plan
+## Status Notes
 
 Investigate with the narrowest server-listen repro before changing runtime code:
 
@@ -97,15 +97,15 @@ No runtime code change is needed for this issue.
 Focused local listen check:
 
 ```sh
-/Users/sadhbh/src/dev/edgejs/build-edge-quickjs-cli/edge \
+~/src/dev/edgejs/build-edge-quickjs-cli/edge \
   -e "const net=require('node:net'); const s=net.createServer(); s.listen(0, '127.0.0.1', () => { console.log('listening', s.address().port); s.close(); });"
 ```
 
 Then rerun the Astro SSR entry:
 
 ```sh
-cd /Users/sadhbh/src/dev/stackmachine.com
-/Users/sadhbh/src/dev/edgejs/build-edge-quickjs-cli/edge ./dist/server/entry.mjs
+cd ~/src/dev/stackmachine.com
+~/src/dev/edgejs/build-edge-quickjs-cli/edge ./dist/server/entry.mjs
 ```
 
 Expected result for this issue: the Astro standalone server can bind or the

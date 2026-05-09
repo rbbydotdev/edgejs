@@ -13,7 +13,7 @@ new module linking failure:
 
 ```text
 13:20:43 [ERROR] [router] Error while trying to render the route /
-13:20:43 [ERROR] SyntaxError: Could not find export 'create' in module '/Users/sadhbh/src/dev/stackmachine.com/node_modules/zustand/ind'
+13:20:43 [ERROR] SyntaxError: Could not find export 'create' in module '~/src/dev/stackmachine.com/node_modules/zustand/ind'
     at runMicrotasks (native)
     at processTicksAndRejections (<input>:105:5)
 ```
@@ -30,7 +30,7 @@ route reaches a later module export mismatch.
 The failing resolved module path is:
 
 ```text
-/Users/sadhbh/src/dev/stackmachine.com/node_modules/zustand/ind
+~/src/dev/stackmachine.com/node_modules/zustand/ind
 ```
 
 Zustand's package metadata exposes the ESM entry via nested package `exports`
@@ -54,13 +54,13 @@ conditions:
 Native ESM resolves `import('zustand')` to:
 
 ```text
-file:///Users/sadhbh/src/dev/stackmachine.com/node_modules/zustand/esm/index.mjs
+file://~/src/dev/stackmachine.com/node_modules/zustand/esm/index.mjs
 ```
 
 Before this fix, QuickJS resolved the same import to:
 
 ```text
-/Users/sadhbh/src/dev/stackmachine.com/node_modules/zustand/index.js
+~/src/dev/stackmachine.com/node_modules/zustand/index.js
 ```
 
 That CommonJS file re-exports values dynamically through
@@ -68,10 +68,10 @@ That CommonJS file re-exports values dynamically through
 does not currently declare. The missing `create` export was therefore caused by
 resolving the package to its CommonJS fallback instead of the ESM import target.
 
-## Fix
+## Current Status
 
-Updated `napi/quickjs/src/unofficial_napi.cc` so the lightweight package
-exports scanner handles the Zustand export shape:
+Updated the former QuickJS C++ package exports scanner so it handled the Zustand
+export shape:
 
 - when a condition value is an object, choose its nested `default` runtime
   target instead of treating nested metadata keys like `types` as targets;
@@ -81,6 +81,9 @@ exports scanner handles the Zustand export shape:
 
 This keeps the fix focused on published package `exports` metadata rather than
 adding synthetic named export support for broader dynamic CommonJS patterns.
+
+Later cleanup removed the remaining QuickJS C++ CommonJS facade/module-loader
+support, so this note is historical context rather than a pointer to live code.
 
 The considered causes were:
 
@@ -92,12 +95,12 @@ The considered causes were:
 The actual cause was package export condition/wildcard resolution selecting the
 CommonJS fallback.
 
-## Plan
+## Status Notes
 
 Investigated with the narrowest checks before changing runtime code:
 
 - inspected Zustand package metadata and files in
-  `/Users/sadhbh/src/dev/stackmachine.com/node_modules`;
+  `~/src/dev/stackmachine.com/node_modules`;
 - reproduced the issue with focused `import('zustand')` and
   `import('zustand/react')` probes;
 - compared against native Node ESM resolution for the same specifier and import
@@ -117,18 +120,18 @@ Investigated with the narrowest checks before changing runtime code:
 Focused import check:
 
 ```sh
-cd /Users/sadhbh/src/dev/stackmachine.com
+cd ~/src/dev/stackmachine.com
 EDGE_TRACE_QUICKJS_MODULES=1 \
-  /Users/sadhbh/src/dev/edgejs/build-edge-quickjs-cli/edge \
+  ~/src/dev/edgejs/build-edge-quickjs-cli/edge \
   -e "import('zustand').then(m=>{ console.log('keys', Object.keys(m).join(',')); console.log('create', typeof m.create); })"
 ```
 
 Observed result after the fix:
 
 ```text
-quickjs-module normalize ... spec=zustand -> /Users/sadhbh/src/dev/stackmachine.com/node_modules/zustand/esm/index.mjs
-quickjs-module normalize ... spec=zustand/vanilla -> /Users/sadhbh/src/dev/stackmachine.com/node_modules/zustand/esm/vanilla.mjs
-quickjs-module normalize ... spec=zustand/react -> /Users/sadhbh/src/dev/stackmachine.com/node_modules/zustand/esm/react.mjs
+quickjs-module normalize ... spec=zustand -> ~/src/dev/stackmachine.com/node_modules/zustand/esm/index.mjs
+quickjs-module normalize ... spec=zustand/vanilla -> ~/src/dev/stackmachine.com/node_modules/zustand/esm/vanilla.mjs
+quickjs-module normalize ... spec=zustand/react -> ~/src/dev/stackmachine.com/node_modules/zustand/esm/react.mjs
 keys create,createStore,useStore
 create function
 ```
@@ -143,8 +146,8 @@ react-remove-scroll-bar/constants -> .../node_modules/react-remove-scroll-bar/di
 Then rerun the server and request `/`:
 
 ```sh
-cd /Users/sadhbh/src/dev/stackmachine.com
-PORT=4322 /Users/sadhbh/src/dev/edgejs/build-edge-quickjs-cli/edge ./dist/server/entry.mjs
+cd ~/src/dev/stackmachine.com
+PORT=4322 ~/src/dev/edgejs/build-edge-quickjs-cli/edge ./dist/server/entry.mjs
 curl -i http://localhost:4322/
 ```
 

@@ -11,7 +11,7 @@ After the WASIX pnpm symlink resolution fix, the `stackmachine.com` Astro
 standalone server starts under Wasmer:
 
 ```sh
-cd /Users/sadhbh/src/dev/stackmachine.com
+cd ~/src/dev/stackmachine.com
 wasmer run --net .
 ```
 
@@ -54,11 +54,11 @@ That made QuickJS compile the CommonJS bundle as ESM. The static linker then
 could not see `exports.ChevronDown = ...`, so route linking failed before the
 CommonJS runtime body could execute.
 
-## Plan
+## Status Notes
 
 - Reproduced the failure with a focused import of the generated layout chunk.
 - Confirmed the resolver targets `lucide-react/dist/cjs/lucide-react.js`.
-- Confirmed the CommonJS export scanner already handles
+- Confirmed the former CommonJS export scanner handled
   `exports.ChevronDown = ...`; the bad behavior was earlier CJS/ESM
   classification.
 - Moved package type detection to the shared parsed package metadata helper so
@@ -74,7 +74,7 @@ Focused checks:
 cd /private/tmp/edge-wasmer-probe
 wasmer run . -- -e "import('/app/dist/server/chunks/Layout_BoMatPJA.mjs').then(()=>console.log('layout ok'))"
 
-cd /Users/sadhbh/src/dev/stackmachine.com
+cd ~/src/dev/stackmachine.com
 wasmer run --net .
 ```
 
@@ -93,7 +93,7 @@ Validation commands run:
 
 ```sh
 cmake --build build-edge-quickjs-cli --target edge -j4
-cd /Users/sadhbh/src/dev/edgejs/quickjs-wasm/ && ./build.sh
+cd ~/src/dev/edgejs/quickjs-wasm/ && ./build.sh
 wasmer run . -- -e "import { ChevronDown } from '/app/node_modules/.pnpm/lucide-react@0.462.0_react@18.3.1/node_modules/lucide-react/dist/cjs/lucide-react.js'; console.log(typeof ChevronDown);"
 wasmer run . -- -e "import('/app/dist/server/chunks/Layout_BoMatPJA.mjs').then(()=>console.log('layout ok'))"
 wasmer run --net --env PORT=3311 --env HOST=127.0.0.1 .

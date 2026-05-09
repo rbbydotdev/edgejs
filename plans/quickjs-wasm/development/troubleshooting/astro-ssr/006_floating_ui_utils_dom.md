@@ -11,8 +11,8 @@ After the Astro standalone SSR server starts successfully outside the Codex
 local-bind sandbox, opening the site in Firefox triggers a route render failure:
 
 ```sh
-cd /Users/sadhbh/src/dev/stackmachine.com
-/Users/sadhbh/src/dev/edgejs/build-edge-quickjs-cli/edge ./dist/server/entry.mjs
+cd ~/src/dev/stackmachine.com
+~/src/dev/edgejs/build-edge-quickjs-cli/edge ./dist/server/entry.mjs
 ```
 
 Observed server output:
@@ -60,13 +60,15 @@ picked the nested key name `types` as though it were a target. It tried to
 resolve a file named `types` and stopped before trying the nested `default`
 runtime target.
 
-## Fix
+## Current Status
 
-Updated `napi/quickjs/src/unofficial_napi.cc` so
-`TryResolvePackageSubpath(...)` does not stop after the first condition string
-if that candidate does not resolve to a runtime file. It now tries `import`,
-`default`, and `module` targets in order, returning the first runtime target
-that resolves.
+Updated the former QuickJS C++ package resolver so `TryResolvePackageSubpath(...)`
+did not stop after the first condition string if that candidate did not resolve
+to a runtime file. That implementation tried runtime condition targets in order,
+returning the first target that resolved.
+
+Later cleanup removed the remaining QuickJS C++ CommonJS facade/module-loader
+support, so this note is historical context rather than a pointer to live code.
 
 This keeps the fix narrow: it does not add a full JSON parser or a complete
 Node package exports implementation, but it handles the nested condition shape
@@ -84,8 +86,8 @@ that exposed this issue.
 Focused import check:
 
 ```sh
-cd /Users/sadhbh/src/dev/stackmachine.com
-/Users/sadhbh/src/dev/edgejs/build-edge-quickjs-cli/edge \
+cd ~/src/dev/stackmachine.com
+~/src/dev/edgejs/build-edge-quickjs-cli/edge \
   -e "import('@floating-ui/utils/dom').then(m=>console.log('loaded', Object.keys(m).length)).catch(e=>{ console.error(e && (e.stack || e.message || e)); process.exitCode = 1; })"
 ```
 
@@ -98,8 +100,8 @@ loaded 20
 Then rerun the server and request `/`:
 
 ```sh
-cd /Users/sadhbh/src/dev/stackmachine.com
-/Users/sadhbh/src/dev/edgejs/build-edge-quickjs-cli/edge ./dist/server/entry.mjs
+cd ~/src/dev/stackmachine.com
+~/src/dev/edgejs/build-edge-quickjs-cli/edge ./dist/server/entry.mjs
 ```
 
 Expected result for this issue: the `@floating-ui/utils/dom` module loads, or

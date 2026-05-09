@@ -1,8 +1,7 @@
 [package]
-entrypoint = "edgejs-quickjs"
-name = "sadhbh-c0d3/edgejs-quickjs"
-description = "Edge.js with an embedded QuickJS N-API provider"
-version = "0.0.4"
+entrypoint = "edgejs"
+name = "wasmer/edgejs"
+version = "0.0.1"
 
 # [fs]
 # "/node-lib" = "./lib"
@@ -10,14 +9,14 @@ version = "0.0.4"
 "/usr/local/ssl" = "./ssl-certs"
 
 [[module]]
-name = "edge"
-source = "./build-quickjs-wasix/edgejs.wasm"
+name = "edgejs"
+source = "./build-wasix/edgejs.wasm"
 
 [[command]]
-name = "edge"
-module = "edge"
+name = "edgejs"
+module = "edgejs"
 runner = "https://webc.org/runner/wasi"
 
 [command.annotations.wasi]
-atom = "edge"
+atom = "edgejs"
 # env = ["EDGEJS_LIB_DIR=/node-lib"]

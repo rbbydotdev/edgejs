@@ -1,5 +1,18 @@
 # Edge QuickJS web app enablement for Astro, Vite, and Next.js
 
+| | | Remarks |
+| --- | --- | --- |
+| **Status** | 🟠 | Historical framework adapter exploration. |
+| **Severity** | Low | Current app-specific issues are tracked under `troubleshooting/`. |
+
+## Current Status Note
+
+This is a historical note from the period when framework validation used small
+CJS adapters. That path depended on QuickJS C++ CommonJS facade/module-loader
+support. The C++ CJS/module-loader hack has since been removed from
+`napi/quickjs/src`, so the CJS adapter examples below are preserved as history,
+not as the current QuickJS N-API support model.
+
 ## Context
 
 `001_merge_analysis.md` through `005_wasix_wasmer_http.md` cover the

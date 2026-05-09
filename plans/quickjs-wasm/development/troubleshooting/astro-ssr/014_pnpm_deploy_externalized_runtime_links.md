@@ -12,7 +12,7 @@ tree, but the smaller `.deploy` directory prepared with `pnpm deploy --prod`
 failed immediately:
 
 ```sh
-cd /Users/sadhbh/src/dev/stackmachine.com
+cd ~/src/dev/stackmachine.com
 npm run edge:prepare-deploy
 cd .deploy
 wasmer run --net .
@@ -72,7 +72,7 @@ issue: `graphql-ws` imported `graphql` at runtime, but `graphql` was listed only
 under app `devDependencies`. Since `pnpm deploy --prod --legacy` correctly
 omits dev dependencies, the deploy artifact did not include `graphql`.
 
-## Plan
+## Status Notes
 
 - Keep the standard pnpm deploy flow so the artifact remains much smaller than
   the full project tree.
@@ -88,16 +88,16 @@ omits dev dependencies, the deploy artifact did not include `graphql`.
 - Treat this as app deploy packaging glue rather than an Edge QuickJS runtime
   change.
 
-## Resolution
+## Current Status
 
-`/Users/sadhbh/src/dev/stackmachine.com/scripts/prepare-edge-deploy.cjs` first
+`~/src/dev/stackmachine.com/scripts/prepare-edge-deploy.cjs` first
 fixed this local `.deploy` failure by building the Astro app, running
 `pnpm deploy --prod --legacy`, assembling `.deploy`, and making externalized
 runtime packages from the generated server bundle addressable at the deploy
 root `node_modules`.
 
 `graphql` was moved from `devDependencies` to `dependencies` in
-`/Users/sadhbh/src/dev/stackmachine.com/package.json`, because it is imported
+`~/src/dev/stackmachine.com/package.json`, because it is imported
 at runtime through `stackmachine` / `graphql-ws`.
 
 The first fixed prepare run added access to:
@@ -118,7 +118,7 @@ contains no symlinks or nested module stores.
 The current deploy directory is:
 
 ```text
-347M	/Users/sadhbh/src/dev/stackmachine.com/.deploy
+347M	~/src/dev/stackmachine.com/.deploy
 ```
 
 ## Validation
@@ -126,14 +126,14 @@ The current deploy directory is:
 Prepare command:
 
 ```sh
-cd /Users/sadhbh/src/dev/stackmachine.com
+cd ~/src/dev/stackmachine.com
 npm run edge:prepare-deploy
 ```
 
 Runtime check:
 
 ```sh
-cd /Users/sadhbh/src/dev/stackmachine.com/.deploy
+cd ~/src/dev/stackmachine.com/.deploy
 wasmer run --net --env PORT=3311 --env HOST=127.0.0.1 .
 curl -i http://127.0.0.1:3311/
 ```
