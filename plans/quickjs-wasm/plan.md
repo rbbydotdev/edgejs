@@ -12,6 +12,19 @@ engine boundary: `src/` uses N-API and must not depend on V8 directly. The
 QuickJS path should preserve that boundary by adding a new N-API provider rather
 than rewriting the runtime kernel.
 
+## Current Status Note
+
+The early plan below predates the later cleanup decision around module loading.
+The QuickJS C++ CommonJS facade/module-loader hack has now been removed:
+`unofficial_module_loader.{h,cc}` and `quickjs_cjs_exports.{h,cc}` are gone from
+`napi/quickjs/src`. The QuickJS backend keeps the relevant public/unofficial
+entry points linkable through explicit failure or stable defaults, but it no
+longer pretends to provide CJS support from C++.
+
+The current design direction is to live without that CJS support until module
+loading can be routed through Node's JavaScript loaders/translators or another
+proper EdgeJS-owned runtime path.
+
 ## Research Summary
 
 - The current native path uses `EDGE_NAPI_PROVIDER=bundled-v8` and links
@@ -139,7 +152,8 @@ through N-API-like calls.
    - `process` object installation;
    - `internalBinding`;
    - builtin execution through `EdgeExecuteBuiltin`;
-   - CommonJS wrapper calls.
+   - basic script execution without reintroducing the removed C++ CJS loader
+     hack.
 3. Implement `unofficial_napi_process_microtasks` with QuickJS job draining.
 4. Stub non-critical V8-specific diagnostics with conservative values where
    Edge can continue:
@@ -191,11 +205,10 @@ Implement APIs in the order Edge is likely to hit them:
    - handled markers;
    - async work hooks needed by timers and libuv.
 6. Module support:
-   - CommonJS first;
+   - no C++ CommonJS facade/module-loader hack in the QuickJS backend;
    - ESM/source text module support once enough `ModuleWrap` behavior exists;
-   - CommonJS/ESM facades for Node compatibility, because Node's V8 path
-     already has mature loader integration while QuickJS must expose equivalent
-     V8-shaped `unofficial_napi` hooks;
+   - Node-compatible CommonJS/ESM behavior only through Node's JavaScript
+     loaders/translators or another proper EdgeJS-owned runtime layer;
    - synthetic modules and cached data can initially be unsupported unless tests
      or bootstrap require them.
 

@@ -61,15 +61,17 @@ for bare package entries and subpaths, but its directory handling only tried
 
 ## Current Status
 
-Updated the QuickJS package resolver so `TryResolvePackageSubpath(...)` tries a
-subpath directory's own package entry metadata when parent package `exports` do
-not resolve the subpath. The current shared implementation lives in
-`napi/quickjs/src/unofficial_module_loader.cc`. This keeps the compatibility
-fallback narrow:
+Updated the former QuickJS C++ package resolver so `TryResolvePackageSubpath(...)`
+tried a subpath directory's own package entry metadata when parent package
+`exports` did not resolve the subpath. This kept the compatibility fallback
+narrow:
 
 - parent package `exports` still win first;
 - only actual directory subpaths get the nested package entry fallback;
 - normal file and `index` fallback behavior remains unchanged.
+
+Later cleanup removed the remaining QuickJS C++ CommonJS facade/module-loader
+support, so this note is historical context rather than a pointer to live code.
 
 ## Status Notes
 

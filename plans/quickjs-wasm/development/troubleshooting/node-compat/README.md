@@ -29,3 +29,8 @@ The cleanup direction is to keep QuickJS N-API small and explicit, keep real
 Node-runtime behavior in EdgeJS itself when it is required, and route module
 loading through Node's JavaScript loaders/translators instead of rebuilding
 Node's loader policy in C++.
+
+The C++ CJS/module-loader hack has been removed from `napi/quickjs/src`. The
+removed files were `unofficial_module_loader.{h,cc}` and
+`quickjs_cjs_exports.{h,cc}`. This means current QuickJS N-API behavior is
+intentionally without that CJS support.

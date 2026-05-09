@@ -64,9 +64,8 @@ legacy `module` condition as the ESM target.
 
 ## Current Status
 
-Updated the QuickJS package exports scanner so it prefers runtime targets in
-this order. The current shared implementation lives in
-`napi/quickjs/src/unofficial_module_loader.cc`:
+Updated the former QuickJS C++ package exports scanner so it preferred runtime
+targets in this order:
 
 ```text
 import, module, default
@@ -75,6 +74,9 @@ import, module, default
 The same order is used for legacy package entry candidates. This keeps the
 runtime compatible with bundler-oriented packages that expose ESM through
 `module` without an explicit `import` condition.
+
+Later cleanup removed the remaining QuickJS C++ CommonJS facade/module-loader
+support, so this note is historical context rather than a pointer to live code.
 
 ## Status Notes
 

@@ -26,7 +26,7 @@ duplicating issue details.
 | 🟠 | High | [004_environment.md](node-compat/napi/004_environment.md) | Environment lifecycle |
 | 🟠 | Medium | [005_global_shims.md](node-compat/napi/005_global_shims.md) | Global shims |
 | 🟢 | High | [006_microtasks.md](node-compat/napi/006_microtasks.md) | Promise hooks and microtasks |
-| ▶️ | High | [007_module_loading.md](node-compat/napi/007_module_loading.md) | Module loading |
+| 🟠 | High | [007_module_loading.md](node-compat/napi/007_module_loading.md) | Module loading |
 | 🟢 | Medium | [008_properties.md](node-compat/napi/008_properties.md) | Property setting semantics |
 | 🟢 | Low | [009_quickjs_utilities.md](node-compat/napi/009_quickjs_utilities.md) | QuickJS utility ownership |
 | 🟢 | Medium | [010_serdes.md](node-compat/napi/010_serdes.md) | Serialization and deserialization |
@@ -66,7 +66,7 @@ duplicating issue details.
 | --- | --- | --- | --- |
 | ▶️ | High | [001_es_module_lexer_webassembly.md](astro-ssr/001_es_module_lexer_webassembly.md) | es-module-lexer WebAssembly import |
 | 🟢 | High | [002_depd_callsite_methods.md](astro-ssr/002_depd_callsite_methods.md) | depd CallSite method compatibility |
-| 🟢 | High | [003_cjs_reexport_named_exports.md](astro-ssr/003_cjs_reexport_named_exports.md) | CommonJS re-export named exports |
+| 🟠 | High | [003_cjs_reexport_named_exports.md](astro-ssr/003_cjs_reexport_named_exports.md) | CommonJS re-export named exports |
 | 🟠 | Medium | [004_missing_intl.md](astro-ssr/004_missing_intl.md) | Missing Intl global |
 | 🟠 | Low | [005_listen_eperm.md](astro-ssr/005_listen_eperm.md) | Listen EPERM on localhost |
 | 🟢 | High | [006_floating_ui_utils_dom.md](astro-ssr/006_floating_ui_utils_dom.md) | Floating UI utils DOM subpath |

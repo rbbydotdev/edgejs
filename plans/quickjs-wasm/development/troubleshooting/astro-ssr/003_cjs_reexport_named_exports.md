@@ -2,7 +2,7 @@
 
 | | | Remarks |
 | --- | --- | --- |
-| **Status** | 🟢 | Fixed by recursive CommonJS named-export discovery and shared QuickJS module resolution helpers. |
+| **Status** | 🟠 | Historical fix superseded by removing the QuickJS C++ CommonJS facade/module-loader hack. |
 | **Severity** | High | React named exports failed to link without this compatibility behavior. |
 
 ## Issue
@@ -51,9 +51,9 @@ module.exports = require('./cjs/react.development.js');
 
 The real `exports.createElement = ...` assignment is in the delegated file, so
 QuickJS declares only `default` and `module.exports` before module linking.
-LLDB confirmed the failure is thrown before `QuickjsCommonJsModuleInit(...)`
-runs, so this must be fixed in export-name declaration rather than later
-evaluation.
+LLDB confirmed the failure was thrown before the synthetic CommonJS module
+initializer ran, so this had to be fixed in export-name declaration rather than
+later evaluation.
 
 ## Why this compatibility layer exists
 
@@ -85,23 +85,24 @@ the pieces that should be treated as technical debt.
 
 ## Current Status
 
-CommonJS named export discovery was moved out of `unofficial_napi.cc` into
-`napi/quickjs/src/quickjs_cjs_exports.cc`. The scanner preserves the direct
-export patterns and adds recursive literal re-export discovery for patterns such
-as:
+CommonJS named export discovery was previously moved out of
+`unofficial_napi.cc` into a dedicated scanner. That scanner preserved the direct
+export patterns and added recursive literal re-export discovery for patterns
+such as:
 
 ```js
 module.exports = require('./target.js')
 Object.assign(exports, require('./target.js'))
 ```
 
-Use the resulting names both when declaring QuickJS C module exports and when
-setting those exports after `require(...)` evaluates.
+The resulting names were used both when declaring QuickJS C module exports and
+when setting those exports after `require(...)` evaluated.
 
-Related follow-up fixes moved path/package resolution into shared helpers in
-`napi/quickjs/src/unofficial_module_loader.cc` and tightened `.js` CJS/ESM
-classification so package metadata is parsed instead of matched with broad
-string heuristics.
+Later cleanup removed the remaining QuickJS C++ CommonJS facade/module-loader
+hack. The deleted files were `unofficial_module_loader.{h,cc}` and
+`quickjs_cjs_exports.{h,cc}`. The QuickJS N-API `module_wrap` public surface
+remains linkable through explicit failure or stable default responses rather
+than pretending this CJS compatibility path exists.
 
 ## Constraints
 
@@ -109,7 +110,8 @@ string heuristics.
 - Do not modify the Astro app, `node_modules`, or generated `dist` files.
 - Keep the scanner conservative; do not execute CommonJS while computing link
   names.
-- Preserve `default` and `module.exports` behavior.
+- Preserve `default` and `module.exports` behavior if CJS support is rebuilt in
+  the JavaScript loader path rather than in QuickJS C++ host-loader shims.
 
 ## Validation
 
@@ -142,7 +144,6 @@ Observed current state:
   text/html` response after the later resolver, symlink, stack, and deploy
   packaging fixes.
 
-Remaining design cleanup: reduce the QuickJS host-loader facades as
-`ModuleWrap` support becomes closer to Node/V8, or keep the behavior but ensure
-all resolver and package metadata handling lives in the shared QuickJS module
-loader rather than local ad hoc parsers.
+Current design status: CJS support is absent in QuickJS N-API. If it returns,
+it should come through Node's JavaScript loaders/translators or another
+EdgeJS-owned runtime path, not through local QuickJS C++ host-loader parsers.

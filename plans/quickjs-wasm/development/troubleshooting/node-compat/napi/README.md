@@ -17,7 +17,7 @@ severity, and links.
 | 🟠 | High | [004_environment.md](004_environment.md) | Environment lifecycle |
 | 🟠 | Medium | [005_global_shims.md](005_global_shims.md) | Global shims |
 | 🟢 | High | [006_microtasks.md](006_microtasks.md) | Promise hooks and microtasks |
-| ▶️ | High | [007_module_loading.md](007_module_loading.md) | Module loading |
+| 🟠 | High | [007_module_loading.md](007_module_loading.md) | Module loading |
 | 🟢 | Medium | [008_properties.md](008_properties.md) | Property setting semantics |
 | 🟢 | Low | [009_quickjs_utilities.md](009_quickjs_utilities.md) | QuickJS utility ownership |
 | 🟢 | Medium | [010_serdes.md](010_serdes.md) | Serialization and deserialization |

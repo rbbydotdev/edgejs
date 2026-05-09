@@ -58,7 +58,7 @@ CommonJS runtime body could execute.
 
 - Reproduced the failure with a focused import of the generated layout chunk.
 - Confirmed the resolver targets `lucide-react/dist/cjs/lucide-react.js`.
-- Confirmed the CommonJS export scanner already handles
+- Confirmed the former CommonJS export scanner handled
   `exports.ChevronDown = ...`; the bad behavior was earlier CJS/ESM
   classification.
 - Moved package type detection to the shared parsed package metadata helper so

@@ -23,17 +23,17 @@ ESM facade for the builtin does not declare that named export before module
 linking. QuickJS requires named exports to be declared before evaluation, unlike
 CommonJS property access after `require()`.
 
-## How Should We Fix It
+## Current Status
 
-Update the QuickJS builtin-to-ESM facade generation so builtin CommonJS modules
-declare all stable public names from the evaluated export object. At minimum,
-`node:test` must declare `test`, `it`, `describe`, `suite`, hooks, `run`,
-`mock`, `snapshot`, and `assert` consistently with `lib/test.js`.
+The earlier idea of extending QuickJS C++ CommonJS facade generation is no
+longer current. The C++ CJS/module-loader hack has been removed. If this Node
+test issue is addressed, the named-export behavior should come from Node's
+JavaScript loaders/translators or another proper EdgeJS-owned runtime path, not
+from new QuickJS C++ source-text heuristics.
 
-This should probably reuse the same synthetic CommonJS named-export discovery
-path used for package CJS facades, but builtins can be safer: after evaluating a
-builtin once, cache its own enumerable export names and use that list when
-creating the QuickJS module facade.
+At minimum, `node:test` must expose `test`, `it`, `describe`, `suite`, hooks,
+`run`, `mock`, `snapshot`, and `assert` consistently with `lib/test.js` if this
+compatibility gap is reopened.
 
 Targeted verification:
 

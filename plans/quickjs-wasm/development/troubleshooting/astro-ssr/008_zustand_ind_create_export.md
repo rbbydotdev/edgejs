@@ -70,9 +70,8 @@ resolving the package to its CommonJS fallback instead of the ESM import target.
 
 ## Current Status
 
-Updated the QuickJS package exports scanner so it handles the Zustand export
-shape. The current shared implementation lives in
-`napi/quickjs/src/unofficial_module_loader.cc`:
+Updated the former QuickJS C++ package exports scanner so it handled the Zustand
+export shape:
 
 - when a condition value is an object, choose its nested `default` runtime
   target instead of treating nested metadata keys like `types` as targets;
@@ -82,6 +81,9 @@ shape. The current shared implementation lives in
 
 This keeps the fix focused on published package `exports` metadata rather than
 adding synthetic named export support for broader dynamic CommonJS patterns.
+
+Later cleanup removed the remaining QuickJS C++ CommonJS facade/module-loader
+support, so this note is historical context rather than a pointer to live code.
 
 The considered causes were:
 

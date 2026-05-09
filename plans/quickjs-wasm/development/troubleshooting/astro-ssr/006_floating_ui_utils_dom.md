@@ -62,11 +62,13 @@ runtime target.
 
 ## Current Status
 
-Updated the QuickJS package resolver so `TryResolvePackageSubpath(...)` does
-not stop after the first condition string if that candidate does not resolve to
-a runtime file. The current shared implementation lives in
-`napi/quickjs/src/unofficial_module_loader.cc` and tries runtime condition
-targets in order, returning the first target that resolves.
+Updated the former QuickJS C++ package resolver so `TryResolvePackageSubpath(...)`
+did not stop after the first condition string if that candidate did not resolve
+to a runtime file. That implementation tried runtime condition targets in order,
+returning the first target that resolved.
+
+Later cleanup removed the remaining QuickJS C++ CommonJS facade/module-loader
+support, so this note is historical context rather than a pointer to live code.
 
 This keeps the fix narrow: it does not add a full JSON parser or a complete
 Node package exports implementation, but it handles the nested condition shape

@@ -5,6 +5,14 @@
 | **Status** | 🟠 | Historical standalone build findings. |
 | **Severity** | Low | Current standalone issues are tracked under app-specific troubleshooting pages. |
 
+## Current Status Note
+
+This note records the earlier standalone-build investigation. Any CJS execution
+paths described here should be read as historical: the QuickJS C++
+CommonJS facade/module-loader hack has now been removed, and the backend must
+live without CJS support until module loading is handled through Node's
+JavaScript loaders/translators or another proper EdgeJS-owned runtime path.
+
 ## Context
 
 `006_framework_app_adapters.md` captured the first working framework-app path for Edge QuickJS:

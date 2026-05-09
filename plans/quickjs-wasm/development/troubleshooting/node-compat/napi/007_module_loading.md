@@ -2,13 +2,19 @@
 
 | | | Remarks |
 | --- | --- | --- |
-| **Status** | ▶️ | C++ module-loading policy was removed; route through Node JavaScript loaders/translators. |
+| **Status** | 🟠 | C++ module-loading and CJS facade hacks were removed; no CJS support is currently provided. |
 | **Severity** | High | Package resolution and CommonJS/ESM interop decide whether real Node apps can bootstrap. |
 
 ## Current State
 
 The QuickJS N-API backend should not carry a parallel C++ approximation of
 Node's package resolver, CommonJS wrapper, or ESM translator policy.
+The C++ CJS/module-loader hack has been removed: `unofficial_module_loader` and
+`quickjs_cjs_exports` no longer exist under `napi/quickjs/src`.
+
+The remaining QuickJS `module_wrap`/unofficial public surface stays linkable
+through explicit failure or stable default behavior. It does not pretend that
+CJS support exists.
 
 ## Known Incompatibility
 
