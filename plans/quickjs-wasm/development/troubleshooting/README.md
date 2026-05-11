@@ -31,7 +31,8 @@ duplicating issue details.
 | 🟢 | Low | [009_quickjs_utilities.md](node-compat/napi/009_quickjs_utilities.md) | QuickJS utility ownership |
 | 🟢 | Medium | [010_serdes.md](node-compat/napi/010_serdes.md) | Serialization and deserialization |
 | ▶️ | Medium | [011_quickjs_wasix_atomics_patch.md](node-compat/napi/011_quickjs_wasix_atomics_patch.md) | QuickJS WASIX atomics guard patch |
-| ▶️ | Medium | [013_v8_shaped_callsite_methods.md](node-compat/napi/013_v8_shaped_callsite_methods.md) | V8-shaped CallSite methods |
+| 🟠 | Medium | [013_v8_shaped_callsite_methods.md](node-compat/napi/013_v8_shaped_callsite_methods.md) | V8-shaped CallSite methods |
+| 🟠 | Medium | [014_lifetime_tracing.md](node-compat/napi/014_lifetime_tracing.md) | QuickJS N-API lifetime tracing |
 | 🟠 | Medium | [003_minimal_intl_fallback.md](node-compat/edgejs/003_minimal_intl_fallback.md) | Minimal `Intl.DateTimeFormat` fallback |
 | 🟠 | Medium | [004_native_inspector_stub.md](node-compat/edgejs/004_native_inspector_stub.md) | Native unavailable `inspector` stub |
 | 🟠 | High | [010_stream_wrapper_unwrap_fallback.md](node-compat/edgejs/010_stream_wrapper_unwrap_fallback.md) | Stream wrapper unwrap fallback |

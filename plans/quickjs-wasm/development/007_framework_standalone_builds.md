@@ -9,9 +9,14 @@
 
 This note records the earlier standalone-build investigation. Any CJS execution
 paths described here should be read as historical: the QuickJS C++
-CommonJS facade/module-loader hack has now been removed, and the backend must
-live without CJS support until module loading is handled through Node's
-JavaScript loaders/translators or another proper EdgeJS-owned runtime path.
+CommonJS facade/module-loader hack has now been removed.
+
+We later added the missing module mechanics to the vendored QuickJS source in
+`577fb31caf2e973b111431b6cb009f7595cc5f7d`, and the QuickJS N-API
+`napi_module_wrap__` layer now adapts Node/V8-shaped `module_wrap` calls onto
+those engine APIs. Package resolution, CommonJS wrapping, package conditions,
+and builtin policy still belong in Node's JavaScript loaders/translators or
+another proper EdgeJS-owned runtime path.
 
 ## Context
 
