@@ -6,6 +6,7 @@
 #include "internal_binding/helpers.h"
 #include "edge_environment.h"
 #include "edge_env_loop.h"
+#include "edge_handle_scope.h"
 #include "edge_module_loader.h"
 #include "edge_runtime.h"
 
@@ -338,6 +339,8 @@ void EdgeHandleWrapMaybeCallOnClose(EdgeHandleWrap* wrap) {
       EdgeHandleWrapEnvCleanupStarted(wrap->env)) {
     return;
   }
+  edge::HandleScope scope(wrap->env);
+  if (!scope.is_open()) return;
   napi_value self = EdgeHandleWrapGetRefValue(wrap->env, wrap->wrapper_ref);
   if (self == nullptr) return;
 

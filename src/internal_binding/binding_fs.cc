@@ -26,6 +26,7 @@
 #include "edge_environment.h"
 #include "internal_binding/helpers.h"
 #include "../edge_env_loop.h"
+#include "../edge_handle_scope.h"
 #include "../edge_handle_wrap.h"
 #include "../edge_async_wrap.h"
 #include "../edge_stream_base.h"
@@ -1647,6 +1648,15 @@ void FinishAsyncFsReq(AsyncFsReq* async_req, int result) {
 void AfterAsyncFsReq(uv_fs_t* req) {
   auto* async_req = static_cast<AsyncFsReq*>(req != nullptr ? req->data : nullptr);
   if (async_req == nullptr) return;
+  if (async_req->env == nullptr) {
+    DestroyAsyncFsReq(async_req);
+    return;
+  }
+  edge::HandleScope scope(async_req->env);
+  if (!scope.is_open()) {
+    DestroyAsyncFsReq(async_req);
+    return;
+  }
   if (!async_req->delayed_open_completion &&
       ShouldDelayOpenCompletion(async_req, static_cast<int>(req->result))) {
     async_req->delayed_open_completion = true;
@@ -1923,6 +1933,29 @@ void FinishFileHandleClose(FileHandleCloseReq* close_req, int result) {
 void AfterFileHandleClose(uv_fs_t* req) {
   auto* close_req = static_cast<FileHandleCloseReq*>(req != nullptr ? req->data : nullptr);
   if (close_req == nullptr) return;
+  napi_env env = close_req->wrap != nullptr ? close_req->wrap->env : nullptr;
+  if (env != nullptr) {
+    edge::HandleScope scope(env);
+    if (!scope.is_open()) {
+      if (close_req->active_request_token != nullptr) {
+        EdgeUnregisterActiveRequestToken(env, close_req->active_request_token);
+        close_req->active_request_token = nullptr;
+      }
+      ResetRef(env, &close_req->req_ref);
+      uv_fs_req_cleanup(&close_req->req);
+      delete close_req;
+      return;
+    }
+    if (EDGE_TRACE_ENABLED("EDGE_TRACE_TTY")) {
+      auto* wrap = close_req->wrap;
+      std::fprintf(stderr,
+                   "EDGE_TRACE_TTY fs FileHandleClose after fd=%d result=%zd\n",
+                   wrap != nullptr ? wrap->fd : -1,
+                   req != nullptr ? req->result : -1);
+    }
+    FinishFileHandleClose(close_req, static_cast<int>(req->result));
+    return;
+  }
   if (EDGE_TRACE_ENABLED("EDGE_TRACE_TTY")) {
     auto* wrap = close_req->wrap;
     std::fprintf(stderr,
@@ -1944,8 +1977,7 @@ void DestroyFileHandleBase(EdgeStreamBase* base) {
 
 int FileHandleReadStopInternal(FileHandleWrap* wrap);
 
-void AfterFileHandleRead(uv_fs_t* req) {
-  auto* read_req = static_cast<FileHandleReadReq*>(req != nullptr ? req->data : nullptr);
+void FinishFileHandleRead(FileHandleReadReq* read_req, uv_fs_t* req) {
   if (read_req == nullptr) return;
 
   FileHandleWrap* wrap = read_req->wrap;
@@ -1994,6 +2026,27 @@ void AfterFileHandleRead(uv_fs_t* req) {
   }
 
   delete read_req;
+}
+
+void AfterFileHandleRead(uv_fs_t* req) {
+  auto* read_req = static_cast<FileHandleReadReq*>(req != nullptr ? req->data : nullptr);
+  if (read_req == nullptr) return;
+
+  napi_env env = read_req->wrap != nullptr ? read_req->wrap->env : nullptr;
+  if (env == nullptr) {
+    FinishFileHandleRead(read_req, req);
+    return;
+  }
+
+  edge::HandleScope scope(env);
+  if (!scope.is_open()) {
+    if (read_req->storage != nullptr) free(read_req->storage);
+    uv_fs_req_cleanup(req);
+    delete read_req;
+    return;
+  }
+
+  FinishFileHandleRead(read_req, req);
 }
 
 int FileHandleReadStartInternal(FileHandleWrap* wrap) {

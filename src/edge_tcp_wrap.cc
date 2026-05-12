@@ -16,6 +16,7 @@
 #include "edge_active_resource.h"
 #include "edge_environment.h"
 #include "edge_env_loop.h"
+#include "edge_handle_scope.h"
 #include "edge_runtime.h"
 #include "edge_stream_base.h"
 #include "edge_stream_listener.h"
@@ -286,6 +287,16 @@ void OnRead(uv_stream_t* stream, ssize_t nread, const uv_buf_t* buf) {
 void OnConnectDone(uv_connect_t* req, int status) {
   auto* cr = static_cast<ConnectReqWrap*>(req->data);
   if (cr == nullptr) return;
+  if (cr->env == nullptr) {
+    ReleaseConnectReqState(cr);
+    return;
+  }
+  edge::HandleScope scope(cr->env);
+  if (!scope.is_open()) {
+    QueueConnectReqDestroyIfNeeded(cr);
+    ReleaseConnectReqState(cr);
+    return;
+  }
   napi_value req_obj = ConnectReqGetOwner(cr->env, cr);
   napi_value tcp_obj = cr->tcp != nullptr ? EdgeStreamBaseGetWrapper(&cr->tcp->base) : nullptr;
   napi_value argv[5] = {
@@ -437,6 +448,10 @@ napi_value TcpBind6(napi_env env, napi_callback_info info) {
 void OnConnection(uv_stream_t* server, int status) {
   auto* server_wrap = server != nullptr ? static_cast<TcpWrap*>(server->data) : nullptr;
   if (server_wrap == nullptr) return;
+  napi_env env = server_wrap->env;
+  if (env == nullptr) return;
+  edge::HandleScope scope(env);
+  if (!scope.is_open()) return;
   if (TraceNetEnabled()) {
     std::fprintf(stderr,
                  "EDGE_TRACE_NET tcp onconnection server=%p status=%d(%s) async_id=%llu\n",
@@ -445,7 +460,6 @@ void OnConnection(uv_stream_t* server, int status) {
                  status == 0 ? "OK" : uv_err_name(status),
                  static_cast<unsigned long long>(server_wrap->base.async_id));
   }
-  napi_env env = server_wrap->env;
   napi_value server_obj = EdgeStreamBaseGetWrapper(&server_wrap->base);
   napi_value onconnection = nullptr;
   if (server_obj == nullptr ||

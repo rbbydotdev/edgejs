@@ -24,6 +24,7 @@
 #include "edge_async_wrap.h"
 #include "edge_environment.h"
 #include "edge_env_loop.h"
+#include "edge_handle_scope.h"
 #include "edge_runtime.h"
 
 #ifndef AI_ALL
@@ -1365,7 +1366,23 @@ void CompleteQuery(CaresReqWrap* req,
   if (env == nullptr) {
     MarkReqComplete(req);
     MaybeDeleteReq(req);
-  } else if (status != ARES_SUCCESS) {
+    if (channel != nullptr) {
+      ModifyActivityQueryCount(channel, -1);
+    }
+    return;
+  }
+
+  edge::HandleScope scope(env);
+  if (!scope.is_open()) {
+    MarkReqComplete(req);
+    CleanupReqAfterAsync(req);
+    if (channel != nullptr) {
+      ModifyActivityQueryCount(channel, -1);
+    }
+    return;
+  }
+
+  if (status != ARES_SUCCESS) {
     // Do not invoke JS callbacks once env teardown has started.
     if (!env_cleaning) {
       CallOnCompleteError(req, status);
@@ -1667,6 +1684,13 @@ void OnGetAddrInfo(uv_getaddrinfo_t* req, int status, addrinfo* res) {
     MaybeDeleteReq(wrap);
     return;
   }
+  edge::HandleScope scope(env);
+  if (!scope.is_open()) {
+    MarkReqComplete(wrap);
+    if (res != nullptr) uv_freeaddrinfo(res);
+    CleanupReqAfterAsync(wrap);
+    return;
+  }
 
   napi_value result = MakeNull(env);
   int result_status = status;
@@ -1738,6 +1762,12 @@ void OnGetNameInfo(uv_getnameinfo_t* req,
   if (env == nullptr) {
     MarkReqComplete(wrap);
     MaybeDeleteReq(wrap);
+    return;
+  }
+  edge::HandleScope scope(env);
+  if (!scope.is_open()) {
+    MarkReqComplete(wrap);
+    CleanupReqAfterAsync(wrap);
     return;
   }
 

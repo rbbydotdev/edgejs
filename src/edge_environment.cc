@@ -7,6 +7,7 @@
 #include <utility>
 
 #include "edge_runtime_platform.h"
+#include "edge_handle_scope.h"
 #include "edge_timers_host.h"
 #include "edge_worker_env.h"
 #include "unofficial_napi.h"
@@ -1371,6 +1372,9 @@ size_t Environment::DrainInterrupts() {
 
   for (const auto& task : tasks) {
     if (task.callback != nullptr) {
+      if (env_ == nullptr) continue;
+      edge::HandleScope scope(env_);
+      if (!scope.is_open()) continue;
       task.callback(env_, task.data);
     }
   }
@@ -1386,6 +1390,9 @@ size_t Environment::DrainThreadsafeImmediates() {
 
   for (const auto& task : tasks) {
     if (task.callback != nullptr) {
+      if (env_ == nullptr) continue;
+      edge::HandleScope scope(env_);
+      if (!scope.is_open()) continue;
       task.callback(env_, task.data);
     }
   }

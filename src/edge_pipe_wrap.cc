@@ -12,6 +12,7 @@
 #include "edge_active_resource.h"
 #include "edge_environment.h"
 #include "edge_env_loop.h"
+#include "edge_handle_scope.h"
 #include "edge_runtime.h"
 #include "edge_stream_base.h"
 #include "edge_stream_listener.h"
@@ -243,6 +244,16 @@ void OnWriteDone(uv_write_t* req, int status) {
 void OnConnectDone(uv_connect_t* req, int status) {
   auto* cr = static_cast<PipeConnectReqWrap*>(req->data);
   if (cr == nullptr) return;
+  if (cr->env == nullptr) {
+    ReleasePipeConnectReqState(cr);
+    return;
+  }
+  edge::HandleScope scope(cr->env);
+  if (!scope.is_open()) {
+    QueuePipeConnectReqDestroyIfNeeded(cr);
+    ReleasePipeConnectReqState(cr);
+    return;
+  }
   napi_value req_obj = PipeConnectReqGetOwner(cr->env, cr);
   napi_value pipe_obj = cr->pipe != nullptr ? EdgeStreamBaseGetWrapper(&cr->pipe->base) : nullptr;
   napi_value argv[5] = {
@@ -338,6 +349,9 @@ void OnConnection(uv_stream_t* server, int status) {
   auto* server_wrap = server != nullptr ? static_cast<PipeWrap*>(server->data) : nullptr;
   if (server_wrap == nullptr) return;
   napi_env env = server_wrap->env;
+  if (env == nullptr) return;
+  edge::HandleScope scope(env);
+  if (!scope.is_open()) return;
   napi_value server_obj = EdgeStreamBaseGetWrapper(&server_wrap->base);
   napi_value onconnection = nullptr;
   if (server_obj == nullptr ||

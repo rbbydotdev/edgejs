@@ -24,6 +24,7 @@
 #include "edge_environment.h"
 #include "internal_binding/helpers.h"
 #include "../edge_async_wrap.h"
+#include "../edge_handle_scope.h"
 #include "../edge_runtime.h"
 #include "../edge_runtime_platform.h"
 #include "../edge_stream_base.h"
@@ -1250,6 +1251,9 @@ bool CallCallbackRef(napi_env env,
                      size_t argc,
                      napi_value* argv,
                      napi_value* result = nullptr) {
+  if (env == nullptr) return false;
+  edge::HandleScope scope(env);
+  if (!scope.is_open()) return false;
   napi_value callback = GetRefValue(env, callback_ref);
   if (!IsFunction(env, callback) || recv == nullptr) return false;
   napi_value ignored = nullptr;
@@ -1266,6 +1270,9 @@ bool CallCallbackRefWithResource(napi_env env,
                                  size_t argc,
                                  napi_value* argv,
                                  napi_value* result = nullptr) {
+  if (env == nullptr) return false;
+  edge::HandleScope scope(env);
+  if (!scope.is_open()) return false;
   napi_value callback = GetRefValue(env, callback_ref);
   napi_value resource = GetRefValue(env, resource_ref);
   napi_value effective_recv = recv != nullptr ? recv : resource;
@@ -1291,6 +1298,9 @@ bool CallNamedIntMethod(napi_env env,
                         int32_t* out) {
   if (out == nullptr) return false;
   *out = 0;
+  if (env == nullptr) return false;
+  edge::HandleScope scope(env);
+  if (!scope.is_open()) return false;
   napi_value fn = nullptr;
   napi_value result = nullptr;
   return GetNamedValue(env, recv, name, &fn) &&

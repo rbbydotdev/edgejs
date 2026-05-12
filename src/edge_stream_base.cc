@@ -12,6 +12,7 @@
 #include "edge_async_wrap.h"
 #include "edge_environment.h"
 #include "edge_env_loop.h"
+#include "edge_handle_scope.h"
 #include "edge_module_loader.h"
 #include "edge_pipe_wrap.h"
 #include "edge_runtime.h"
@@ -742,6 +743,8 @@ void MaybeCallHandleOnClose(EdgeStreamBase* base) {
       EdgeStreamBaseEnvCleanupStarted(base->env)) {
     return;
   }
+  edge::HandleScope scope(base->env);
+  if (!scope.is_open()) return;
   napi_value self = EdgeStreamBaseGetWrapper(base);
   if (self == nullptr) return;
   napi_value symbol = GetHandleOnCloseSymbol(base->env);
@@ -799,6 +802,15 @@ void FreeWriteReq(LibuvWriteReq* wr) {
 void OnWriteDone(uv_write_t* req, int status) {
   auto* wr = static_cast<LibuvWriteReq*>(req->data);
   if (wr == nullptr) return;
+  if (wr->env == nullptr) {
+    FreeWriteReq(wr);
+    return;
+  }
+  edge::HandleScope scope(wr->env);
+  if (!scope.is_open()) {
+    FreeWriteReq(wr);
+    return;
+  }
   if (TraceNetEnabled()) {
     std::fprintf(stderr,
                  "EDGE_TRACE_NET stream write_done provider=%d async_id=%llu status=%d(%s)\n",
@@ -815,6 +827,16 @@ void OnWriteDone(uv_write_t* req, int status) {
 void OnShutdownDone(uv_shutdown_t* req, int status) {
   auto* sr = static_cast<LibuvShutdownReq*>(req->data);
   if (sr == nullptr) return;
+  if (sr->env == nullptr) {
+    delete sr;
+    return;
+  }
+  edge::HandleScope scope(sr->env);
+  if (!scope.is_open()) {
+    DeleteRefIfPresent(sr->env, &sr->req_obj_ref);
+    delete sr;
+    return;
+  }
   if (sr->active_request_token != nullptr) {
     EdgeUnregisterActiveRequestToken(sr->env, sr->active_request_token);
     sr->active_request_token = nullptr;
@@ -1026,6 +1048,9 @@ bool EdgeStreamBaseRemoveListener(EdgeStreamBase* base, EdgeStreamListener* list
 
 bool EdgeStreamBaseOnUvAlloc(EdgeStreamBase* base, size_t suggested_size, uv_buf_t* out) {
   if (base == nullptr || out == nullptr) return false;
+  if (base->env == nullptr) return false;
+  edge::HandleScope scope(base->env);
+  if (!scope.is_open()) return false;
   if (TraceNetEnabled()) {
     std::fprintf(stderr,
                  "EDGE_TRACE_NET stream uv_alloc base=%p current=%p suggested=%zu\n",
@@ -1041,6 +1066,15 @@ bool EdgeStreamBaseOnUvAlloc(EdgeStreamBase* base, size_t suggested_size, uv_buf
 
 void EdgeStreamBaseOnUvRead(EdgeStreamBase* base, ssize_t nread, const uv_buf_t* buf) {
   if (base == nullptr) {
+    if (buf != nullptr && buf->base != nullptr) free(buf->base);
+    return;
+  }
+  if (base->env == nullptr) {
+    if (buf != nullptr && buf->base != nullptr) free(buf->base);
+    return;
+  }
+  edge::HandleScope scope(base->env);
+  if (!scope.is_open()) {
     if (buf != nullptr && buf->base != nullptr) free(buf->base);
     return;
   }

@@ -110,8 +110,9 @@ every N creations of a given type.
 - `napi_env__` is allocated in
   `unofficial_napi_create_env_from_context(...)` and destroyed through
   `DestroyEnvInstance(...)` / `ReleaseEnvScope(...)`.
-- `napi_env__` creates a root `napi_scope__`; current code nulls
-  `root_scope_` during env teardown without destroying it.
+- `napi_env__` creates a root `napi_scope__`; later allocator-backed scope work
+  made root-scope teardown explicit so root-owned values/refs are released
+  during env destruction.
 - Most public N-API value-producing calls wrap `JSValue`s into
   `env->current_scope()->wrap_value(...)`, which allocates `napi_value__`.
 - Explicit handle scopes are allocated by `napi_open_handle_scope(...)` /
@@ -127,10 +128,13 @@ every N creations of a given type.
 
 ## EdgeJS Embedder Findings
 
-`src/` does not currently call `napi_open_handle_scope(...)` or
-`napi_close_handle_scope(...)`. Runtime bindings mostly rely on explicit
-`napi_delete_reference(...)`, object finalizers from `napi_wrap(...)`, and
-environment-slot destructors.
+Initial inspection found that `src/` did not call
+`napi_open_handle_scope(...)` / `napi_close_handle_scope(...)` around native
+event callbacks. After the 2026-05-12 scope pass, the Node-mapped callback
+boundaries listed below use `edge::HandleScope` or `edge::EscapableHandleScope`.
+Runtime bindings still rely on explicit `napi_delete_reference(...)`, object
+finalizers from `napi_wrap(...)`, and environment-slot destructors for
+persistent state.
 
 Representative paths that do close refs explicitly:
 
@@ -142,9 +146,12 @@ Representative paths that do close refs explicitly:
 - filesystem deferred completions destroy created refs on failure and later
   completion cleanup.
 
-The missing embedder handle-scope discipline means temporary values created
-during callbacks appear to accumulate in the QuickJS root scope unless the
-backend explicitly deletes them.
+The original missing embedder handle-scope discipline meant temporary values
+created during callbacks accumulated in the QuickJS root scope unless the
+backend explicitly deleted them. The remaining lifetime work is now to find
+unscoped native callback paths outside the current Node-mapped set and to
+separate truly persistent `napi_ref` ownership from callback-local
+`napi_value` churn.
 
 ## Verification
 
@@ -1783,7 +1790,7 @@ directly to `BuildHeadersArray(...)` and URL-string creation in
 `src/edge_http_parser.cc`, reached from the consumed stream listener while
 `llhttp_execute(...)` calls the parser callbacks.
 
-Action plan before code changes:
+Completed action plan for the first native-event scope pass:
 
 1. Add a tiny Edge-side RAII helper around `napi_open_handle_scope(...)` /
    `napi_close_handle_scope(...)`.
@@ -1869,32 +1876,40 @@ rejects handle creation unless the listener opens an inner `HandleScope`. This
 matches V8's handle discipline: `v8::HandleScope::CreateHandle(...)` checks
 that there is an active non-sealed handle scope before creating a local handle.
 
-The analogous EdgeJS paths currently do not provide that level-1 scope:
+The analogous EdgeJS paths now provide explicit `edge::HandleScope` /
+`edge::EscapableHandleScope` coverage at the matching native-event boundaries
+where EdgeJS has implemented the corresponding Node subsystem. The current
+scope audit table is:
 
-- `src/edge_stream_listener.cc::EdgeStreamEmitRead(...)` just calls
-  `listener->on_read(...)`.
-- `src/edge_http_parser.cc::ParserConsumedListenerOnRead(...)` obtains
-  `parser_obj` and calls `DispatchConsumedParserRead(...)` without opening a
-  local scope.
-- `DispatchConsumedParserRead(...)` calls `ParserExecuteCommon(...)`, looks up
-  `kOnExecute`, and calls `EdgeMakeCallback(...)` without opening a local
-  scope.
-- `src/edge_tcp_wrap.cc::OnConnection(...)` and
-  `src/edge_pipe_wrap.cc::OnConnection(...)` build callback argv and accepted
-  wrapper objects without an outer native-event scope.
-- `src/edge_runtime.cc::EdgeMakeCallbackWithFlags(...)` manages async callback
-  depth, domains, pending exceptions, and task-queue checkpoints, but it does
-  not retroactively scope handles that were created before the callback call.
+| location | Node | Edge |
+| --- | --- | --- |
+| HTTP parser stream read: `node/src/node_http_parser.cc::Parser::OnStreamRead(...)` / `src/edge_http_parser.cc::ParserConsumedListenerOnRead(...)` via `EdgeStreamEmitRead(...)` | yes | yes |
+| HTTP parser execute return: `Parser::Execute(...)` / `ParserExecuteCommon(...)` | yes, `EscapableHandleScope` | yes, `edge::EscapableHandleScope` |
+| Stream alloc/read entry: `node/src/stream_wrap.cc::LibuvStreamWrap::OnUvAlloc(...)`, `OnUvRead(...)` / `EdgeStreamBaseOnUvAlloc(...)`, `EdgeStreamBaseOnUvRead(...)` | yes | yes |
+| Stream JS listener implementations: `node/src/stream_base.cc` listener classes / `src/edge_stream_listener.cc` dispatch | yes | yes |
+| Stream write/shutdown completion: `AfterUvWrite(...)`, `AfterUvShutdown(...)` / `OnWriteDone(...)`, `OnShutdownDone(...)` | yes | yes |
+| TCP/Pipe connect completion: `ConnectionWrap::AfterConnect(...)` / `edge_tcp_wrap.cc::OnConnectDone(...)`, `edge_pipe_wrap.cc::OnConnectDone(...)` | yes | yes |
+| TCP/Pipe accepted connection: `ConnectionWrap::OnConnection(...)` / `edge_tcp_wrap.cc::OnConnection(...)`, `edge_pipe_wrap.cc::OnConnection(...)` | yes | yes |
+| Handle close callback: `node/src/handle_wrap.cc::HandleWrap::OnClose(...)` / `EdgeHandleWrapMaybeCallOnClose(...)`, `MaybeCallHandleOnClose(...)` | yes | yes |
+| DNS query completion: `node/src/cares_wrap.h::ParseError(...)`, `CallOnComplete(...)`, `node/src/cares_wrap.cc` parse methods / `edge_cares_wrap.cc::CompleteQuery(...)` | yes | yes |
+| DNS `getaddrinfo`: `AfterGetAddrInfo(...)` / `OnGetAddrInfo(...)` | yes | yes |
+| DNS `getnameinfo`: `AfterGetNameInfo(...)` / `OnGetNameInfo(...)` | yes | yes |
+| UDP receive/send completion: `UDPWrap::OnRecv(...)`, `UDPWrap::OnSendDone(...)` / `UdpWrap::OnRecv(...)`, `UdpWrap::OnSendDone(...)` | yes | yes |
+| Signal callback: `node/src/signal_wrap.cc` signal lambda / `edge_signal_wrap.cc::OnSignal(...)` | yes | yes |
+| Child process exit: `node/src/process_wrap.cc::OnExit(...)` / `edge_process_wrap.cc::EmitOnExit(...)` | yes | yes |
+| N-API async work completion: `node/src/node_api.cc::AsyncWorker::AfterThreadPoolWork(...)` / `src/node_api.cc::UvAfterWork(...)` | yes | yes |
+| Async fs completion: `node/src/node_file.h::FSReqAfterScope` used by `AfterNoArgs(...)`, `AfterStat(...)`, `AfterInteger(...)`, `AfterScanDir(...)` / `binding_fs.cc::AfterAsyncFsReq(...)` | yes | yes |
+| Async file-handle close/read completion: `node/src/node_file-inl.h` / `binding_fs.cc::AfterFileHandleClose(...)`, `AfterFileHandleRead(...)` | yes | yes |
+| Async fs dir completion: Node FS after-scope pattern / `binding_fs_dir.cc::AfterOpenDir(...)`, `AfterReadDir(...)`, `AfterCloseDir(...)` | yes | yes |
+| Timers/immediates callback dispatch: Node timer callback dispatch runs inside V8 handle scope / `edge_timers_host.cc::CallTimersCallback(...)`, `CallImmediateCallback(...)` | yes | yes |
+| Threadsafe immediate/interrupt task callbacks: Node N-API/threadsafe callback paths open a V8 handle scope / `edge_environment.cc::DrainInterrupts(...)`, `DrainThreadsafeImmediates(...)` | yes | yes |
+| HTTP/2 callback helpers: `node/src/node_http2.cc` callback dispatch sites / `binding_http2.cc::CallCallbackRef(...)`, `CallCallbackRefWithResource(...)`, `CallNamedIntMethod(...)` | yes | yes |
+| TLS/OpenSSL callbacks: `node/src/crypto/crypto_tls.cc` callback paths / `edge_tls_wrap.cc` handshake, keylog, session, OCSP, ALPN, PSK, info, error, and parent-method callbacks | yes | yes |
+| Crypto async completion: Node crypto job completion callback dispatch / `binding_crypto.cc::RunCryptoOnDoneTask(...)` | yes | yes |
 
-Conclusion: the QuickJS fix should mirror Node's native-event scope ownership,
-not rely on `EdgeMakeCallback(...)` or the JS-to-native N-API trampoline. The
-first target is a small RAII `napi_handle_scope` around
-`ParserConsumedListenerOnRead(...)`, so `parser_obj`, ignored reads,
-`DispatchConsumedParserRead(...)`, `ParserExecuteCommon(...)`, `ret`,
-`onexecute`, and callback-result locals all live in one request-local scope.
-Other stream listeners that allocate N-API values or call into JavaScript should
-get the same treatment at the listener implementation boundary, with TCP/Pipe
-connection callbacks following the same pattern as Node's `ConnectionWrap`.
+`src/edge_runtime.cc::EdgeMakeCallbackWithFlags(...)` still intentionally does
+not try to retroactively scope handles created before the callback call. The
+fix is at the native event boundary, matching Node's ownership model.
 
 ### Native event scope implementation
 
@@ -1937,6 +1952,33 @@ shape: it opens `edge::EscapableHandleScope` before `llhttp_execute(...)` /
 scope helpers treat a null `napi_env` as a fatal internal misuse and abort with
 a `FATAL ERROR` message instead of permitting unscoped execution.
 
+The second scope pass added `edge::HandleScope` to the broader Node-mapped
+native callback set:
+
+- `src/edge_stream_base.cc`: libuv stream alloc/read, write completion,
+  shutdown completion, and stream handle-close callback dispatch.
+- `src/edge_tcp_wrap.cc` and `src/edge_pipe_wrap.cc`: connect completion and
+  accepted connection callbacks.
+- `src/edge_cares_wrap.cc`: c-ares query completion plus `uv_getaddrinfo(...)`
+  and `uv_getnameinfo(...)` completion callbacks.
+- `src/edge_udp_wrap.cc`: UDP receive and send completion callbacks.
+- `src/edge_signal_wrap.cc`: signal delivery callback.
+- `src/edge_process_wrap.cc`: child process exit callback.
+- `src/edge_handle_wrap.cc`: generic handle close callback dispatch.
+- `src/node_api.cc`: N-API async work completion callback.
+- `src/internal_binding/binding_fs.cc`: async fs completion and async
+  file-handle close/read completion.
+- `src/internal_binding/binding_fs_dir.cc`: async directory open/read/close
+  completion.
+- `src/edge_timers_host.cc` and `src/edge_environment.cc`: timers, immediates,
+  interrupt tasks, and threadsafe immediate task dispatch.
+- `src/internal_binding/binding_http2.cc`: HTTP/2 callback reference and named
+  integer method dispatch.
+- `src/edge_tls_wrap.cc`: OpenSSL/TLS handshake, keylog, session, OCSP, ALPN,
+  PSK, info, error, and parent-method callback dispatch.
+- `src/internal_binding/binding_crypto.cc`: crypto async `ondone` task
+  dispatch.
+
 Verification:
 
 ```sh
@@ -1961,6 +2003,10 @@ Results:
   bounded in the hundreds with `napi_scope.escape_value.calls` incrementing,
   rather than the previous request-correlated root-scope growth into tens or
   hundreds of thousands.
+- After the broader Node-mapped callback scope pass, including HTTP/2, TLS, and
+  crypto callback helpers, `cmake --build build-edge-quickjs-cli --target edge
+  -j4` passed again. The build still emits pre-existing c-ares and OpenSSL
+  deprecation warnings.
 
 ### Periodic lifetime stats verbosity split
 

@@ -3,6 +3,7 @@
 #include <cmath>
 
 #include "edge_environment.h"
+#include "edge_handle_scope.h"
 #include "edge_runtime.h"
 #include "edge_worker_env.h"
 
@@ -80,6 +81,8 @@ bool CanCallTimersCallback(napi_env env) {
 
 bool CallImmediateCallback(TimersHostState* st) {
   if (st == nullptr || st->env == nullptr || st->immediate_callback_ref == nullptr) return true;
+  edge::HandleScope scope(st->env);
+  if (!scope.is_open()) return false;
 
   napi_value cb = nullptr;
   if (napi_get_reference_value(st->env, st->immediate_callback_ref, &cb) != napi_ok ||
@@ -95,6 +98,8 @@ bool CallImmediateCallback(TimersHostState* st) {
 
 double CallTimersCallback(TimersHostState* st, double now) {
   if (st == nullptr || st->env == nullptr || st->timers_callback_ref == nullptr) return 0;
+  edge::HandleScope scope(st->env);
+  if (!scope.is_open()) return 0;
 
   napi_value cb = nullptr;
   if (napi_get_reference_value(st->env, st->timers_callback_ref, &cb) != napi_ok ||
