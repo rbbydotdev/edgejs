@@ -840,12 +840,14 @@ void EdgeStreamBaseInit(EdgeStreamBase* base,
   base->prev = nullptr;
   base->next = nullptr;
 
+  base->default_listener.env = env;
   base->default_listener.on_alloc = DefaultOnAlloc;
   base->default_listener.on_read = DefaultOnRead;
   base->default_listener.on_after_write = DefaultOnAfterWrite;
   base->default_listener.on_after_shutdown = DefaultOnAfterShutdown;
   base->default_listener.data = base;
 
+  base->user_buffer_listener.env = env;
   base->user_buffer_listener.on_alloc = UserBufferOnAlloc;
   base->user_buffer_listener.on_read = UserBufferOnRead;
   base->user_buffer_listener.data = base;

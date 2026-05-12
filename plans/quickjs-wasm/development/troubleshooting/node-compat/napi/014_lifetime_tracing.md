@@ -1795,6 +1795,170 @@ Action plan before code changes:
 4. Leave normal N-API callback functions and helpers that return `napi_value`
    untouched unless they use an escapable handle scope.
 
+### Node/V8 native event scope comparison
+
+The direct leak-shaped call in the consumed HTTP parser path is:
+
+```c++
+napi_value ret = ParserExecuteCommon(p, data, len);
+```
+
+inside `src/edge_http_parser.cc::DispatchConsumedParserRead(...)`. That return
+value is only used as the `kOnExecute` callback argument. In the current
+QuickJS backend, because no local handle scope has been opened for the native
+stream-read entry, `ParserExecuteCommon(...)` wraps the return value in
+`env->current_scope()`, which is still the env root scope. The same root-scope
+ownership also applies to `parser_obj`, `onexecute`, and request-local values
+created while `llhttp_execute(...)` runs parser callbacks.
+
+Node's V8 implementation opens the native-event handle scope explicitly before
+this kind of work:
+
+- `node/src/node_http_parser.cc::Parser::OnStreamRead(...)` opens
+  `HandleScope scope(env()->isolate())` before calling `Execute(...)`, reading
+  `kOnExecute`, and calling JavaScript.
+- `Parser::Execute(...)` opens an `EscapableHandleScope`, builds the parser
+  result/error value, then escapes the return value back to the surrounding
+  `OnStreamRead(...)` scope.
+- `node/src/connection_wrap.cc::ConnectionWrap::OnConnection(...)` opens
+  `HandleScope handle_scope(env->isolate())` before instantiating the accepted
+  socket object, building argv, and calling `onconnection`.
+- `node/src/stream_base.cc` listener implementations that materialize JS values
+  also open scopes themselves: `EmitToJSStreamListener::OnStreamRead(...)`,
+  `CustomBufferJSListener::OnStreamRead(...)`, and
+  `ReportWritesToJSStreamListener::OnStreamAfterReqFinished(...)`.
+
+The native Node HTTP read flow is:
+
+```text
+HTTP bytes arrive from socket
+  -> libuv read callback
+    -> StreamBase::EmitRead(...)
+      -> DebugSealHandleScope
+      -> listener_->OnStreamRead(nread, buf)
+
+        HTTPParser::OnStreamRead(...) {
+          HandleScope scope;                         // level 1 opens
+
+          ret = Execute(buf.base, nread);
+
+            Execute(...) {
+              EscapableHandleScope scope;             // level 2 opens
+
+              current_buffer = buf;
+              llhttp_execute(...)
+
+                -> parser callback: on_headers_complete / on_body / Flush
+                   may open its own HandleScope when calling JS
+
+              nread_obj = Integer::New(...)
+              return scope.Escape(nread_obj);         // escape to level 1
+            }                                         // level 2 closes
+
+          cb = object()->Get(kOnExecute)
+          current_buffer = buf;
+          MakeCallback(cb, [ret])
+          current_buffer = null
+        }                                             // level 1 closes
+```
+
+The generic Node stream dispatch layer does not open the allocation scope for
+listeners. `node/src/stream_base-inl.h::StreamResource::EmitRead(...)` wraps
+the listener call in `DebugSealHandleScope`, which is a debug barrier that
+rejects handle creation unless the listener opens an inner `HandleScope`. This
+matches V8's handle discipline: `v8::HandleScope::CreateHandle(...)` checks
+that there is an active non-sealed handle scope before creating a local handle.
+
+The analogous EdgeJS paths currently do not provide that level-1 scope:
+
+- `src/edge_stream_listener.cc::EdgeStreamEmitRead(...)` just calls
+  `listener->on_read(...)`.
+- `src/edge_http_parser.cc::ParserConsumedListenerOnRead(...)` obtains
+  `parser_obj` and calls `DispatchConsumedParserRead(...)` without opening a
+  local scope.
+- `DispatchConsumedParserRead(...)` calls `ParserExecuteCommon(...)`, looks up
+  `kOnExecute`, and calls `EdgeMakeCallback(...)` without opening a local
+  scope.
+- `src/edge_tcp_wrap.cc::OnConnection(...)` and
+  `src/edge_pipe_wrap.cc::OnConnection(...)` build callback argv and accepted
+  wrapper objects without an outer native-event scope.
+- `src/edge_runtime.cc::EdgeMakeCallbackWithFlags(...)` manages async callback
+  depth, domains, pending exceptions, and task-queue checkpoints, but it does
+  not retroactively scope handles that were created before the callback call.
+
+Conclusion: the QuickJS fix should mirror Node's native-event scope ownership,
+not rely on `EdgeMakeCallback(...)` or the JS-to-native N-API trampoline. The
+first target is a small RAII `napi_handle_scope` around
+`ParserConsumedListenerOnRead(...)`, so `parser_obj`, ignored reads,
+`DispatchConsumedParserRead(...)`, `ParserExecuteCommon(...)`, `ret`,
+`onexecute`, and callback-result locals all live in one request-local scope.
+Other stream listeners that allocate N-API values or call into JavaScript should
+get the same treatment at the listener implementation boundary, with TCP/Pipe
+connection callbacks following the same pattern as Node's `ConnectionWrap`.
+
+### Native event scope implementation
+
+Added `src/edge_handle_scope.h` with two non-copyable, non-movable RAII helpers:
+
+- `edge::HandleScope`, which opens with `napi_open_handle_scope(...)` and
+  closes with `napi_close_handle_scope(...)`.
+- `edge::EscapableHandleScope`, which opens with
+  `napi_open_escapable_handle_scope(...)`, closes with
+  `napi_close_escapable_handle_scope(...)`, and exposes `Escape(...)` through
+  `napi_escape_handle(...)`.
+
+`EdgeStreamListener` and `EdgeStreamListenerState` now carry `napi_env` so the
+generic listener dispatch layer can open a scope without knowing each concrete
+listener payload type. The env is set directly for the default/user stream
+listeners in `EdgeStreamBaseInit(...)`, for the consumed parser listener in
+`ParserCtor(...)`, and propagated in `EdgePushStreamListener(...)`. When a
+specific listener has no env, dispatch scans the remaining listener chain or
+uses the caller/state env as a fallback; if no env is available, the listener is
+called without a scope so non-JS listener paths are not broken.
+
+The following stream-listener callback paths now invoke listener functions under
+`edge::HandleScope` when an env is available:
+
+- `EdgeStreamEmitAlloc(...)`
+- `EdgeStreamEmitRead(...)`
+- `EdgeStreamEmitAfterWrite(...)`
+- `EdgeStreamEmitAfterShutdown(...)`
+- `EdgeStreamEmitWantsWrite(...)`
+- `EdgeStreamPassAfterWrite(...)`
+- `EdgeStreamPassAfterShutdown(...)`
+- `EdgeStreamPassWantsWrite(...)`
+- `EdgeStreamNotifyClosed(...)`
+
+`ParserExecuteCommon(...)` now mirrors Node's inner `Parser::Execute(...)`
+shape: it opens `edge::EscapableHandleScope` before `llhttp_execute(...)` /
+`llhttp_finish(...)`, then escapes only the intended return value (`nread`,
+`undefined`, or parse error) back to the caller's outer listener scope.
+
+Verification:
+
+```sh
+cmake --build build-edge-quickjs-cli --target edge -j4
+./build-edge-quickjs-cli/napi-quickjs/tests/napi_quickjs_test_36_handle_scope \
+  --gtest_filter=Test36HandleScope.PortedCoreFlow
+./build-edge-quickjs-cli/edge -e "const http=require('http'); console.log('http', typeof http.createServer)"
+PORT=3315 EDGE_TRACE_NAPI_LIFETIME_STATS=1 ./build-edge-quickjs-cli/edge server.js
+curl -sS http://127.0.0.1:3315/
+curl -sS http://127.0.0.1:3315/again
+```
+
+Results:
+
+- Native QuickJS Edge build passed.
+- Focused `napi_quickjs_test_36_handle_scope` passed.
+- HTTP eval printed `http function`, then hit the pre-existing
+  `JS_FreeRuntime` GC-list teardown assertion.
+- The sandboxed server run still failed with the expected `listen EPERM`; the
+  approved localhost run served requests successfully.
+- Server lifetime stats after requests showed root-scope `napi_value.active`
+  bounded in the hundreds with `napi_scope.escape_value.calls` incrementing,
+  rather than the previous request-correlated root-scope growth into tens or
+  hundreds of thousands.
+
 ## 2026-05-12 Env-Owned Reference Allocator Plan
 
 `napi_ref` handles are persistent references rather than local handles. They
