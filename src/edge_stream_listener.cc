@@ -31,7 +31,7 @@ bool ScopedOnAlloc(napi_env env,
                    EdgeStreamListener* listener,
                    size_t suggested_size,
                    uv_buf_t* out) {
-  if (env == nullptr) return listener->on_alloc(listener, suggested_size, out);
+  if (env == nullptr) return false;
   edge::HandleScope scope(env);
   if (!scope.is_open()) return false;
   return listener->on_alloc(listener, suggested_size, out);
@@ -41,7 +41,7 @@ bool ScopedOnRead(napi_env env,
                   EdgeStreamListener* listener,
                   ssize_t nread,
                   const uv_buf_t* buf) {
-  if (env == nullptr) return listener->on_read(listener, nread, buf);
+  if (env == nullptr) return false;
   edge::HandleScope scope(env);
   if (!scope.is_open()) return false;
   return listener->on_read(listener, nread, buf);
@@ -51,7 +51,7 @@ bool ScopedOnAfterWrite(napi_env env,
                         EdgeStreamListener* listener,
                         napi_value req_obj,
                         int status) {
-  if (env == nullptr) return listener->on_after_write(listener, req_obj, status);
+  if (env == nullptr) return false;
   edge::HandleScope scope(env);
   if (!scope.is_open()) return false;
   return listener->on_after_write(listener, req_obj, status);
@@ -61,7 +61,7 @@ bool ScopedOnAfterShutdown(napi_env env,
                            EdgeStreamListener* listener,
                            napi_value req_obj,
                            int status) {
-  if (env == nullptr) return listener->on_after_shutdown(listener, req_obj, status);
+  if (env == nullptr) return false;
   edge::HandleScope scope(env);
   if (!scope.is_open()) return false;
   return listener->on_after_shutdown(listener, req_obj, status);
@@ -70,17 +70,14 @@ bool ScopedOnAfterShutdown(napi_env env,
 bool ScopedOnWantsWrite(napi_env env,
                         EdgeStreamListener* listener,
                         size_t suggested_size) {
-  if (env == nullptr) return listener->on_wants_write(listener, suggested_size);
+  if (env == nullptr) return false;
   edge::HandleScope scope(env);
   if (!scope.is_open()) return false;
   return listener->on_wants_write(listener, suggested_size);
 }
 
 void ScopedOnClose(napi_env env, EdgeStreamListener* listener) {
-  if (env == nullptr) {
-    listener->on_close(listener);
-    return;
-  }
+  if (env == nullptr) return;
   edge::HandleScope scope(env);
   if (!scope.is_open()) return;
   listener->on_close(listener);

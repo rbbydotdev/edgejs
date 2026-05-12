@@ -3,14 +3,23 @@
 
 #include "node_api.h"
 
+#include <cstdio>
+#include <cstdlib>
+
 namespace edge {
+
+[[noreturn]] inline void FatalHandleScopeEnv(const char* scope_name) {
+  std::fprintf(stderr, "FATAL ERROR: %s requires a non-null napi_env\n", scope_name);
+  std::abort();
+}
 
 class HandleScope {
  public:
   explicit HandleScope(napi_env env) : env_(env) {
-    if (env_ != nullptr) {
-      status_ = napi_open_handle_scope(env_, &scope_);
+    if (env_ == nullptr) {
+      FatalHandleScopeEnv("edge::HandleScope");
     }
+    status_ = napi_open_handle_scope(env_, &scope_);
   }
 
   ~HandleScope() {
@@ -36,9 +45,10 @@ class HandleScope {
 class EscapableHandleScope {
  public:
   explicit EscapableHandleScope(napi_env env) : env_(env) {
-    if (env_ != nullptr) {
-      status_ = napi_open_escapable_handle_scope(env_, &scope_);
+    if (env_ == nullptr) {
+      FatalHandleScopeEnv("edge::EscapableHandleScope");
     }
+    status_ = napi_open_escapable_handle_scope(env_, &scope_);
   }
 
   ~EscapableHandleScope() {

@@ -1913,8 +1913,9 @@ listener payload type. The env is set directly for the default/user stream
 listeners in `EdgeStreamBaseInit(...)`, for the consumed parser listener in
 `ParserCtor(...)`, and propagated in `EdgePushStreamListener(...)`. When a
 specific listener has no env, dispatch scans the remaining listener chain or
-uses the caller/state env as a fallback; if no env is available, the listener is
-called without a scope so non-JS listener paths are not broken.
+uses the caller/state env as a fallback. If no env is available, dispatch does
+not invoke the listener, because executing a JS-facing listener without a local
+handle scope would silently allocate into the root scope.
 
 The following stream-listener callback paths now invoke listener functions under
 `edge::HandleScope` when an env is available:
@@ -1932,7 +1933,9 @@ The following stream-listener callback paths now invoke listener functions under
 `ParserExecuteCommon(...)` now mirrors Node's inner `Parser::Execute(...)`
 shape: it opens `edge::EscapableHandleScope` before `llhttp_execute(...)` /
 `llhttp_finish(...)`, then escapes only the intended return value (`nread`,
-`undefined`, or parse error) back to the caller's outer listener scope.
+`undefined`, or parse error) back to the caller's outer listener scope. The RAII
+scope helpers treat a null `napi_env` as a fatal internal misuse and abort with
+a `FATAL ERROR` message instead of permitting unscoped execution.
 
 Verification:
 
@@ -1958,6 +1961,22 @@ Results:
   bounded in the hundreds with `napi_scope.escape_value.calls` incrementing,
   rather than the previous request-correlated root-scope growth into tens or
   hundreds of thousands.
+
+### Periodic lifetime stats verbosity split
+
+`napi/quickjs/src/internal/napi_lifetime_tracker.cc` now separates the periodic
+stats tick from the heavy diagnostic dump:
+
+- `env->should_dump_lifetime_stats(now)` emits a single
+  `[napi-lifetime-stats]` line with `napi_value`, `napi_ref`, and `napi_scope`
+  slot totals plus active counts.
+- `env->should_dump_lifetime_string_symbol_values(now)` emits the full
+  `NAPI LIFETIME TRACKER` dump, including the detailed slot/type/scope/tag
+  tables and, when `NAPI_QUICKJS_ENABLE_LIFETIME_STRING_SYMBOL_DUMP` is
+  compiled in, the strings and object-type tables.
+
+This keeps normal request-load tracing readable while still allowing the heavier
+string/object classification snapshots at the slower interval.
 
 ## 2026-05-12 Env-Owned Reference Allocator Plan
 
