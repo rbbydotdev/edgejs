@@ -236,10 +236,10 @@ js http_server parserOnIncoming method= GET url= /
 
 The old broken shape was `stream missing_onread` after bytes were read.
 
-### QuickJS teardown is still not solved
+### QuickJS teardown and lifetime status
 
-The N-API QuickJS submodule currently has `JS_FreeRuntime(...)` commented out in
-the env release path:
+Historical note: during this adapter bring-up, the N-API QuickJS submodule had
+`JS_FreeRuntime(...)` commented out in the env release path:
 
 ```text
 ~/src/edgejs/napi/quickjs/src/unofficial_napi.cc
@@ -251,16 +251,19 @@ The submodule commit is:
 a200c14 Disabling JS_FreeRuntime until gc leaks are solved
 ```
 
-This prevents the known teardown assertion from aborting successful Wasmer app
-runs:
+That workaround prevented the known teardown assertion from aborting successful
+Wasmer app runs:
 
 ```text
 Assertion failed: list_empty(&rt->gc_obj_list)
 ```
 
-This is intentionally not a real GC/leak fix. It is a current compatibility
-workaround so the runtime can exit without aborting while the remaining QuickJS
-object lifetime issues are investigated.
+This was intentionally not a real GC/leak fix. The current QuickJS N-API source
+has `JS_FreeRuntime(...)` enabled again. Lifetime diagnostics now use
+allocator-backed handles and `napi_lifetime_tracker__`; the remaining server
+growth work is tracked in
+`troubleshooting/node-compat/napi/014_lifetime_tracing.md`, especially native
+event paths that allocate request-local N-API values into the env root scope.
 
 ## Running static sites through Edge QuickJS
 
@@ -735,7 +738,9 @@ For Next.js:
 
 ## Remaining work
 
-1. Fix QuickJS teardown properly so `JS_FreeRuntime(...)` can be restored.
+1. Continue the native-event handle-scope work from
+   `troubleshooting/node-compat/napi/014_lifetime_tracing.md` so server request
+   churn does not retain temporary N-API values in the env root scope.
 2. Revisit QuickJS N-API object type reporting so constructed class instances do
    not look like plain `napi_external` values.
 3. Decide whether `EDGE_TRACE_NET` and `EDGE_TRACE_TTY` should stay in-tree as

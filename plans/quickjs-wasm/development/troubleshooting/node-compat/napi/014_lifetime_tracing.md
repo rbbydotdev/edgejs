@@ -2,20 +2,37 @@
 
 | | | Remarks |
 | --- | --- | --- |
-| **Status** | 🟠 | Value/ref wrapper allocation has been replaced with scope-owned slot vectors; external backing hints still need separate follow-up. |
+| **Status** | 🟠 | `napi_allocator__` owns handle/helper storage and feeds `napi_lifetime_tracker__`; native event scopes and external backing hints still need follow-up. |
 | **Severity** | Medium | Growth can destabilize long-running Edge QuickJS servers, but this note tracks diagnostics rather than a confirmed blocker. |
 
 ## Current State
 
-The QuickJS N-API backend has small internal owners for values, refs, scopes,
-callback state, externals, functions, deferred promises, and environment
-subsystems. EdgeJS runtime code under `src/` creates many long-lived refs for
-binding singletons, wrapper objects, stream and filesystem requests, async
-hooks, timers, and process state. Many paths delete refs explicitly, but others
-rely on object finalizers or environment teardown.
+The current source of truth is:
 
-There is currently no unified counter for live QuickJS N-API wrapper objects, so
-request-over-request growth is hard to separate from expected churn.
+- `JS_FreeRuntime(...)` is enabled in `napi/quickjs/src/unofficial_napi.cc`.
+  Env release keeps `napi_env__` alive until after QuickJS context/runtime
+  finalizers can run, then finalizes instance data and deletes the env.
+- `napi_allocator__` is the storage mechanism for QuickJS N-API scopes, refs,
+  cleanup hooks, deferred promises, external backing-store hints, and
+  scope-owned values. The current allocator uses fixed-size aligned blocks and
+  stable pointer-shaped public handles.
+- `napi_lifetime_tracker__` receives allocator create/release hooks. The
+  tracker is compile-time gated and can report slot totals, active counts,
+  scope levels, tags, string/symbol values, object prototype buckets, and
+  external backing hint counts.
+- `napi_function__::trampoline(...)` opens a callback-local handle scope around
+  JS-to-native callbacks, duplicates callback return values before closing that
+  scope, and releases the temporary local handle.
+- The remaining `server.js` growth diagnosis is not that the allocator leaks
+  by itself. The tracker shows native EdgeJS event paths creating request-local
+  N-API values while `env->current_scope()` is still the env root scope. Those
+  values then survive until environment teardown.
+
+EdgeJS runtime code under `src/` still creates many legitimate long-lived refs
+for binding singletons, wrapper objects, stream and filesystem requests, async
+hooks, timers, and process state. Many paths delete refs explicitly, but others
+rely on object finalizers or environment teardown. The lifetime tracker is used
+to separate expected persistent ownership from request-local handle retention.
 
 ## Action Plan
 
@@ -25,23 +42,23 @@ request-over-request growth is hard to separate from expected churn.
 2. Inspect representative EdgeJS `src/` bindings for explicit
    `napi_delete_reference(...)`, `napi_wrap(...)` finalizers, and handle-scope
    discipline.
-3. Add a reusable internal lifetime tracker under `napi/quickjs/src/internal`
-   that is silent unless `EDGE_TRACE_NAPI_LIFETIME=1` is set.
-4. Record create/destroy counters and live counts for the focused wrapper
-   classes, with optional dump points at environment teardown and manual
-   breakpoints.
-5. Rebuild the native QuickJS CLI if feasible and run a short smoke test that
-   exercises a server entry while tracing lifetime churn.
+3. Keep `napi_lifetime_tracker__` wired through allocator hooks so normal
+   builds stay silent but diagnostic builds can report live handle/helper
+   counts.
+4. Use the tracker to distinguish root-scope value retention, env-owned refs,
+   and external backing-store/finalizer state.
+5. Continue with narrow native event-entry handle scopes around paths that
+   construct N-API arguments before invoking JavaScript.
 
 ## Initial Investigation Notes
 
 - `plans/quickjs-wasm/development/001_merge_analysis.md` already identified
   the key QuickJS N-API runtime types and the preference for internal RAII-style
   ownership over broad public structs.
-- `004_environment.md` records the known teardown caveat around
-  `JS_FreeRuntime(...)`. A concurrent worktree edit has re-enabled
-  `JS_FreeRuntime(...)` in `napi/quickjs/src/unofficial_napi.cc`; lifetime
-  tracing must observe that state rather than reverting it.
+- `004_environment.md` records the current teardown caveat around
+  `JS_FreeRuntime(...)`: runtime release is enabled, and finalizer/order bugs
+  should be fixed with env lifetime and allocator ownership, not by disabling
+  runtime release again.
 - The first instrumentation pass should remain diagnostic-only and avoid
   changing normal runtime semantics.
 
@@ -523,7 +540,7 @@ Action plan:
 
 Action plan:
 
-1. Treat the current vector-backed allocator, teardown fixes, and periodic
+1. Treat the then-current vector-backed allocator, teardown fixes, and periodic
    stats feature as the baseline; inspect their accounting before changing
    behavior.
 2. Confirm whether `build-edge-quickjs-cli` was configured with
@@ -1159,7 +1176,7 @@ Implementation notes:
 
 Action plan before code changes:
 
-1. Preserve the current vector-backed allocator, root-scope teardown, periodic
+1. Preserve the then-current vector-backed allocator, root-scope teardown, periodic
    stats, and string/value dump diagnostics as the baseline.
 2. Confirm which callback direction is already scoped. In the current worktree,
    `napi_function__::trampoline` opens a temporary handle scope before invoking
@@ -1476,17 +1493,18 @@ separate QuickJS finalizer/external backing-store lifetime issue.
 
 User reported that running `make test-napi-quickjs` from
 `/Users/sadhbh/src/dev/edgejs/napi` now produces 32 segfault failures, while the
-root QuickJS CLI build/test path previously passed. This investigation should
-work with the current vector-backed `napi_value__` / `napi_ref__` allocator
-state and avoid reverting concurrent edits.
+root QuickJS CLI build/test path previously passed. This investigation worked
+with the then-current vector-backed `napi_value__` / `napi_ref__` allocator
+state and avoided reverting concurrent edits. The current source has since
+moved to fixed-block `napi_allocator__` storage.
 
 Action plan:
 
 1. Reproduce from the `napi` subdirectory, then reduce to the first crashing
    binary/test: `napi_quickjs_test_2 --gtest_filter=Test2.Ported`.
 2. Use LLDB on that exact test to prove where an encoded `napi_value` or
-   `napi_ref` handle is still being treated as a direct pointer, or whether the
-   allocator slot lookup collides across scopes/build harnesses.
+   `napi_ref` handle was still being treated as a direct pointer, or whether the
+   then-current allocator slot lookup collided across scopes/build harnesses.
 3. Patch only the focused QuickJS N-API implementation path that bypasses the
    allocator decode layer, preserving scope-owned value slots, root-scope ref
    slots, free-list reuse, and root-scope teardown.
@@ -1496,7 +1514,7 @@ Action plan:
 
 Findings and fix:
 
-- The standalone 32-crash pattern was not an encoded handle collision. LLDB on
+- The standalone 32-crash pattern was not a handle-storage collision. LLDB on
   `napi_quickjs_test_2 --gtest_filter=Test2.Ported` stopped in QuickJS runtime
   teardown: `JS_FreeRuntime(...)` finalized GC objects after `DestroyEnvInstance`
   had deleted `napi_env__`. External/wrap finalizers still carried `napi_env`
@@ -1612,20 +1630,27 @@ makes it current. Closing requires that the supplied scope is exactly the
 current scope, restores `current_scope_` to `scope->parent()`, and destroys the
 scope.
 
-Each scope owns vector-backed slot allocators:
+Each scope owns fixed-block `napi_allocator__` storage for local values:
 
 ```c++
-napi_allocator__<napi_value__> values_;
-napi_allocator__<napi_ref__> refs_;
+napi_allocator__<napi_value__, napi_scope__> values_;
 ```
 
-Public `napi_value` and `napi_ref` handles are encoded slot indexes rather than
-direct wrapper addresses. `napi_scope__::wrap_value(...)` initializes an active
-value slot in the current scope; `napi_scope__::wrap_ref(...)` initializes an
-active ref slot, with persistent refs allocated from the root scope. Releasing a
-handle marks the slot inactive and places its index on the allocator free list.
-Closing a scope releases active slots in reverse order, clears the vectors, and
-clears the free lists.
+Public `napi_value` handles are stable pointers to allocator payload slots.
+`napi_scope__::wrap_value(...)` initializes an active value slot in the current
+scope. Releasing a handle marks the slot inactive and returns it to the block's
+free list. Closing a scope releases active slots in reverse order and drops the
+allocator blocks.
+
+Persistent `napi_ref` handles are env-owned rather than scope-owned:
+
+```c++
+napi_allocator__<napi_ref__, napi_env__> refs_;
+```
+
+That matches their semantic lifetime: refs can outlive the local handle scope
+that created them and are released by explicit `napi_delete_reference(...)`,
+object/finalizer cleanup, or env teardown.
 
 Escapable scopes duplicate the underlying QuickJS value into the parent scope:
 `escape_value(...)` calls `parent_->wrap_value(value->get_inner(), false)`.
@@ -1633,17 +1658,21 @@ That creates a separate parent-scope `napi_value__` with its own
 `JS_DupValue(...)`; closing the child then frees the child wrapper without
 invalidating the escaped parent wrapper.
 
-Callback invocation currently does not open an automatic temporary N-API handle
-scope. `napi_function__::trampoline(...)` stack-allocates `napi_callback_info__`
-and invokes the native callback directly. Calls such as `napi_get_cb_info(...)`
-wrap callback arguments and `this` into `env->current_scope()`. If user/native
-code has not opened a handle scope, those wrappers land in `root_scope_`.
+Callback invocation now opens an automatic temporary N-API handle scope in
+`napi_function__::trampoline(...)`. The trampoline stack-allocates
+`napi_callback_info__`, invokes the native callback, duplicates a non-null
+callback return value into a raw QuickJS result, and deletes the temporary local
+return handle before the child scope closes.
 
-The root scope is destroyed during environment teardown in the current
-vector-backed implementation. That releases root-owned value/ref slots before
-the env teardown completes; remaining teardown failures should be treated as
-QuickJS GC/finalizer or external backing-store lifetime issues, not as the old
-root-scope wrapper retention bug.
+That trampoline scope does not cover earlier native libuv/event-entry work such
+as `OnConnection(...)` or HTTP parser callbacks that create N-API argument
+values before entering JavaScript. Those paths still need explicit Edge-side
+handle scopes or an equivalent backend-owned entry scope.
+
+The root scope is destroyed during environment teardown. That releases
+root-owned value slots before env teardown completes; remaining teardown
+failures should be treated as QuickJS GC/finalizer or external backing-store
+lifetime issues, not as allocator storage leaks.
 
 ## 2026-05-11 Server Stats Growth Findings
 
@@ -1733,12 +1762,11 @@ FreeWriteReq
 So some `napi_ref` churn is expected live socket/request ownership, but the
 value-slot growth is root-scope temporary handle retention.
 
-The vector-backed allocator's reserved-prefix scheme was also checked while
+The old vector-backed allocator's reserved-prefix scheme was also checked while
 experimenting with automatic callback scopes. Materializing parent prefixes in
-child scopes makes each callback scope expensive once the root has many slots.
-The safer shape is a logical base index for child scopes, so child handles do
-not collide with parent handles without allocating or scanning inactive prefix
-entries.
+child scopes made each callback scope expensive once the root had many slots.
+The current fixed-block pointer-handle allocator removed that reserved-prefix
+class of overhead.
 
 Current conclusion: the right fix is to open short-lived handle scopes around
 native event-entry / libuv callback processing that calls N-API before entering
@@ -1812,7 +1840,7 @@ intermittent CTest/process-exit issue unless it reproduces under direct LLDB.
 
 Action plan:
 
-1. Keep the existing vector-backed value/ref allocator behavior intact.
+1. Keep the then-existing vector-backed value/ref allocator behavior intact.
 2. Add an internal opaque `napi_scope_handle__` for env-owned scope identity,
    backed by `napi_allocator__<napi_scope__>` rather than raw scope pointers.
 3. Store `root_scope_` and `current_scope_` in `napi_env__` as scope handles,
