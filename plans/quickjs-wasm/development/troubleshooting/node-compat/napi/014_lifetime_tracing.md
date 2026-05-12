@@ -243,6 +243,266 @@ so encoded handles are resolved before reading the slot payload.
 root-owned value/ref slots and runs their QuickJS value frees before env
 teardown completes.
 
+## 2026-05-12 Fixed-Block Allocator Plan
+
+Sadhbh noted that the vector-backed allocator can become inefficient for scope,
+value, and ref churn because vector growth can reallocate storage and requires
+the reserved-prefix scheme for nested scope handle lookup.
+
+Action plan before code changes:
+
+1. Reimplement `napi_allocator__<T>` as stable fixed-size blocks instead of a
+   growing vector.
+2. Keep public handles as real pointers to slot payloads (`T *`), which matches
+   the opaque `napi_value__ *`, `napi_ref__ *`, and `napi_handle_scope__ *`
+   typedefs.
+3. Recover the owning block from an entry pointer without a stored offset by
+   aligning each block to a computed power-of-two size and masking the slot
+   pointer down to that boundary.
+4. Maintain two block lists: available blocks with at least one free slot, and
+   full blocks with no free slots. Allocation uses the available list; release
+   moves a formerly full block back to the available list.
+5. Remove the nested-scope reserved-prefix behavior. A child allocator should
+   reject a parent-owned pointer handle, and `napi_scope__::value_from_handle`
+   should continue walking to the parent scope.
+6. Preserve the existing `allocate`, `get`, `release`, `close`,
+   `storage_slot_count`, `active_count`, and `for_each_active` surface so the
+   rest of the N-API layer stays narrow.
+
+Implementation:
+
+- Replaced the vector/free-index allocator with:
+
+```c++
+std::list<block__> blocks_;
+std::vector<block__ *> available_blocks_;
+std::vector<block__ *> full_blocks_;
+```
+
+- `block_layout__` defines the fixed `std::array<slot__, N>` storage and block
+  bookkeeping once; `block__` inherits that layout, adds alignment, and owns the
+  allocation/release behavior.
+- Each `block__` is aligned to the nearest power of two that can hold the block
+  layout.
+- Each `slot__` stores `T data`; public handles are `&slot.data`.
+- The allocator recovers the slot from a handle by subtracting
+  `offsetof(slot__, data)`, then masks the slot pointer down to the aligned
+  power-of-two block boundary to recover the enclosing block.
+- `static_assert(sizeof(block__) == block_alignment__)` keeps the mask-down
+  assumption honest if the block layout changes.
+- `std::list` keeps block addresses stable while new blocks are appended.
+- Allocation uses the last available block. When it becomes full, the block is
+  moved from `available_blocks_` to `full_blocks_`. Releasing a slot from a full
+  block moves it back to `available_blocks_`.
+- Nested scope lookup no longer needs reserved prefix slots. A child allocator
+  rejects a parent-owned pointer handle, and `napi_scope__::value_from_handle`
+  walks to the parent scope as before.
+- `napi_scope__` stores a debug `level_` instead of an allocator index:
+  root scope is level 0, and each child scope is `parent.level() + 1`.
+- `napi_env__::next_scope_index_` was removed; scope level is derived from the
+  handle-scope stack shape, not from allocation order.
+- `napi_value__` and `napi_ref__` no longer store copied scope levels either;
+  their owning scope is implicit in the allocator that contains the slot.
+
+Complexity and performance notes:
+
+- The allocation hot path is O(1): take the last block from
+  `available_blocks_`, pop one slot from that block's internal free list, and
+  return `&slot.data`.
+- The release hot path is O(1) for the slot itself: recover the slot from the
+  handle, mask down to the aligned block base, call `T::release()`, and push the
+  slot back onto that block's free list.
+- Moving a block from available to full is O(1). Moving a formerly full block
+  back to available includes a small `full_blocks_` vector erase scan, but that
+  only happens on the first release from a full block, not on every slot
+  release.
+- Handles are stable real pointers. Appending a new `std::list` block cannot
+  relocate existing slots, so `napi_value`, `napi_ref`, and scope handles do not
+  depend on vector capacity or integer index encoding.
+- Block-local slot arrays keep ordinary allocation/free churn cache-friendly
+  within each block, while avoiding the large copy/move behavior of vector
+  growth.
+- `get(handle)` is effectively O(1) after the pointer mask, with the remaining
+  ownership check scanning the block list as a debug/safety validation. If this
+  becomes measurable, the next optimization is to trust the masked block after a
+  compact block magic value or generation check instead of scanning `blocks_`.
+- Diagnostic operations such as `active_count()` and `for_each_active()` remain
+  intentionally O(number of blocks or slots), because they are aggregate
+  queries used by tracing, teardown, and tests rather than the request-time
+  allocation hot path.
+
+Cycle and memory-use notes:
+
+- The old vector-backed allocator could turn one allocation into a capacity
+  growth event that moves many existing entries. That is bad for CPU cycles and
+  fundamentally incompatible with pointer-shaped handles unless handles are
+  encoded indexes. The fixed-block allocator removes that relocation class
+  entirely.
+- Normal allocation now touches one available-block pointer, one slot pointer,
+  and the payload initialization. Normal release touches the payload release
+  plus a few fields in the owning block. That is the shape we want for request
+  churn: small, predictable work per N-API local.
+- The main memory cost is bounded slack inside the last partially used block:
+  with block size `N`, each allocator can retain up to `N - 1` unused slots in a
+  non-empty tail block. That trades a little reserved memory for stable handles
+  and O(1) slot reuse.
+- There is also one `std::list` node allocation per block and two pointer-vector
+  indexes for block scheduling. Those costs are per block, not per N-API value
+  or ref, so they should be small compared with the thousands of handles created
+  during HTTP/server load.
+- A full block has no per-slot free-list overhead in the scheduler: it simply
+  lives in `full_blocks_` until the first release makes it available again.
+- `close()` releases active entries in reverse block order and then drops every
+  block. Peak memory is therefore governed by the high-water mark of concurrent
+  live handles in the allocator, not by every handle ever allocated over the
+  process lifetime.
+- Compared with vector capacity growth, this model should reduce allocator
+  cycle spikes under bursty request load and make memory behavior easier to
+  reason about: memory grows in fixed block increments, slots are reused
+  immediately, and no active handle is invalidated by growth.
+
+Verification:
+
+```sh
+cmake --build build-edge-quickjs-cli --target \
+  napi_quickjs_test_36_handle_scope \
+  napi_quickjs_test_15_function \
+  napi_quickjs_test_16_reference \
+  napi_quickjs_test_41_instance_data -j4
+./build-edge-quickjs-cli/napi-quickjs/tests/napi_quickjs_test_36_handle_scope --gtest_filter=Test36HandleScope.PortedCoreFlow
+./build-edge-quickjs-cli/napi-quickjs/tests/napi_quickjs_test_15_function --gtest_filter=Test15Function.PortedCoreFlow
+./build-edge-quickjs-cli/napi-quickjs/tests/napi_quickjs_test_16_reference --gtest_filter=Test16Reference.PortedCoreFlow
+./build-edge-quickjs-cli/napi-quickjs/tests/napi_quickjs_test_41_instance_data --gtest_filter=Test41InstanceData.PortedCoreFlow
+make test-napi-quickjs-only
+cmake --build build-edge-quickjs-cli --target edge -j4
+```
+
+Results:
+
+- Focused allocator-sensitive tests passed.
+- `make test-napi-quickjs-only` passed 45/45.
+- Edge CLI relink passed.
+- After switching block alignment from fixed 64 KiB to computed nearest
+  power-of-two, the focused handle-scope/function/reference tests were rebuilt
+  and passed again.
+
+## 2026-05-12 Extending Fixed-Block Allocation To Other N-API Helpers
+
+Action plan before code changes:
+
+1. Reuse `napi_allocator__` for helper objects that currently use QuickJS
+   `js_mallocz(...)` manually.
+2. Classify ownership by semantic lifetime rather than by convenience:
+   `napi_callback_info__` is already a good stack object because it is
+   callback-frame data and cannot escape the callback; `napi_env_cleanup_hook__`
+   is environment data and must be owned by `napi_env__`.
+3. Keep `napi_deferred__` environment-owned. The public `napi_deferred` handle
+   is intentionally resolved/rejected later, often after the handle scope that
+   created the promise has closed.
+4. Keep `napi_external_backing_store_hint__` environment-owned. QuickJS stores
+   raw hint pointers in object opaques and array-buffer finalizer opaques, so a
+   current-scope allocator would leave dangling pointers as soon as that handle
+   scope closes.
+5. Do not add an allocator for `napi_external__` itself because it is a static
+   QuickJS class helper, not an allocated per-instance wrapper. Its allocated
+   payload is `napi_external_backing_store_hint__`.
+6. Preserve existing public create/destroy entry points where useful, but route
+   them through the owning allocator.
+
+Implementation:
+
+- Left `napi_callback_info__` as a stack object in
+  `napi_function__::trampoline(...)`. It is callback-frame metadata, cannot
+  outlive the native callback, and stack storage is cheaper and clearer than an
+  allocator slot.
+- Added env-owned `napi_allocator__` instances for:
+  `napi_env_cleanup_hook__`, `napi_deferred__`, and
+  `napi_external_backing_store_hint__`.
+- Routed `napi_env_cleanup_hook__::create/destroy(...)`,
+  `napi_deferred__::create/destroy(...)`, and
+  `napi_external_backing_store_hint__::create/destroy(...)` through
+  `napi_env__`.
+- Closed deferred and cleanup-hook allocators during `napi_env__` teardown while
+  the QuickJS context is still alive. External backing hints are not proactively
+  closed during `prepare_teardown()` because QuickJS object and array-buffer
+  finalizers can still hold raw hint pointers until `JS_FreeRuntime(...)`.
+- Removed the old helper-local `js_mallocz(...)` / `js_free(...)` allocation
+  path for those env-owned helper objects.
+
+Verification:
+
+```sh
+cmake --build build-edge-quickjs-cli --target \
+  napi_quickjs_test_35_promise \
+  napi_quickjs_test_38_finalizer \
+  napi_quickjs_test_41_instance_data \
+  napi_quickjs_test_15_function -j4
+./build-edge-quickjs-cli/napi-quickjs/tests/napi_quickjs_test_35_promise --gtest_filter='Test35Promise.*'
+./build-edge-quickjs-cli/napi-quickjs/tests/napi_quickjs_test_38_finalizer --gtest_filter=Test38Finalizer.PortedCoreFlow
+./build-edge-quickjs-cli/napi-quickjs/tests/napi_quickjs_test_41_instance_data --gtest_filter=Test41InstanceData.PortedCoreFlow
+./build-edge-quickjs-cli/napi-quickjs/tests/napi_quickjs_test_15_function --gtest_filter=Test15Function.PortedCoreFlow
+make test-napi-quickjs-only
+cmake --build build-edge-quickjs-cli --target edge -j4
+```
+
+Results:
+
+- Focused promise, finalizer, instance-data, and function tests passed.
+- `make test-napi-quickjs-only` passed 45/45.
+- Edge CLI relink passed.
+
+## 2026-05-12 Object Prototype Lifetime Buckets
+
+Action plan before code changes:
+
+1. Extend the existing heavier lifetime value dump path so object prototype
+   buckets are captured only on the slower content-dump cadence, alongside
+   repeated string/symbol value counts.
+2. Scan active `napi_value__` and `napi_ref__` slots for `JS_TAG_OBJECT`.
+3. For each object, derive a debug type label from the object's prototype:
+   `prototype.constructor.name` where possible.
+4. Avoid letting diagnostics perturb runtime state: clear and ignore QuickJS
+   exceptions raised while reading prototype or constructor metadata.
+5. Collapse object labels into per-scope/per-owner counts and print repeated
+   buckets while reporting how many object labels appeared only once.
+
+Implementation:
+
+- Added object prototype bucket collection to the existing
+  `NAPI_QUICKJS_ENABLE_LIFETIME_STRING_SYMBOL_DUMP` path. This keeps object
+  type inspection on the slower content-dump cadence instead of the normal
+  two-second tag-stat cadence.
+- For each active object-valued `napi_value__` or `napi_ref__`, the tracker
+  reads the object's prototype, then reads `prototype.constructor.name`.
+- If the prototype is null, the bucket is `<null-prototype>`.
+- If prototype/constructor/name lookup throws or produces no usable name, the
+  tracker clears the diagnostic exception and falls back to the QuickJS class
+  name, then finally to `<object>`.
+- Output lines use:
+
+```text
+[napi-lifetime-objects] scope_level=0 napi_value prototype="Object" count=62
+[napi-lifetime-objects] scope_level=0 napi_ref prototype="Pipe" count=2
+[napi-lifetime-objects] scope_level=0 napi_value singular_object_type_count=1
+```
+
+Verification:
+
+```sh
+cmake --build build-edge-quickjs-cli --target napi_quickjs -j4
+EDGE_TRACE_NAPI_LIFETIME_STATS=1 ./build-edge-quickjs-cli/edge -e "class Foo{}; const xs=[]; for (let i=0;i<3;i++) xs.push(new Foo(), {i}, []); console.log(xs.length)"
+make test-napi-quickjs
+```
+
+Results:
+
+- `napi_quickjs` rebuilt with the lifetime tracker changes.
+- The smoke command printed object prototype buckets, including `Object`,
+  `<null-prototype>`, `Function`, `Array`, `Pipe`, and typed-array buckets.
+- The smoke then hit the existing `JS_FreeRuntime` GC-list assertion after
+  `napi_env__ teardown end`; the lifetime dumps had already been emitted.
+- `make test-napi-quickjs` rebuilt the test-enabled cache and passed 45/45.
+
 ## 2026-05-11 Periodic Allocator Stats
 
 Action plan:
@@ -397,6 +657,257 @@ make test-napi-quickjs-only
 
 Result: 45/45 tests passed.
 
+## 2026-05-12 Compact Detailed Lifetime Tables
+
+The compact lifetime dump keeps the rolling three-sample columns:
+
+- `x[i-1]`: the centered current value;
+- `speed`: `x[i] - x[i-2]`;
+- `accel`: `x[i] - 2*x[i-1] + x[i-2]`.
+
+Detailed attribution was added back in the same format:
+
+```text
+[napi-lifetime-scopes]
+  level                x[i-1]      speed      accel
+
+[napi-lifetime-strings]
+  string               x[i-1]      speed      accel
+
+[napi-lifetime-objects]
+  type                 values:x    speed      accel      refs:x      speed      accel
+```
+
+Scope rows are aggregated by scope level, so multiple active scopes at level 2
+produce one level-2 row with the total active `napi_value` count. String and
+object detail rows only print entries whose count is greater than one; singleton
+strings/object types are collapsed into a single `count == 1` summary row. The
+object table merges `napi_value` object prototypes and `napi_ref` object
+prototypes side by side.
+
+While validating `NAPI_QUICKJS_ENABLE_LIFETIME_STRING_SYMBOL_DUMP=1`,
+`napi_quickjs_test_16_reference` exposed a crash in the old detailed capture
+path: the tracker attempted to stringify QuickJS symbols by treating the symbol
+payload as a `JSAtom`. The detailed dump no longer stringifies symbols; symbols
+remain visible through the tag table only.
+
+Verification:
+
+```sh
+NAPI_QUICKJS_BUILD_TESTS=1 \
+NAPI_QUICKJS_ENABLE_LIFETIME_TRACKER=1 \
+NAPI_QUICKJS_ENABLE_LIFETIME_PERIODIC_STATS=1 \
+NAPI_QUICKJS_ENABLE_LIFETIME_TAG_STATS=1 \
+NAPI_QUICKJS_ENABLE_LIFETIME_STRING_SYMBOL_DUMP=1 \
+cmake -S . -B build-edge-quickjs-cli -DEDGE_BUILD_NAPI_TESTS=ON
+cmake --build build-edge-quickjs-cli --target edge \
+  napi_quickjs_test_16_reference \
+  napi_quickjs_test_36_handle_scope \
+  napi_quickjs_test_37_reference_double_free \
+  napi_quickjs_test_38_finalizer -j4
+ctest --test-dir build-edge-quickjs-cli --output-on-failure \
+  -R 'napi_quickjs_test_16_reference|napi_quickjs_test_36_handle_scope|napi_quickjs_test_37_reference_double_free|napi_quickjs_test_38_finalizer'
+EDGE_TRACE_NAPI_LIFETIME_STATS=1 \
+  ./build-edge-quickjs-cli/edge -e 'console.log("tracker details smoke")'
+```
+
+The focused CTest run passed 4/4. The detailed smoke printed the scopes,
+strings, and objects tables.
+
+## 2026-05-12 HTTP Load Detailed Snapshot
+
+Sadhbh captured the following detailed lifetime dump while running the local
+HTTP server under load:
+
+```text
+NAPI LIFETIME TRACKER
+=====================
+[napi-lifetime-slots]
+  metric                                   x[i-1]      speed      accel
+  napi_value.slots_total                   195328      13312          0
+  napi_value.active                        195225      13418         -6
+  napi_value.tracked_active                195225      13418         -6
+  napi_ref.slots_total                       6144        512          0
+  napi_ref.active                            6003        400          0
+  napi_ref.tracked_active                    6003        400          0
+  napi_scope.slots_total                      256          0          0
+  napi_scope.active                             1          0          0
+  napi_scope.escape_value.calls                 0          0          0
+  napi_scope.escape_value.succeeded             0          0          0
+  napi_scope.escape_value.failed                0          0          0
+[napi-lifetime-scopes]
+  level                x[i-1]      speed      accel
+  0                    195225      13418         -6
+[napi-lifetime-types]
+  type                                 created   released     x[i-1]       peak      speed      accel
+  napi_value                            404368     202437     195225     201931      13418         -6
+  napi_ref                               24204      18001       6003       6211        400          0
+  napi_env_cleanup_hook                      0          0          0          0          0          0
+  napi_deferred                              0          0          0          0          0          0
+  napi_external_backing_store_hint        7937         73       7714       7864        300          0
+[napi-lifetime-tags] owner=napi_value
+  tag                  x[i-1]      speed      accel
+  symbol                 1494        100          0
+  string                10278        700          0
+  object               129587       8909         -3
+  int                   13115        903         -1
+  bool                   4385        300          0
+  null                   1485        103         -1
+  undefined             30485       2100          0
+  float64                4396        303         -1
+[napi-lifetime-tags] owner=napi_ref
+  tag                  x[i-1]      speed      accel
+  symbol                    5          0          0
+  object                 5995        400          0
+  undefined                 3          0          0
+[napi-lifetime-strings]
+  string                                   x[i-1]      speed      accel
+  */*                                        1250        500          0
+  /                                          1250        500          0
+  127.0.0.1:8080                             1250        500          0
+  Accept                                     1250        500          0
+  ApacheBench/2.3                            1250        500          0
+  Host                                       1250        500          0
+  User-Agent                                 1250        500          0
+  primordials                                  11          0          0
+  internalBinding                               7          0          0
+  process                                       7          0          0
+  require                                       6          0          0
+  ./build-edge-quickjs-cli/edge                 3          0          0
+  deps/undici/undici.js                         3          0          0
+  exports                                       3          0          0
+  perIsolateSymbols                             3          0          0
+  privateSymbols                                3          0          0
+  10                                            2          0          0
+  count == 1                                   80          0          0
+[napi-lifetime-objects]
+  type                            values:x      speed      accel      refs:x      speed      accel
+  ArrayBuffer                        26252      10500          0           -          -          -
+  Function                           20169       8013          1        1314        500          0
+  Float64Array                       18750       7500          0           3          0          0
+  TCP                                 8751       3500          0        1252        500          0
+  Array                               8765       3500          0           3          0          0
+  Object                              7585       3013          1          95          0          0
+  Uint32Array                         7502       3000          0           5          0          0
+  HTTPParser                          6250       2500          0           2          0          0
+  process                             3791       1513          1           -          -          -
+  ShutdownWrap                        2500       1000          0        1250        500          0
+  WriteWrap                              -          -          -        1251        500          0
+  Socket                              1250        500          0           -          -          -
+  <null-prototype>                     171          0          0           4          0          0
+  Signal                                33          0          0           2          0          0
+  Int32Array                             -          -          -           4          0          0
+  TTY                                    -          -          -           4          0          0
+  Uint8Array                             -          -          -           3          0          0
+  count == 1                             0          0          0           3          0          0
+```
+
+Interpretation:
+
+- The decisive line is `[napi-lifetime-scopes] level 0 = 195225`, with
+  `napi_scope.active = 1`. Every active `napi_value` in this snapshot is in the
+  root scope. No request/callback-local scope is active when these values are
+  created.
+- Growth is linear and stable: slot/value speeds stay around `13418` per
+  two-sample window and acceleration is near zero. That points to per-request
+  retention, not compounding retention.
+- The repeated strings are exactly request-local HTTP parse data:
+  `Host`, `127.0.0.1:8080`, `User-Agent`, `ApacheBench/2.3`, `Accept`, `*/*`,
+  and `/`. These should be temporary N-API local values, but they remain in
+  level 0 because the native HTTP/parser path enters N-API without first
+  preparing a scoped lifetime boundary.
+- The object table has the same shape: `ArrayBuffer`, `Function`,
+  `Float64Array`, `TCP`, `Array`, `Uint32Array`, `HTTPParser`, `Socket`, and
+  `ShutdownWrap` grow at request-correlated rates. Their value handles are local
+  wrappers allocated into the current scope, and the current scope is the root
+  scope in these native-entry paths.
+- `napi_ref` growth is smaller and separately meaningful. Refs are persistent by
+  design, but `Function`, `TCP`, `WriteWrap`, and `ShutdownWrap` refs growing by
+  roughly `500` over the same window indicates per-request or per-connection
+  persistent ownership that must be released by completion/finalizer paths.
+- `napi_external_backing_store_hint` growth (`x[i-1] = 7714`, speed `300`) is
+  another separate lifetime issue. It is likely tied to ArrayBuffer/external
+  backing-store finalization rather than local handle scopes alone.
+
+Working conclusion:
+
+The root problem for `napi_value` growth is not the allocator. The allocator is
+now correctly showing where live handles are owned. The issue is that EdgeJS
+native event paths call N-API while `env->current_scope()` is still the env root
+scope. In Node/V8, a handle scope is normally prepared around such native/API
+entry boundaries. In the QuickJS backend, if no scope is prepared before native
+HTTP/parser/stream callbacks create local values, those local values are owned
+by root scope and survive until environment teardown.
+
+The next fix should add a small RAII scope around native event-entry paths that
+call N-API and do not return a `napi_value` to their caller. The likely first
+targets remain the HTTP parser callback path, stream read/event callbacks, and
+TCP/Pipe connection callbacks. Refs and external backing-store hints should be
+tracked separately after local value scope containment is fixed.
+
+## 2026-05-12 Allocator Hook Lifetime Refactor
+
+The lifetime tracker was moved away from scattered
+`NAPI_QUICKJS_LIFETIME_MAYBE_DUMP(...)` call sites. `napi_allocator__` now calls
+`napi_lifetime__<T>::record_create(...)` after slot initialization and
+`record_release(...)` before slot release, including allocator `close()`.
+
+The allocator is now owner-aware:
+
+```c++
+template <napi_allocator_payload__ T, napi_allocator_owner__ Owner_, size_t N = 256>
+class napi_allocator__
+```
+
+The allocator stores `Owner_ *owner_` and passes it to lifetime hooks. Env-owned
+allocators use `napi_env__` as owner, while `napi_scope__::values_` uses
+`napi_scope__` as owner so value counting can attribute through the scope.
+
+The generic `napi_lifetime__<T>` is a no-op so untracked allocator payloads can
+still use `napi_allocator__`. Real specializations are compile-time gated in
+`napi_lifetime_tracker.h` for:
+
+- `napi_value__`
+- `napi_ref__`
+- `napi_env_cleanup_hook__`
+- `napi_deferred__`
+- `napi_external_backing_store_hint__`
+
+The implementation in `napi_lifetime_tracker.cc` keeps one process-static
+counter/snapshot state. Value and ref records capture tag, string/symbol text,
+and object prototype names at create time, then remove those snapshots at
+release time. Periodic stats are triggered from allocator lifetime hooks.
+
+`napi_scope__::escape_value(...)` now has a separate semantic tracker hook that
+counts every escape attempt and splits successful versus failed escapes. This is
+reported in the compact stats table.
+
+Lifetime dumps now use compact readable tables. Each metric keeps a three-sample
+rolling window. Once three samples exist, the displayed point is centered on
+`x[i-1]`; `speed` is `x[i] - x[i-2]`, and `accel` is
+`x[i] - 2*x[i-1] + x[i-2]`. String/symbol and object details collapse entries
+with count `< 2` into one row, and print one row per repeated value/type.
+
+Verification:
+
+```sh
+cmake --build build-edge-quickjs-cli --target edge -j4
+cmake --build build-edge-quickjs-cli --target \
+  napi_quickjs_test_16_reference \
+  napi_quickjs_test_36_handle_scope \
+  napi_quickjs_test_37_reference_double_free \
+  napi_quickjs_test_38_finalizer -j4
+ctest --test-dir build-edge-quickjs-cli/napi-quickjs/tests \
+  --output-on-failure \
+  -R 'napi_quickjs_test_16_reference|napi_quickjs_test_36_handle_scope|napi_quickjs_test_37_reference_double_free|napi_quickjs_test_38_finalizer'
+EDGE_TRACE_NAPI_LIFETIME_STATS=1 \
+  ./build-edge-quickjs-cli/edge -e "console.log('tracker smoke')"
+```
+
+Build and focused tests passed. The tracker smoke emitted create/release totals
+and showed `tracked_active` matching active value/ref slots at teardown begin
+and returning to zero after env value/ref/scope close.
+
 ## 2026-05-11 Root `test_6` Debug Check
 
 Sadhbh reported that `make test-native-quickjs` from `napi/` passed, while a
@@ -534,7 +1045,7 @@ Action plan before code changes:
    two-second cadence.
 4. Capture only active `JS_TAG_STRING`, `JS_TAG_STRING_ROPE`, and
    `JS_TAG_SYMBOL` values from `napi_value__` and `napi_ref__`.
-5. Split output by scope index and by owner kind, then collapse duplicates into
+5. Split output by scope level and by owner kind, then collapse duplicates into
    `count=N value="..."` lines so repeated per-request values are visible.
 6. Convert strings with `JS_ToCStringLen(...)`; convert symbols with
    `JS_ValueToAtom(...)` and `JS_AtomToCStringLen(...)`, because direct string
@@ -550,12 +1061,12 @@ Implementation notes:
 - The new flag enables tag stats if needed; tag stats already enable periodic
   stats, and periodic stats enable the lifetime tracker.
 - Active string/symbol values are counted in the lifetime tracker by
-  `(scope_index, napi_value/napi_ref, tag, escaped value)`.
+  `(scope_level, napi_value/napi_ref, tag, escaped value)`.
 - Output lines use:
 
 ```text
-[napi-lifetime-values] scope=0 napi_value tag=string count=1000 value="Host"
-[napi-lifetime-values] scope=0 napi_value tag=symbol count=1002 value="handle_onclose"
+[napi-lifetime-values] scope_level=0 napi_value tag=string count=1000 value="Host"
+[napi-lifetime-values] scope_level=0 napi_value tag=symbol count=1002 value="handle_onclose"
 ```
 
 Verification:
@@ -576,26 +1087,26 @@ string/symbol content counts increasing with request churn:
 
 ```text
 [napi-lifetime-stats] napi_value slots_total=67788 active=67788 napi_ref slots_total=2214 active=2206 napi_scope slots_total=3 active=1
-[napi-lifetime-tags] scope=0 napi_value symbol=545 string=3628 object=45003 int=4522 bool=1502 null=513 undefined=10557 float64=1519
-[napi-lifetime-values] scope=0 napi_value tag=symbol count=502 value="handle_onclose"
-[napi-lifetime-values] scope=0 napi_value tag=string count=500 value="Host"
-[napi-lifetime-values] scope=0 napi_value tag=string count=500 value="127.0.0.1:8080"
-[napi-lifetime-values] scope=0 napi_value tag=string count=500 value="User-Agent"
-[napi-lifetime-values] scope=0 napi_value tag=string count=500 value="ApacheBench/2.3"
-[napi-lifetime-values] scope=0 napi_value tag=string count=500 value="Accept"
-[napi-lifetime-values] scope=0 napi_value tag=string count=500 value="*/*"
-[napi-lifetime-values] scope=0 napi_value tag=string count=500 value="/"
+[napi-lifetime-tags] scope_level=0 napi_value symbol=545 string=3628 object=45003 int=4522 bool=1502 null=513 undefined=10557 float64=1519
+[napi-lifetime-values] scope_level=0 napi_value tag=symbol count=502 value="handle_onclose"
+[napi-lifetime-values] scope_level=0 napi_value tag=string count=500 value="Host"
+[napi-lifetime-values] scope_level=0 napi_value tag=string count=500 value="127.0.0.1:8080"
+[napi-lifetime-values] scope_level=0 napi_value tag=string count=500 value="User-Agent"
+[napi-lifetime-values] scope_level=0 napi_value tag=string count=500 value="ApacheBench/2.3"
+[napi-lifetime-values] scope_level=0 napi_value tag=string count=500 value="Accept"
+[napi-lifetime-values] scope_level=0 napi_value tag=string count=500 value="*/*"
+[napi-lifetime-values] scope_level=0 napi_value tag=string count=500 value="/"
 
 [napi-lifetime-stats] napi_value slots_total=134840 active=134840 napi_ref slots_total=4214 active=4206 napi_scope slots_total=3 active=1
-[napi-lifetime-tags] scope=0 napi_value symbol=1045 string=7128 object=89529 int=9032 bool=3002 null=1023 undefined=21055 float64=3027
-[napi-lifetime-values] scope=0 napi_value tag=symbol count=1002 value="handle_onclose"
-[napi-lifetime-values] scope=0 napi_value tag=string count=1000 value="Host"
-[napi-lifetime-values] scope=0 napi_value tag=string count=1000 value="127.0.0.1:8080"
-[napi-lifetime-values] scope=0 napi_value tag=string count=1000 value="User-Agent"
-[napi-lifetime-values] scope=0 napi_value tag=string count=1000 value="ApacheBench/2.3"
-[napi-lifetime-values] scope=0 napi_value tag=string count=1000 value="Accept"
-[napi-lifetime-values] scope=0 napi_value tag=string count=1000 value="*/*"
-[napi-lifetime-values] scope=0 napi_value tag=string count=1000 value="/"
+[napi-lifetime-tags] scope_level=0 napi_value symbol=1045 string=7128 object=89529 int=9032 bool=3002 null=1023 undefined=21055 float64=3027
+[napi-lifetime-values] scope_level=0 napi_value tag=symbol count=1002 value="handle_onclose"
+[napi-lifetime-values] scope_level=0 napi_value tag=string count=1000 value="Host"
+[napi-lifetime-values] scope_level=0 napi_value tag=string count=1000 value="127.0.0.1:8080"
+[napi-lifetime-values] scope_level=0 napi_value tag=string count=1000 value="User-Agent"
+[napi-lifetime-values] scope_level=0 napi_value tag=string count=1000 value="ApacheBench/2.3"
+[napi-lifetime-values] scope_level=0 napi_value tag=string count=1000 value="Accept"
+[napi-lifetime-values] scope_level=0 napi_value tag=string count=1000 value="*/*"
+[napi-lifetime-values] scope_level=0 napi_value tag=string count=1000 value="/"
 ```
 
 The cache was intentionally left with the diagnostic flags on.
@@ -611,9 +1122,10 @@ Action plan before code changes:
 4. Add typed overloads on `napi_lifetime_tracker__` for `napi_value__` and
    `napi_ref__`, so C++ overload resolution routes value/ref slots through the
    diagnostic-aware tracker path.
-5. Let the tracker read the slot's env, scope index, and `JSValue`, extract tag
-   and string/symbol content internally, and maintain active per-slot snapshots
-   so ref value changes can decrement the old value and increment the new value.
+5. Let the tracker read the slot's env and `JSValue`, with scope labels supplied
+   by the active-scope scan, extract tag and string/symbol content internally,
+   and maintain active per-slot snapshots so ref value changes can decrement
+   the old value and increment the new value.
 6. Restore periodic aggregate stats to the intended 2-second cadence.
 7. Keep string/symbol value dumps on a separate 10-second cadence.
 8. Rebuild the existing diagnostic cache and rerun a short local server/request
@@ -710,18 +1222,18 @@ Representative lines:
 
 ```text
 [napi-lifetime-stats] napi_value slots_total=67661 active=67661 napi_ref slots_total=2207 active=2199 napi_scope slots_total=3 active=1
-[napi-lifetime-tags] scope=0 napi_value symbol=544 string=3628 object=44905 int=4512 bool=1502 null=513 undefined=10535 float64=1522
-[napi-lifetime-tags] scope=0 napi_ref symbol=5 object=2191 undefined=3
+[napi-lifetime-tags] scope_level=0 napi_value symbol=544 string=3628 object=44905 int=4512 bool=1502 null=513 undefined=10535 float64=1522
+[napi-lifetime-tags] scope_level=0 napi_ref symbol=5 object=2191 undefined=3
 
-[napi-lifetime-values] scope=0 napi_value tag=string count=500 value="Host"
-[napi-lifetime-values] scope=0 napi_value tag=string count=500 value="127.0.0.1:8080"
-[napi-lifetime-values] scope=0 napi_value tag=string count=500 value="User-Agent"
-[napi-lifetime-values] scope=0 napi_value tag=string count=500 value="ApacheBench/2.3"
-[napi-lifetime-values] scope=0 napi_value tag=string count=500 value="Accept"
-[napi-lifetime-values] scope=0 napi_value tag=string count=500 value="*/*"
-[napi-lifetime-values] scope=0 napi_value tag=string count=500 value="/"
-[napi-lifetime-values] scope=0 napi_value singular_string_count=80
-[napi-lifetime-values] scope=0 napi_ref singular_string_count=0
+[napi-lifetime-values] scope_level=0 napi_value tag=string count=500 value="Host"
+[napi-lifetime-values] scope_level=0 napi_value tag=string count=500 value="127.0.0.1:8080"
+[napi-lifetime-values] scope_level=0 napi_value tag=string count=500 value="User-Agent"
+[napi-lifetime-values] scope_level=0 napi_value tag=string count=500 value="ApacheBench/2.3"
+[napi-lifetime-values] scope_level=0 napi_value tag=string count=500 value="Accept"
+[napi-lifetime-values] scope_level=0 napi_value tag=string count=500 value="*/*"
+[napi-lifetime-values] scope_level=0 napi_value tag=string count=500 value="/"
+[napi-lifetime-values] scope_level=0 napi_value singular_string_count=80
+[napi-lifetime-values] scope_level=0 napi_ref singular_string_count=0
 ```
 
 The direct helper names, old direct diagnostic macros, global snapshot state,
@@ -839,13 +1351,13 @@ with localhost/network approval succeeded. After several `ab -n 50 -c 10`
 batches, root-scope request strings still grew:
 
 ```text
-[napi-lifetime-values] scope=0 napi_value tag=string count=500 value="Host"
-[napi-lifetime-values] scope=0 napi_value tag=string count=500 value="127.0.0.1:8080"
-[napi-lifetime-values] scope=0 napi_value tag=string count=500 value="User-Agent"
-[napi-lifetime-values] scope=0 napi_value tag=string count=500 value="ApacheBench/2.3"
-[napi-lifetime-values] scope=0 napi_value tag=string count=500 value="Accept"
-[napi-lifetime-values] scope=0 napi_value tag=string count=500 value="*/*"
-[napi-lifetime-values] scope=0 napi_value tag=string count=500 value="/"
+[napi-lifetime-values] scope_level=0 napi_value tag=string count=500 value="Host"
+[napi-lifetime-values] scope_level=0 napi_value tag=string count=500 value="127.0.0.1:8080"
+[napi-lifetime-values] scope_level=0 napi_value tag=string count=500 value="User-Agent"
+[napi-lifetime-values] scope_level=0 napi_value tag=string count=500 value="ApacheBench/2.3"
+[napi-lifetime-values] scope_level=0 napi_value tag=string count=500 value="Accept"
+[napi-lifetime-values] scope_level=0 napi_value tag=string count=500 value="*/*"
+[napi-lifetime-values] scope_level=0 napi_value tag=string count=500 value="/"
 ```
 
 Conclusion: the trampoline RAII frame is now implemented and verified for
@@ -867,7 +1379,7 @@ Action plan:
    potentially noisy string capture code is compiled out by default.
 3. Reuse active value/ref slot lifecycle hooks, and only record content for
    `JS_TAG_STRING`, `JS_TAG_STRING_ROPE`, and `JS_TAG_SYMBOL`.
-4. Split dump output by scope index and owner kind (`napi_value` versus
+4. Split dump output by scope level and owner kind (`napi_value` versus
    `napi_ref`) so root-scope retention remains easy to identify.
 5. Use QuickJS C-string conversion only while the underlying `JSValue` is known
    to be alive; store a bounded escaped copy in the tracker.
@@ -901,12 +1413,13 @@ Implementation notes:
 - This first implementation printed periodic stats every 10 seconds; the later
   tracker-owned extraction correction restored aggregate stats and tag
   breakdowns to the intended two-second cadence.
-- Tag stats are split by allocator-backed `napi_scope__` index, so output can
-  distinguish root-scope retention from child-scope retention:
+- Tag stats are split by the lifetime tracker's scope levels, so
+  output can distinguish root-scope retention from child-scope retention without
+  storing an index inside `napi_scope__`:
 
 ```text
-[napi-lifetime-tags] scope=0 napi_value symbol=794 string=5378 object=67179 int=6781 bool=2252 null=771 undefined=15785 float64=2269
-[napi-lifetime-tags] scope=0 napi_ref symbol=5 object=3191 undefined=3
+[napi-lifetime-tags] scope_level=0 napi_value symbol=794 string=5378 object=67179 int=6781 bool=2252 null=771 undefined=15785 float64=2269
+[napi-lifetime-tags] scope_level=0 napi_ref symbol=5 object=3191 undefined=3
 ```
 
 Sample run:
@@ -927,19 +1440,19 @@ Observed after driving repeated small `ab` batches for about 30 seconds:
 
 ```text
 [napi-lifetime-stats] napi_value slots_total=34136 active=34136 napi_ref slots_total=1207 active=1199 napi_scope slots_total=3 active=1
-[napi-lifetime-tags] scope=0 napi_value symbol=294 string=1878 object=22643 int=2269 bool=752 null=259 undefined=5285 float64=757
-[napi-lifetime-tags] scope=0 napi_ref symbol=5 object=1191 undefined=3
+[napi-lifetime-tags] scope_level=0 napi_value symbol=294 string=1878 object=22643 int=2269 bool=752 null=259 undefined=5285 float64=757
+[napi-lifetime-tags] scope_level=0 napi_ref symbol=5 object=1191 undefined=3
 
 [napi-lifetime-stats] napi_value slots_total=67678 active=67678 napi_ref slots_total=2207 active=2199 napi_scope slots_total=3 active=1
-[napi-lifetime-tags] scope=0 napi_value symbol=544 string=3628 object=44914 int=4526 bool=1502 null=516 undefined=10535 float64=1514
-[napi-lifetime-tags] scope=0 napi_ref symbol=5 object=2191 undefined=3
+[napi-lifetime-tags] scope_level=0 napi_value symbol=544 string=3628 object=44914 int=4526 bool=1502 null=516 undefined=10535 float64=1514
+[napi-lifetime-tags] scope_level=0 napi_ref symbol=5 object=2191 undefined=3
 
 [napi-lifetime-stats] napi_value slots_total=101208 active=101208 napi_ref slots_total=3207 active=3199 napi_scope slots_total=3 active=1
-[napi-lifetime-tags] scope=0 napi_value symbol=794 string=5378 object=67179 int=6781 bool=2252 null=771 undefined=15785 float64=2269
-[napi-lifetime-tags] scope=0 napi_ref symbol=5 object=3191 undefined=3
+[napi-lifetime-tags] scope_level=0 napi_value symbol=794 string=5378 object=67179 int=6781 bool=2252 null=771 undefined=15785 float64=2269
+[napi-lifetime-tags] scope_level=0 napi_ref symbol=5 object=3191 undefined=3
 ```
 
-Conclusion from this sample: retained values/refs are all in `scope=0`, the
+Conclusion from this sample: retained values/refs are all in `scope_level=0`, the
 root scope. The dominant retained value tag is `object`, followed by
 `undefined`, `int`, `string`, and `float64`; refs are almost entirely `object`.
 
@@ -1232,6 +1745,48 @@ native event-entry / libuv callback processing that calls N-API before entering
 JS, or to add an equivalent backend-owned entry scope for those EdgeJS runtime
 boundaries. A trampoline-only scope is useful but does not address
 `OnConnection(...)` and similar native paths.
+
+## 2026-05-12 Native Event Scope Plan
+
+The active reproduction server is the repository-local
+`/Users/sadhbh/src/dev/edgejs/server.js`, a minimal `node:http` server that
+writes a plain text response. The repeated strings in the root-scope dump map
+directly to `BuildHeadersArray(...)` and URL-string creation in
+`src/edge_http_parser.cc`, reached from the consumed stream listener while
+`llhttp_execute(...)` calls the parser callbacks.
+
+Action plan before code changes:
+
+1. Add a tiny Edge-side RAII helper around `napi_open_handle_scope(...)` /
+   `napi_close_handle_scope(...)`.
+2. Use it only around native libuv/event callbacks that call N-API and do not
+   return a `napi_value` to their caller.
+3. Start with the server hot path: TCP/Pipe `OnConnection(...)`, consumed HTTP
+   parser reads, and stream read callbacks that create ArrayBuffer handles
+   before calling JavaScript.
+4. Leave normal N-API callback functions and helpers that return `napi_value`
+   untouched unless they use an escapable handle scope.
+
+## 2026-05-12 Env-Owned Reference Allocator Plan
+
+`napi_ref` handles are persistent references rather than local handles. They
+should therefore be owned directly by `napi_env__`, not by the root
+`napi_scope__`.
+
+Action plan before code changes:
+
+1. Move `napi_allocator__<napi_ref__>` from `napi_scope__` into `napi_env__`.
+2. Keep public reference creation/deletion routed through env helpers.
+3. Leave `napi_value__` allocation in `napi_scope__`, because values remain
+   local to the current handle scope.
+4. Update lifetime scanning so `napi_ref` totals and tag dumps come from the
+   env-level ref allocator rather than scope-level ref allocators.
+5. Replace the linear weak-ref vector with an object-identity keyed
+   `std::unordered_multimap<void *, napi_ref>`, because multiple weak refs may
+   point at the same QuickJS object.
+6. Replace the linear external ArrayBuffer hint vector with an object-identity
+   keyed `std::unordered_multimap<void *, napi_external_backing_store_hint__ *>`
+   for the same identity lookup reason.
 
 Verification after the investigation:
 
