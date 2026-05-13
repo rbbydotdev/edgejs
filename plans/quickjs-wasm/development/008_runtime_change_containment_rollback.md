@@ -110,7 +110,7 @@ cd ~/src/dev/edgejs/quickjs-wasm && ./build.sh
 `build-quickjs-wasix/edgejs.wasm`, and its final no-N-API-imports check passed.
 
 The QuickJS source submodule now lives under the N-API project at
-`napi/quickjs/src/quickjs`, not at the EdgeJS repository root. The root
+`napi/quickjs/deps/quickjs`, not at the EdgeJS repository root. The root
 `EDGE_NAPI_PROVIDER=quickjs` CMake path should add that nested QuickJS CMake
 project and force `NAPI_QUICKJS_INCLUDE_DIR` to the same directory so old build
 caches do not keep pointing at the removed root `quickjs/` path.

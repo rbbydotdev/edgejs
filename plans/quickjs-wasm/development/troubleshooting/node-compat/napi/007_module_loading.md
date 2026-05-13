@@ -44,7 +44,7 @@ translators. Tests should cover pnpm layouts, builtins, package exports,
 CommonJS/ESM interop, and source classification without rebuilding Node's loader
 policy in C++.
 
-The superproject must pin `napi/quickjs/src/quickjs` to
+The superproject must pin `napi/quickjs/deps/quickjs` to
 `41b00d4cc34cf79188cd9255f050e95ea1a2e9d6` or later. Plain upstream QuickJS at
 `c707cf5eda67a97bbff7a60cb2ef124fd4a77420` does not declare the new
 `JSModuleImportPhaseEnum`, module wrapper APIs, or `JS_GetCurrentStackTrace`

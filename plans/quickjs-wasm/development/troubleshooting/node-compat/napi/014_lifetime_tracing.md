@@ -2,7 +2,7 @@
 
 | | | Remarks |
 | --- | --- | --- |
-| **Status** | 🟠 | `napi_allocator__` owns handle/helper storage and feeds `napi_lifetime_tracker__`; native event scopes and external backing hints still need follow-up. |
+| **Status** | 🟠 | `napi_allocator__` owns N-API handle/helper storage and feeds `napi_lifetime_tracker__`; native event scopes are in place, function metadata uses raw QuickJS externals, and weak/external opaque lifetimes are now delegated to QuickJS instead of env identity maps. |
 | **Severity** | Medium | Growth can destabilize long-running Edge QuickJS servers, but this note tracks diagnostics rather than a confirmed blocker. |
 
 ## Current State
@@ -23,6 +23,10 @@ The current source of truth is:
 - `napi_function__::trampoline(...)` opens a callback-local handle scope around
   JS-to-native callbacks, duplicates callback return values before closing that
   scope, and releases the temporary local handle.
+- `napi_env__::wrap_external_data(...)` creates a raw QuickJS external
+  `JSValue` for native pointers. That raw value is not itself a `napi_value`
+  and is not inserted into any handle scope until a public N-API call explicitly
+  wraps it with `env->wrap_value_in_current_scope(...)`.
 - The remaining `server.js` growth diagnosis is not that the allocator leaks
   by itself. The tracker shows native EdgeJS event paths creating request-local
   N-API values while `env->current_scope()` is still the env root scope. Those
@@ -45,8 +49,9 @@ to separate expected persistent ownership from request-local handle retention.
 3. Keep `napi_lifetime_tracker__` wired through allocator hooks so normal
    builds stay silent but diagnostic builds can report live handle/helper
    counts.
-4. Use the tracker to distinguish root-scope value retention, env-owned refs,
-   and external backing-store/finalizer state.
+4. Use the tracker to distinguish root-scope value retention and env-owned refs.
+   Native opaque payloads attached to QuickJS values should be tracked by
+   QuickJS finalizer/weak-record paths, not by env identity side maps.
 5. Continue with narrow native event-entry handle scopes around paths that
    construct N-API arguments before invoking JavaScript.
 
@@ -121,10 +126,379 @@ every N creations of a given type.
 - `napi_ref__` is allocated by `napi_create_reference(...)` and freed by
   `napi_delete_reference(...)`; weak refs are also tracked on `napi_env__`.
 - `napi_external_backing_store_hint__` backs externals, wraps, finalizers, and
-  external array buffers; it is destroyed by QuickJS class or array-buffer
-  finalizers, or by `napi_remove_wrap(...)`.
+  external array buffers; it is attached to QuickJS as opaque data and is
+  destroyed by QuickJS class or array-buffer finalizers, or by
+  `napi_remove_wrap(...)`.
+- Internal QuickJS function metadata must not create `napi_value` wrappers just
+  to smuggle native callback/data pointers into `JS_NewCFunctionData(...)`.
+  `napi_env__::wrap_external_data(...)` creates the raw QuickJS external
+  `JSValue`; public `napi_create_external(...)` then wraps that `JSValue` into
+  the current handle scope only when returning a public `napi_value`.
 - `napi_callback_info__` is stack-allocated in the QuickJS C-function
   trampoline for each N-API callback.
+
+### Scope and ownership picture
+
+The QuickJS backend has three different lifetime containers that must not be
+blurred together:
+
+```text
+napi_env__
+  |
+  +-- root scope, level 0
+  |     owns root-local napi_value slots
+  |
+  +-- current scope pointer
+  |     points at root unless a handle scope is open
+  |
+  +-- env-owned ref allocator
+  |     owns napi_ref slots independently of handle scopes
+  |
+  +-- env-owned helper allocators
+        cleanup hooks, deferreds, external backing-store hints,
+        callback helpers, scope records
+```
+
+Opening a handle scope pushes a short-lived local allocation layer:
+
+```text
+before callback:
+
+  current_scope
+      |
+      v
+  [level 0 root scope]
+
+inside native event or callback:
+
+  current_scope
+      |
+      v
+  [level 1 local scope]  <-- new napi_value handles live here
+      |
+      v
+  [level 0 root scope]
+
+inside helper that must return one value:
+
+  current_scope
+      |
+      v
+  [level 2 escapable scope]  -- Escape(value) --> value moves to level 1
+      |
+      v
+  [level 1 local scope]
+      |
+      v
+  [level 0 root scope]
+```
+
+Facts to keep straight:
+
+- A `JSValue` is the QuickJS engine value.
+- A `napi_value` is a public handle slot around a `JSValue`.
+- `env->wrap_value_in_current_scope(js_value, owned)` creates the `napi_value`
+  in whatever `env->current_scope()` points to at that exact moment.
+- If no local handle scope is open, the current scope is the root scope, so
+  temporary `napi_value` handles become root-owned and survive until env
+  teardown.
+- `napi_ref` is not a local handle. It is persistent env-owned storage that
+  keeps or observes a `JSValue` across scopes. `napi_get_reference_value(...)`
+  creates a fresh `napi_value` in the current scope when code asks for the
+  referenced object again.
+- `napi_external_backing_store_hint__` is native pointer/finalizer state handed
+  to QuickJS as opaque data. It is allocated from
+  `napi_env__::external_backing_stores_`, then attached to a QuickJS object with
+  `JS_SetOpaque(...)` or to an ArrayBuffer as the free-function opaque pointer.
+  It is not a `napi_value`, does not live in a handle scope, and is not tracked
+  through an env identity map.
+
+The simplest mental model is:
+
+```text
+QuickJS object/value
+    |
+    +-- optional public napi_value handle
+    |      lives in current handle scope
+    |
+    +-- optional napi_ref
+    |      lives in env ref allocator
+    |
+    +-- optional opaque external/wrap hint
+           lives in env external backing-store allocator and is reached through
+           JS_SetOpaque or ArrayBuffer opaque data
+```
+
+### External data flow
+
+External native pointer data now has two deliberately separate paths.
+
+Internal QuickJS metadata can wrap a native pointer as a raw `JSValue` only:
+
+```cpp
+JSValue callback_data = env->wrap_external_data(reinterpret_cast<void *>(cb));
+```
+
+That allocates an external backing-store hint and creates a QuickJS external
+object with the hint as its opaque payload. It does not allocate a `napi_value`
+slot in root or in the current handle scope.
+
+Public `napi_create_external(...)` uses the same raw primitive, then creates a
+public handle in the current scope because the N-API contract returns a
+`napi_value`:
+
+```cpp
+napi_status NAPI_CDECL napi_create_external(napi_env env,
+                                            void *data,
+                                            napi_finalize finalize_cb,
+                                            void *finalize_hint,
+                                            napi_value *result)
+{
+  if (!napi_util__::check_env(env) || result == nullptr)
+    return napi_invalid_arg;
+
+  JSValue obj = env->wrap_external_data(data, finalize_cb, finalize_hint);
+  if (JS_IsException(obj))
+  {
+    return napi_util__::return_pending_if_caught(env,
+                                                 "Failed to create external object");
+  }
+
+  *result = env->wrap_value_in_current_scope(obj, true);
+  return (*result == nullptr) ? napi_generic_failure : napi_ok;
+}
+```
+
+So the public path is:
+
+```text
+native pointer
+  -> napi_env__::wrap_external_data(...)
+       -> QuickJS external JSValue + env-owned backing hint
+  -> env->wrap_value_in_current_scope(...)
+       -> public napi_value in current scope
+```
+
+The internal path is shorter:
+
+```text
+native pointer
+  -> napi_env__::wrap_external_data(...)
+       -> QuickJS external JSValue + env-owned backing hint
+       -> no napi_value handle
+```
+
+The QuickJS external object's finalizer invokes the stored finalizer, clears any
+weak refs for the finalizer target, and releases the backing hint through the
+env allocator. `napi_remove_wrap(...)` is the explicit early-release path for
+native objects attached with `napi_wrap(...)`: it extracts the external data,
+detaches the opaque/wrap record from the JS object, destroys the backing hint,
+and returns the native pointer to the caller.
+
+### Function and class metadata flow
+
+`napi_function__::create(...)` is the core function factory for
+`napi_create_function(...)`, methods, getters/setters, and constructors created
+by `napi_define_class(...)`.
+
+The metadata passed into QuickJS C functions should stay raw:
+
+```cpp
+JSValue data_values[2];
+data_values[0] = env->wrap_external_data(reinterpret_cast<void *>(cb));
+data_values[1] = env->wrap_external_data(data);
+
+JSValue fn = JS_NewCFunctionData(env->context(), trampoline, 0, magic, 2,
+                                 data_values);
+JS_FreeValue(env->context(), data_values[0]);
+JS_FreeValue(env->context(), data_values[1]);
+
+*result = env->wrap_value_in_current_scope(fn, true);
+```
+
+The important ownership detail is that `data_values[]` are QuickJS values used
+to initialize `JS_NewCFunctionData(...)`. They are freed after QuickJS has
+captured them. No temporary `napi_value` is created for the callback pointer or
+the callback data pointer.
+
+The resulting function itself is a public N-API value because callers need a
+`napi_value`:
+
+```text
+napi_function__::create(...)
+  |
+  +-- raw external JSValue for napi_callback
+  +-- raw external JSValue for callback data
+  |
+  +-- JS_NewCFunctionData(...)
+          stores those values inside the QuickJS function object
+  |
+  +-- wrap_value_in_current_scope(function)
+          returns public napi_value for the function
+```
+
+When JavaScript calls the function, `napi_function__::trampoline(...)` opens a
+callback-local handle scope before building callback arguments and
+`napi_callback_info__`. Those callback argument `napi_value` handles are local
+to that callback scope. If the native callback returns a value, the trampoline
+duplicates the returned `JSValue` before the callback-local scope closes.
+
+Classes are layered on top of functions:
+
+```text
+napi_define_class(...)
+  |
+  +-- napi_function__::create(constructor)
+  |      returns constructor napi_value in current scope
+  |
+  +-- JS_NewObject(ctx) prototype
+  |
+  +-- for each method/getter/setter:
+  |      napi_function__::create(property callback)
+  |      JS_DefineProperty... on constructor or prototype
+  |
+  +-- result = constructor napi_value
+```
+
+Constructing an instance uses the constructor's `JSValue` and wraps the created
+instance into the current scope:
+
+```text
+napi_new_instance(...)
+  |
+  +-- prepare_call_args(env, argc, argv)
+  |      converts input napi_value handles to JSValue array
+  |
+  +-- JS_CallConstructor(...)
+  |
+  +-- wrap_value_in_current_scope(instance)
+          returns instance napi_value in current scope
+```
+
+Native instance ownership is separate from constructor/class creation. A later
+`napi_wrap(...)` attaches a native pointer/finalizer to an object using an
+external backing-store hint. If QuickJS accepts the object's opaque slot, the
+hint is attached there. If the object already has incompatible opaque storage,
+the hint is stored in a separate QuickJS external object under the internal
+`__napi_wrap__` property. In both cases, `napi_unwrap(...)` reads the hint and
+returns its native pointer, while `napi_remove_wrap(...)` detaches and destroys
+the hint early.
+
+### QuickJS WeakRef intrinsic and N-API weak refs
+
+`JS_AddIntrinsicWeakRef(ctx)` is QuickJS's installer for the ECMAScript
+`WeakRef` and `FinalizationRegistry` constructors. It registers QuickJS internal
+classes, creates the global constructors/prototypes, and relies on internal
+`JSWeakRefRecord` lists hanging off `JSObject` / `JSAtomStruct`
+`first_weak_ref` fields. During object or symbol teardown, QuickJS calls
+`reset_weak_ref(...)` to clear `WeakRef` targets, remove `WeakMap`/`WeakSet`
+records, and enqueue `FinalizationRegistry` cleanup jobs when allowed.
+
+Because this tree vendors QuickJS, the backend now exposes only the native parts
+it needs instead of double-tracking target identity in `napi_env__`:
+
+- QuickJS has a new native weak record kind, `JS_WEAK_REF_KIND_NATIVE`, plus a
+  shared native weak anchor/link API. `JS_GetNativeWeakRef(...)` returns the one
+  native weak anchor for a live target `JSValue`, `JS_AddNativeWeakRefLink(...)`
+  links each weak `napi_ref__` into that shared anchor, and
+  `JS_DeleteNativeWeakRefLink(...)` unlinks it.
+- Multiple weak `napi_ref__` slots pointing at the same `JSValue` therefore
+  share one QuickJS-owned native weak anchor. Each `napi_ref__` embeds one
+  `JSNativeWeakRefLink weak_link_` by value. When QuickJS resets the target's
+  internal weak-ref list, it walks those embedded links, each linked
+  `napi_ref__` clears itself to `{ JS_UNDEFINED, nullptr }`, and QuickJS frees
+  the shared native weak anchor as part of target teardown.
+- QuickJS has `JS_GetArrayBufferFreeInfo(...)`, which exposes the ArrayBuffer
+  `free_func` and `opaque` pair already stored in `JSArrayBuffer`. During
+  `napi_detach_arraybuffer(...)`, the backend asks QuickJS for that pair and
+  recognizes `napi_external__::free_external_array_buffer_data` directly.
+- QuickJS has `JS_GetRefCount(...)` for diagnostics. That count is the engine's
+  total `JSValue` ownership pressure for the pointed-to payload, not the
+  Node-API logical reference count returned by `napi_reference_ref(...)` and
+  `napi_reference_unref(...)`.
+- `napi_env__` no longer owns `weak_refs_` or `external_array_buffer_hints_`.
+  There is no env-side identity mirror for those lifetimes.
+- `napi_ref__` no longer caches `can_be_weak_`; weak state is the fact that
+  QuickJS linked its embedded `JSNativeWeakRefLink`. It still keeps the N-API
+  logical `ref_count_`, matching the V8 backend, because that value is API
+  state rather than duplicate lifetime tracking.
+
+The resulting ownership rule is deliberately simple:
+
+```text
+JSValue -> napi_value
+  stored in current handle scope
+
+JSValue -> napi_ref
+  stored in N-API persistent/root ref storage
+  napi_ref keeps the public N-API ref/unref count
+
+native pointer -> QuickJS opaque JSValue / ArrayBuffer opaque
+  not stored in napi_env__
+  QuickJS owns the death notification/finalizer path
+
+same JSValue -> multiple weak napi_refs
+  QuickJS target weak list contains one JSNativeWeakRef anchor
+  each napi_ref embeds one JSNativeWeakRefLink in that anchor's list
+  target GC walks the embedded links
+  each subscribed napi_ref clears to JS_UNDEFINED + nullptr
+  QuickJS frees the shared native weak anchor
+```
+
+After collection, cloning or otherwise copying from an existing weak `napi_ref`
+state must preserve emptiness:
+
+```text
+a = JSValue { someObject }
+b = napi_ref { a, weak_link_ linked }
+c = napi_ref { a, weak_link_ linked }
+
+GC collects a
+
+b = napi_ref { JS_UNDEFINED, nullptr }
+c = napi_ref { JS_UNDEFINED, nullptr }
+
+d = clone/copy state from c
+d = napi_ref { JS_UNDEFINED, nullptr }
+```
+
+There is no route back from `c` to the old `a`; `napi_get_reference_value(c)`
+returns `nullptr`, and `napi_reference_ref(c)` returns `0`.
+
+### 2026-05-13 external data split
+
+Development plan for this pass:
+
+1. Add `napi_env__::wrap_external_data(void *data)` as the internal raw
+   QuickJS external constructor.
+2. Keep a finalizer-aware overload for public `napi_create_external(...)` so
+   Node-API finalizer semantics stay intact.
+3. Change `napi_create_external(...)` to call `wrap_external_data(...)` and
+   only then wrap the returned `JSValue` into the current scope.
+4. Change `napi_function__::create(...)` to pass raw external `JSValue`s into
+   `JS_NewCFunctionData(...)`, with no `napi_create_external(...)` and no
+   `JS_DupValue(napi_quickjs_value_inner(...))` bridge.
+5. Verify with the full QuickJS N-API suite and the Edge CTest suite.
+
+Implementation result:
+
+- `napi/quickjs/src/internal/napi_env.{h,cc}` defines
+  `wrap_external_data(...)`.
+- `napi/quickjs/src/js_native_api_quickjs.cc::napi_create_external(...)` now
+  uses the raw helper plus `wrap_value_in_current_scope(...)`.
+- `napi/quickjs/src/internal/napi_function.cc::napi_function__::create(...)`
+  now stores callback/data metadata as raw QuickJS external values.
+- The exact root-scope pattern with `napi_create_external(...)` followed by
+  `JS_DupValue(napi_quickjs_value_inner(...))` is gone from `napi_function.cc`.
+
+Verification:
+
+```sh
+make test-napi-quickjs JOBS=4
+ctest --test-dir build-edge-quickjs-cli --output-on-failure
+```
+
+Results: 45/45 QuickJS N-API tests passed, and 46/46 Edge CTest tests passed.
 
 ## EdgeJS Embedder Findings
 
@@ -217,42 +591,48 @@ Planned shape:
 
 1. Add an internal `napi_allocator__` that owns opaque handle encoding,
    decoding, slot construction, and slot release for values and refs.
-2. Store actual `napi_value__` entries in `napi_scope__::values_` and actual
-   `napi_ref__` entries in `napi_scope__::refs_`; expose `napi_value` and
-   `napi_ref` as encoded slot indexes rather than addresses of heap-allocated
-   wrapper objects.
+2. Store actual `napi_value__` entries in `napi_scope__::values_`; the later
+   env-owned reference allocator stores actual `napi_ref__` entries in
+   `napi_env__::refs_`. Public `napi_value` and `napi_ref` handles are encoded
+   allocator handles rather than separate heap-allocated wrapper objects.
 3. Reuse freed vector entries by keeping free indexes in each scope instead of
    deleting wrapper allocations.
 4. Keep value handles local to the current scope, with parent-scope lookup for
    outer handles used from nested scopes.
-5. Keep refs persistent by allocating ref slots from the env root scope, because
-   EdgeJS stores refs across callbacks and async completions.
-6. Destroy the root scope during `napi_env__` teardown so root-owned refs and
-   values release their duplicated `JSValue`s.
+5. Keep refs persistent by allocating ref slots from `napi_env__::refs_`,
+   because EdgeJS stores refs across callbacks and async completions. They are
+   root-lifetime handles conceptually, but their allocator owner is the env.
+6. Destroy the root scope during `napi_env__` teardown so root-owned values
+   release their duplicated `JSValue`s, then close the env-owned ref allocator
+   during env teardown.
 7. Preserve `EDGE_TRACE_NAPI_LIFETIME=1` counters while changing the allocation
    backend so before/after server traces remain comparable.
 
-## Vector-Backed Handle Implementation
+## Historical Vector-Backed Handle Implementation
 
-Implemented `napi_allocator__<T>` for `napi_value__` and `napi_ref__` slots.
-The public handles are encoded slot indexes, not addresses of heap-allocated
-wrappers. Slot index zero is encoded as pointer value one so `nullptr` remains
-the invalid handle.
+This section records the earlier vector-backed allocator shape. It was later
+superseded by the fixed-block pointer-handle allocator.
 
-`napi_scope__` now owns:
+That pass implemented `napi_allocator__<T>` for `napi_value__` and `napi_ref__`
+slots. The public handles were encoded slot indexes, not addresses of
+heap-allocated wrappers. Slot index zero was encoded as pointer value one so
+`nullptr` remained the invalid handle.
+
+At that point, `napi_scope__` owned:
 
 ```c++
 napi_allocator__<napi_value__> values_;
 napi_allocator__<napi_ref__> refs_;
 ```
 
-`napi_value__` and `napi_ref__` are reusable move-only slot payloads with
-`initialize(...)`, `release()`, and `is_active()` methods. Released slots are
-put on the allocator free-list for reuse instead of deleting wrapper memory.
+`napi_value__` and `napi_ref__` were reusable slot payloads with custom move
+operations plus `initialize(...)`, `release()`, and `is_active()` methods.
+Later allocator work removed that payload protocol in favor of non-copyable,
+non-movable payloads constructed in-place and destroyed explicitly.
 
-Value handles are allocated from `env->current_scope()`. Ref handles are
+Value handles were allocated from `env->current_scope()`. Ref handles were
 allocated from `env->root_scope()` because EdgeJS stores refs across callbacks,
-async completions, finalizers, and binding singleton state. Accessors now route
+async completions, finalizers, and binding singleton state. Accessors routed
 through:
 
 ```c++
@@ -261,11 +641,10 @@ napi_quickjs_value_slot(env, value)
 napi_quickjs_ref_slot(env, ref)
 ```
 
-so encoded handles are resolved before reading the slot payload.
+so encoded handles were resolved before reading the slot payload.
 
-`napi_env__::~napi_env__` now destroys the root scope. This releases all
-root-owned value/ref slots and runs their QuickJS value frees before env
-teardown completes.
+`napi_env__::~napi_env__` destroyed the root scope. This released all root-owned
+value/ref slots and ran their QuickJS value frees before env teardown completed.
 
 ## 2026-05-12 Fixed-Block Allocator Plan
 
@@ -289,7 +668,7 @@ Action plan before code changes:
 5. Remove the nested-scope reserved-prefix behavior. A child allocator should
    reject a parent-owned pointer handle, and `napi_scope__::value_from_handle`
    should continue walking to the parent scope.
-6. Preserve the existing `allocate`, `get`, `release`, `close`,
+6. Preserve the existing `allocate`, `release`, `close`,
    `storage_slot_count`, `active_count`, and `for_each_active` surface so the
    rest of the N-API layer stays narrow.
 
@@ -308,9 +687,10 @@ std::vector<block__ *> full_blocks_;
   allocation/release behavior.
 - Each `block__` is aligned to the nearest power of two that can hold the block
   layout.
-- Each `slot__` stores `T data`; public handles are `&slot.data`.
+- Each `slot__` stores raw aligned payload storage; public handles are pointers
+  to the constructed payload inside that storage.
 - The allocator recovers the slot from a handle by subtracting
-  `offsetof(slot__, data)`, then masks the slot pointer down to the aligned
+  `offsetof(slot__, storage)`, then masks the slot pointer down to the aligned
   power-of-two block boundary to recover the enclosing block.
 - `static_assert(sizeof(block__) == block_alignment__)` keeps the mask-down
   assumption honest if the block layout changes.
@@ -332,10 +712,10 @@ Complexity and performance notes:
 
 - The allocation hot path is O(1): take the last block from
   `available_blocks_`, pop one slot from that block's internal free list, and
-  return `&slot.data`.
+  return the constructed payload pointer.
 - The release hot path is O(1) for the slot itself: recover the slot from the
-  handle, mask down to the aligned block base, call `T::release()`, and push the
-  slot back onto that block's free list.
+  handle, mask down to the aligned block base, call the payload's explicit
+  destructor, and push the slot back onto that block's free list.
 - Moving a block from available to full is O(1). Moving a formerly full block
   back to available includes a small `full_blocks_` vector erase scan, but that
   only happens on the first release from a full block, not on every slot
@@ -346,10 +726,9 @@ Complexity and performance notes:
 - Block-local slot arrays keep ordinary allocation/free churn cache-friendly
   within each block, while avoiding the large copy/move behavior of vector
   growth.
-- `get(handle)` is effectively O(1) after the pointer mask, with the remaining
-  ownership check scanning the block list as a debug/safety validation. If this
-  becomes measurable, the next optimization is to trust the masked block after a
-  compact block magic value or generation check instead of scanning `blocks_`.
+- `unsafe_data_from_handle(handle)` is a pure handle-to-payload calculation.
+  Ownership checks are separate and use `owns_handle(...)` or the higher-level
+  env/scope/ref validation helpers.
 - Diagnostic operations such as `active_count()` and `for_each_active()` remain
   intentionally O(number of blocks or slots), because they are aggregate
   queries used by tracing, teardown, and tests rather than the request-time
@@ -423,10 +802,10 @@ Action plan before code changes:
 3. Keep `napi_deferred__` environment-owned. The public `napi_deferred` handle
    is intentionally resolved/rejected later, often after the handle scope that
    created the promise has closed.
-4. Keep `napi_external_backing_store_hint__` environment-owned. QuickJS stores
-   raw hint pointers in object opaques and array-buffer finalizer opaques, so a
-   current-scope allocator would leave dangling pointers as soon as that handle
-   scope closes.
+4. Keep `napi_external_backing_store_hint__` environment-owned because QuickJS
+   stores raw hint pointers in object opaques and array-buffer finalizer
+   opaques. Ownership separation means QuickJS owns the death notification path,
+   not that the backing-store record must use `new`/`delete`.
 5. Do not add an allocator for `napi_external__` itself because it is a static
    QuickJS class helper, not an allocated per-instance wrapper. Its allocated
    payload is `napi_external_backing_store_hint__`.
@@ -439,17 +818,20 @@ Implementation:
   `napi_function__::trampoline(...)`. It is callback-frame metadata, cannot
   outlive the native callback, and stack storage is cheaper and clearer than an
   allocator slot.
-- Added env-owned `napi_allocator__` instances for:
+- Added env-owned `napi_allocator__` instances for
   `napi_env_cleanup_hook__`, `napi_deferred__`, and
   `napi_external_backing_store_hint__`.
-- Routed `napi_env_cleanup_hook__::create/destroy(...)`,
-  `napi_deferred__::create/destroy(...)`, and
-  `napi_external_backing_store_hint__::create/destroy(...)` through
-  `napi_env__`.
+- Routed `napi_env_cleanup_hook__::create/destroy(...)` and
+  `napi_deferred__::create/destroy(...)` through `napi_env__`.
+  `napi_external_backing_store_hint__::create/destroy(...)` also uses
+  `napi_env__::external_backing_stores_`; QuickJS finalizer/remove paths still
+  decide when the record dies.
 - Closed deferred and cleanup-hook allocators during `napi_env__` teardown while
   the QuickJS context is still alive. External backing hints are not proactively
-  closed during `prepare_teardown()` because QuickJS object and array-buffer
-  finalizers can still hold raw hint pointers until `JS_FreeRuntime(...)`.
+  closed during `prepare_teardown()` because QuickJS object and ArrayBuffer
+  finalizers can still hold raw hint pointers until the context/runtime
+  finalizer phase. The env-owned allocator is finally closed by normal
+  `napi_env__` member destruction after that phase.
 - Removed the old helper-local `js_mallocz(...)` / `js_free(...)` allocation
   path for those env-owned helper objects.
 
@@ -680,6 +1062,168 @@ make test-napi-quickjs-only
 ```
 
 Result: 45/45 tests passed.
+
+## 2026-05-13 Allocator Handle Decoding Checks
+
+Sadhbh caught a real invariant mismatch in the fixed-block allocator lookup:
+`napi_value` handles do not have to belong to the current scope. A value can be
+owned by the current scope, any parent scope, and later possibly a detached
+scope. Therefore, decoding a public handle into a candidate slot/block must be
+separate from proving that the current allocator owns that slot.
+
+Current allocator contract:
+
+- `unsafe_handle_from_data(...)`, `unsafe_data_from_handle(...)`,
+  `unsafe_data_with_owner_from_handle(...)`, and `owns_handle(...)`
+  are the fixed public handle API.
+- Release builds trust that incoming public handles came from this N-API
+  backend and map them with `unsafe_data_from_handle(...)` at the N-API boundary.
+- Debug builds decode `(data, owner)` and assert the expected ownership fact:
+  scope handles must belong to the env scope allocator, value handles must point
+  at a scope owned by the env, and ref handles must belong to the env-owned ref
+  allocator.
+- Relationship operations validate the narrower relationship at the point of
+  use instead of adding broad null checks everywhere. `napi_scope__::parent()`
+  stops at the root parent handle. `napi_scope__::delete_value(...)` releases
+  only if the value is owned by that exact scope, so a callback returning a
+  parent-scope value does not destroy the parent handle. `escape_value(...)`
+  remains an exact-scope operation.
+- `napi_ref` slots are persistent env-owned slots in `napi_env__::refs_`. They
+  are root-lifetime handles conceptually, but the allocator owner checked by
+  `ref_from_handle(...)` is the env, which also preserves the existing
+  `napi_lifetime__<napi_ref__>` tracking.
+
+Verification after applying the caller-side ownership fixes:
+
+```sh
+cmake --build build-edge-quickjs-cli --target edge -j4
+make test-napi-quickjs-only
+ctest --test-dir build-edge-quickjs-cli --output-on-failure
+cmake --build build-edge-quickjs-cli-debug --target \
+  napi_quickjs_test_36_handle_scope \
+  napi_quickjs_test_15_function \
+  napi_quickjs_test_16_reference \
+  napi_quickjs_test_37_reference_double_free -j4
+```
+
+Results:
+
+- Release Edge build passed.
+- Release QuickJS N-API suite passed 45/45.
+- Release full Edge CTest passed 46/46.
+- Debug focused handle-scope/function/reference/double-free executables built
+  and passed individually. The Debug CTest registry still contains many
+  `_NOT_BUILT` placeholder entries, so the focused Debug executables are the
+  meaningful Debug verification for this build tree.
+
+## 2026-05-13 Allocator Constructor/Destructor Payloads
+
+The allocator payload protocol now matches the `napi_scope__` pattern:
+allocation constructs the payload directly in its slot, and release destroys
+the object directly.
+
+Current facts:
+
+- `napi_allocator__` stores raw `alignas(T) std::byte storage[sizeof(T)]` in
+  each slot rather than a live `T data` member.
+- `allocate(args...)` calls placement construction:
+
+```c++
+new (address) T(args...);
+```
+
+- `release(handle)` and allocator `close()` call the payload's explicit
+  destructor before marking the slot reusable:
+
+```c++
+value->~T();
+```
+
+- Debug builds zero the raw slot storage after the destructor returns. Release
+  builds intentionally leave the old bytes alone.
+- The allocator no longer requires payloads to implement `initialize(...)` or
+  `release()`.
+- Allocator-owned payload types are non-copyable and non-movable:
+  `napi_scope__`, `napi_value__`, `napi_ref__`, `napi_deferred__`, and
+  `napi_env_cleanup_hook__`. `napi_external_backing_store_hint__` follows the
+  same constructor/destructor and non-copyable/non-movable pattern once routed
+  through `napi_env__::external_backing_stores_`.
+
+Verification after this pass:
+
+```sh
+cmake --build build-edge-quickjs-cli --target edge -j4
+make test-napi-quickjs-only
+ctest --test-dir build-edge-quickjs-cli --output-on-failure
+cmake --build build-edge-quickjs-cli-debug --target \
+  napi_quickjs_test_36_handle_scope \
+  napi_quickjs_test_15_function \
+  napi_quickjs_test_16_reference \
+  napi_quickjs_test_37_reference_double_free -j4
+./build-edge-quickjs-cli-debug/napi-quickjs/tests/napi_quickjs_test_36_handle_scope
+./build-edge-quickjs-cli-debug/napi-quickjs/tests/napi_quickjs_test_15_function
+./build-edge-quickjs-cli-debug/napi-quickjs/tests/napi_quickjs_test_16_reference
+./build-edge-quickjs-cli-debug/napi-quickjs/tests/napi_quickjs_test_37_reference_double_free
+```
+
+Results:
+
+- Release Edge build passed.
+- Release QuickJS N-API suite passed 45/45.
+- Release full Edge CTest passed 46/46.
+- Debug focused handle-scope, function, reference, and reference double-free
+  executables passed.
+
+## 2026-05-13 External Backing Store Allocator
+
+`napi_external_backing_store_hint__` is allocator-backed again. The important
+ownership distinction is:
+
+```text
+napi_env__::external_backing_stores_
+  owns fast/stable native storage for napi_external_backing_store_hint__
+
+QuickJS object opaque / ArrayBuffer free opaque
+  stores the raw pointer and decides when that record should die
+```
+
+`napi_external_backing_store_hint__::create(...)` delegates to
+`napi_env__::create_external_backing_store(...)`, which allocates from:
+
+```c++
+napi_allocator__<napi_external_backing_store_hint,
+                 napi_external_backing_store_hint__,
+                 napi_env__> external_backing_stores_;
+```
+
+`napi_external_backing_store_hint__::destroy_with_runtime(...)` reads the stored
+env from the hint and returns the slot through
+`napi_env__::destroy_external_backing_store(...)`. That keeps allocator-backed
+lifetime tracking for external hints without reintroducing env identity maps.
+
+The allocator is not closed in `prepare_teardown()`, because QuickJS can still
+hold raw hint pointers in object and ArrayBuffer finalizers until the
+context/runtime finalizer phase. The allocator closes as an env member after
+that phase.
+
+Verification:
+
+```sh
+cmake --build build-edge-quickjs-cli --target edge -j4
+make build-napi-quickjs
+make test-napi-quickjs-only
+ctest --test-dir build-edge-quickjs-cli --output-on-failure
+git diff --check
+git -C napi diff --check
+```
+
+Results:
+
+- Release Edge build passed.
+- N-API-enabled rebuild passed.
+- QuickJS N-API suite passed 45/45.
+- Edge CTest passed 46/46.
+- Diff whitespace checks passed.
 
 ## 2026-05-12 Compact Detailed Lifetime Tables
 
@@ -2038,12 +2582,13 @@ Action plan before code changes:
    local to the current handle scope.
 4. Update lifetime scanning so `napi_ref` totals and tag dumps come from the
    env-level ref allocator rather than scope-level ref allocators.
-5. Replace the linear weak-ref vector with an object-identity keyed
-   `std::unordered_multimap<void *, napi_ref>`, because multiple weak refs may
-   point at the same QuickJS object.
-6. Replace the linear external ArrayBuffer hint vector with an object-identity
-   keyed `std::unordered_multimap<void *, napi_external_backing_store_hint__ *>`
-   for the same identity lookup reason.
+5. Historical decision, superseded on 2026-05-13: the first pass replaced the
+   linear weak-ref vector with an object-identity keyed multimap. The later
+   QuickJS native weak-ref API removed `weak_refs_` entirely.
+6. Historical decision, superseded on 2026-05-13: the first pass replaced the
+   linear external ArrayBuffer hint vector with an object-identity keyed
+   multimap. The later `JS_GetArrayBufferFreeInfo(...)` API removed
+   `external_array_buffer_hints_` entirely.
 
 Verification after the investigation:
 
