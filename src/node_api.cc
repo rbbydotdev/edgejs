@@ -3,6 +3,7 @@
 #include "edge_async_wrap.h"
 #include "edge_environment.h"
 #include "edge_env_loop.h"
+#include "edge_handle_scope.h"
 #include "edge_module_loader.h"
 #include "edge_runtime.h"
 
@@ -346,7 +347,15 @@ void UvAfterWork(uv_work_t* req, int status) {
   if (work == nullptr) return;
   work->state = AsyncWorkState::kCompleting;
   napi_status napi_status_code = (status == UV_ECANCELED) ? napi_cancelled : napi_ok;
-  if (work->complete != nullptr) {
+  if (work->complete != nullptr && work->env != nullptr) {
+    edge::HandleScope scope(work->env);
+    if (!scope.is_open()) {
+      work->state = AsyncWorkState::kSettled;
+      if (work->delete_pending_from_complete) {
+        DeleteAsyncWork(work);
+      }
+      return;
+    }
     const napi_status scope_status = EnterAsyncContextScope(work->env, work->async_context);
     const bool scope_entered = (scope_status == napi_ok);
     work->complete(work->env, napi_status_code, work->data);

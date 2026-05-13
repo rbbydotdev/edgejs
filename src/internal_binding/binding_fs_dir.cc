@@ -12,6 +12,7 @@
 #include "edge_environment.h"
 #include "internal_binding/helpers.h"
 #include "edge_env_loop.h"
+#include "edge_handle_scope.h"
 #include "edge_runtime.h"
 
 namespace internal_binding {
@@ -383,6 +384,15 @@ bool InitAsyncReq(napi_env env, napi_value req_value, DirReq* req) {
 void AfterOpenDir(uv_fs_t* uv_req) {
   auto* req = static_cast<DirReq*>(uv_req != nullptr ? uv_req->data : nullptr);
   if (req == nullptr) return;
+  if (req->env == nullptr) {
+    DeleteReq(req);
+    return;
+  }
+  edge::HandleScope scope(req->env);
+  if (!scope.is_open()) {
+    DeleteReq(req);
+    return;
+  }
 
   napi_value err = nullptr;
   napi_value value = Undefined(req->env);
@@ -402,6 +412,15 @@ void AfterOpenDir(uv_fs_t* uv_req) {
 void AfterReadDir(uv_fs_t* uv_req) {
   auto* req = static_cast<DirReq*>(uv_req != nullptr ? uv_req->data : nullptr);
   if (req == nullptr) return;
+  if (req->env == nullptr) {
+    DeleteReq(req);
+    return;
+  }
+  edge::HandleScope scope(req->env);
+  if (!scope.is_open()) {
+    DeleteReq(req);
+    return;
+  }
 
   napi_value err = nullptr;
   napi_value value = Undefined(req->env);
@@ -422,6 +441,15 @@ void AfterReadDir(uv_fs_t* uv_req) {
 void AfterCloseDir(uv_fs_t* uv_req) {
   auto* req = static_cast<DirReq*>(uv_req != nullptr ? uv_req->data : nullptr);
   if (req == nullptr) return;
+  if (req->env == nullptr) {
+    DeleteReq(req);
+    return;
+  }
+  edge::HandleScope scope(req->env);
+  if (!scope.is_open()) {
+    DeleteReq(req);
+    return;
+  }
 
   napi_value err = nullptr;
   if (uv_req->result < 0) {

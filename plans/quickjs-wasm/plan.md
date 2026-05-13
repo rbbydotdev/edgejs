@@ -17,13 +17,19 @@ than rewriting the runtime kernel.
 The early plan below predates the later cleanup decision around module loading.
 The QuickJS C++ CommonJS facade/module-loader hack has now been removed:
 `unofficial_module_loader.{h,cc}` and `quickjs_cjs_exports.{h,cc}` are gone from
-`napi/quickjs/src`. The QuickJS backend keeps the relevant public/unofficial
-entry points linkable through explicit failure or stable defaults, but it no
-longer pretends to provide CJS support from C++.
+`napi/quickjs/src`.
 
-The current design direction is to live without that CJS support until module
-loading can be routed through Node's JavaScript loaders/translators or another
-proper EdgeJS-owned runtime path.
+The missing engine-side module primitive has since moved into vendored QuickJS
+itself. Commit `577fb31caf2e973b111431b6cb009f7595cc5f7d` adds APIs for
+enumerating module requests, binding host-linked modules, linking/evaluating
+modules, querying module state, initializing import meta, and handling dynamic
+imports. The current `napi/quickjs/src/internal/napi_module_wrap.*` code uses
+those APIs to implement the V8-shaped `unofficial_napi_module_wrap_*` surface.
+
+That does not restore the removed C++ package resolver or CommonJS export
+scanner. The current design direction is to keep package resolution, CommonJS
+wrapping, package conditions, and builtin policy in Node's JavaScript
+loaders/translators or another proper EdgeJS-owned runtime path.
 
 ## Research Summary
 

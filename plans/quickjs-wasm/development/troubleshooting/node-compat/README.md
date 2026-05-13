@@ -33,4 +33,11 @@ Node's loader policy in C++.
 The C++ CJS/module-loader hack has been removed from `napi/quickjs/src`. The
 removed files were `unofficial_module_loader.{h,cc}` and
 `quickjs_cjs_exports.{h,cc}`. This means current QuickJS N-API behavior is
-intentionally without that CJS support.
+intentionally without that parser/resolver.
+
+The missing engine-side module primitives were added to the vendored QuickJS
+submodule in `577fb31caf2e973b111431b6cb009f7595cc5f7d`, and the current
+`napi_module_wrap__` implementation adapts the V8-shaped `module_wrap` surface
+onto those APIs. This keeps module mechanics in QuickJS while leaving package
+resolution, CommonJS wrapping, package conditions, and builtin policy in
+EdgeJS/Node loader code.

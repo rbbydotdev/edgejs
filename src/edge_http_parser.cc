@@ -15,6 +15,7 @@
 
 #include "edge_async_wrap.h"
 #include "edge_environment.h"
+#include "edge_handle_scope.h"
 #include "edge_runtime.h"
 #include "edge_pipe_wrap.h"
 #include "edge_stream_base.h"
@@ -729,6 +730,7 @@ napi_value ParserCtor(napi_env env, napi_callback_info info) {
   napi_get_cb_info(env, info, &argc, nullptr, &self, nullptr);
   auto* p = new Parser();
   p->env = env;
+  p->consumed_listener.env = env;
   p->consumed_listener.on_alloc = ParserConsumedListenerOnAlloc;
   p->consumed_listener.on_read = ParserConsumedListenerOnRead;
   p->consumed_listener.on_close = ParserConsumedListenerOnClose;
@@ -859,6 +861,9 @@ napi_value ParserExecuteCommon(Parser* p, const char* data, size_t len) {
                  len,
                  data == nullptr);
   }
+  edge::EscapableHandleScope scope(p != nullptr ? p->env : nullptr);
+  if (!scope.is_open()) return nullptr;
+
   p->current_buffer_data = data;
   p->current_buffer_len = len;
   p->got_exception = false;
@@ -913,18 +918,19 @@ napi_value ParserExecuteCommon(Parser* p, const char* data, size_t len) {
       message += ": ";
       message += reason;
     }
-    return MakeError(p->env,
-                     message.c_str(),
-                     code.c_str(),
-                     reason.c_str(),
-                     static_cast<uint32_t>(nread),
-                     data,
-                     len);
+    napi_value error = MakeError(p->env,
+                                 message.c_str(),
+                                 code.c_str(),
+                                 reason.c_str(),
+                                 static_cast<uint32_t>(nread),
+                                 data,
+                                 len);
+    return scope.Escape(error);
   }
   if (data == nullptr) {
     napi_value undefined = nullptr;
     napi_get_undefined(p->env, &undefined);
-    return undefined;
+    return scope.Escape(undefined);
   }
   napi_value nread_v = nullptr;
   napi_create_uint32(p->env, static_cast<uint32_t>(nread), &nread_v);
@@ -935,7 +941,7 @@ napi_value ParserExecuteCommon(Parser* p, const char* data, size_t len) {
                  nread,
                  p->headers_completed);
   }
-  return nread_v;
+  return scope.Escape(nread_v);
 }
 
 bool DispatchConsumedParserRead(Parser* p,

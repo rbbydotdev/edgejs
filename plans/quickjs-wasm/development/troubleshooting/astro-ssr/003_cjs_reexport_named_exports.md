@@ -62,11 +62,21 @@ JavaScript engine; Node implements CommonJS, ESM loading, and the CJS/ESM bridge
 around the engine.
 
 The difference is that Node's V8 path already has mature native `ModuleWrap`,
-loader, and translator integration. The QuickJS N-API backend is implementing
-that V8-shaped `unofficial_napi` surface over QuickJS. QuickJS asks the host C
-module loader to normalize and load imports during `JS_ResolveModule`, and it
-requires declared ESM export names before link time. CommonJS modules only know
-their true export object after evaluation.
+loader, and translator integration. Earlier QuickJS work tried to approximate
+that with a C++ host module loader, resolver, and CommonJS facade. That is the
+compatibility layer described by this historical issue.
+
+We later solved the missing engine primitive at the QuickJS source level:
+commit `577fb31caf2e973b111431b6cb009f7595cc5f7d` adds QuickJS APIs for
+enumerating module requests, binding host-supplied module records, linking,
+evaluating, querying module state, initializing import meta, and dispatching
+dynamic imports. The current `napi_module_wrap__` layer can therefore map
+Node/V8-shaped `unofficial_napi_module_wrap_*` calls onto QuickJS itself,
+without restoring the deleted package resolver or CommonJS export scanner.
+
+QuickJS still requires declared ESM export names before link time. CommonJS
+modules only know their true export object after evaluation, so CJS/ESM bridge
+policy remains a Node loader/runtime concern rather than an engine concern.
 
 The facade/export-name logic is therefore a bridge for Node compatibility:
 
@@ -78,10 +88,10 @@ The facade/export-name logic is therefore a bridge for Node compatibility:
 - after `require(...)` evaluates the CommonJS file, copy the actual properties
   onto the declared QuickJS module exports.
 
-This behavior is needed until QuickJS `ModuleWrap` can delegate more of the
-flow back to Node's JS loaders/translators. The behavior is valid runtime
-plumbing; the older ad hoc JSON/package parsing and broad CJS heuristics are
-the pieces that should be treated as technical debt.
+This behavior was needed while QuickJS lacked host-linkable module primitives.
+With `577fb31`, the valid long-term direction is clearer: keep the engine hooks
+in QuickJS and keep package, CommonJS, and translator policy in Node's
+JavaScript loaders/translators or another EdgeJS-owned runtime path.
 
 ## Current Status
 
@@ -100,9 +110,10 @@ when setting those exports after `require(...)` evaluated.
 
 Later cleanup removed the remaining QuickJS C++ CommonJS facade/module-loader
 hack. The deleted files were `unofficial_module_loader.{h,cc}` and
-`quickjs_cjs_exports.{h,cc}`. The QuickJS N-API `module_wrap` public surface
-remains linkable through explicit failure or stable default responses rather
-than pretending this CJS compatibility path exists.
+`quickjs_cjs_exports.{h,cc}`. The current QuickJS N-API `module_wrap` public
+surface is implemented through `napi/quickjs/src/internal/napi_module_wrap.*`
+and depends on the QuickJS module APIs introduced by `577fb31`, rather than on
+the deleted compatibility parser/resolver.
 
 ## Constraints
 
@@ -144,6 +155,8 @@ Observed current state:
   text/html` response after the later resolver, symlink, stack, and deploy
   packaging fixes.
 
-Current design status: CJS support is absent in QuickJS N-API. If it returns,
-it should come through Node's JavaScript loaders/translators or another
-EdgeJS-owned runtime path, not through local QuickJS C++ host-loader parsers.
+Current design status: QuickJS N-API has a real source-text/synthetic
+`ModuleWrap` bridge over local QuickJS engine APIs. CommonJS support and
+CJS/ESM named-export policy should come through Node's JavaScript
+loaders/translators or another EdgeJS-owned runtime path, not through local
+QuickJS C++ host-loader parsers.

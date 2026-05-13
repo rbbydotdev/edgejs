@@ -38,6 +38,7 @@
 #include "edge_environment.h"
 #include "crypto/edge_secure_context_bridge.h"
 #include "edge_async_wrap.h"
+#include "edge_handle_scope.h"
 #include "edge_module_loader.h"
 #include "edge_runtime.h"
 #include "edge_runtime_platform.h"
@@ -5144,7 +5145,9 @@ void CleanupCryptoOnDoneTask(napi_env env, void* data) {
 
 void RunCryptoOnDoneTask(napi_env env, void* data) {
   auto* task = static_cast<CryptoOnDoneTask*>(data);
-  if (task == nullptr) return;
+  if (task == nullptr || env == nullptr) return;
+  edge::HandleScope scope(env);
+  if (!scope.is_open()) return;
 
   napi_value this_arg = GetRefValue(env, task->this_arg_ref);
   napi_value ondone = GetRefValue(env, task->ondone_ref);

@@ -27,6 +27,7 @@ using EdgeStreamOnClose = void (*)(EdgeStreamListener* listener);
 
 struct EdgeStreamListener {
   EdgeStreamListener* previous = nullptr;
+  napi_env env = nullptr;
   EdgeStreamOnAlloc on_alloc = nullptr;
   EdgeStreamOnRead on_read = nullptr;
   EdgeStreamOnAfterWrite on_after_write = nullptr;
@@ -38,6 +39,7 @@ struct EdgeStreamListener {
 
 struct EdgeStreamListenerState {
   EdgeStreamListener* current = nullptr;
+  napi_env env = nullptr;
 };
 
 void EdgeInitStreamListenerState(EdgeStreamListenerState* state,
