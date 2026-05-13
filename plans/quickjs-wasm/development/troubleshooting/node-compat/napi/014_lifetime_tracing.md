@@ -1063,6 +1063,47 @@ make test-napi-quickjs-only
 
 Result: 45/45 tests passed.
 
+### 2026-05-13 `napi_wrap(...)` result references must be weak
+
+LLDB investigation of the server lifetime run showed
+`napi_ref__::make_weak()` was never called. That ruled out the QuickJS native
+weak-ref callback path as an active participant in the observed server growth.
+
+The mismatch was in the QuickJS implementation of `napi_wrap(...)`:
+
+```cpp
+return napi_create_reference(env, js_object, 1, result);
+```
+
+The V8 backend creates the optional `napi_wrap(..., result)` reference with
+initial refcount `0`. That makes the returned wrapper reference weak by default.
+Embedder code can then explicitly pin it with `napi_reference_ref(...)` while a
+native handle/request is active and release it back to weak with
+`napi_reference_unref(...)`.
+
+QuickJS creating this reference with initial refcount `1` made every wrapper ref
+strong immediately. For handle wrappers such as `TCP`, `WriteWrap`, and
+`ShutdownWrap`, that means:
+
+```text
+napi_wrap(..., &wrapper_ref)
+  -> strong napi_ref
+  -> wrapped JS object stays alive
+  -> QuickJS finalizer does not run
+  -> external backing-store hint also stays alive
+```
+
+The fix is to match V8:
+
+```cpp
+return napi_create_reference(env, js_object, 0, result);
+```
+
+After this change, wrapper references enter `napi_ref__::make_weak()` at
+creation time. Active native resources still pin themselves explicitly through
+their normal `napi_reference_ref(...)` / `napi_reference_unref(...)` lifecycle,
+but idle wrapper refs no longer start life as unintended strong roots.
+
 ## 2026-05-13 Allocator Handle Decoding Checks
 
 Sadhbh caught a real invariant mismatch in the fixed-block allocator lookup:
