@@ -2651,6 +2651,64 @@ twice and reported 44/45 passing both times, with
 `PASSED` and direct reruns of that test passed. Treat that as a separate
 intermittent CTest/process-exit issue unless it reproduces under direct LLDB.
 
+## 2026-05-13 Env-Owned Ref Teardown Assertion
+
+After the env-owned `napi_ref` allocator and constructor/destructor allocator
+refactor, `make test-native-quickjs` in Debug reproduced a hard assertion in
+`napi_allocator__::release(...)`:
+
+```text
+napi_quickjs.napi_quickjs_test_6.Test6.PortedCoreFlow
+Assertion failed: (owns_block(block)), function release, file napi_allocator.h
+```
+
+LLDB showed the assert was not allocator address math. The call stack was:
+
+```text
+JS_FreeRuntime(...)
+  -> JS_RunGC(...)
+  -> napi_external__::finalizer(...)
+  -> napi_external_backing_store_hint__::invoke_finalizer(...)
+  -> MyObject::Destructor(...)
+  -> MyObject::~MyObject()
+  -> napi_delete_reference(env_, wrapper_)
+  -> napi_env__::delete_ref_from_root_scope(...)
+  -> refs_.release(wrapper_)
+```
+
+The stale-handle bug was teardown ordering. `napi_env__::prepare_teardown()`
+closed the env-owned `refs_` allocator before QuickJS runtime finalization.
+QuickJS later finalized a wrapped object during `JS_FreeRuntime(...)`; that
+object's native destructor called `napi_delete_reference(...)` on its wrapper
+ref, but the allocator blocks had already been destroyed.
+
+The fix keeps allocator slots alive through QuickJS finalization, while still
+dropping JS ownership before the context/runtime teardown:
+
+- `napi_ref__::clear_for_teardown()` clears the weak link, releases any strong
+  `JSValue` while the context is still valid, then sets the ref to
+  `{ env=nullptr, value=JS_UNDEFINED, ref_count=0 }`.
+- `napi_env__::prepare_teardown()` now clears active refs instead of closing the
+  ref allocator. The allocator itself closes later with `napi_env__` destruction,
+  after `JS_FreeRuntime(...)` has had a chance to run object finalizers.
+- Late finalizer-driven `napi_delete_reference(...)` now releases an active but
+  already-cleared ref slot, so the operation is idempotent and does not touch
+  freed allocator storage or a freed QuickJS context.
+
+Verification:
+
+```sh
+cd /Users/sadhbh/src/dev/edgejs/napi
+CMAKE_BUILD_TYPE=Debug make build-native-quickjs
+/Users/sadhbh/src/dev/edgejs/build-napi-quickjs/quickjs/tests/napi_quickjs_test_6 --gtest_filter=Test6.PortedCoreFlow
+CMAKE_BUILD_TYPE=Debug make test-native-quickjs
+make test-native-quickjs
+```
+
+The focused Debug test passed. The full Debug native QuickJS suite passed
+45/45. The exact user command `make test-native-quickjs` also passed 45/45 in
+the default Release configuration.
+
 ## 2026-05-11 Scope Handle Allocator Plan
 
 Action plan:
