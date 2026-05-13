@@ -1063,6 +1063,82 @@ make test-napi-quickjs-only
 
 Result: 45/45 tests passed.
 
+## 2026-05-13 Async-Wrap Destroy Hook Scope Fix
+
+The remaining `Function`/`Object` `napi_value` growth under `server.js` was
+tracked to async-wrap destroy-hook draining. A live LLDB run against
+`./build-edge-quickjs-cli/edge server.js` showed repeated root-scope Function
+handle creation from this stack:
+
+```text
+napi_env__::wrap_value_in_current_scope(...)
+  -> napi_get_named_property(..., utf8name="destroy", ...)
+  -> internal_binding::EmitDestroyHookForAsyncId(...)
+  -> internal_binding::DrainQueuedDestroyHooks(...)
+  -> EdgeRuntimePlatformDrainImmediateTasks(...)
+  -> edge::Environment::OnImmediateCheck(...)
+  -> uv_run(..., UV_RUN_DEFAULT)
+  -> RunEventLoopUntilQuiescent(...)
+```
+
+`EmitDestroyHookForAsyncId(...)` is invoked from the native immediate/check
+drain, not from a JS callback trampoline, so it did not inherit the temporary
+`quickjs_callback_handle_scope__`. The `"destroy"` property lookup was therefore
+wrapping the hook function into the root scope on each drain. The adjacent
+`IsDestroyHookAlreadyHandled(...)` helper also rehydrates the destroyed object
+reference and reads the `"destroyed"` flag, so it needs the same local-scope
+protection.
+
+Implementation:
+
+- Added `edge::HandleScope` to
+  `src/internal_binding/binding_async_wrap.cc::EmitDestroyHookForAsyncId(...)`.
+- Added `edge::HandleScope` to
+  `src/internal_binding/binding_async_wrap.cc::IsDestroyHookAlreadyHandled(...)`
+  after the existing `env`/reference null guard.
+
+Verification used a Debug edge build with all lifetime diagnostics enabled:
+
+```sh
+CMAKE_BUILD_TYPE=Debug \
+EXTRA_CMAKE_ARGS='-DNAPI_QUICKJS_ENABLE_LIFETIME_TRACKER=ON -DNAPI_QUICKJS_ENABLE_LIFETIME_PERIODIC_STATS=ON -DNAPI_QUICKJS_ENABLE_LIFETIME_TAG_STATS=ON -DNAPI_QUICKJS_ENABLE_LIFETIME_STRING_SYMBOL_DUMP=ON' \
+make build-edge-quickjs-cli
+
+CMAKE_BUILD_TYPE=Debug \
+EXTRA_CMAKE_ARGS='-DNAPI_QUICKJS_ENABLE_LIFETIME_TRACKER=ON -DNAPI_QUICKJS_ENABLE_LIFETIME_PERIODIC_STATS=ON -DNAPI_QUICKJS_ENABLE_LIFETIME_TAG_STATS=ON -DNAPI_QUICKJS_ENABLE_LIFETIME_STRING_SYMBOL_DUMP=ON' \
+make test-napi-quickjs
+
+cd /Users/sadhbh/src/dev/edgejs/napi
+CMAKE_BUILD_TYPE=Debug make test-native-quickjs
+```
+
+Both test suites passed 45/45.
+
+Runtime profile used the patched server on an alternate port so the existing
+`8080` run stayed untouched:
+
+```sh
+PORT=3316 EDGE_TRACE_NAPI_LIFETIME_STATS=1 ./build-edge-quickjs-cli/edge server.js
+ab -n 5000 -c 10 http://127.0.0.1:3316/
+```
+
+After 5,000 requests, the periodic full dump showed stable active value counts
+instead of the previous 1,500-per-period growth:
+
+```text
+napi_value created=1331955 released=1331512 x[i-1]=443 speed=0
+napi_ref   created=81000   released=80802   x[i-1]=198 speed=0
+
+[napi-lifetime-objects]
+Function values:x=109 speed=0 refs:x=64 speed=0
+Object   values:x=58  speed=0 refs:x=93 speed=0
+```
+
+Conclusion: `binding_async_wrap.cc` had the same missing native callback scope
+shape as the earlier stream/parser paths. The destroy-hook property lookup now
+lands in the short-lived local scope instead of the root scope, and the observed
+Function/Object active counts stay flat under HTTP load.
+
 ### 2026-05-13 `napi_wrap(...)` result references must be weak
 
 LLDB investigation of the server lifetime run showed
@@ -2708,6 +2784,47 @@ make test-native-quickjs
 The focused Debug test passed. The full Debug native QuickJS suite passed
 45/45. The exact user command `make test-native-quickjs` also passed 45/45 in
 the default Release configuration.
+
+## 2026-05-13 Root-Scope Function Value Growth
+
+After the reference leak was reduced, lifetime stats still showed request-rate
+growth in root-scope `napi_value` object buckets, especially `Function` and
+`Object`, while `napi_ref` stayed flat. That points at temporary public
+`napi_value` handles being created with `env->current_scope() == root_scope_`,
+not persistent reference retention.
+
+LLDB attached to a live `server.js` process and set a conditional breakpoint on:
+
+```text
+napi_env__::wrap_value_in_current_scope(JSValue, bool)
+condition: this->current_scope_ == this->root_scope_ && JS_IsFunction(this->context_, value)
+```
+
+The repeated Function root-scope stack was:
+
+```text
+napi_env__::wrap_value_in_current_scope(...)
+  -> napi_get_named_property(..., utf8name="destroy", ...)
+  -> internal_binding::EmitDestroyHookForAsyncId(...)
+  -> internal_binding::DrainQueuedDestroyHooks(...)
+  -> EdgeRuntimePlatformDrainImmediateTasks(...)
+  -> edge::Environment::OnImmediateCheck(...)
+  -> uv__run_check(...)
+  -> uv_run(..., UV_RUN_DEFAULT)
+  -> RunEventLoopUntilQuiescent(...)
+```
+
+So at least one live Function handle leak is not an escaped child scope. It is
+the async-wrap destroy-hook drain running as a native immediate/check callback
+without an Edge/N-API handle scope around the JS-facing work. Each
+`napi_get_named_property(..., "destroy", ...)` wraps the hook function into a
+new public `napi_value` in the root scope.
+
+Resolution: `binding_async_wrap.cc::EmitDestroyHookForAsyncId(...)` and the
+adjacent `IsDestroyHookAlreadyHandled(...)` helper now open `edge::HandleScope`
+around their JS-facing N-API work. The follow-up profile is recorded in
+`2026-05-13 Async-Wrap Destroy Hook Scope Fix`; after a patched 5,000-request
+HTTP run, `Function` and `Object` value counts stayed flat with speed 0.
 
 ## 2026-05-11 Scope Handle Allocator Plan
 
