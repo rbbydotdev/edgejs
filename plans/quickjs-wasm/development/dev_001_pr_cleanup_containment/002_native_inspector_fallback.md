@@ -17,11 +17,17 @@ donor-clean.
 
 ## Current Implementation
 
-- `src/internal_binding/dispatch.cc` now resolves `internalBinding("inspector")`
-  to a native fallback object.
-- `src/edge_module_loader.cc` special-cases public builtin require of
-  `inspector` / `node:inspector` so `require("inspector")` returns the native
-  fallback while `internalBinding("config").hasInspector` remains false.
+- `src/internal_binding/binding_inspector.cc` implements
+  `internalBinding("inspector")` as a native fallback object.
+- `src/internal_binding/dispatch.cc` only routes the `inspector` binding name to
+  that resolver.
+- `src/edge_module_loader.cc` special-cases the `inspector` builtin at the
+  native builtins compile hook, so public `require("inspector")` /
+  `require("node:inspector")` return the native fallback without executing
+  donor-clean `lib/inspector.js`, which still throws when compiled normally
+  with `internalBinding("config").hasInspector === false`.
+- The C++ require-builtin bridge also returns the native fallback for direct
+  native requests for builtin id `inspector`.
 - Keeping `hasInspector` false is important: setting it true activates broad
   bootstrap inspector paths such as console wrapping and async inspector hooks.
 
@@ -59,15 +65,14 @@ false false
   fallback object, and `internalBinding("config").hasInspector` /
   `process.features.inspector` remain false.
 - The native public fallback is intentionally smaller than upstream
-  `lib/inspector.js`: `new inspector.Session()` does not inherit from
-  `EventEmitter`, so passive code can import the module and active APIs report
-  unavailable, but consumers that attach listeners before calling `connect()`
-  will see `typeof session.on === "undefined"`.
-- Builtin metadata still reports `inspector` in
-  `internalBinding("builtins").builtinCategories.cannotBeRequired` even though
-  public `require("inspector")` now succeeds through the native loader
-  special-case. That is a contract mismatch to resolve or explicitly document if
-  any tests or embedders consume the category metadata.
+  `lib/inspector.js`: passive code can import the module, call `url()`, and
+  construct `Session`; active APIs such as `open()` and `Session.connect()`
+  report `ERR_INSPECTOR_NOT_AVAILABLE`.
+- `Session` exposes a small EventEmitter-shaped method surface so passive
+  listener setup and `inspector/promises` module initialization work.
+- Builtin metadata now reports `inspector` as publicly requireable:
+  `internalBinding("builtins").builtinCategories.canBeRequired` includes
+  `inspector`, and `cannotBeRequired` does not.
 
 Lightweight probes:
 
@@ -78,7 +83,25 @@ Lightweight probes:
 ./build-edge-quickjs-cli/edge -e "const cats=internalBinding('builtins').builtinCategories; console.log(cats.canBeRequired.includes('inspector'), cats.cannotBeRequired.includes('inspector')); console.log(require('module').builtinModules.includes('inspector'), require('module').builtinModules.includes('node:inspector'));"
 ```
 
+May 14, 2026 rerun on `/Users/syrusakbary/Development/edgejs` passed these
+native QuickJS probes after rebuilding `build-edge-quickjs-cli/edge`. The
+`private-poker` app command:
+
+```sh
+PORT=3100 /Users/syrusakbary/Development/edgejs/build-edge-quickjs-cli/edge npm run start
+```
+
+advanced past `ERR_INSPECTOR_NOT_AVAILABLE` and reached a later
+`next.config.ts` transform failure:
+
+```text
+Error: Failed to get Buffer pointer and length
+    at transform (null) {
+  code: 'InvalidArg'
+}
+```
+
 ## Ownership
 
-Code ownership for this subtask is `src/internal_binding/dispatch.cc` and the
-inspector special-case in `src/edge_module_loader.cc`.
+Code ownership for this subtask is `src/internal_binding/binding_inspector.cc`
+and the inspector special-cases in `src/edge_module_loader.cc`.

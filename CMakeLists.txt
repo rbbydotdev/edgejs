@@ -831,6 +831,7 @@ add_library(edge_runtime STATIC
   src/internal_binding/binding_http2.cc
   src/internal_binding/binding_http_parser.cc
   src/internal_binding/binding_icu.cc
+  src/internal_binding/binding_inspector.cc
   src/internal_binding/binding_js_udp_wrap.cc
   src/internal_binding/binding_js_stream.cc
   src/internal_binding/binding_internal_only_v8.cc

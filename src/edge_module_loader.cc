@@ -1021,6 +1021,62 @@ static napi_value ReturnFirstArgCallback(napi_env env, napi_callback_info info) 
   return undefined;
 }
 
+static napi_value InspectorBuiltinFallbackCompileFunction(napi_env env, napi_callback_info info) {
+  size_t argc = 6;
+  napi_value argv[6] = {nullptr, nullptr, nullptr, nullptr, nullptr, nullptr};
+  if (napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr) != napi_ok ||
+      argc < 5 ||
+      argv[2] == nullptr ||
+      argv[4] == nullptr) {
+    napi_throw_error(env, nullptr, "Failed to initialize inspector builtin fallback");
+    return nullptr;
+  }
+  napi_valuetype internal_binding_type = napi_undefined;
+  if (napi_typeof(env, argv[4], &internal_binding_type) != napi_ok ||
+      internal_binding_type != napi_function) {
+    napi_throw_error(env, nullptr, "Failed to initialize inspector builtin fallback");
+    return nullptr;
+  }
+
+  napi_value name = nullptr;
+  if (napi_create_string_utf8(env, "inspector", NAPI_AUTO_LENGTH, &name) != napi_ok ||
+      name == nullptr) {
+    return nullptr;
+  }
+
+  napi_value global = nullptr;
+  if (napi_get_global(env, &global) != napi_ok || global == nullptr) return nullptr;
+
+  napi_value inspector = nullptr;
+  if (napi_call_function(env, global, argv[4], 1, &name, &inspector) != napi_ok ||
+      inspector == nullptr ||
+      IsUndefinedValue(env, inspector)) {
+    return nullptr;
+  }
+
+  if (napi_set_named_property(env, argv[2], "exports", inspector) != napi_ok) {
+    return nullptr;
+  }
+
+  napi_value undefined = nullptr;
+  napi_get_undefined(env, &undefined);
+  return undefined;
+}
+
+static napi_value CreateInspectorBuiltinFallbackCompileFunction(napi_env env) {
+  napi_value compiled = nullptr;
+  if (napi_create_function(env,
+                           "inspector",
+                           NAPI_AUTO_LENGTH,
+                           InspectorBuiltinFallbackCompileFunction,
+                           nullptr,
+                           &compiled) != napi_ok ||
+      compiled == nullptr) {
+    return nullptr;
+  }
+  return compiled;
+}
+
 static napi_value BuiltinsCompileFunctionCallback(napi_env env, napi_callback_info info) {
   size_t argc = 1;
   napi_value argv[1] = {nullptr};
@@ -1039,6 +1095,10 @@ static napi_value BuiltinsCompileFunctionCallback(napi_env env, napi_callback_in
   if (id.empty()) {
     napi_throw_error(env, nullptr, "builtins.compileFunction requires a builtin id");
     return nullptr;
+  }
+
+  if (id == "inspector") {
+    return CreateInspectorBuiltinFallbackCompileFunction(env);
   }
 
   std::string source;
@@ -4749,9 +4809,41 @@ bool ParseJsonModule(napi_env env, const fs::path& resolved_path, napi_value mod
 
 bool LoadResolvedModule(napi_env env, ModuleLoaderState* state, const fs::path& resolved_path, napi_value* out_exports);
 
+bool LoadUnavailableInspectorBuiltin(napi_env env, ModuleLoaderState* state, napi_value* out_exports) {
+  if (out_exports != nullptr) *out_exports = nullptr;
+  if (env == nullptr || state == nullptr) return false;
+
+  napi_value internal_binding = GetStateInternalBinding(env, state);
+  if (!IsFunctionValue(env, internal_binding)) return false;
+
+  napi_value name = nullptr;
+  if (napi_create_string_utf8(env, "inspector", NAPI_AUTO_LENGTH, &name) != napi_ok || name == nullptr) {
+    return false;
+  }
+
+  napi_value global = nullptr;
+  if (napi_get_global(env, &global) != napi_ok || global == nullptr) return false;
+
+  napi_value exports = nullptr;
+  if (napi_call_function(env, global, internal_binding, 1, &name, &exports) != napi_ok ||
+      exports == nullptr ||
+      IsUndefinedValue(env, exports)) {
+    return false;
+  }
+
+  if (out_exports != nullptr) *out_exports = exports;
+  return true;
+}
+
 bool CallRequireBuiltinLoader(napi_env env, ModuleLoaderState* state, const std::string& id, napi_value* out_exports) {
   if (out_exports != nullptr) *out_exports = nullptr;
-  if (env == nullptr || state == nullptr || id.empty() || state->require_builtin_loader_ref == nullptr) return false;
+  if (env == nullptr || state == nullptr || id.empty()) return false;
+
+  if (id == "inspector") {
+    return LoadUnavailableInspectorBuiltin(env, state, out_exports);
+  }
+
+  if (state->require_builtin_loader_ref == nullptr) return false;
 
   napi_value require_builtin = nullptr;
   if (napi_get_reference_value(env, state->require_builtin_loader_ref, &require_builtin) != napi_ok ||
