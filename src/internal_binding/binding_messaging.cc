@@ -23,6 +23,7 @@
 #include "edge_active_resource.h"
 #include "edge_async_wrap.h"
 #include "edge_env_loop.h"
+#include "edge_handle_scope.h"
 #include "edge_handle_wrap.h"
 #include "edge_runtime.h"
 #include "edge_worker_env.h"
@@ -3623,7 +3624,10 @@ void OnMessagePortClosed(uv_handle_t* handle) {
 
 void OnMessagePortAsync(uv_async_t* handle) {
   auto* wrap = static_cast<MessagePortWrap*>(handle != nullptr ? handle->data : nullptr);
-  if (wrap == nullptr) return;
+  if (wrap == nullptr || wrap->handle_wrap.env == nullptr) return;
+  edge::HandleScope scope(wrap->handle_wrap.env);
+  if (!scope.is_open()) return;
+
   size_t processing_limit = 1000;
   if (wrap->data) {
     std::lock_guard<std::mutex> lock(wrap->data->mutex);

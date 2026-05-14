@@ -1139,6 +1139,167 @@ shape as the earlier stream/parser paths. The destroy-hook property lookup now
 lands in the short-lived local scope instead of the root scope, and the observed
 Function/Object active counts stay flat under HTTP load.
 
+### 2026-05-13 Internal Binding Async Scope Audit
+
+Follow-up review request: scan `src/internal_binding` for the same class of leak
+as `binding_async_wrap.cc`, especially async workloads where a native/libuv
+callback starts JS-facing N-API work without an explicit local scope. The current
+truth from the scan is that more candidates exist.
+
+Definite missing local scopes:
+
+- `src/internal_binding/binding_fs_event_wrap.cc::OnEvent(...)` is registered
+  through `uv_fs_event_start(...)`. It rehydrates the wrapper, reads the
+  `"onchange"` property, builds status/event/filename values, and calls JS via
+  `EdgeMakeCallback(...)`. It has no `edge::HandleScope`.
+- `src/internal_binding/binding_fs.cc::OnStatWatcherChange(...)` is registered
+  through `uv_fs_poll_start(...)`. It rehydrates the wrapper, reads `"onchange"`,
+  creates the status value and stat array, then calls JS. The other async fs
+  completions in this file already have scopes, but this StatWatcher callback
+  does not.
+- `src/internal_binding/binding_messaging.cc::OnMessagePortAsync(...)` is a
+  `uv_async_t` callback and calls `ProcessQueuedMessages(...)`. That path
+  deserializes payloads, restores transferred ports, creates event objects and
+  arrays, and calls JS through `EmitMessageToPort(...)`. It has no
+  `edge::HandleScope`.
+- `src/internal_binding/binding_worker.cc::OnWorkerCompletionAsync(...)` is a
+  parent-thread `uv_async_t` callback. It rehydrates task callback refs, builds
+  result/error objects and strings, and calls `ondone`. It has no
+  `edge::HandleScope`.
+
+Potential/brittle path:
+
+- `src/internal_binding/binding_performance.cc::PerformanceEmitEntry(...)`
+  rehydrates an observer callback and calls JS. Current observed callers appear
+  to be covered by other scopes, but the helper itself does not document or
+  enforce that requirement. It should either open a scope itself or have an
+  explicit "caller must already be scoped" contract.
+
+Covered paths found during the same scan:
+
+- `src/internal_binding/binding_zlib.cc` async completion runs through
+  `src/node_api.cc::UvAfterWork(...)`, which opens `edge::HandleScope` before
+  invoking the N-API async-work completion callback.
+- Handle close notifications are covered by
+  `src/edge_handle_wrap.cc::EdgeHandleWrapMaybeCallOnClose(...)`, which opens a
+  scope before rehydrating and invoking JS close hooks.
+- Stream listener callbacks are intended to be covered by
+  `src/edge_stream_listener.cc`, whose scoped dispatch helpers open
+  `edge::HandleScope` around listener calls when an env is present.
+- `src/edge_environment.cc` drains interrupt and threadsafe-immediate tasks with
+  `edge::HandleScope`, so worker parent-completion foreground tasks such as
+  `CallWorkerOnExit(...)` look covered when reached through that scheduler.
+
+Next continuation point: patch the four definite callbacks first, then rebuild
+with lifetime stats and stress the matching workloads (`fs.watch`,
+`fs.watchFile`, `MessagePort`, and worker operation callbacks). Recheck whether
+`PerformanceEmitEntry(...)` should become self-scoped after inspecting all
+current and expected callers.
+
+2026-05-14 resolution pass:
+
+- Added `edge::HandleScope` to
+  `src/internal_binding/binding_fs_event_wrap.cc::OnEvent(...)`.
+- Added `edge::HandleScope` to
+  `src/internal_binding/binding_fs.cc::OnStatWatcherChange(...)`.
+- Added `edge::HandleScope` to
+  `src/internal_binding/binding_messaging.cc::OnMessagePortAsync(...)`.
+- Added `edge::HandleScope` to
+  `src/internal_binding/binding_worker.cc::OnWorkerCompletionAsync(...)`.
+
+The patch keeps the scope at the native async-entry boundary, immediately after
+the existing env guard. If the scope cannot open, the callback returns before
+creating or rehydrating any public `napi_value`.
+
+Verification:
+
+```sh
+make build-edge-quickjs-cli JOBS=4
+```
+
+Result: passed. This is the edge-side compile/link check for the touched
+`src/internal_binding` files. The build emitted existing vendored/OpenSSL
+deprecation warnings, but no errors from the scope patch.
+
+```sh
+cd /Users/sadhbh/src/dev/edgejs/napi
+CMAKE_BUILD_TYPE=Debug make test-native-quickjs
+```
+
+Result: passed, 45/45 QuickJS N-API tests.
+
+2026-05-14 one-minute `server.js` fs-watch stress:
+
+`server.js` was expanded for local profiling so each HTTP request asynchronously
+reads `server.js` and returns a randomly selected, fixed-width source line. It
+also creates a temporary watched file under `/private/tmp`, installs both
+`fs.watch(...)` and `fs.watchFile(...)`, and periodically writes to that file
+during request handling. This exercises:
+
+- async fs read completions,
+- `binding_fs_event_wrap.cc::OnEvent(...)` through `fs.watch(...)`,
+- `binding_fs.cc::OnStatWatcherChange(...)` through `fs.watchFile(...)`,
+- the normal HTTP parser/stream callback scopes under load.
+
+Build:
+
+```sh
+CMAKE_BUILD_TYPE=Debug \
+EXTRA_CMAKE_ARGS='-DNAPI_QUICKJS_ENABLE_LIFETIME_TRACKER=ON -DNAPI_QUICKJS_ENABLE_LIFETIME_PERIODIC_STATS=ON -DNAPI_QUICKJS_ENABLE_LIFETIME_TAG_STATS=ON -DNAPI_QUICKJS_ENABLE_LIFETIME_STRING_SYMBOL_DUMP=ON' \
+make build-edge-quickjs-cli JOBS=4
+```
+
+Run:
+
+```sh
+PORT=3318 EDGE_TRACE_NAPI_LIFETIME_STATS=1 ./build-edge-quickjs-cli/edge server.js
+ab -t 60 -c 10 http://127.0.0.1:3318/
+```
+
+`ab` result:
+
+```text
+Complete requests:      21477
+Failed requests:        0
+Requests per second:    357.93 [#/sec] (mean)
+Time per request:       27.938 [ms] (mean)
+Document Length:        155 bytes
+```
+
+Last under-load full dump:
+
+```text
+napi_value created=11976548 released=11976091 x[i-1]=447 peak=2854 speed=-9
+napi_ref   created=781992   released=781739   x[i-1]=260 peak=285  speed=-1
+external_backing_store_hint created=225484 released=222087 x[i-1]=3397 peak=3408 speed=0
+
+Function values:x=110 speed=0 refs:x=72 speed=1
+Object   values:x=58  speed=0 refs:x=96 speed=0
+FSEvent  refs:x=2     speed=0
+StatWatcher refs:x=2  speed=0
+```
+
+Final dump after stopping the server:
+
+```text
+napi_value created=11982061 released=11981618 x[i-1]=443 speed=-14
+napi_ref   created=782279   released=782065   x[i-1]=214 speed=-39
+external_backing_store_hint created=225565 released=222178 x[i-1]=3387 speed=-10
+```
+
+Release ratios from the final dump:
+
+```text
+napi_value: 99.9963% released, 443 active
+napi_ref:   99.9726% released, 214 active
+external_backing_store_hint: 98.4984% released, 3387 active
+```
+
+Conclusion: the fs watcher workload did not show unbounded `napi_value` or
+`napi_ref` growth. `FSEvent` and `StatWatcher` refs remained stable at their
+expected watcher refs while the callback-generated values were released through
+the new local scopes.
+
 ### 2026-05-13 `napi_wrap(...)` result references must be weak
 
 LLDB investigation of the server lifetime run showed
