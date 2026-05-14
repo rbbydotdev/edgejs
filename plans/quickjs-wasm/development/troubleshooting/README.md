@@ -93,6 +93,7 @@ duplicating issue details.
 | 🟢 | High | [001_standalone_v8_serdes.md](next-app/001_standalone_v8_serdes.md) | `require("v8")` / serdes findings |
 | 🟢 | High | [002_standalone_inspector_stub.md](next-app/002_standalone_inspector_stub.md) | `require("inspector")` stub |
 | ▶️ | High | [003_route_stack_exhausted.md](next-app/003_route_stack_exhausted.md) | Route request stack exhaustion |
+| 🟢 | High | [004_next_config_swc_options_buffer.md](next-app/004_next_config_swc_options_buffer.md) | SWC options Buffer rejected by N-API |
 
 ## Wasmer Deploy
 
