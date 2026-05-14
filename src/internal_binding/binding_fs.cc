@@ -2570,6 +2570,8 @@ void CloseStatWatcherForCleanup(void* data) {
 void OnStatWatcherChange(uv_fs_poll_t* handle, int status, const uv_stat_t* prev, const uv_stat_t* curr) {
   auto* wrap = static_cast<StatWatcherWrap*>(handle != nullptr ? handle->data : nullptr);
   if (wrap == nullptr || wrap->handle_wrap.env == nullptr) return;
+  edge::HandleScope scope(wrap->handle_wrap.env);
+  if (!scope.is_open()) return;
 
   napi_value self = EdgeHandleWrapGetRefValue(wrap->handle_wrap.env, wrap->handle_wrap.wrapper_ref);
   if (self == nullptr) return;

@@ -9,6 +9,7 @@
 #include "internal_binding/helpers.h"
 #include "edge_active_resource.h"
 #include "edge_env_loop.h"
+#include "edge_handle_scope.h"
 #include "edge_handle_wrap.h"
 #include "edge_runtime.h"
 
@@ -190,6 +191,8 @@ void FsEventFinalize(napi_env env, void* data, void* /*hint*/) {
 void OnEvent(uv_fs_event_t* handle, const char* filename, int events, int status) {
   auto* wrap = static_cast<FsEventWrap*>(handle != nullptr ? handle->data : nullptr);
   if (wrap == nullptr || wrap->handle_wrap.env == nullptr) return;
+  edge::HandleScope scope(wrap->handle_wrap.env);
+  if (!scope.is_open()) return;
 
   napi_value self = EdgeHandleWrapGetRefValue(wrap->handle_wrap.env, wrap->handle_wrap.wrapper_ref);
   if (self == nullptr) return;
