@@ -1,4 +1,4 @@
-.PHONY: build build-edge-quickjs-cli build-wasix build-quickjs-wasix build-napi build-napi-quickjs build-wasix-napi build-wasix-napi-quickjs build-napi-wasmer-cli test-napi test-napi-only test-napi-quickjs test-napi-quickjs-only test-wasix-napi test-wasix-napi-quickjs test-wasix-napi-cli test-wasix-safe-mode test test-only check-portability clean clean-napi-quickjs clean-edge-quickjs-cli clean-dist dist dist-only framework-test framework-test-reset
+.PHONY: build build-edge build-edge-quickjs-cli build-wasix build-quickjs-wasix build-napi build-napi-quickjs build-native-v8 build-native-quickjs build-wasix-napi build-wasix-napi-quickjs build-napi-wasmer-cli test-napi test-napi-only test-napi-quickjs test-napi-quickjs-only test-native-v8 test-native-quickjs test-wasix-napi test-wasix-napi-quickjs test-wasix-napi-cli test-wasix-safe-mode test test-only check-portability clean clean-napi-quickjs clean-edge-quickjs-cli clean-dist dist dist-only framework-test framework-test-reset
 
 UNAME_S := $(shell uname -s)
 UNAME_M := $(shell uname -m)
@@ -96,9 +96,23 @@ test-napi-quickjs: build-napi-quickjs test-napi-quickjs-only
 test-napi-quickjs-only:
 	$(BUILD_ENV) ctest --test-dir $(BUILD_EDGE_QUICKJS_CLI_DIR) --output-on-failure -R '^napi_quickjs\.'
 
+build-native-v8:
+	$(MAKE) -C napi build-native-v8
+
+test-native-v8:
+	$(MAKE) -C napi test-native-v8
+
+build-native-quickjs:
+	$(MAKE) -C napi build-native-quickjs
+
+test-native-quickjs:
+	$(MAKE) -C napi test-native-quickjs
+
 build:
-	$(BUILD_ENV) cmake -S . -B $(BUILD_DIR) -DCMAKE_BUILD_TYPE=$(CMAKE_BUILD_TYPE) -DEDGE_DEFAULT_WASMER_PACKAGE=$(EDGE_WASMER_PACKAGE) -DEDGE_BUILD_NAPI_TESTS=OFF $(EXTRA_CMAKE_ARGS) $(CMAKE_ARGS)
+	$(BUILD_ENV) cmake -S . -B $(BUILD_DIR) -DCMAKE_BUILD_TYPE=$(CMAKE_BUILD_TYPE) -DEDGE_DEFAULT_WASMER_PACKAGE=$(EDGE_WASMER_PACKAGE) -DEDGE_BUILD_NAPI_TESTS=OFF $(NAPI_V8_CMAKE_ARGS) $(EXTRA_CMAKE_ARGS) $(CMAKE_ARGS)
 	$(BUILD_ENV) cmake --build $(BUILD_DIR) -j$(JOBS)
+
+build-edge: build
 
 build-edge-quickjs-cli:
 	$(BUILD_ENV) cmake -S . -B $(BUILD_EDGE_QUICKJS_CLI_DIR) -DCMAKE_BUILD_TYPE=$(CMAKE_BUILD_TYPE) -DEDGE_DEFAULT_WASMER_PACKAGE=$(EDGE_WASMER_PACKAGE) -DEDGE_NAPI_PROVIDER=quickjs -DEDGE_BUILD_NAPI_TESTS=OFF $(EXTRA_CMAKE_ARGS) $(CMAKE_ARGS)

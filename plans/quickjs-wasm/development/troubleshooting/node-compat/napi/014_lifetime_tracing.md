@@ -650,54 +650,53 @@ value/ref slots and ran their QuickJS value frees before env teardown completed.
 
 Sadhbh noted that the vector-backed allocator can become inefficient for scope,
 value, and ref churn because vector growth can reallocate storage and requires
-the reserved-prefix scheme for nested scope handle lookup.
-
-Action plan before code changes:
-
-1. Reimplement `napi_allocator__<T>` as stable fixed-size blocks instead of a
-   growing vector.
-2. Keep public handles as real pointers to slot payloads (`T *`), which matches
-   the opaque `napi_value__ *`, `napi_ref__ *`, and `napi_handle_scope__ *`
-   typedefs.
-3. Recover the owning block from an entry pointer without a stored offset by
-   aligning each block to a computed power-of-two size and masking the slot
-   pointer down to that boundary.
-4. Maintain two block lists: available blocks with at least one free slot, and
-   full blocks with no free slots. Allocation uses the available list; release
-   moves a formerly full block back to the available list.
-5. Remove the nested-scope reserved-prefix behavior. A child allocator should
-   reject a parent-owned pointer handle, and `napi_scope__::value_from_handle`
-   should continue walking to the parent scope.
-6. Preserve the existing `allocate`, `release`, `close`,
-   `storage_slot_count`, `active_count`, and `for_each_active` surface so the
-   rest of the N-API layer stays narrow.
+the reserved-prefix scheme for nested scope handle lookup. The current allocator
+keeps stable pointer-shaped handles without keeping cached block index vectors
+or list nodes.
 
 Implementation:
 
-- Replaced the vector/free-index allocator with:
-
-```c++
-std::list<block__> blocks_;
-std::vector<block__ *> available_blocks_;
-std::vector<block__ *> full_blocks_;
-```
-
-- `block_layout__` defines the fixed `std::array<slot__, N>` storage and block
-  bookkeeping once; `block__` inherits that layout, adds alignment, and owns the
-  allocation/release behavior.
+- `napi_allocator__<T, Owner>` allocates fixed-size `block__` instances and
+  exposes only `T *` payload pointers.
+- Blocks are owned by circular intrusive `napi_intrinsic_link__` lists.
+  `first_free_` is the sentinel for completely empty blocks, `first_partial_`
+  is the sentinel for blocks with both free and live slots, and `first_used_`
+  is the sentinel for full blocks. Each block has exactly one allocator-list
+  `link_`, and that link is present in exactly one of those three lists except
+  while `destroy(T *)` has intentionally unlinked the block before invoking the
+  payload destructor.
+  `napi_intrinsic_link__` lives header-only in
+  `napi/lib/src/napi_intrinsic_link.h`, stores only `next_link_` and
+  `prev_link_`, owns circular-list operations such as `link(...)`, `unlink()`,
+  `first()`, and `contains(...)`, and recovers embedded owners with
+  `unsafe_get<&T::link_>()`.
+- `block_layout__` exists only to compute the aligned block size. `block__`
+  stores the actual fixed `std::array<slot__, N>` storage, intrusive links, and
+  block-local allocation/free-list behavior directly, so pointer-to-member link
+  offsets refer to `block__` itself.
 - Each `block__` is aligned to the nearest power of two that can hold the block
   layout.
-- Each `slot__` stores raw aligned payload storage; public handles are pointers
-  to the constructed payload inside that storage.
-- The allocator recovers the slot from a handle by subtracting
-  `offsetof(slot__, storage)`, then masks the slot pointer down to the aligned
+- Each `slot__` stores raw aligned payload storage plus `free_link_` and
+  `used_link_`; there is no per-slot active flag. A slot is active when it is
+  linked through the block's `first_used_slot_` list.
+- The allocator recovers the slot from a payload pointer by subtracting
+  `offsetof(slot__, storage_)`, then masks the slot pointer down to the aligned
   power-of-two block boundary to recover the enclosing block.
 - `static_assert(sizeof(block__) == block_alignment__)` keeps the mask-down
   assumption honest if the block layout changes.
-- `std::list` keeps block addresses stable while new blocks are appended.
-- Allocation uses the last available block. When it becomes full, the block is
-  moved from `available_blocks_` to `full_blocks_`. Releasing a slot from a full
-  block moves it back to `available_blocks_`.
+- `allocate(...)` uses the first block from `first_partial_`, then the first
+  block from `first_free_`. If neither list has a block, the allocator creates
+  one. After allocation, the block is relinked to `first_partial_` or
+  `first_used_` according to its final slot state.
+- `destroy(T *)` unlinks the slot from the block used-slot list and, if the
+  block was linked at entry, puts the block in vacuum before recording release
+  accounting and destroying the payload. It then links the slot to the block
+  free list and relinks the block to `first_free_`, `first_partial_`, or
+  `first_used_` only if this call put the block in vacuum. Reentrant sibling
+  destruction that enters an already-vacuum block leaves relinking to the outer
+  destroy.
+- `take_used()` / `take_next_used()` marks one live slot free and returns its
+  still-constructed payload pointer to the caller for external teardown work.
 - Nested scope lookup no longer needs reserved prefix slots. A child allocator
   rejects a parent-owned pointer handle, and `napi_scope__::value_from_handle`
   walks to the parent scope as before.
@@ -710,26 +709,24 @@ std::vector<block__ *> full_blocks_;
 
 Complexity and performance notes:
 
-- The allocation hot path is O(1): take the last block from
-  `available_blocks_`, pop one slot from that block's internal free list, and
-  return the constructed payload pointer.
-- The release hot path is O(1) for the slot itself: recover the slot from the
-  handle, mask down to the aligned block base, call the payload's explicit
-  destructor, and push the slot back onto that block's free list.
-- Moving a block from available to full is O(1). Moving a formerly full block
-  back to available includes a small `full_blocks_` vector erase scan, but that
-  only happens on the first release from a full block, not on every slot
-  release.
-- Handles are stable real pointers. Appending a new `std::list` block cannot
+- The allocation hot path is O(1): use the front free block or create one, pop
+  one slot from that block's internal free list, construct the payload in place,
+  and move the block to `first_used_` only when it becomes full.
+- The release hot path is O(1): recover the slot from the pointer, mask down to
+  the aligned block base, unlink the slot from `first_used_slot_`, call the
+  payload destructor, and push the slot back through `first_free_slot_`.
+- Block scheduling uses only circular `napi_intrinsic_link__` relinks. There is
+  no full-block scan and no cached block-vector erase.
+- Handles are stable real pointers. Allocating or relinking a block cannot
   relocate existing slots, so `napi_value`, `napi_ref`, and scope handles do not
   depend on vector capacity or integer index encoding.
 - Block-local slot arrays keep ordinary allocation/free churn cache-friendly
   within each block, while avoiding the large copy/move behavior of vector
   growth.
-- `unsafe_data_from_handle(handle)` is a pure handle-to-payload calculation.
-  Ownership checks are separate and use `owns_handle(...)` or the higher-level
-  env/scope/ref validation helpers.
-- Diagnostic operations such as `active_count()` and `for_each_active()` remain
+- `unsafe_owner(T *)` is the raw pointer-to-owner calculation. Ownership checks
+  are separate and use `owns(T *)` or higher-level env/scope/ref validation
+  helpers.
+- Diagnostic operations such as `count_active()` and `begin()` / `end()` remain
   intentionally O(number of blocks or slots), because they are aggregate
   queries used by tracing, teardown, and tests rather than the request-time
   allocation hot path.
@@ -749,16 +746,9 @@ Cycle and memory-use notes:
   with block size `N`, each allocator can retain up to `N - 1` unused slots in a
   non-empty tail block. That trades a little reserved memory for stable handles
   and O(1) slot reuse.
-- There is also one `std::list` node allocation per block and two pointer-vector
-  indexes for block scheduling. Those costs are per block, not per N-API value
-  or ref, so they should be small compared with the thousands of handles created
-  during HTTP/server load.
-- A full block has no per-slot free-list overhead in the scheduler: it simply
-  lives in `full_blocks_` until the first release makes it available again.
-- `close()` releases active entries in reverse block order and then drops every
-  block. Peak memory is therefore governed by the high-water mark of concurrent
-  live handles in the allocator, not by every handle ever allocated over the
-  process lifetime.
+- Empty blocks live on `first_free_`, partially used blocks live on
+  `first_partial_`, and full blocks live on `first_used_`. `close()` destroys
+  live slots and releases every block from all three mutually exclusive chains.
 - Compared with vector capacity growth, this model should reduce allocator
   cycle spikes under bursty request load and make memory behavior easier to
   reason about: memory grows in fixed block increments, slots are reused
@@ -1063,6 +1053,56 @@ make test-napi-quickjs-only
 
 Result: 45/45 tests passed.
 
+## 2026-05-15 allocator used/free block refactor
+
+The shared allocator in `napi/lib/src/napi_allocator.h` is now
+`napi_allocator__<T, Owner>` and only exposes typed payload pointers. The old
+handle-parameter slab allocator surface, cached full/available vectors, and
+`std::list` block storage are gone.
+
+Current shape:
+
+- Blocks are owned by circular intrusive `napi_intrinsic_link__` lists.
+  `first_free_` owns completely empty blocks; `first_partial_` owns blocks with
+  both free and live slots; `first_used_` owns full blocks. Each block is on
+  exactly one of those lists through its single `link_`, except during the
+  explicit vacuum window in `destroy(T *)`. The link implementation is
+  header-only in `napi/lib/src/napi_intrinsic_link.h`; it stores only
+  `next_link_` and `prev_link_`, with `unsafe_get<&T::link_>()` doing owner
+  recovery from an embedded link pointer.
+- Slots contain `storage_`, `free_link_`, and `used_link_`. There is no slot
+  `active` flag and no per-block active counter. A block is full when its
+  block-local `first_free_slot_` list is empty; a block is empty when its
+  block-local `first_used_slot_` list is empty.
+- `allocate(...)` is O(1): allocate from the first block in `first_partial_`,
+  then `first_free_`, creating a block only when both lists are empty. Relink
+  the block to `first_partial_` or `first_used_` after the slot is taken.
+- `destroy(T *)` remembers whether the block was linked at entry, unlinks the
+  slot from the block used list, unlinks a linked block before running the
+  payload destructor, and links the slot to the block free list afterward. If
+  the block was already in vacuum at entry, it remains in vacuum; otherwise,
+  the call relinks the block to `first_free_`, `first_partial_`, or
+  `first_used_`.
+- `take_used()` / `take_next_used()` removes one live slot from a full block
+  first, or from a partial block if no full blocks exist, marks that slot free,
+  records allocator release accounting, and returns the still-constructed
+  payload pointer to the caller for external teardown work.
+- `begin()` / `end()` iterate over active slots by walking `first_used_` and
+  then `first_partial_`, following each block's `first_used_slot_` chain
+  through slot `used_link_` links.
+  `count_active()` walks the same full and partial lists.
+- `owns(T *)` is implemented from `unsafe_owner(T *)`, which derives the block
+  from the slot address and checks the block owner.
+
+Verification:
+
+```sh
+cmake --build build-edge-quickjs-cli --target edge -j4
+make test-napi-quickjs-only
+```
+
+Result: edge target built, and the QuickJS N-API suite passed 48/48.
+
 ## 2026-05-13 Async-Wrap Destroy Hook Scope Fix
 
 The remaining `Function`/`Object` `napi_value` growth under `server.js` was
@@ -1351,15 +1391,15 @@ separate from proving that the current allocator owns that slot.
 
 Current allocator contract:
 
-- `unsafe_handle_from_data(...)`, `unsafe_data_from_handle(...)`,
-  `unsafe_data_with_owner_from_handle(...)`, and `owns_handle(...)`
-  are the fixed public handle API.
+- The allocator public API is pointer-shaped: `allocate(...)`, `destroy(T *)`,
+  `take_used()` / `take_next_used()`, `owns(T *)`, and `unsafe_owner(T *)`.
 - Release builds trust that incoming public handles came from this N-API
-  backend and map them with `unsafe_data_from_handle(...)` at the N-API boundary.
-- Debug builds decode `(data, owner)` and assert the expected ownership fact:
-  scope handles must belong to the env scope allocator, value handles must point
-  at a scope owned by the env, and ref handles must belong to the env-owned ref
-  allocator.
+  backend and treat the opaque public handle as the typed payload pointer at the
+  N-API boundary.
+- Debug builds derive the owner from the slot/block and assert the expected
+  ownership fact: scope handles must belong to the env scope allocator, value
+  handles must point at a scope owned by the env, and ref handles must belong to
+  the env-owned ref allocator.
 - Relationship operations validate the narrower relationship at the point of
   use instead of adding broad null checks everywhere. `napi_scope__::parent()`
   stops at the root parent handle. `napi_scope__::delete_value(...)` releases
@@ -2892,7 +2932,7 @@ intermittent CTest/process-exit issue unless it reproduces under direct LLDB.
 
 After the env-owned `napi_ref` allocator and constructor/destructor allocator
 refactor, `make test-native-quickjs` in Debug reproduced a hard assertion in
-`napi_allocator__::release(...)`:
+the allocator's pointer release path:
 
 ```text
 napi_quickjs.napi_quickjs_test_6.Test6.PortedCoreFlow
@@ -2945,6 +2985,90 @@ make test-native-quickjs
 The focused Debug test passed. The full Debug native QuickJS suite passed
 45/45. The exact user command `make test-native-quickjs` also passed 45/45 in
 the default Release configuration.
+
+## 2026-05-15 Reentrant Allocator Destroy Assertion
+
+With the shared slab allocator and lifetime tracker enabled, the native
+QuickJS Edge CLI could serve `server.js` initially, then abort under concurrent
+HTTP load:
+
+```text
+Assertion failed during allocator `destroy(T *)` block-list membership checking.
+```
+
+LLDB showed the assertion was caused by reentrant destruction, not by wrong
+owner decoding or bad block alignment. The outer destroy was releasing one
+`napi_ref__` slot. Its payload destructor freed a QuickJS value, which ran an
+external finalizer for a stream wrapper. That finalizer called
+`napi_delete_reference(...)` for another `napi_ref__` in the same allocator
+block:
+
+```text
+napi_allocator__<napi_ref__, napi_env__>::destroy(ref A)
+  -> napi_ref__::~napi_ref__()
+  -> napi_ref__::clear_for_teardown()
+  -> JS_FreeValue(...)
+  -> napi_external__::finalizer(...)
+  -> EdgeStreamBaseFinalize(...)
+  -> DeleteOnReadRefs(...)
+  -> napi_delete_reference(ref B)
+  -> napi_allocator__<napi_ref__, napi_env__>::destroy(ref B)
+```
+
+The allocator had already unlinked the block from its owning list before
+running `slot->destroy()`. During the nested
+`destroy(ref B)`, the same block was temporarily in no owning list, so the
+membership assertion failed even though the pointer was a valid live slot.
+
+The allocator invariant is now stricter and simpler:
+
+- `destroy(T *)` first unlinks the slot from the block's `first_used_slot_`
+  list.
+- If the block was linked when `destroy(T *)` began, it unlinks the block's
+  single allocator-list `link_` before running the payload destructor.
+- It records release, runs `slot->destroy()`, links the slot through
+  `first_free_slot_`, then relinks the block only if this call put it in
+  vacuum. A nested destroy that enters while the block is already in vacuum
+  leaves it in vacuum; the outer destroy owns the final relink.
+- `close()` follows the same slot release rule, then unlinks and deletes each
+  block after `block->close()` returns.
+
+Verification:
+
+```sh
+env CMAKE_BUILD_TYPE=Debug \
+  NAPI_ENABLE_LIFETIME_TRACKER=ON \
+  NAPI_ENABLE_LIFETIME_PERIODIC_STATS=ON \
+  NAPI_ENABLE_LIFETIME_TAG_STATS=ON \
+  NAPI_ENABLE_LIFETIME_STRING_SYMBOL_DUMP=ON \
+  EDGE_TRACE_NAPI_LIFETIME=1 \
+  make build-edge-quickjs-cli
+
+lldb -- ./build-edge-quickjs-cli/edge ./server.js
+# target env included the same lifetime flags plus PORT=8081
+ab -n 500 -c 10 http://127.0.0.1:8081/
+ab -n 5000 -c 10 http://127.0.0.1:8081/
+
+env CMAKE_BUILD_TYPE=Debug \
+  NAPI_ENABLE_LIFETIME_TRACKER=ON \
+  NAPI_ENABLE_LIFETIME_PERIODIC_STATS=ON \
+  NAPI_ENABLE_LIFETIME_TAG_STATS=ON \
+  NAPI_ENABLE_LIFETIME_STRING_SYMBOL_DUMP=ON \
+  EDGE_TRACE_NAPI_LIFETIME=1 \
+  make test-native-quickjs
+```
+
+The patched server handled 500 and then 5,000 ApacheBench requests at
+concurrency 10 with zero failed requests while LLDB stayed running and did not
+hit `__assert_rtn`. The native QuickJS N-API suite passed 48/48 with the
+lifetime tracker options enabled.
+
+One separate cleanup-path bug was exposed while port 8080 was still occupied:
+the bind failure path produced `EADDRINUSE`, then an `FSEvent` close callback
+called `napi_open_handle_scope(...)` with a stale poisoned `napi_env` pointer
+during environment cleanup. That is not the allocator membership bug; track it
+as an EdgeJS handle-wrapper/env cleanup ordering issue if it reproduces after
+the listener conflict is removed.
 
 ## 2026-05-13 Root-Scope Function Value Growth
 

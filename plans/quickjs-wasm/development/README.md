@@ -50,6 +50,7 @@ canonical home for known incompatibilities once a troubleshooting page exists.
 | [dev_001_pr_cleanup_containment](dev_001_pr_cleanup_containment/) | 🟢 | Runtime cleanup containment history. |
 | [dev_002_napi_promises_refactor](dev_002_napi_promises_refactor/) | 🟢 | QuickJS N-API internal refactor history. |
 | [dev_003_quickjs_module_loading](dev_003_quickjs_module_loading/) | ▶️ | QuickJS `ModuleWrap` and Node JS loader interop plan for CommonJS/ESM parity. |
+| [dev_004_v8_napi_lifetime_refactor](dev_004_v8_napi_lifetime_refactor/) | 🟢 | V8 N-API lifetime, handle-scope, reference, wrap, and finalizer refactor implemented and verified against shared V8/QuickJS N-API suites. |
 
 ## Status Icons
 
