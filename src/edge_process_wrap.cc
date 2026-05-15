@@ -319,7 +319,6 @@ void OnProcessClose(uv_handle_t* handle) {
   UntrackLiveChildPid(wrap->pid);
 
   EdgeHandleWrapDetach(&wrap->handle_wrap);
-  EdgeHandleWrapReleaseWrapperRef(&wrap->handle_wrap);
 
   if (wrap->handle_wrap.active_handle_token != nullptr) {
     EdgeUnregisterActiveHandle(wrap->handle_wrap.env, wrap->handle_wrap.active_handle_token);
@@ -335,6 +334,8 @@ void OnProcessClose(uv_handle_t* handle) {
   }
   if (can_delete) {
     delete wrap;
+  } else {
+    EdgeHandleWrapReleaseWrapperRef(&wrap->handle_wrap);
   }
 }
 

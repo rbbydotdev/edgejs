@@ -3590,7 +3590,6 @@ void OnMessagePortClosed(uv_handle_t* handle) {
   }
   DisentanglePeer(wrap->handle_wrap.env, wrap, true);
   EdgeHandleWrapDetach(&wrap->handle_wrap);
-  EdgeHandleWrapReleaseWrapperRef(&wrap->handle_wrap);
   if (wrap->handle_wrap.active_handle_token != nullptr) {
     EdgeUnregisterActiveHandle(wrap->handle_wrap.env, wrap->handle_wrap.active_handle_token);
     wrap->handle_wrap.active_handle_token = nullptr;
@@ -3620,6 +3619,7 @@ void OnMessagePortClosed(uv_handle_t* handle) {
     EdgeAsyncWrapQueueDestroyId(wrap->handle_wrap.env, wrap->async_id);
     wrap->async_id = 0;
   }
+  EdgeHandleWrapReleaseWrapperRef(&wrap->handle_wrap);
 }
 
 void OnMessagePortAsync(uv_async_t* handle) {

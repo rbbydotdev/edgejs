@@ -847,7 +847,6 @@ void OnClosed(uv_handle_t* h) {
   if (wrap == nullptr) return;
   wrap->handle_wrap.state = kEdgeHandleClosed;
   EdgeHandleWrapDetach(&wrap->handle_wrap);
-  EdgeHandleWrapReleaseWrapperRef(&wrap->handle_wrap);
   if (wrap->handle_wrap.active_handle_token != nullptr) {
     EdgeUnregisterActiveHandle(wrap->handle_wrap.env, wrap->handle_wrap.active_handle_token);
     wrap->handle_wrap.active_handle_token = nullptr;
@@ -861,6 +860,8 @@ void OnClosed(uv_handle_t* h) {
   if (can_delete) {
     EdgeHandleWrapDeleteRefIfPresent(wrap->handle_wrap.env, &wrap->handle_wrap.wrapper_ref);
     delete wrap;
+  } else {
+    EdgeHandleWrapReleaseWrapperRef(&wrap->handle_wrap);
   }
 }
 
