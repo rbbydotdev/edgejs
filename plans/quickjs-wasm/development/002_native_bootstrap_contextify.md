@@ -228,6 +228,12 @@ Added a QuickJS env initialization shim in
 - `EnsureSymbolProperty(ctx, symbol_ctor, "dispose", "Symbol.dispose")`
 - `EnsureSymbolProperty(ctx, symbol_ctor, "asyncDispose", "Symbol.asyncDispose")`
 
+May 10, 2026 update: this regression reappeared after later QuickJS N-API
+refactors. The shim was restored in `unofficial_napi_create_env_from_context()`,
+`require('http')` now loads, `examples/http-server.js` starts with the native
+QuickJS CLI, and `napi/tests/js-native-api/13_symbol/test.js` now asserts both
+well-known symbols and descriptions.
+
 This runs immediately after `JS_NewContext(rt)` in
 `unofficial_napi_create_env_with_options()`, before EdgeJS executes
 `internal/per_context/primordials`.

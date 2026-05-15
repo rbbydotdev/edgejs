@@ -336,5 +336,5 @@ plans/napi-v8/node-vs-napi.md
 The original implementation notes are still under:
 
 ```text
-plans/quickjs-wasm/development/dev_003_v8_napi_lifetime_refactor/
+plans/quickjs-wasm/development/dev_004_v8_napi_lifetime_refactor/
 ```
