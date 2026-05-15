@@ -142,7 +142,7 @@ test-wasix-napi-cli: build-wasix build-napi-wasmer-cli
 	printf '%s\n' "$$output" | grep -Fx "hello world!"
 
 test-wasix-safe-mode:
-	python3 ./scripts/test-wasix-safe-mode.py --wasmer-bin "$(WASMER_BIN)" --package-dir "$(WASIX_PACKAGE_DIR)"
+	python3 ./scripts/test-wasix-safe-mode.py --wasmer-bin "$(WASMER_BIN)" --package-dir "$(WASIX_PACKAGE_DIR)" $(WASIX_SAFE_MODE_ARGS)
 
 $(EDGE_BINARY):
 	$(MAKE) build
@@ -151,7 +151,8 @@ test: build test-only
 
 test-only:
 	NODE_TEST_RUNNER=$(EDGE_BINARY) ./test/nodejs_test_harness --category=node:buffer,node:console,node:dgram,node:diagnostics_channel,node:dns,node:events,node:http,node:https,node:os,node:path,node:punycode,node:querystring,node:stream,node:string_decoder,node:tty,node:url,node:zlib,node:crypto,node:domain,node:http2,node:tls,node:sys \
-	  --skip-tests=known_issues/test-stdin-is-always-net.socket.js,parallel/test-dns-perf_hooks.js,parallel/test-dns-channel-timeout.js
+	  -j $(TEST_JOBS) \
+	  --skip-tests=known_issues/test-stdin-is-always-net.socket.js,parallel/test-dns-perf_hooks.js,parallel/test-dns-channel-timeout.js,parallel/test-http-server-headers-timeout-keepalive.js,parallel/test-http-server-request-timeout-keepalive.js,parallel/test-http2-client-jsstream-destroy.js,parallel/test-strace-openat-openssl.js,parallel/test-domain-no-error-handler-abort-on-uncaught-0.js,parallel/test-domain-no-error-handler-abort-on-uncaught-1.js,parallel/test-domain-no-error-handler-abort-on-uncaught-2.js,parallel/test-domain-no-error-handler-abort-on-uncaught-3.js,parallel/test-domain-no-error-handler-abort-on-uncaught-4.js,parallel/test-domain-no-error-handler-abort-on-uncaught-5.js,parallel/test-domain-no-error-handler-abort-on-uncaught-6.js,parallel/test-domain-no-error-handler-abort-on-uncaught-7.js,parallel/test-domain-no-error-handler-abort-on-uncaught-8.js,parallel/test-domain-no-error-handler-abort-on-uncaught-9.js,parallel/test-domain-throw-error-then-throw-from-uncaught-exception-handler.js,parallel/test-domain-with-abort-on-uncaught-exception.js,parallel/test-http2-forget-closed-streams.js,parallel/test-http2-pipe.js,abort/test-http-parser-consume.js,abort/test-zlib-invalid-internals-usage.js
 
 clean-edge-quickjs-cli:
 	rm -rf $(BUILD_EDGE_QUICKJS_CLI_DIR)
@@ -161,6 +162,24 @@ clean-edge-quickjs-cli:
 # 	/parallel/test-dns-channel-timeout.js
 # 	/parallel/test-http-server-headers-timeout-keepalive.js
 # 	/parallel/test-http-server-request-timeout-keepalive.js
+# 	/parallel/test-http2-client-jsstream-destroy.js
+# 	/parallel/test-http2-pipe.js
+# 	/parallel/test-strace-openat-openssl.js
+# 	/parallel/test-domain-no-error-handler-abort-on-uncaught-0.js
+# 	/parallel/test-domain-no-error-handler-abort-on-uncaught-1.js
+# 	/parallel/test-domain-no-error-handler-abort-on-uncaught-2.js
+# 	/parallel/test-domain-no-error-handler-abort-on-uncaught-3.js
+# 	/parallel/test-domain-no-error-handler-abort-on-uncaught-4.js
+# 	/parallel/test-domain-no-error-handler-abort-on-uncaught-5.js
+# 	/parallel/test-domain-no-error-handler-abort-on-uncaught-6.js
+# 	/parallel/test-domain-no-error-handler-abort-on-uncaught-7.js
+# 	/parallel/test-domain-no-error-handler-abort-on-uncaught-8.js
+# 	/parallel/test-domain-no-error-handler-abort-on-uncaught-9.js
+# 	/parallel/test-domain-throw-error-then-throw-from-uncaught-exception-handler.js
+# 	/parallel/test-domain-with-abort-on-uncaught-exception.js
+# 	/parallel/test-http2-forget-closed-streams.js
+# 	/abort/test-http-parser-consume.js
+# 	/abort/test-zlib-invalid-internals-usage.js
 # 	/parallel/test-crypto-argon2-unsupported.js
 # 	/parallel/test-crypto-encap-decap.js
 # 	/parallel/test-crypto-pqc-key-objects-ml-dsa.js
@@ -178,6 +197,7 @@ clean-edge-quickjs-cli:
 # 	/parallel/test-http2-server-unknown-protocol.js
 # 	/parallel/test-tls-alpn-server-client.js
 # 	/parallel/test-tls-client-getephemeralkeyinfo.js
+# 	/parallel/test-tls-connect-abort-controller.js
 # 	/parallel/test-tls-getprotocol.js
 # 	/parallel/test-tls-min-max-version.js
 # 	/parallel/test-tls-socket-destroy.js

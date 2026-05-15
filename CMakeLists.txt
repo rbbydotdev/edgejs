@@ -67,6 +67,10 @@ option(EDGE_SHARED_OPENSSL
   "Link against a shared/system OpenSSL instead of the vendored OpenSSL"
   OFF
 )
+option(ENABLE_TRACING
+  "Compile startup tracing support"
+  OFF
+)
 set(EDGE_SHARED_OPENSSL_INCLUDES
   ""
   CACHE PATH "Directory containing OpenSSL headers when EDGE_SHARED_OPENSSL is ON"
@@ -983,6 +987,9 @@ target_compile_definitions(edge_runtime
     EDGE_VERSION_COMMIT="${EDGE_VERSION_COMMIT}"
     EDGE_VERSION_SUFFIX="${EDGE_VERSION_SUFFIX}"
 )
+if(ENABLE_TRACING)
+  target_compile_definitions(edge_runtime PRIVATE ENABLE_TRACING=1)
+endif()
 if(EDGE_IS_WASIX_TARGET)
   target_sources(edge_runtime PRIVATE
     wasix/src/wasix_compat.cc
@@ -1016,6 +1023,9 @@ target_compile_definitions(edge_cli
     EDGE_VERSION_COMMIT="${EDGE_VERSION_COMMIT}"
     EDGE_VERSION_SUFFIX="${EDGE_VERSION_SUFFIX}"
 )
+if(ENABLE_TRACING)
+  target_compile_definitions(edge_cli PRIVATE ENABLE_TRACING=1)
+endif()
 if(NOT EDGE_DEFAULT_WASMER_PACKAGE STREQUAL "")
   target_compile_definitions(edge_cli
     PRIVATE

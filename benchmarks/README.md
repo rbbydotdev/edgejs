@@ -130,6 +130,36 @@ What it does not measure:
 - filesystem or network I/O
 - long-running application throughput
 
+### `http-loopback`
+Starts a small local HTTP server, performs a fixed number of loopback requests against it, and prints a deterministic checksum.
+
+What it isolates:
+- local HTTP request/response overhead in a small one-shot process
+- runtime behavior across a basic built-in networking path
+- a more representative server/client surface than startup-only baselines
+
+What it does not measure:
+- real network conditions
+- TLS/HTTPS behavior
+- production throughput
+- websocket behavior
+- framework or router overhead
+
+### `timers-settimeout-chain`
+
+Chains 200 sequential `setTimeout(fn, 0)` calls. Each callback fires, increments a counter, and schedules the next timer. Prints a deterministic checksum when the chain completes.
+
+What it isolates:
+- per-`setTimeout` dispatch cost in the event loop timer phase
+- callback scheduling and execution overhead across N iterations
+- a runtime surface that maps to the roadmap's timers benchmark lane
+
+What it does not measure:
+- concurrent timer scheduling (all timers here are sequential)
+- high-resolution timer behavior
+- timer cancellation or re-scheduling
+- `setImmediate` or `queueMicrotask` (covered by `promise-microtask-chain`)
+
 ## Coverage notes
 
 Each benchmark in this directory is intentionally narrow.
@@ -171,12 +201,12 @@ These benchmark files are intentionally small and standalone so they can be comp
 
 CLI startup benchmarks intentionally omit Deno from the matrix because they exercise Node/Bun-compatible `-e` and `-p` entry paths rather than file-entry workloads.
 
-Each benchmark run also captures an Edge-only startup phase profile when the binary was built with `-DEDGE_ENABLE_STARTUP_PROFILE=ON`. Alongside the usual `hyperfine` exports, the harness writes:
+Each benchmark run also attempts to capture an Edge-only startup phase profile by running the Edge command with `EDGE_STARTUP_PROFILE=1`. Alongside the usual `hyperfine` exports, the harness writes:
 
 - `benchmarks/results/<workload>.edge-profile.json`
 - `benchmarks/results/<workload>.edge-profile.md`
 
-These artifacts record the native startup phase breakdown for the exact Edge command used in the benchmark, so wall-clock deltas can be reviewed together with phase deltas. When the profiler is not compiled into the binary, the harness writes a placeholder note instead.
+These artifacts record the native startup phase breakdown for the exact Edge command used in the benchmark, so wall-clock deltas can be reviewed together with phase deltas. If startup profile JSON is not emitted on your checkout, the harness writes a placeholder note instead.
 
 ## Build Edge locally
 
@@ -184,7 +214,13 @@ These artifacts record the native startup phase breakdown for the exact Edge com
 make build
 ```
 
-To embed the internal startup profiler in the binary for benchmark analysis:
+To check whether the current local binary emits startup profile output:
+
+```bash
+EDGE_STARTUP_PROFILE=1 ./build-edge/edge -e ""
+```
+
+Some checkouts may require additional build support for startup profiling. A common rebuild attempt is:
 
 ```bash
 cmake -S . -B build-edge -DCMAKE_BUILD_TYPE=Release -DEDGE_ENABLE_STARTUP_PROFILE=ON
