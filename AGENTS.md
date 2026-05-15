@@ -211,7 +211,7 @@ plans/quickjs-wasm/development/troubleshooting/node-test/016_whatwg_url_inspect_
 Most recent Node compatibility troubleshooting note:
 
 ```text
-plans/quickjs-wasm/development/troubleshooting/node-compat/napi/014_lifetime_tracing.md
+plans/quickjs-wasm/development/troubleshooting/node-compat/edgejs/012_v8_ctest_environment_attach.md
 ```
 
 Most recent Wasmer deploy troubleshooting note:

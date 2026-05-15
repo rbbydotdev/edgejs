@@ -36,6 +36,7 @@ duplicating issue details.
 | 🟠 | Medium | [003_minimal_intl_fallback.md](node-compat/edgejs/003_minimal_intl_fallback.md) | Minimal `Intl.DateTimeFormat` fallback |
 | 🟠 | Medium | [004_native_inspector_stub.md](node-compat/edgejs/004_native_inspector_stub.md) | Native unavailable `inspector` stub |
 | 🟠 | High | [010_stream_wrapper_unwrap_fallback.md](node-compat/edgejs/010_stream_wrapper_unwrap_fallback.md) | Stream wrapper unwrap fallback |
+| 🟠 | Medium | [012_v8_ctest_environment_attach.md](node-compat/edgejs/012_v8_ctest_environment_attach.md) | V8 CTest runtime fixture environment attachment |
 | 🟠 | Medium | [016_napi_extern_wasix_linkage.md](node-compat/deploy/016_napi_extern_wasix_linkage.md) | `NAPI_EXTERN=` WASIX linkage rule |
 | 🟠 | Low | [017_framework_static_server_adapters.md](node-compat/deploy/017_framework_static_server_adapters.md) | Framework static and ad hoc server adapters |
 | 🟠 | Medium | [018_pnpm_deploy_graph_materialization.md](node-compat/deploy/018_pnpm_deploy_graph_materialization.md) | pnpm deploy graph materialization |
