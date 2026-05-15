@@ -999,7 +999,7 @@ endif()
 if(EDGE_NAPI_PROVIDER STREQUAL "bundled-v8")
   target_compile_definitions(edge_runtime PRIVATE EDGE_BUNDLED_NAPI_V8=1 EDGE_EMBEDDED_NAPI_PROVIDER=1)
 elseif(EDGE_NAPI_PROVIDER STREQUAL "quickjs")
-  target_compile_definitions(edge_runtime PRIVATE EDGE_EMBEDDED_NAPI_PROVIDER=1)
+  target_compile_definitions(edge_runtime PRIVATE EDGE_EMBEDDED_NAPI_PROVIDER=1 EDGE_NAPI_QUICKJS=1)
 endif()
 
 add_library(edge_cli STATIC

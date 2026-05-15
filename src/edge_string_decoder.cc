@@ -213,8 +213,10 @@ napi_value MakeStringFromBytes(napi_env env, const uint8_t* data, size_t len, ui
   if (ThrowIfStringTooLong(env, max_decoded_length)) return nullptr;
 
   // First try global Buffer.from(...).toString(enc) so we match the runtime's
-  // exact Buffer decoding behavior used by tests for comparison.
-  {
+  // exact Buffer decoding behavior used by tests for comparison. UTF-8 is
+  // decoded below because StringDecoder has streaming boundary rules that are
+  // stricter than a raw Buffer decode fallback.
+  if (enc != kEncUtf8) {
     napi_value global = nullptr;
     napi_value buffer_ctor = nullptr;
     napi_value from_fn = nullptr;
