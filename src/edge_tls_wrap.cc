@@ -1237,6 +1237,27 @@ bool SetSecureContextOnSsl(TlsWrap* wrap, edge::crypto::SecureContextHolder* hol
   return true;
 }
 
+bool SetSecureContextOnSslAndRetain(TlsWrap* wrap,
+                                    edge::crypto::SecureContextHolder* holder,
+                                    napi_value context) {
+  if (wrap == nullptr || wrap->env == nullptr || context == nullptr) return false;
+
+  napi_ref next_ref = nullptr;
+  if (napi_create_reference(wrap->env, context, 1, &next_ref) != napi_ok || next_ref == nullptr) {
+    return false;
+  }
+
+  bool ok = SetSecureContextOnSsl(wrap, holder);
+  if (ok || wrap->secure_context == holder) {
+    DeleteRefIfPresent(wrap->env, &wrap->context_ref);
+    wrap->context_ref = next_ref;
+  } else {
+    DeleteRefIfPresent(wrap->env, &next_ref);
+  }
+
+  return ok;
+}
+
 void InitSsl(TlsWrap* wrap);
 void Cycle(TlsWrap* wrap);
 void EncOut(TlsWrap* wrap);
@@ -3627,7 +3648,7 @@ napi_value TlsWrapSetKeyCert(napi_env env, napi_callback_info info) {
   if (wrap == nullptr || wrap->ssl == nullptr || wrap->is_server == false || argc < 1) return Undefined(env);
   edge::crypto::SecureContextHolder* holder = nullptr;
   if (internal_binding::EdgeCryptoGetSecureContextHolderFromObject(env, argv[0], &holder) && holder != nullptr) {
-    if (!SetSecureContextOnSsl(wrap, holder)) {
+    if (!SetSecureContextOnSslAndRetain(wrap, holder, argv[0])) {
       EmitError(wrap, CreateLastOpenSslError(env, "ERR_TLS_INVALID_CONTEXT", "Failed to update secure context"));
     }
   } else {
@@ -3677,7 +3698,7 @@ napi_value TlsWrapCertCbDone(napi_env env, napi_callback_info info) {
       napi_typeof(env, sni_context, &sni_type) == napi_ok &&
       sni_type == napi_object) {
     if (internal_binding::EdgeCryptoGetSecureContextHolderFromObject(env, sni_context, &holder) && holder != nullptr) {
-      if (!SetSecureContextOnSsl(wrap, holder)) {
+      if (!SetSecureContextOnSslAndRetain(wrap, holder, sni_context)) {
         EmitError(wrap, CreateLastOpenSslError(env, "ERR_TLS_INVALID_CONTEXT", "Failed to set SNI context"));
         return Undefined(env);
       }

@@ -11,6 +11,12 @@
 
 namespace edge::crypto {
 
+inline void ClearSecureContextAppData(SSL_CTX* ctx) {
+  if (ctx == nullptr) return;
+  SSL_CTX_set_app_data(ctx, nullptr);
+  SSL_CTX_set_tlsext_ticket_key_cb(ctx, nullptr);
+}
+
 struct SecureContextHolder {
   explicit SecureContextHolder(SSL_CTX* in_ctx)
       : ctx(in_ctx) {}
@@ -25,6 +31,7 @@ struct SecureContextHolder {
       issuer = nullptr;
     }
     if (ctx != nullptr) {
+      ClearSecureContextAppData(ctx);
       SSL_CTX_free(ctx);
       ctx = nullptr;
     }

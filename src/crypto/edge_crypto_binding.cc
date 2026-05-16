@@ -1851,6 +1851,7 @@ napi_value CryptoSecureContextInit(napi_env env, napi_callback_info info) {
   holder->ticket_callback_installed = false;
   EnsureTicketCallback(holder);
   if (old_ctx != nullptr) {
+    ClearSecureContextAppData(old_ctx);
     SSL_CTX_free(old_ctx);
   }
   napi_value true_v = nullptr;
