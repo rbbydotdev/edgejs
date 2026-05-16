@@ -205,7 +205,7 @@ plans/quickjs-wasm/development/troubleshooting/next-app/003_route_stack_exhauste
 Most recent Node test troubleshooting note:
 
 ```text
-plans/quickjs-wasm/development/troubleshooting/node-test/016_whatwg_url_inspect_and_searchparams.md
+plans/quickjs-wasm/development/troubleshooting/node-test/018_tls_securecontext_sni_lifetime.md
 ```
 
 Most recent Node compatibility troubleshooting note:
@@ -225,7 +225,6 @@ Important commands:
 ```sh
 make build-edge-quickjs-cli JOBS=4
 cmake --build build-edge-quickjs-cli --target edge -j4
-~/src/dev/edgejs/napi/cargo-standalone.sh test --lib -- --nocapture
 cd /Users/sadhbh/src/dev/edgejs/quickjs-wasm/ && ./build.sh
 wasmer package build --check .
 wasmer run --net .
@@ -251,18 +250,10 @@ linking `napi_quickjs` must compile with `NAPI_EXTERN=`. Without that, wasm
 objects can disagree on the import module for unresolved `napi_*` calls
 (`napi` versus `env`) and fail at the final `wasm-ld` step.
 
-For the standalone N-API Cargo workflow, `napi/Cargo.standalone.toml` is pinned
-to the crates.io `0.701` / `7.1` dependency family so it runs on the default
-Rust 1.91 toolchain. Do not update that standalone manifest to Wasmer
-`7.2.0-alpha.2` / WASIX `0.702.0-alpha.2` just to match the vendored path
-manifest; those crates require Rust 1.92 and make
-`~/src/dev/edgejs/napi/cargo-standalone.sh test --lib -- --nocapture` fail
-before tests start. The standalone wrapper must run from a temporary sibling
-Cargo project, not by rewriting `napi/Cargo.toml` in place; the in-place swap can
-make CI observe the vendored `wasmer-types = 7.2.0-alpha.2` constraint while
-resolving the standalone `7.1.0` graph. Do not copy the vendored `Cargo.lock`
-into the temporary standalone project, because that lockfile may also come from
-the vendored alpha graph.
+The N-API test suites are owned by the N-API repository. EdgeJS CI and the root
+`Makefile` should not run duplicate native N-API or standalone N-API Cargo test
+jobs; keep EdgeJS verification focused on Edge runtime, QuickJS CLI, WASIX, and
+package-level smoke tests.
 
 For QuickJS WASIX smoke testing:
 
@@ -286,64 +277,35 @@ Known caveats to remember:
 - The vendored QuickJS source has local compatibility patches for promise hooks
   and WASIX atomics. Preserve them unless replacing QuickJS with an upstream
   version that provides equivalent behavior.
-- QuickJS N-API class instances may currently look like `napi_external`, so
-  Edge stream code intentionally tries wrapper-specific `napi_unwrap(...)`
-  paths before raw external fallback.
+- QuickJS N-API class instances should not look like `napi_external`; keep
+  `napi_get_value_external(...)` limited to values created by
+  `napi_create_external(...)`.
 - For Next.js adapters, avoid `export const runtime = 'edge'` on routes that
   `server/generate-next-dynamic-shells.cjs` must import from
   `.next/server/app/.../page.js`.
 
 ## Build And Test Workflow
 
-From the repo root `~/src/edgejs`, use:
+From the repo root `~/src/edgejs`, use Edge runtime targets:
 
 ```sh
-export CMAKE_BUILD_TYPE=Debug
-make clean-napi-quickjs
-make build-napi-quickjs
+make build-edge-quickjs-cli JOBS=4
+make test-quickjs-only TEST_JOBS=4
+make build JOBS=4
+make test-only TEST_JOBS=4
 ```
 
-The built QuickJS N-API test binaries are under:
-
-```text
-~/src/edgejs/build-quickjs-napi/tests
-```
-
-Run the full QuickJS N-API suite with:
-
-```sh
-make test-napi-quickjs
-```
-
-If only rerunning already-built tests, this is useful:
-
-```sh
-make test-napi-quickjs-only
-```
-
-When investigating one failing test, run the specific binary directly, and use
-LLDB when the failure is unclear. Example:
-
-```sh
-lldb ~/src/edgejs/build-quickjs-napi/tests/napi_quickjs_test_16_reference
-```
-
-Inside LLDB, prefer a focused loop:
-
-```text
-run --gtest_filter='*Test16Reference*'
-bt
-frame select <interesting-frame>
-p <expr>
-```
+N-API implementation tests should be added to and run by the N-API repo, not by
+EdgeJS root Makefile targets or EdgeJS CI workflows.
 
 ## Methodology
 
-When a N-API test fails, first reproduce the exact failing test, then inspect the
-crash/failure in LLDB before changing code. Fix one behavior at a time and rerun
-the targeted test first, then the full `make test-napi-quickjs` suite. Avoid
-fixes that make one test pass by changing broad semantics; previous work often
-found that narrow QuickJS/V8 semantic differences caused regressions elsewhere.
+When a Node compatibility test fails, first reproduce the exact failing test,
+then inspect the crash/failure in LLDB before changing code. Fix one behavior at
+a time and rerun the targeted EdgeJS test first, then the relevant Edge runtime
+suite. Avoid fixes that make one test pass by changing broad semantics; previous
+work often found that narrow QuickJS/V8 semantic differences caused regressions
+elsewhere.
 
 Before editing, compare with the V8 backend for intent:
 
@@ -401,12 +363,6 @@ so embedders get stable behavior and linkable symbols.
 
 ## Known Good Baseline
 
-After the recent refactors and unofficial N-API implementation work, this passed:
-
-```sh
-make build-napi-quickjs
-make test-napi-quickjs
-make test-napi-quickjs-only
-```
-
-The suite result was 41/41 passing.
+The EdgeJS root suite should validate the runtime through `make test-only` for
+V8 and `make test-quickjs-only` for QuickJS. Native N-API test baselines live in
+the N-API repository.

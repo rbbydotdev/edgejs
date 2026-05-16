@@ -74,21 +74,11 @@ manifest is not used for the QuickJS artifact. The legacy `napi_wasmer` smoke
 path was removed from this job because it tests the host-import N-API artifact,
 not the embedded QuickJS package.
 
-The separate NAPI-owned `.github/workflows/napi-wasmer-quickjs.yml` workflow
-now builds NAPI in isolation rather than checking out EdgeJS as a harness. The
-NAPI repository has its own `Makefile` targets matching the EdgeJS root target
-names: `build-napi` / `test-napi` for native V8, `build-napi-quickjs` /
-`test-napi-quickjs` for native QuickJS, `build-wasix-napi` /
-`test-wasix-napi` for the V8-backed WASIX `napi_wasmer` runner, and
-`build-wasix-napi-quickjs` for the WASIX QuickJS static-library build. When
-invoked from EdgeJS, `test-napi` builds and tests in `build-edge`, while
-`test-napi-quickjs` builds and tests in `build-edge-quickjs-cli`. When invoked
-from `napi`, `test-napi` builds and tests in the sibling
-`../build-napi-v8`, while `test-napi-quickjs` builds and tests in the sibling
-`../build-napi-quickjs`. The QuickJS WASIX job verifies the NAPI QuickJS
-provider can be compiled with the WASIX toolchain; EdgeJS package-level smoke
-coverage remains in the EdgeJS QuickJS workflow that owns
-`quickjs-wasm/wasmer.toml`.
+Native N-API and standalone N-API Cargo test workflows now belong in the N-API
+repository rather than EdgeJS CI. EdgeJS no longer runs duplicate native N-API
+or standalone N-API Cargo test jobs from its root workflows. EdgeJS
+package-level smoke coverage remains in the EdgeJS QuickJS WASIX workflow that
+owns `quickjs-wasm/wasmer.toml`.
 
 `make dist-only` now treats both `build-wasix` and `build-quickjs-wasix` as
 WASIX distribution directories, so it copies `edgejs.wasm`, `wasmer.toml`, and
@@ -111,13 +101,11 @@ run locally because it depends on the WASIX/Wasmer CI toolchain.
 
 ## Follow-Up: Native Linux Job
 
-The native `build-linux` job in the QuickJS workflow still built the V8 N-API
-test target and default V8-backed Edge binary. It now follows the same provider
-direction as the WASIX job:
+The native `build-linux` job in the QuickJS workflow formerly built the V8
+N-API test target and default V8-backed Edge binary. It was later aligned with
+the QuickJS provider:
 
 ```sh
-make build-napi-quickjs CMAKE_BUILD_TYPE=Release JOBS=4
-make test-napi-quickjs-only TEST_JOBS=4
 make build-edge-quickjs-cli CMAKE_BUILD_TYPE=Release JOBS=4
 make dist-only BUILD_DIR=build-edge-quickjs-cli JOBS=4 ZIP_NAME=edge-linux-amd64.zip
 make test-only BUILD_DIR=build-edge-quickjs-cli TEST_JOBS=4
@@ -155,12 +143,10 @@ Result: passed in the Ubuntu 24.04 / Clang 18.1.3 Docker container.
 
 The main `.github/workflows/test-and-build.yml` workflow and root `wasmer.toml`
 were restored to their main/V8 behavior. The QuickJS-specific copy at
-`.github/workflows/test-and-build-quickjs.yml` now keeps all active build/test
-targets on the QuickJS provider:
+`.github/workflows/test-and-build-quickjs.yml` now keeps active Edge runtime
+build/test targets on the QuickJS provider:
 
 ```sh
-make build-napi-quickjs CMAKE_BUILD_TYPE=Release JOBS=4
-make test-napi-quickjs-only TEST_JOBS=4
 make build-edge-quickjs-cli CMAKE_BUILD_TYPE=Release JOBS=4
 make dist-only BUILD_DIR=build-edge-quickjs-cli JOBS=4 ZIP_NAME=edge-<platform>.zip
 make test-only BUILD_DIR=build-edge-quickjs-cli TEST_JOBS=4

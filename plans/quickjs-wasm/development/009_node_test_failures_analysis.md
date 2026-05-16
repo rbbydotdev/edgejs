@@ -6,6 +6,15 @@
 | **Severity** | High | Node compatibility failures remain significant until the linked issue pages close. |
 
 Date: 2026-05-07
+Last updated: 2026-05-15
+
+This note is chronological. The May 7 sections describe the original
+V8/default-run failure clustering. Current QuickJS issue status lives in the
+later dated sections and the canonical
+[`troubleshooting/node-test`](troubleshooting/node-test/README.md) registry.
+EdgeJS root verification now focuses on Edge runtime tests; native N-API test
+suites are owned by the N-API repository and should not be treated as EdgeJS CI
+or root Makefile gates.
 
 Command under investigation:
 
@@ -445,3 +454,264 @@ Residual failures seen during the same triage:
 - `test-buffer-creation-regression`, `test-buffer-alloc`, and
   `test-buffer-constants` still expose QuickJS built-in allocation limit and
   error-message differences rather than the native Buffer prototype issue.
+
+## May 15, 2026 QuickJS-Only Failure Triage
+
+Command:
+
+```sh
+make test-quickjs-only
+```
+
+The first interactive run exited early at about 59% because the Python harness
+hit a `UnicodeDecodeError` while reading invalid UTF-8 from a failing test's
+stderr. A redirected rerun completed and failed with:
+
+```text
+[01:47|%  99|+ 1632|- 124]: Done
+make: *** [test-quickjs-only] Error 1
+```
+
+Failure count by broad path/topic:
+
+```text
+40 http2
+20 tls
+15 stream/string-decoder
+13 fetch/proxy
+10 WHATWG URL
+7 crypto/webcrypto
+5 buffer
+4 dns
+3 console
+3 domain
+4 other
+```
+
+Largest numerical clusters are HTTP/2 and TLS, but they are probably not the
+smallest fixes. The best small-change wins from this run are:
+
+1. Normalize QuickJS symbol-to-string TypeError text. Seven
+   `URLSearchParams` tests fail only because QuickJS says
+   `cannot convert symbol to string` while Node expects
+   `Cannot convert a Symbol value to a string`. This is likely a tiny vendored
+   QuickJS message patch near `JS_ToStringFree`.
+2. Add a minimal `globalThis.WebAssembly` compatibility surface or route
+   Undici away from its wasm `llhttp` loader. Five fetch/proxy tests fail with
+   `ReferenceError: WebAssembly is not defined`, and that blocks basic
+   `fetch()`/proxy coverage before response behavior can be assessed.
+3. Fix URL/USVString lone-surrogate replacement. This directly affects
+   `test-whatwg-url-custom-parsing` and is probably shared with the
+   Buffer/StringDecoder lone-surrogate failures.
+4. Fix proxy tunnel error string ordering and matchability. Several HTTPS proxy
+   failure tests already produce `ERR_PROXY_TUNNEL`, but the captured stderr
+   has the code after the message/body, so regexes such as
+   `/ERR_PROXY_TUNNEL.*Connection .../` miss and some tests then dereference a
+   null match.
+5. Add Buffer-facing 32-bit allocation/string length guards. The remaining
+   large-buffer failures (`test-buffer-tostring-4gb`,
+   `test-buffer-creation-regression`, `test-buffer-constants`) still reach
+   QuickJS's raw `invalid array buffer length` or miss Node's
+   `Invalid string length` surface.
+
+The HTTP/2 and TLS groups should be sampled after the above wins. Many entries
+may share one or two native binding or socket lifecycle causes, but the log
+mostly shows command-level failures without enough repeated text to rank them
+above the smaller message/compatibility fixes.
+
+## 2026-05-15 QuickJS Node-Compat Fix Pass
+
+Implemented three of the small-change wins in vendored QuickJS/native binding
+code without touching `lib/`:
+
+- Symbol-to-string coercion now uses Node's
+  `Cannot convert a Symbol value to a string` text.
+- Normal QuickJS UTF-8 export replaces unmatched UTF-16 surrogates with U+FFFD,
+  fixing both URL percent-encoding and Buffer UTF-8 bytes.
+- QuickJS string/ArrayBuffer limit behavior now reports Node-compatible
+  `Invalid string length` and accepted allocation-failure text, with
+  `buffer.kStringMaxLength` set to QuickJS's actual `0x3fffffff` ceiling.
+
+Targeted URL/SearchParams and Buffer limit tests passed. A full redirected run
+improved the suite from `1632` passing / `124` failing to:
+
+```text
+[01:45|% 100|+ 1644|- 113]: Done
+make: *** [test-quickjs-only] Error 1
+```
+
+The remaining failures are outside this fix pass, mostly the known HTTP/2, TLS,
+proxy/fetch, stream/StringDecoder, diagnostics, crypto, domain, and URL inspect
+groups.
+
+## 2026-05-15 Post HTTP/2 and TLS Reassessment
+
+After the QuickJS N-API object/external classification fix, the HTTP/2 crash
+cluster and much of the old TLS-looking surface changed significantly. A fresh
+TLS-only category run now passes completely:
+
+```sh
+NODE_TEST_RUNNER=build-edge-quickjs-cli/edge ./test/nodejs_test_harness --category=node:tls
+```
+
+Result:
+
+```text
+195/195 passed
+```
+
+The earlier `20 tls` count was a raw path/category count from the `124`-failure
+triage. It was not a de-duplicated TLS root-cause count. Several entries in that
+old category were fan-out from non-TLS issues, especially:
+
+- QuickJS N-API wrapped class instances being reported as `napi_external`.
+- Missing `-p` / `--print` output affecting child-process assertions such as
+  `test-tls-cipher-list`.
+- Missing profiler/worker/context behavior reached through test harness helpers.
+- General callback/lifetime ordering differences that were later reduced by the
+  HTTP/2 external-classification fix.
+
+By the time the TLS SecureContext/SNI fix started, the live TLS category had
+already been reduced to two real failures:
+
+```text
+test/parallel/test-tls-external-accessor.js
+test/parallel/test-tls-server-setkeycert.js
+```
+
+The TLS fix addressed those two roots:
+
+- inherited N-API wrap metadata incorrectly unwrapped through prototypes;
+- `setKeyCert()` / SNI-selected `SecureContext.context` was not retained while
+  OpenSSL still used its `SSL_CTX`.
+
+A full `make test-quickjs-only` run after the HTTP/2 and TLS fixes completed
+with:
+
+```text
+[01:50|% 100|+ 1720|-  37]: Done
+```
+
+The remaining failed-test list has no TLS entries. Current remaining buckets:
+
+```text
+8 stream/FastUTF8/async-iterator/destroy behavior
+7 crypto/webcrypto/worker-thread or cross-realm behavior
+6 fetch/proxy/Undici/WebAssembly or URL validation behavior
+3 dns
+3 domain/promise
+3 http2
+2 console/inspect/TTY color stack formatting
+2 diagnostics-channel/promise or worker-thread behavior
+1 buffer deprecation node_modules path filtering
+1 os userinfo getter error handling
+1 http keep-alive timeout race
+```
+
+The HTTP/2 category is no longer the old crash bucket either. A fresh
+HTTP/2-only category run now has two failures:
+
+```text
+test/parallel/test-http2-response-splitting.js
+test/parallel/test-http2-reset-flood.js
+```
+
+`test-http2-origin.js` appears in the full-suite failed list but not in the
+HTTP/2-only category run, so treat it as order/timing-sensitive until reproduced
+standalone with logs.
+
+Revised assessment:
+
+1. Do not expect another TLS-native pass to yield 20 wins; TLS is currently
+   closed under the category runner.
+2. The remaining highest-return native work is no longer TLS/SNI. It is likely
+   one of:
+   - WebAssembly/Undici fetch compatibility, if the decision changes to stop
+     skipping Wasm-backed paths;
+   - stream destroy/async iterator/FastUTF8 behavior;
+   - promise hooks/context propagation for diagnostics/domain, if no longer
+     deferred;
+   - HTTP/2 response validation/reset-flood semantics, now only a small
+     non-crash bucket.
+3. For strict "no Wasm, no promise hooks/contextify" prioritization, the best
+   next target is the stream/FastUTF8 bucket, followed by the small HTTP/2
+   semantic bucket.
+
+## 2026-05-15 Edge Build And CI Scope Update
+
+The root build targets still compile the selected N-API provider. They no longer
+build or run duplicate N-API test suites when exercising normal Edge runtime
+CI paths.
+
+Clean-directory build verification:
+
+```sh
+rm -rf /tmp/edgejs-ci-build-v8 /tmp/edgejs-ci-build-quickjs
+make build BUILD_DIR=/tmp/edgejs-ci-build-v8 CMAKE_BUILD_TYPE=Release JOBS=4
+make build-edge-quickjs-cli BUILD_EDGE_QUICKJS_CLI_DIR=/tmp/edgejs-ci-build-quickjs CMAKE_BUILD_TYPE=Release JOBS=4
+```
+
+Both builds passed. The V8 build produced:
+
+```text
+/tmp/edgejs-ci-build-v8/edge
+/tmp/edgejs-ci-build-v8/edgeenv
+/tmp/edgejs-ci-build-v8/napi-v8/libnapi_v8.a
+```
+
+The QuickJS build produced:
+
+```text
+/tmp/edgejs-ci-build-quickjs/edge
+/tmp/edgejs-ci-build-quickjs/edgeenv
+/tmp/edgejs-ci-build-quickjs/quickjs/libqjs.a
+/tmp/edgejs-ci-build-quickjs/napi-quickjs/libnapi_quickjs.a
+```
+
+The relevant CMake cache entries show provider compilation with N-API tests
+disabled:
+
+```text
+EDGE_BUILD_NAPI_TESTS=OFF
+NAPI_V8_BUILD_TESTS=OFF
+NAPI_QUICKJS_BUILD_TESTS=OFF
+```
+
+Smoke checks:
+
+```sh
+/tmp/edgejs-ci-build-v8/edge --version
+/tmp/edgejs-ci-build-quickjs/edge --version
+/tmp/edgejs-ci-build-quickjs/edge -e "console.log('quickjs smoke ok')"
+```
+
+Both version commands reported `v24.13.2-pre`, and the QuickJS `-e` smoke
+printed `quickjs smoke ok`.
+
+CI/Makefile interpretation:
+
+- `make build` builds the V8-backed Edge runtime and `libnapi_v8.a` with
+  `EDGE_BUILD_NAPI_TESTS=OFF`.
+- `make build-edge-quickjs-cli` builds the QuickJS-backed Edge runtime,
+  `libqjs.a`, and `libnapi_quickjs.a` with `EDGE_BUILD_NAPI_TESTS=OFF`.
+- EdgeJS workflows should not run `test-napi*`, `test-native-*`, or standalone
+  N-API Cargo test jobs. Those suites belong in the N-API repository.
+- The `napi_wasmer` WASIX smoke path is package-level runtime coverage, not the
+  standalone native N-API suite.
+
+Current runtime-test baseline remains:
+
+```text
+V8:     make test-only        -> 1757/1757 passed
+QuickJS: make test-quickjs-only -> 1720 passed / 37 failed
+```
+
+For the next QuickJS compatibility pass, keep skipping Wasm and
+promise-hooks/contextify buckets unless that priority changes. Under that
+constraint, the highest-return remaining targets are:
+
+1. stream/FastUTF8/async-iterator/destroy behavior;
+2. the now-small HTTP/2 semantic bucket;
+3. console/inspect/TTY color stack formatting;
+4. Buffer deprecation node-modules path filtering and other one-off native
+   parity fixes.

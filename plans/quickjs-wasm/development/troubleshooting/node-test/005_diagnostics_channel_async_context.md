@@ -26,13 +26,31 @@ The worker-thread diagnostics test times out, which may be a separate missing
 worker capability or a hang caused by diagnostics subscriptions crossing worker
 startup/shutdown.
 
+## 2026-05-15 Update
+
+The `parallel/test-diagnostics-channel-tracing-channel-args-types` message
+failure is fixed in the vendored QuickJS source. `Object.getPrototypeOf()` and
+`Reflect.getPrototypeOf()` now throw `TypeError: Cannot convert undefined or
+null to object` for `null`/`undefined`, matching the V8/Node text that
+`Channel[Symbol.hasInstance]` exposes during diagnostics-channel validation.
+
+Targeted verification:
+
+```sh
+cmake --build build-edge-quickjs-cli --target edge -j4
+build-edge-quickjs-cli/edge test/parallel/test-diagnostics-channel-tracing-channel-args-types.js
+```
+
+The broader async-context and worker-thread diagnostics failures remain tracked
+by this note.
+
 ## How Should We Fix It
 
 Treat this as two passes:
 
-1. Normalize argument validation in `diagnostics_channel` helpers by explicitly
-   checking `null`/`undefined` before calling QuickJS builtins like
-   `Object.getPrototypeOf()`.
+1. Keep the argument-validation message parity in vendored QuickJS, where
+   `Object.getPrototypeOf()` and `Reflect.getPrototypeOf()` produce their
+   observable TypeError text.
 2. Trace async context propagation through QuickJS promise hooks, microtask
    draining, and `AsyncLocalStorage`. The existing promise hook/microtask work
    should be extended so diagnostics-channel `runStores` sees the active store

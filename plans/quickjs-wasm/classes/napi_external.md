@@ -3,16 +3,26 @@
 Status: Current as of 2026-05-15.
 
 `napi_external__` is the QuickJS external class and helper surface for native
-opaque payloads.
+opaque payloads and internal object-wrap records.
 
 It lives in `napi/quickjs/src/internal/napi_external.h` and `.cc`. The class
-registers one QuickJS class ID named `NapiExternal`; external values store a
-`napi_external_backing_store_hint__` as their opaque pointer. `get_value(...)`
-returns the hint's native data pointer.
+registers two QuickJS class IDs:
+
+- `NapiExternal` is the public `napi_create_external(...)` representation.
+  Values of this class are the only values that `napi_typeof(...)` reports as
+  `napi_external`, and the only values accepted by
+  `napi_get_value_external(...)`.
+- `NapiExternalRecord` stores internal wrap/finalizer metadata without making
+  the owning JavaScript object look like a public external value.
+
+Public external values store a `napi_external_backing_store_hint__` as their
+opaque pointer. `get_value(...)` returns the hint's native data pointer.
 
 The same helper owns object-wrap metadata conventions. Wrapped objects can carry
 an external record either as the object's own opaque value or through the
-`__napi_wrap__` property. Type tags, buffer markers, and finalizer metadata are
+`__napi_wrap__` property. Those records use `NapiExternalRecord`, not
+`NapiExternal`, so constructed N-API class instances stay ordinary
+prototype-backed objects. Type tags, buffer markers, and finalizer metadata are
 stored under internal property names so public N-API code does not need to know
 QuickJS class details.
 

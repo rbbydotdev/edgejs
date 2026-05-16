@@ -13,6 +13,20 @@ Affected tests:
 
 ## What Is The Issue
 
+Current `make test-quickjs-only` runs fail earlier in Undici's HTTP parser
+loader:
+
+```text
+TypeError: fetch failed
+[cause]: ReferenceError: WebAssembly is not defined
+```
+
+Undici's lazy `llhttp` path expects `globalThis.WebAssembly`. Until QuickJS Edge
+provides enough of that API or routes Undici to a non-wasm parser path, fetch
+and fetch-through-proxy tests cannot reach the older Response body assertions.
+
+Earlier runs exposed the response construction/body issue below.
+
 The HTTP proxy fetch fixtures fail with:
 
 ```text
@@ -36,7 +50,9 @@ Start with a minimal native QuickJS CLI repro:
 build-edge-quickjs-cli/edge -e "fetch('http://127.0.0.1:<port>').then(async r => console.log(r && r.constructor.name, await r.text()))"
 ```
 
-Then inspect the JS fetch implementation and the native HTTP/client bridge:
+First resolve the missing `WebAssembly` dependency in Undici's lazy HTTP parser
+path. Then inspect the JS fetch implementation and the native HTTP/client
+bridge:
 
 - ensure the promise resolves to a real `Response` instance;
 - ensure `Response.prototype.text()` is installed and bound to the response body;

@@ -741,11 +741,9 @@ For Next.js:
 1. Continue the native-event handle-scope work from
    `troubleshooting/node-compat/napi/014_lifetime_tracing.md` so server request
    churn does not retain temporary N-API values in the env root scope.
-2. Revisit QuickJS N-API object type reporting so constructed class instances do
-   not look like plain `napi_external` values.
-3. Decide whether `EDGE_TRACE_NET` and `EDGE_TRACE_TTY` should stay in-tree as
+2. Decide whether `EDGE_TRACE_NET` and `EDGE_TRACE_TTY` should stay in-tree as
    supported diagnostics or be reduced before merging.
-4. Add a tiny framework smoke-test matrix for:
+3. Add a tiny framework smoke-test matrix for:
    - `echo-server.js`;
    - Astro static;
    - Vite static SPA fallback;

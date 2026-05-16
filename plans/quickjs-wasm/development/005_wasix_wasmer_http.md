@@ -317,9 +317,12 @@ server path correctly.
 The important implementation lessons are:
 
 1. WASIX QuickJS needs Atomics enabled when the target has wasm atomics.
-2. QuickJS N-API class instances may currently appear as `napi_external`, so
-   code that accepts both wrapper objects and raw externals must try
-   `napi_unwrap(...)` first when a known wrapper type is possible.
+2. The original HTTP parser stream bug was caused by QuickJS N-API class
+   instances being represented with the same QuickJS class ID as public
+   `napi_create_external(...)` values. That ambiguity is now fixed in the
+   QuickJS N-API layer: constructed class instances are ordinary
+   prototype-backed objects, and internal wrap records use a separate
+   `NapiExternalRecord` class.
 3. The HTTP parser consume path depends on the listener being attached to the
    exact `EdgeStreamBase` used by the libuv read callbacks.
 4. Embedded QuickJS WASIX targets that include N-API headers must compile with
@@ -329,7 +332,6 @@ The important implementation lessons are:
    link fails with an import module mismatch. The concrete fixed case was
    `edge_environment_core`.
 
-Longer term, it may be cleaner for the QuickJS N-API implementation to avoid
-representing constructed N-API class instances with the same QuickJS class id as
-plain `napi_external` values. The stream wrapper fix is intentionally narrow and
-validated, but the type-reporting behavior is still worth revisiting.
+The stream wrapper-specific fallback remains useful as defensive native
+conversion code, but the root type-reporting problem now belongs to the
+historical record rather than current QuickJS N-API behavior.
