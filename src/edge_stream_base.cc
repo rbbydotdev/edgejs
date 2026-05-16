@@ -768,7 +768,13 @@ void MaybeCallHandleOnClose(EdgeStreamBase* base) {
 }
 
 void DestroyBase(EdgeStreamBase* base) {
-  if (base == nullptr || base->ops == nullptr || base->ops->destroy_self == nullptr) return;
+  if (base == nullptr ||
+      base->destroyed ||
+      base->ops == nullptr ||
+      base->ops->destroy_self == nullptr) {
+    return;
+  }
+  base->destroyed = true;
   base->ops->destroy_self(base);
 }
 
@@ -952,6 +958,11 @@ void EdgeStreamBaseFinalize(EdgeStreamBase* base) {
   uv_handle_t* handle = (base->ops != nullptr && base->ops->get_handle != nullptr)
                             ? base->ops->get_handle(base)
                             : nullptr;
+  if (base->close_callback_active) {
+    base->delete_on_close = true;
+    return;
+  }
+
   if (handle == nullptr) {
     StreamBaseDetach(base);
     if (base->active_handle_token != nullptr) {
@@ -979,6 +990,7 @@ void EdgeStreamBaseOnClosed(EdgeStreamBase* base) {
   if (base == nullptr || base->env == nullptr) return;
   base->closing = false;
   base->closed = true;
+  base->close_callback_active = true;
   StreamBaseDetach(base);
 
   MaybeCallHandleOnClose(base);
@@ -997,8 +1009,12 @@ void EdgeStreamBaseOnClosed(EdgeStreamBase* base) {
 
   if (base->delete_on_close || base->finalized) {
     DeleteOnReadRefs(base);
+    base->close_callback_active = false;
     DestroyBase(base);
+    return;
   }
+
+  base->close_callback_active = false;
 }
 
 bool EdgeStreamBasePushListener(EdgeStreamBase* base, EdgeStreamListener* listener) {

@@ -798,3 +798,127 @@ Local reproduction was blocked in this checkout because
 failed during CMake configure before producing `build-edge-quickjs-cli/edge`.
 Repopulate the QuickJS dependency/submodule before rerunning the targeted tests
 and the crash cases under LLDB.
+
+## 2026-05-16 Linux QuickJS Double-Free Reproduction
+
+The downloaded CI logs in `/Users/syrusakbary/Downloads/logs_69318706385`
+show that the Linux QuickJS failure spike is dominated by native allocator
+aborts, not by hundreds of unrelated JavaScript assertions. The Linux log
+finished around 898 passing / 881 failing tests, while the macOS log finished
+around 1739 passing / 40 failing tests. The Linux log contains hundreds of:
+
+```text
+free(): double free detected in tcache 2
+double free or corruption (!prev)
+--- CRASHED (Signal: 6) ---
+```
+
+Native Linux arm64 Docker reproduced the CI crash shape with one HTTP test:
+
+```sh
+docker run --rm --platform linux/arm64 \
+  -v "$PWD":/work -w /work ubuntu:latest \
+  bash -lc './build-edge-quickjs-cli-linux-arm64/edge \
+    ./test/parallel/test-http-agent-no-protocol.js'
+```
+
+The test printed the same glibc failure:
+
+```text
+free(): double free detected in tcache 2
+```
+
+The initial suspicion was that network read buffers handed to QuickJS as
+external ArrayBuffers were being finalized twice. GDB disproved that as the
+direct crashing path for this test. The second free happens while destroying
+the native `TcpWrap`, not while finalizing an external ArrayBuffer backing
+store.
+
+Observed sequence under GDB:
+
+1. `EdgeStreamBaseOnClosed()` starts for the TCP stream with
+   `closed = false`, `closing = true`, `delete_on_close = false`, and
+   `finalized = false`.
+2. While the close callback is still active, QuickJS frees the JS wrapper via
+   `napi_external__::finalizer()` / `free_zero_refcount()`.
+3. That calls `EdgeStreamBaseFinalize()`, which sees `closed = true`, clears the
+   wrapper reference, and calls `DestroyBase()`.
+4. `DestroyBase()` calls `TcpDestroy()`, which deletes the native `TcpWrap`.
+5. Control returns to the still-running `EdgeStreamBaseOnClosed()` call. Because
+   `base->finalized` is now true, line 1000 calls `DestroyBase()` again on the
+   same `TcpWrap`, and glibc aborts with a double free.
+
+The key backtrace for the first destroy:
+
+```text
+TcpDestroy
+napi_external__::finalizer
+free_object
+free_gc_object
+free_zero_refcount
+js_free_value_rt
+napi_ref__::~napi_ref__
+```
+
+The second destroy then comes from:
+
+```text
+DestroyBase
+EdgeStreamBaseOnClosed
+uv__finish_close
+uv__run_closing_handles
+uv_run
+```
+
+This explains why Linux CI reports hundreds of failures: any HTTP/HTTPS/TLS or
+HTTP/2 test that creates TCP stream wrappers can hit the same native lifecycle
+bug. macOS does not report the same broad failure spike because its allocator
+does not abort on this exact double-delete pattern in the same way, and V8 does
+not expose the same reentrant wrapper-finalizer timing as the QuickJS N-API
+backend.
+
+The implemented stream fix makes `EdgeStreamBase` destruction safe across the
+close callback and wrapper finalizer paths:
+
+- `EdgeStreamBaseOnClosed()` marks the close callback as active while it is
+  still using the native stream object.
+- `EdgeStreamBaseFinalize()` now defers native deletion to the close callback
+  when finalization happens reentrantly during that callback.
+- `DestroyBase()` has a one-way `destroyed` guard so multiple close/finalizer
+  paths cannot call the native `destroy_self` hook twice.
+
+After this change, the direct Linux Docker repros
+`test/parallel/test-http-agent-no-protocol.js` and
+`test/parallel/test-http-agent-null.js` exit successfully. A focused HTTP
+sample covering agent close/keepalive/maxsockets/client abort cases also exits
+successfully. The aggregate Linux arm64 Docker buckets moved to:
+
+```text
+node:http       total=411 passed=406 failed=5
+node:https,tls  total=284 passed=280 failed=4
+```
+
+The first full post-fix run still reported 206 failures because HTTP/2 had a
+second lifetime issue. A child-process GDB backtrace for
+`test/parallel/test-http2-client-destroy.js` showed the child crashing in
+`RemoveStreamFromSession()` while erasing from a freed
+`Http2SessionWrap::streams` map. That was caused by QuickJS finalizing the JS
+session wrapper while native streams still had deferred destroy callbacks
+pending.
+
+The implemented HTTP/2 fix holds the session wrapper reference while each
+native `Http2StreamWrap` is registered in the session map, releases that
+reference when the stream is removed, and defensively detaches any remaining
+stream back-pointers during session finalization. After that fix, the HTTP/2
+crash repro no longer segfaults; it fails only as a normal assertion mismatch
+that belongs to the remaining compatibility baseline.
+
+Final Linux arm64 Docker verification:
+
+```text
+node:http2 total=248 passed=244 failed=4
+full quickjs category set total=1779 passed=1740 failed=39
+```
+
+That matches the macOS-sized residual failure set and removes the Linux-only
+allocator-abort wave from the downloaded CI logs.

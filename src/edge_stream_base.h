@@ -43,6 +43,8 @@ struct EdgeStreamBase {
   bool eof_emitted = false;
   bool finalized = false;
   bool delete_on_close = false;
+  bool close_callback_active = false;
+  bool destroyed = false;
   bool destroy_notified = false;
   bool async_init_emitted = false;
   bool attached = false;

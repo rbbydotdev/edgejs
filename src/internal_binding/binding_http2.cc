@@ -311,6 +311,7 @@ struct Http2StreamWrap {
   bool destroyed = false;
   bool destroy_scheduled = false;
   bool close_pending = false;
+  bool session_ref_held = false;
   uint32_t pending_close_code = NGHTTP2_NO_ERROR;
 };
 
@@ -1418,6 +1419,13 @@ void CompletePendingPing(napi_env env, PendingPing* pending, bool ack, const uin
 void Http2SessionFinalize(napi_env env, void* data, void* /*hint*/) {
   auto* wrap = static_cast<Http2SessionWrap*>(data);
   if (wrap == nullptr) return;
+  for (auto& entry : wrap->streams) {
+    if (entry.second != nullptr) {
+      entry.second->session = nullptr;
+      entry.second->session_ref_held = false;
+    }
+  }
+  wrap->streams.clear();
   for (auto& pending : wrap->pending_settings) DeletePendingSettings(env, &pending);
   for (auto& pending : wrap->pending_pings) DeletePendingPing(env, &pending);
   ClearPendingParentRead(wrap);
@@ -1505,8 +1513,14 @@ void RemoveStreamFromSession(Http2StreamWrap* stream) {
   if (stream == nullptr || stream->session == nullptr) return;
   Http2SessionWrap* session = stream->session;
   session->streams.erase(stream->id);
-  DeleteRefIfPresent(stream->env, &stream->active_ref);
   MaybeInvokeGracefulClose(session);
+  if (stream->session_ref_held && session->wrapper_ref != nullptr) {
+    uint32_t ignored = 0;
+    (void)napi_reference_unref(session->env, session->wrapper_ref, &ignored);
+  }
+  stream->session_ref_held = false;
+  stream->session = nullptr;
+  DeleteRefIfPresent(stream->env, &stream->active_ref);
 }
 
 bool HasPendingRstStream(Http2SessionWrap* session, int32_t stream_id) {
@@ -1589,6 +1603,12 @@ bool CreateStreamHandle(Http2SessionWrap* session,
   }
   wrap->max_header_length = std::min<size_t>(max_header_length, kMaxMaxHeaderListSize);
   napi_create_reference(session->env, *object_out, 1, &wrap->active_ref);
+  if (session->wrapper_ref != nullptr) {
+    uint32_t ignored = 0;
+    if (napi_reference_ref(session->env, session->wrapper_ref, &ignored) == napi_ok) {
+      wrap->session_ref_held = true;
+    }
+  }
   session->streams[id] = wrap;
   *wrap_out = wrap;
   return true;
