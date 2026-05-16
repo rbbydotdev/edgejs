@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <cstring>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <uv.h>
@@ -85,6 +86,41 @@ std::string ValueToUtf8(napi_env env, napi_value value) {
   return out;
 }
 
+bool GetStringProperty(napi_env env, napi_value obj, const char* key, std::string* out) {
+  if (env == nullptr || obj == nullptr || key == nullptr || out == nullptr) return false;
+  napi_value value = nullptr;
+  if (napi_get_named_property(env, obj, key, &value) != napi_ok || value == nullptr) return false;
+  napi_valuetype type = napi_undefined;
+  if (napi_typeof(env, value, &type) != napi_ok || type != napi_string) return false;
+  size_t len = 0;
+  if (napi_get_value_string_utf8(env, value, nullptr, 0, &len) != napi_ok) return false;
+  std::string text(len + 1, '\0');
+  size_t copied = 0;
+  if (napi_get_value_string_utf8(env, value, text.data(), text.size(), &copied) != napi_ok) return false;
+  text.resize(copied);
+  *out = std::move(text);
+  return true;
+}
+
+bool ClearPendingExceptionIfCode(napi_env env, const char* code) {
+  if (env == nullptr || code == nullptr) return false;
+  bool pending = false;
+  if (napi_is_exception_pending(env, &pending) != napi_ok || !pending) return false;
+
+  napi_value exception = nullptr;
+  if (napi_get_and_clear_last_exception(env, &exception) != napi_ok || exception == nullptr) {
+    return false;
+  }
+
+  std::string actual_code;
+  if (GetStringProperty(env, exception, "code", &actual_code) && actual_code == code) {
+    return true;
+  }
+
+  (void)napi_throw(env, exception);
+  return false;
+}
+
 int32_t CallMethodReturningInt32(napi_env env,
                                  napi_value self,
                                  int64_t async_id,
@@ -140,6 +176,9 @@ napi_value CallOnWrite(napi_env env,
 
   napi_value argv[2] = {req_obj != nullptr ? req_obj : EdgeStreamBaseUndefined(env), array};
   int32_t status = CallMethodReturningInt32(env, self, wrap->base.async_id, "onwrite", 2, argv, UV_EPROTO);
+  if (status == UV_EPROTO && ClearPendingExceptionIfCode(env, "ERR_STREAM_DESTROYED")) {
+    status = UV_EPIPE;
+  }
   int32_t* state = EdgeGetStreamBaseState(env);
   if (state != nullptr) {
     state[kEdgeBytesWritten] = static_cast<int32_t>(status == 0 ? total_bytes : 0);

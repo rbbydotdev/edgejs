@@ -2,7 +2,7 @@
 
 | | | Remarks |
 | --- | --- | --- |
-| **Status** | 🟢 | Read-only Stage 007 audit complete. |
+| **Status** | 🟢 | Stage 007 audit complete; 2026-05-16 escaped-local follow-up implemented. |
 | **Severity** | High | Several unofficial N-API result paths rely on the current heap-owned `napi_value__` wrapper instead of the intended current-scope local-handle design. |
 
 ## Scope
@@ -37,6 +37,47 @@ The internal header still exposes the pre-refactor lifetime model directly:
 `napi/v8/src/internal/napi_v8_env.h:25`). Stage 007 should treat any remaining
 source that depends on public `napi_value` persistence as a blocker after
 Stages 002-004, because current-scope local handles are the intended design.
+
+## 2026-05-16 V8 Node-Compat Follow-Up
+
+The `v8-macos` CI log in `test-failures-v8.log` exposed the predicted
+escaped-local failure mode after the direct-local `napi_value` refactor. Several
+Node compatibility tests crashed or misbehaved with V8 heap dumps showing
+`<NativeContext[302]>` in places where contextify-returned values were expected,
+including cross-realm `ArrayBuffer`, `String`, and `Uint8Array` cases exercised
+by Buffer, querystring, crypto subtle, and VM/domain tests.
+
+The fix updated result-producing paths in:
+
+- `napi/v8/src/unofficial_napi_contextify.cc`
+- `napi/v8/src/unofficial_napi_error_utils.cc`
+
+Single-result paths now use `v8::EscapableHandleScope` and
+`Escape(...)` before returning through `napi_v8_wrap_value(...)`. Error helpers
+with multiple `napi_value*` outputs no longer open a nested `v8::HandleScope`,
+so their returned locals are allocated in the caller/current N-API scope instead
+of a closing temporary scope. Public `napi_value` handles remain direct
+current-scope locals; persistence still belongs to `napi_ref` or explicit
+`v8::Global` records.
+
+The same follow-up also fixed contextify exception propagation: V8
+`TryCatch::ReThrow()` alone did not set the N-API pending-exception state that
+the Edge runtime expects when `unofficial_napi_contextify_run_script(...)`
+returns. Contextify now wraps the caught V8 exception as a current-scope
+`napi_value` and throws it through N-API before returning
+`napi_pending_exception`. This restored top-level `-e` failures and getter
+exceptions that flow through `vm.runInThisContext(...)`.
+
+Verification run for the patch:
+
+```sh
+git -C napi diff --check -- v8/src/unofficial_napi_contextify.cc v8/src/unofficial_napi_error_utils.cc
+cmake --build build-edge --target edge -j4
+build-edge/edge -e "throw new Error('xyz')"
+build-edge/edge test/parallel/test-os-userinfo-handles-getter-errors.js
+```
+
+The direct throw command is expected to exit nonzero and print the thrown stack.
 
 ## Findings
 

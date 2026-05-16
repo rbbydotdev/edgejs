@@ -64,3 +64,32 @@ build-edge/edge test/parallel/test-http2-socket-proxy-handler-for-has.js
 build-edge/edge test/sequential/test-http2-timeout-large-write.js
 build-edge/edge test/parallel/test-buffer-constants.js
 ```
+
+## V8 JSStream Destroy Follow-up
+
+The May 16, 2026 V8 CI log still failed
+`test/parallel/test-http2-client-jsstream-destroy.js` without crashing. The
+failure was an unhandled `ERR_STREAM_DESTROYED` from the JavaScript stream
+wrapped by `internal/js_stream_socket`, reached through:
+
+```text
+JSStreamSocket.doWrite()
+JSStream.onwrite()
+process.processImmediate()
+```
+
+The source-side fix stays outside `lib/`: `src/edge_js_stream.cc` now treats a
+pending `ERR_STREAM_DESTROYED` from `JSStream.onwrite` as a write completion
+with `UV_EPIPE`, matching the existing JS wrapper behavior for async write
+errors. Other pending exceptions are rethrown, so unrelated userland callback
+errors still surface.
+
+Verification:
+
+```sh
+cmake --build build-edge --target edge -j4
+build-edge/edge test/parallel/test-http2-client-jsstream-destroy.js
+```
+
+The HTTP/2 test binds a local socket, so sandboxed local runs may need to be
+rerun outside the filesystem sandbox when they fail with `listen EPERM`.
