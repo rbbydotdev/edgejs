@@ -694,10 +694,9 @@ CI/Makefile interpretation:
   `EDGE_BUILD_NAPI_TESTS=OFF`.
 - `make build-edge-quickjs-cli` builds the QuickJS-backed Edge runtime,
   `libqjs.a`, and `libnapi_quickjs.a` with `EDGE_BUILD_NAPI_TESTS=OFF`.
-- EdgeJS workflows should not run `test-napi*`, `test-native-*`, or standalone
-  N-API Cargo test jobs. Those suites belong in the N-API repository.
-- The `napi_wasmer` WASIX smoke path is package-level runtime coverage, not the
-  standalone native N-API suite.
+- EdgeJS workflows should not run `test-napi*`, `test-native-*`, standalone
+  N-API Cargo test jobs, or the old `napi_wasmer` host-import smoke path. Those
+  suites belong in the N-API repository.
 
 Current runtime-test baseline remains:
 
@@ -715,3 +714,41 @@ constraint, the highest-return remaining targets are:
 3. console/inspect/TTY color stack formatting;
 4. Buffer deprecation node-modules path filtering and other one-off native
    parity fixes.
+
+## 2026-05-15 CI Matrix Simplification
+
+The active CI workflow shape now matches the intended build/test matrix without
+duplicate commented jobs or duplicate QuickJS WASIX workflows.
+
+Build lanes that generate binaries/packages:
+
+| Engine | Target OS | Workflow job | Command |
+| --- | --- | --- | --- |
+| V8 | Linux | `v8-linux` | `make build` |
+| V8 | macOS | `v8-macos` | `make build` |
+| V8 | WASIX | `v8-wasix` | `make build-wasix` |
+| QuickJS | Linux | `quickjs-linux` | `make build-edge-quickjs-cli` |
+| QuickJS | macOS | `quickjs-macos` | `make build-edge-quickjs-cli` |
+| QuickJS | WASIX | `quickjs-wasix` | `make build-quickjs-wasix` |
+
+Runtime test lanes:
+
+| Engine | Host OS | Workflow job | Command |
+| --- | --- | --- | --- |
+| V8 | Linux | `v8-linux` | `make test-only` |
+| V8 | macOS | `v8-macos` | `make test-only` |
+| QuickJS | Linux | `quickjs-linux` | `make test-quickjs-only` |
+| QuickJS | macOS | `quickjs-macos` | `make test-quickjs-only` |
+
+Publish lanes:
+
+| Engine | Workflow job | Gate | Publishes |
+| --- | --- | --- | --- |
+| V8 | `publish-nightly` | `push` to `main` after `metadata`, `native`, and `wasix` pass | `edge-linux-amd64`, `edge-darwin-arm64`, `edge-wasix`, and the V8 WASIX package |
+| QuickJS | `publish-nightly` | `push` to `main` after `metadata`, `native`, and `wasix` pass | `edge-quickjs-linux-amd64`, `edge-quickjs-darwin-arm64`, `edge-quickjs-wasix`, and the QuickJS WASIX package |
+
+The standalone `.github/workflows/napi-wasmer-quickjs.yml` workflow was removed
+because QuickJS WASIX is already covered by
+`.github/workflows/test-and-build-quickjs.yml`. The V8 workflow also no longer
+builds the `napi_wasmer` CLI or runs `test-wasix-napi-cli`; WASIX CI coverage is
+the engine-specific WASIX build lane plus the main-branch publish job.

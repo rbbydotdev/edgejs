@@ -17,6 +17,7 @@ jobs:
       release_name: ${{ steps.version.outputs.release_name }}
     steps:
       - uses: actions/checkout@v4
+
       - name: Compute release metadata
         id: version
         shell: bash
@@ -38,273 +39,34 @@ jobs:
             echo "release_name=${release_name}"
           } >> "${GITHUB_OUTPUT}"
 
-  # build-linux:
-  #   name: build-linux
-  #   runs-on: ubuntu-latest
-  #   env:
-  #     NAPI_V8_BUILD_METHOD: prebuilt
-  #     SCCACHE_GHA_ENABLED: "true"
-  #     CC: clang
-  #     CXX: clang++
-  #   steps:
-  #     - uses: actions/checkout@v4
-  #       with:
-  #         submodules: recursive
-  #     - name: Setup sccache
-  #       uses: mozilla-actions/sccache-action@v0.0.9
-  #     - name: Ensure submodules are initialized
-  #       shell: bash
-  #       run: |
-  #         set -euo pipefail
-  #         git submodule sync --recursive
-  #         git -c protocol.version=2 submodule update --init --recursive --depth=1
-  #         test -f node/src/node_api_types.h
-
-  #     - name: Install Linux build dependencies
-  #       shell: bash
-  #       run: |
-  #         set -euo pipefail
-  #         sudo apt-get update
-  #         sudo apt-get install -y libicu-dev
-
-  #     - name: Validate public N-API headers stay V8-agnostic
-  #       run: |
-  #         ! grep -nE "v8::|<v8.h>|\"v8.h\"" napi/include/js_native_api.h napi/include/node_api.h
-
-  #     - name: Build edge
-  #       run: |
-  #         make build CMAKE_BUILD_TYPE=Release JOBS=4
-
-  #     - name: Generate dist
-  #       shell: bash
-  #       run: |
-  #         set -euo pipefail
-  #         make dist-only JOBS=4 ZIP_NAME=edge-linux-amd64.zip
-
-  #     - name: Upload artifact edge
-  #       uses: actions/upload-artifact@v4
-  #       with:
-  #         name: edge-linux-amd64
-  #         path: edge-linux-amd64.zip
-  #         if-no-files-found: error
-
-  #     - name: Test edge
-  #       shell: bash
-  #       run: |
-  #         set +e
-  #         make test-only TEST_JOBS=4 2>&1 | tee test-edge.log
-  #         status=${PIPESTATUS[0]}
-  #         if [ "$status" -ne 0 ]; then
-  #           echo "::group::test-edge.log"
-  #           cat test-edge.log
-  #           echo "::endgroup::"
-  #         fi
-  #         exit "$status"
-
-  #     - name: Upload Test edge log
-  #       if: failure()
-  #       uses: actions/upload-artifact@v4
-  #       with:
-  #         name: build-linux-test-edge-log
-  #         path: test-edge.log
-  #         if-no-files-found: warn
-
-  #     - name: sccache stats
-  #       if: always()
-  #       run: sccache --show-stats || true
-
-  # publish-nightly:
-  #   name: publish-nightly
-  #   runs-on: ubuntu-latest
-  #   needs:
-  #     - metadata
-  #     - build-linux
-  #     - build-macos
-  #     - build-wasix-linux
-  #   if: ${{ always() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
-  #   env:
-  #     GH_TOKEN: ${{ secrets.RELEASE_PLEASE_GH_TOKEN }}
-  #     TARGET_REPO: wasmerio/edgejs-nightlies
-  #     RELEASE_TAG: ${{ needs.metadata.outputs.release_tag }}
-  #     RELEASE_NAME: ${{ needs.metadata.outputs.release_name }}
-  #     RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-  #   steps:
-  #     - name: Download Linux artifact
-  #       uses: actions/download-artifact@v4
-  #       continue-on-error: true
-  #       with:
-  #         name: edge-linux-amd64
-  #         path: release-assets/linux
-
-  #     - name: Download macOS artifact
-  #       uses: actions/download-artifact@v4
-  #       continue-on-error: true
-  #       with:
-  #         name: edge-darwin-arm64
-  #         path: release-assets/macos
-
-  #     - name: Download WASIX artifact
-  #       uses: actions/download-artifact@v4
-  #       continue-on-error: true
-  #       with:
-  #         name: edge-wasix
-  #         path: release-assets/wasix
-
-  #     - name: Collect release assets
-  #       id: assets
-  #       shell: bash
-  #       run: |
-  #         set -euo pipefail
-  #         mkdir -p release-assets
-  #         mapfile -t files < <(find release-assets -type f -name '*.zip' | sort)
-  #         {
-  #           echo "asset_count=${#files[@]}"
-  #           echo "asset_list<<EOF"
-  #           printf '%s\n' "${files[@]}"
-  #           echo "EOF"
-  #         } >> "${GITHUB_OUTPUT}"
-  #         printf 'Discovered %s release asset(s)\n' "${#files[@]}"
-  #         printf '%s\n' "${files[@]}"
-
-  #     - name: Prepare Wasmer publish assets
-  #       id: wasmer
-  #       shell: bash
-  #       run: |
-  #         set -euo pipefail
-
-  #         linux_zip="$(find release-assets/linux -type f -name '*.zip' | head -n 1)"
-  #         wasix_zip="$(find release-assets/wasix -type f -name '*.zip' | head -n 1)"
-
-  #         if [[ -z "${linux_zip}" || ! -f "${linux_zip}" ]]; then
-  #           echo "Missing Linux artifact zip" >&2
-  #           exit 1
-  #         fi
-  #         if [[ -z "${wasix_zip}" || ! -f "${wasix_zip}" ]]; then
-  #           echo "Missing WASIX artifact zip" >&2
-  #           exit 1
-  #         fi
-
-  #         linux_dir="release-assets/linux/unpacked"
-  #         wasix_dir="release-assets/wasix/unpacked"
-  #         rm -rf "${linux_dir}" "${wasix_dir}"
-  #         mkdir -p "${linux_dir}" "${wasix_dir}"
-
-  #         unzip -q "${linux_zip}" -d "${linux_dir}"
-  #         unzip -q "${wasix_zip}" -d "${wasix_dir}"
-
-  #         edge_bin="${linux_dir}/bin/edge"
-  #         if [[ ! -x "${edge_bin}" ]]; then
-  #           echo "Expected packaged edge binary at ${edge_bin}" >&2
-  #           exit 1
-  #         fi
-
-  #         edge_version="$("${edge_bin}" -p "process.versions.edge")"
-  #         if [[ -z "${edge_version}" ]]; then
-  #           echo "Failed to determine EDGE version from packaged binary" >&2
-  #           exit 1
-  #         fi
-
-  #         if [[ ! -f "${wasix_dir}/wasmer.toml" ]]; then
-  #           echo "Expected wasmer.toml in ${wasix_dir}" >&2
-  #           exit 1
-  #         fi
-
-  #         {
-  #           echo "edge_version=${edge_version}"
-  #           echo "wasix_dist_dir=${wasix_dir}"
-  #         } >> "${GITHUB_OUTPUT}"
-
-  #     - name: Create release notes
-  #       shell: bash
-  #       run: |
-  #         set -euo pipefail
-  #         {
-  #           echo "Automated nightly build for EDGE ${{ steps.wasmer.outputs.edge_version }}."
-  #           echo
-  #           echo "- Source repo: ${GITHUB_REPOSITORY}"
-  #           echo "- Commit: ${GITHUB_SHA}"
-  #           echo "- Workflow run: ${RUN_URL}"
-  #           echo "- Uploaded assets: ${{ steps.assets.outputs.asset_count }}"
-  #         } > release-notes.md
-
-  #     - name: Ensure nightly release exists
-  #       shell: bash
-  #       run: |
-  #         set -euo pipefail
-  #         target_ref="$(gh repo view "${TARGET_REPO}" --json defaultBranchRef --jq '.defaultBranchRef.name')"
-  #         if [[ -z "${target_ref}" ]]; then
-  #           echo "Failed to resolve default branch for ${TARGET_REPO}" >&2
-  #           exit 1
-  #         fi
-  #         if ! gh release view "${RELEASE_TAG}" --repo "${TARGET_REPO}" >/dev/null 2>&1; then
-  #           gh release create "${RELEASE_TAG}" \
-  #             --repo "${TARGET_REPO}" \
-  #             --target "${target_ref}" \
-  #             --title "${RELEASE_NAME}" \
-  #             --notes-file release-notes.md \
-  #             --prerelease \
-  #             --latest=false
-  #         fi
-  #         release_id="$(gh api "repos/${TARGET_REPO}/releases/tags/${RELEASE_TAG}" --jq '.id')"
-  #         gh api \
-  #           --method PATCH \
-  #           "repos/${TARGET_REPO}/releases/${release_id}" \
-  #           -f name="${RELEASE_NAME}" \
-  #           -F prerelease=true \
-  #           -F make_latest=false \
-  #           -F body=@release-notes.md \
-  #           >/dev/null
-
-  #     - name: Upload nightly assets
-  #       if: ${{ steps.assets.outputs.asset_count != '0' }}
-  #       shell: bash
-  #       run: |
-  #         set -euo pipefail
-  #         mapfile -t files < <(printf '%s\n' "${{ steps.assets.outputs.asset_list }}" | sed '/^$/d')
-  #         gh release upload "${RELEASE_TAG}" \
-  #           --repo "${TARGET_REPO}" \
-  #           --clobber \
-  #           "${files[@]}"
-
-  #     - name: Install Wasmer CLI
-  #       uses: wasmerio/setup-wasmer@v3
-
-  #     - name: Publish to wasmer.wtf
-  #       env:
-  #         WASMER_TOKEN: ${{ secrets.DEV_BACKEND_CIUSER_TOKEN }}
-  #         EDGE_VERSION: ${{ steps.wasmer.outputs.edge_version }}
-  #       shell: bash
-  #       run: |
-  #         set -euo pipefail
-  #         wasmer publish "${{ steps.wasmer.outputs.wasix_dist_dir }}" \
-  #           --registry wasmer.wtf \
-  #           --token "${WASMER_TOKEN}" \
-  #           --version="${EDGE_VERSION}"
-
-  #     - name: Publish to wasmer.io
-  #       env:
-  #         WASMER_TOKEN: ${{ secrets.PROD_BACKEND_CIUSER_TOKEN }}
-  #         EDGE_VERSION: ${{ steps.wasmer.outputs.edge_version }}
-  #       shell: bash
-  #       run: |
-  #         set -euo pipefail
-  #         wasmer publish "${{ steps.wasmer.outputs.wasix_dist_dir }}" \
-  #           --registry wasmer.io \
-  #           --token "${WASMER_TOKEN}" \
-  #           --version="${EDGE_VERSION}"
-
-  build-macos:
-    name: build-macos
-    runs-on: macos-latest
+  native:
+    name: v8-${{ matrix.os_name }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os_name: linux
+            runner: ubuntu-latest
+            artifact_name: edge-linux-amd64
+            zip_name: edge-linux-amd64.zip
+          - os_name: macos
+            runner: macos-latest
+            artifact_name: edge-darwin-arm64
+            zip_name: edge-darwin-arm64.zip
     env:
       NAPI_V8_BUILD_METHOD: prebuilt
       SCCACHE_GHA_ENABLED: "true"
+      CC: clang
+      CXX: clang++
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
+
       - name: Setup sccache
         uses: mozilla-actions/sccache-action@v0.0.9
+
       - name: Ensure submodules are initialized
         shell: bash
         run: |
@@ -313,77 +75,63 @@ jobs:
           git -c protocol.version=2 submodule update --init --recursive --depth=1
           test -f node/src/node_api_types.h
 
-      - name: Validate public N-API headers stay V8-agnostic
+      - name: Install Linux build dependencies
+        if: matrix.os_name == 'linux'
+        shell: bash
         run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y libicu-dev
+
+      - name: Validate public N-API headers stay V8-agnostic
+        shell: bash
+        run: |
+          set -euo pipefail
           ! grep -nE "v8::|<v8.h>|\"v8.h\"" napi/include/js_native_api.h napi/include/node_api.h
 
       - name: Build edge
+        shell: bash
         run: |
+          set -euo pipefail
           make build CMAKE_BUILD_TYPE=Release JOBS=4
 
       - name: Generate dist
         shell: bash
         run: |
           set -euo pipefail
-          make dist-only JOBS=4 ZIP_NAME=edge-darwin-arm64.zip
+          make dist-only JOBS=4 ZIP_NAME="${{ matrix.zip_name }}"
 
       - name: Upload artifact edge
         uses: actions/upload-artifact@v4
         with:
-          name: edge-darwin-arm64
-          path: edge-darwin-arm64.zip
+          name: ${{ matrix.artifact_name }}
+          path: ${{ matrix.zip_name }}
           if-no-files-found: error
 
       - name: Test edge
+        shell: bash
         run: |
+          set -euo pipefail
           make test-only TEST_JOBS=4
 
       - name: sccache stats
         if: always()
         run: sccache --show-stats || true
 
-  # build-windows-smoke:
-  #   name: build-windows-smoke
-  #   runs-on: windows-latest
-  #   env:
-  #     NAPI_V8_BUILD_METHOD: prebuilt
-  #   steps:
-  #     - uses: actions/checkout@v4
-  #       with:
-  #         submodules: recursive
-
-  #     - name: Ensure submodules are initialized
-  #       shell: bash
-  #       run: |
-  #         set -euo pipefail
-  #         git submodule sync --recursive
-  #         git -c protocol.version=2 submodule update --init --recursive --depth=1
-  #         test -f node/src/node_api_types.h
-
-  #     - name: Configure edge
-  #       shell: pwsh
-  #       run: >
-  #         cmake -S . -B build-edge-win -A x64
-  #         -DCMAKE_BUILD_TYPE=Release
-  #         -DEDGE_PREFER_REPO_LOCAL_V8=OFF
-
-  #     - name: Build edge
-  #       shell: pwsh
-  #       run: cmake --build build-edge-win --config Release -j4
-
-  build-wasix-linux:
-    name: build-wasix-linux
+  wasix:
+    name: v8-wasix
     runs-on: ubuntu-latest
     env:
-      LLVM_DIR: llvm
       SCCACHE_GHA_ENABLED: "true"
       RUSTC_WRAPPER: sccache
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
+
       - name: Setup sccache
         uses: mozilla-actions/sccache-action@v0.0.9
+
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
 
@@ -395,7 +143,9 @@ jobs:
           version: v0.4.2
 
       - name: Install wasm-tools
+        shell: bash
         run: |
+          set -euo pipefail
           cargo install --locked wasm-tools
 
       - name: Build edge (WASIX)
@@ -404,70 +154,11 @@ jobs:
           set -euo pipefail
           make build-wasix
 
-      - name: Install LLVM
-        shell: bash
-        run: |
-          set -euo pipefail
-          curl -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
-            --retry 3 --proto '=https' --tlsv1.2 -sSf \
-            "https://github.com/wasmerio/llvm-custom-builds/releases/download/21.x/llvm-linux-amd64.tar.xz" \
-            -L -o llvm.tar.xz
-          LLVM_DIR="$(pwd)/${LLVM_DIR}"
-          mkdir -p "${LLVM_DIR}"
-          tar xf llvm.tar.xz --strip-components=1 -C "${LLVM_DIR}"
-          echo "${LLVM_DIR}/bin" >> "$GITHUB_PATH"
-          echo "${LLVM_DIR}/usr/bin" >> "$GITHUB_PATH"
-          echo "LLVM_SYS_211_PREFIX=${LLVM_DIR}" >> "$GITHUB_ENV"
-          echo "ENABLE_LLVM=1" >> "$GITHUB_ENV"
-
-      - name: Setup Prebuilt V8
-        shell: bash
-        run: |
-          set -euo pipefail
-          V8_VERSION="11.9.2"
-          ASSET="v8-linux-amd64.tar.xz"
-          V8_ROOT="$PWD/.ci/v8/${V8_VERSION}/linux-amd64"
-          mkdir -p "$V8_ROOT"
-          curl -fsSL "https://github.com/wasmerio/v8-custom-builds/releases/download/${V8_VERSION}/${ASSET}" -o "$V8_ROOT/${ASSET}"
-          tar -xJf "$V8_ROOT/${ASSET}" -C "$V8_ROOT"
-
-          echo "V8_INCLUDE_DIR=$V8_ROOT/include" >> "$GITHUB_ENV"
-          echo "V8_LIB_DIR=$V8_ROOT/lib" >> "$GITHUB_ENV"
-          echo "V8_DEFINES=V8_COMPRESS_POINTERS" >> "$GITHUB_ENV"
-          echo "LD_LIBRARY_PATH=$V8_ROOT/lib:${LD_LIBRARY_PATH:-}" >> "$GITHUB_ENV"
-
-      - name: Build napi_wasmer CLI
-        shell: bash
-        run: |
-          set -euo pipefail
-          make build-napi-wasmer-cli
-
-      - name: Smoke test edgejs.wasm via napi_wasmer
-        shell: bash
-        run: |
-          set -euo pipefail
-          make test-wasix-napi-cli
-
-      - name: Install Wasmer CLI
-        uses: wasmerio/setup-wasmer@v3
-
-      - name: Smoke test WASIX safe mode via Wasmer CLI
-        shell: bash
-        run: |
-          set -euo pipefail
-          make test-wasix-safe-mode WASMER_BIN=wasmer
-
       - name: Generate dist
         shell: bash
         run: |
           set -euo pipefail
           make dist-only BUILD_DIR=build-wasix JOBS=4 ZIP_NAME=edge-wasix.zip
-
-      - name: Smoke test packaged WASIX dist via Wasmer CLI
-        shell: bash
-        run: |
-          set -euo pipefail
-          make test-wasix-safe-mode WASMER_BIN=wasmer WASIX_PACKAGE_DIR="$(pwd)/dist"
 
       - name: Upload artifact edge
         uses: actions/upload-artifact@v4
@@ -479,3 +170,178 @@ jobs:
       - name: sccache stats
         if: always()
         run: sccache --show-stats || true
+
+  publish-nightly:
+    name: publish-nightly
+    runs-on: ubuntu-latest
+    needs:
+      - metadata
+      - native
+      - wasix
+    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    env:
+      GH_TOKEN: ${{ secrets.RELEASE_PLEASE_GH_TOKEN }}
+      TARGET_REPO: wasmerio/edgejs-nightlies
+      RELEASE_TAG: ${{ needs.metadata.outputs.release_tag }}
+      RELEASE_NAME: ${{ needs.metadata.outputs.release_name }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - name: Download Linux artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: edge-linux-amd64
+          path: release-assets/linux
+
+      - name: Download macOS artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: edge-darwin-arm64
+          path: release-assets/macos
+
+      - name: Download WASIX artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: edge-wasix
+          path: release-assets/wasix
+
+      - name: Collect release assets
+        id: assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t files < <(find release-assets -type f -name '*.zip' | sort)
+          {
+            echo "asset_count=${#files[@]}"
+            echo "asset_list<<EOF"
+            printf '%s\n' "${files[@]}"
+            echo "EOF"
+          } >> "${GITHUB_OUTPUT}"
+          printf 'Discovered %s release asset(s)\n' "${#files[@]}"
+          printf '%s\n' "${files[@]}"
+
+      - name: Prepare Wasmer publish assets
+        id: wasmer
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          linux_zip="$(find release-assets/linux -type f -name '*.zip' | head -n 1)"
+          wasix_zip="$(find release-assets/wasix -type f -name '*.zip' | head -n 1)"
+
+          if [[ -z "${linux_zip}" || ! -f "${linux_zip}" ]]; then
+            echo "Missing Linux artifact zip" >&2
+            exit 1
+          fi
+          if [[ -z "${wasix_zip}" || ! -f "${wasix_zip}" ]]; then
+            echo "Missing WASIX artifact zip" >&2
+            exit 1
+          fi
+
+          linux_dir="release-assets/linux/unpacked"
+          wasix_dir="release-assets/wasix/unpacked"
+          rm -rf "${linux_dir}" "${wasix_dir}"
+          mkdir -p "${linux_dir}" "${wasix_dir}"
+
+          unzip -q "${linux_zip}" -d "${linux_dir}"
+          unzip -q "${wasix_zip}" -d "${wasix_dir}"
+
+          edge_bin="${linux_dir}/bin/edge"
+          if [[ ! -x "${edge_bin}" ]]; then
+            echo "Expected packaged edge binary at ${edge_bin}" >&2
+            exit 1
+          fi
+
+          edge_version="$("${edge_bin}" -p "process.versions.edge")"
+          if [[ -z "${edge_version}" ]]; then
+            echo "Failed to determine EDGE version from packaged binary" >&2
+            exit 1
+          fi
+
+          if [[ ! -f "${wasix_dir}/wasmer.toml" ]]; then
+            echo "Expected wasmer.toml in ${wasix_dir}" >&2
+            exit 1
+          fi
+
+          {
+            echo "edge_version=${edge_version}"
+            echo "wasix_dist_dir=${wasix_dir}"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Create release notes
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "Automated nightly build for EDGE ${{ steps.wasmer.outputs.edge_version }}."
+            echo
+            echo "- Source repo: ${GITHUB_REPOSITORY}"
+            echo "- Commit: ${GITHUB_SHA}"
+            echo "- Workflow run: ${RUN_URL}"
+            echo "- Uploaded assets from this workflow: ${{ steps.assets.outputs.asset_count }}"
+          } > release-notes.md
+
+      - name: Ensure nightly release exists
+        shell: bash
+        run: |
+          set -euo pipefail
+          target_ref="$(gh repo view "${TARGET_REPO}" --json defaultBranchRef --jq '.defaultBranchRef.name')"
+          if [[ -z "${target_ref}" ]]; then
+            echo "Failed to resolve default branch for ${TARGET_REPO}" >&2
+            exit 1
+          fi
+          if ! gh release view "${RELEASE_TAG}" --repo "${TARGET_REPO}" >/dev/null 2>&1; then
+            gh release create "${RELEASE_TAG}" \
+              --repo "${TARGET_REPO}" \
+              --target "${target_ref}" \
+              --title "${RELEASE_NAME}" \
+              --notes-file release-notes.md \
+              --prerelease \
+              --latest=false || true
+          fi
+          release_id="$(gh api "repos/${TARGET_REPO}/releases/tags/${RELEASE_TAG}" --jq '.id')"
+          gh api \
+            --method PATCH \
+            "repos/${TARGET_REPO}/releases/${release_id}" \
+            -f name="${RELEASE_NAME}" \
+            -F prerelease=true \
+            -F make_latest=false \
+            -F body=@release-notes.md \
+            >/dev/null
+
+      - name: Upload nightly assets
+        if: ${{ steps.assets.outputs.asset_count != '0' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t files < <(printf '%s\n' "${{ steps.assets.outputs.asset_list }}" | sed '/^$/d')
+          gh release upload "${RELEASE_TAG}" \
+            --repo "${TARGET_REPO}" \
+            --clobber \
+            "${files[@]}"
+
+      - name: Install Wasmer CLI
+        uses: wasmerio/setup-wasmer@v3
+
+      - name: Publish to wasmer.wtf
+        env:
+          WASMER_TOKEN: ${{ secrets.DEV_BACKEND_CIUSER_TOKEN }}
+          EDGE_VERSION: ${{ steps.wasmer.outputs.edge_version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          wasmer publish "${{ steps.wasmer.outputs.wasix_dist_dir }}" \
+            --registry wasmer.wtf \
+            --token "${WASMER_TOKEN}" \
+            --version="${EDGE_VERSION}"
+
+      - name: Publish to wasmer.io
+        env:
+          WASMER_TOKEN: ${{ secrets.PROD_BACKEND_CIUSER_TOKEN }}
+          EDGE_VERSION: ${{ steps.wasmer.outputs.edge_version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          wasmer publish "${{ steps.wasmer.outputs.wasix_dist_dir }}" \
+            --registry wasmer.io \
+            --token "${WASMER_TOKEN}" \
+            --version="${EDGE_VERSION}"

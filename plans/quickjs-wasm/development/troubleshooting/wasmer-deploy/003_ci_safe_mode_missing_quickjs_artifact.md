@@ -74,11 +74,13 @@ manifest is not used for the QuickJS artifact. The legacy `napi_wasmer` smoke
 path was removed from this job because it tests the host-import N-API artifact,
 not the embedded QuickJS package.
 
-Native N-API and standalone N-API Cargo test workflows now belong in the N-API
-repository rather than EdgeJS CI. EdgeJS no longer runs duplicate native N-API
-or standalone N-API Cargo test jobs from its root workflows. EdgeJS
-package-level smoke coverage remains in the EdgeJS QuickJS WASIX workflow that
-owns `quickjs-wasm/wasmer.toml`.
+Native N-API, standalone N-API Cargo, and `napi_wasmer` host-import smoke
+workflows now belong outside EdgeJS runtime CI. EdgeJS no longer runs duplicate
+native N-API or standalone N-API Cargo test jobs from its root workflows. EdgeJS
+WASIX coverage is now the engine-specific package build lanes: `build-wasix` for
+V8 and `build-quickjs-wasix` for QuickJS. Publishing remains active only for
+`push` events on `main`, after the native matrix and WASIX build for that engine
+have passed.
 
 `make dist-only` now treats both `build-wasix` and `build-quickjs-wasix` as
 WASIX distribution directories, so it copies `edgejs.wasm`, `wasmer.toml`, and
@@ -108,7 +110,7 @@ the QuickJS provider:
 ```sh
 make build-edge-quickjs-cli CMAKE_BUILD_TYPE=Release JOBS=4
 make dist-only BUILD_DIR=build-edge-quickjs-cli JOBS=4 ZIP_NAME=edge-linux-amd64.zip
-make test-only BUILD_DIR=build-edge-quickjs-cli TEST_JOBS=4
+make test-quickjs-only TEST_JOBS=4
 ```
 
 `make build-edge-quickjs-cli` now builds both the `edge` and `edgeenv` targets
@@ -149,11 +151,14 @@ build/test targets on the QuickJS provider:
 ```sh
 make build-edge-quickjs-cli CMAKE_BUILD_TYPE=Release JOBS=4
 make dist-only BUILD_DIR=build-edge-quickjs-cli JOBS=4 ZIP_NAME=edge-<platform>.zip
-make test-only BUILD_DIR=build-edge-quickjs-cli TEST_JOBS=4
+make test-quickjs-only TEST_JOBS=4
 make build-quickjs-wasix
-make dist-only BUILD_DIR=build-quickjs-wasix JOBS=4 ZIP_NAME=edge-wasix.zip
+make dist-only BUILD_DIR=build-quickjs-wasix JOBS=4 ZIP_NAME=edge-quickjs-wasix.zip
 ```
 
-The macOS job was updated to match the Linux QuickJS native job. The inactive
-Windows smoke scaffold was also changed to use `-DEDGE_NAPI_PROVIDER=quickjs`
-if it is re-enabled later.
+The macOS job matches the Linux QuickJS native job. The old duplicate
+QuickJS-only WASIX workflow was removed; QuickJS WASIX is covered by the
+`quickjs-wasix` job in `.github/workflows/test-and-build-quickjs.yml`. The
+QuickJS workflow also has a `publish-nightly` job gated to `push` on `main`;
+it uploads the QuickJS native/WASIX artifacts to the nightly release and
+publishes the packaged QuickJS WASIX manifest through Wasmer.
