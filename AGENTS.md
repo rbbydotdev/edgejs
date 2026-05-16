@@ -271,9 +271,6 @@ Useful diagnostics:
 
 Known caveats to remember:
 
-- `JS_FreeRuntime(...)` is currently disabled in
-  `napi/quickjs/src/unofficial_napi.cc` until QuickJS GC-owned object lifetime
-  leaks are fixed. Do not mistake this for a real teardown fix.
 - The vendored QuickJS source has local compatibility patches for promise hooks
   and WASIX atomics. Preserve them unless replacing QuickJS with an upstream
   version that provides equivalent behavior.
