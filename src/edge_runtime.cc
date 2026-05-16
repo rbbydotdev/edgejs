@@ -43,6 +43,7 @@
 #include "edge_errors_binding.h"
 #include "edge_buffer.h"
 #include "edge_env_loop.h"
+#include "edge_handle_scope.h"
 #include "edge_intl_fallback.h"
 #include "edge_crypto.h"
 #include "edge_encoding.h"
@@ -1354,6 +1355,8 @@ int HandlePendingExceptionAfterLoopStep(napi_env env, std::string* error_out) {
 // Mirrors Node's native tick dispatch by preferring the task_queue callback
 // registered through setTickCallback(), and falling back to process._tickCallback.
 napi_status DrainProcessTickCallback(napi_env env) {
+  edge::HandleScope scope(env);
+
   bool called_task_queue_tick = false;
   const napi_status task_queue_status = EdgeRunTaskQueueTickCallback(env, &called_task_queue_tick);
   if (task_queue_status != napi_ok) {
@@ -1868,7 +1871,15 @@ int RunEventLoopUntilQuiescent(napi_env env, std::string* error_out) {
     // worker messaging, can resolve Promises without a JS callback entering the
     // isolate on that turn. Run a plain microtask checkpoint here so those
     // promises settle without waiting for an unrelated timer or I/O callback.
-    const napi_status microtask_status = unofficial_napi_process_microtasks(env);
+    napi_status microtask_status = napi_ok;
+    {
+      edge::HandleScope scope(env);
+      if (!scope.is_open()) {
+        microtask_status = scope.status();
+      } else {
+        microtask_status = unofficial_napi_process_microtasks(env);
+      }
+    }
     if (microtask_status != napi_ok) {
       if (error_out != nullptr) {
         *error_out = "Failed to process microtasks";
@@ -3283,6 +3294,11 @@ napi_status EdgeMakeCallback(napi_env env,
 napi_status EdgeRunCallbackScopeCheckpoint(napi_env env) {
   if (env == nullptr) {
     return napi_invalid_arg;
+  }
+
+  edge::HandleScope scope(env);
+  if (!scope.is_open()) {
+    return scope.status();
   }
 
   bool has_pending = false;

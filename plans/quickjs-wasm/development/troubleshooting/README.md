@@ -95,6 +95,7 @@ duplicating issue details.
 | 🟢 | High | [002_standalone_inspector_stub.md](next-app/002_standalone_inspector_stub.md) | `require("inspector")` stub |
 | ▶️ | High | [003_route_stack_exhausted.md](next-app/003_route_stack_exhausted.md) | Route request stack exhaustion |
 | 🟢 | High | [004_next_config_swc_options_buffer.md](next-app/004_next_config_swc_options_buffer.md) | SWC options Buffer rejected by N-API |
+| 🟢 | High | [005_entry_css_work_store_async_context.md](next-app/005_entry_css_work_store_async_context.md) | `entryCSSFiles` work store async context |
 
 ## Wasmer Deploy
 

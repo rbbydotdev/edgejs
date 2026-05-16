@@ -81,8 +81,11 @@ namespace fs = std::filesystem;
 
 struct RequireContext;
 struct ModuleLoaderState;
+struct ContextifyScriptInstance;
 
 static bool IsUndefinedValue(napi_env env, napi_value value);
+static napi_value GetNamedPropertyOrUndefined(napi_env env, napi_value object, const char* key);
+static ModuleLoaderState* GetModuleLoaderState(napi_env env);
 static void ResetModuleLoaderState(napi_env env, ModuleLoaderState* state);
 static void DeleteModuleLoaderState(void* data);
 
@@ -115,6 +118,7 @@ struct ModuleLoaderState {
     std::unordered_map<std::string, CategoryBufferState> category_buffers;
   } trace_events_state;
   std::vector<RequireContext*> require_contexts;
+  std::vector<ContextifyScriptInstance*> contextify_scripts;
   std::string entry_dir;
   bool finalized = false;
 };
@@ -123,12 +127,54 @@ struct RequireContext {
   ModuleLoaderState* state;
   std::string base_dir;
 };
+
+struct ContextifyScriptInstance {
+  ModuleLoaderState* state = nullptr;
+  napi_ref wrapper_ref = nullptr;
+  napi_ref host_defined_option_ref = nullptr;
+};
 using TraceEventsBindingState = ModuleLoaderState::TraceEventsBindingState;
 
 void DeleteRefIfPresent(napi_env env, napi_ref* ref) {
   if (env == nullptr || ref == nullptr || *ref == nullptr) return;
   napi_delete_reference(env, *ref);
   *ref = nullptr;
+}
+
+static void ClearContextifyHostDefinedOptionProperties(napi_env env, napi_value target);
+
+static void DestroyContextifyScriptInstance(napi_env env,
+                                            ContextifyScriptInstance* instance,
+                                            bool detach_wrapper) {
+  if (instance == nullptr) return;
+  if (env == nullptr && instance->state != nullptr) env = instance->state->env;
+
+  if (env != nullptr && instance->wrapper_ref != nullptr) {
+    napi_value wrapper = nullptr;
+    if (napi_get_reference_value(env, instance->wrapper_ref, &wrapper) == napi_ok &&
+        wrapper != nullptr) {
+      ClearContextifyHostDefinedOptionProperties(env, wrapper);
+      if (detach_wrapper) {
+        void* removed = nullptr;
+        (void)napi_remove_wrap(env, wrapper, &removed);
+      }
+    }
+  }
+
+  DeleteRefIfPresent(env, &instance->wrapper_ref);
+  DeleteRefIfPresent(env, &instance->host_defined_option_ref);
+  delete instance;
+}
+
+static void ContextifyScriptFinalize(napi_env env, void* data, void* /*hint*/) {
+  auto* instance = static_cast<ContextifyScriptInstance*>(data);
+  if (instance == nullptr) return;
+  ModuleLoaderState* state = GetModuleLoaderState(env);
+  if (state != nullptr && !state->finalized) {
+    auto& scripts = state->contextify_scripts;
+    scripts.erase(std::remove(scripts.begin(), scripts.end(), instance), scripts.end());
+  }
+  DestroyContextifyScriptInstance(env, instance, false);
 }
 
 static ModuleLoaderState* GetModuleLoaderState(napi_env env) {
@@ -177,6 +223,11 @@ static void ResetModuleLoaderState(napi_env env, ModuleLoaderState* state) {
     delete context;
   }
   state->require_contexts.clear();
+
+  for (ContextifyScriptInstance* script : state->contextify_scripts) {
+    DestroyContextifyScriptInstance(env, script, true);
+  }
+  state->contextify_scripts.clear();
 
   for (auto& kv : state->module_cache) {
     DeleteRefIfPresent(env, &kv.second);
@@ -3001,6 +3052,61 @@ static void SetHostDefinedOptionSymbol(napi_env env, napi_value target, napi_val
   napi_set_property(env, target, symbol, value);
 }
 
+static void SetContextifyHostDefinedOption(napi_env env, napi_value target, napi_value id_value) {
+  if (env == nullptr || target == nullptr) return;
+  napi_value value = id_value;
+  if (value == nullptr) napi_get_undefined(env, &value);
+  SetHostDefinedOptionSymbol(env, target, value);
+  napi_set_named_property(env, target, "contextifyHostDefinedOptionId", value);
+}
+
+static void ClearContextifyHostDefinedOptionProperties(napi_env env, napi_value target) {
+  if (env == nullptr || target == nullptr) return;
+  napi_value undefined = nullptr;
+  napi_get_undefined(env, &undefined);
+  SetContextifyHostDefinedOption(env, target, undefined);
+}
+
+static ContextifyScriptInstance* TrackContextifyScript(napi_env env,
+                                                       napi_value wrapper,
+                                                       napi_value host_defined_option_id) {
+  ModuleLoaderState* state = GetModuleLoaderState(env);
+  if (state == nullptr || wrapper == nullptr || host_defined_option_id == nullptr ||
+      IsUndefinedValue(env, host_defined_option_id)) {
+    return nullptr;
+  }
+
+  auto* instance = new (std::nothrow) ContextifyScriptInstance();
+  if (instance == nullptr) return nullptr;
+  instance->state = state;
+
+  if (napi_create_reference(env, wrapper, 0, &instance->wrapper_ref) != napi_ok ||
+      napi_create_reference(env, host_defined_option_id, 1, &instance->host_defined_option_ref) != napi_ok ||
+      napi_wrap(env, wrapper, instance, ContextifyScriptFinalize, nullptr, nullptr) != napi_ok) {
+    DestroyContextifyScriptInstance(env, instance, true);
+    return nullptr;
+  }
+
+  state->contextify_scripts.push_back(instance);
+  return instance;
+}
+
+static napi_value GetContextifyHostDefinedOption(napi_env env, napi_value wrapper) {
+  if (env == nullptr || wrapper == nullptr) return nullptr;
+  void* data = nullptr;
+  if (napi_unwrap(env, wrapper, &data) == napi_ok && data != nullptr) {
+    auto* instance = static_cast<ContextifyScriptInstance*>(data);
+    if (instance->host_defined_option_ref != nullptr) {
+      napi_value out = nullptr;
+      if (napi_get_reference_value(env, instance->host_defined_option_ref, &out) == napi_ok &&
+          out != nullptr) {
+        return out;
+      }
+    }
+  }
+  return GetNamedPropertyOrUndefined(env, wrapper, "contextifyHostDefinedOptionId");
+}
+
 static napi_value GetNamedPropertyOrUndefined(napi_env env, napi_value object, const char* key) {
   napi_value value = nullptr;
   if (object != nullptr && napi_get_named_property(env, object, key, &value) == napi_ok && value != nullptr) {
@@ -3077,9 +3183,11 @@ static napi_value ContextifyScriptConstructorCallback(napi_env env, napi_callbac
   napi_value host_defined_option_id = nullptr;
   if (argc >= 8) host_defined_option_id = argv[7];
   if (host_defined_option_id != nullptr) {
-    napi_set_named_property(env, this_arg, "contextifyHostDefinedOptionId", host_defined_option_id);
+    SetContextifyHostDefinedOption(env, this_arg, host_defined_option_id);
+    TrackContextifyScript(env, this_arg, host_defined_option_id);
+  } else {
+    SetHostDefinedOptionSymbol(env, this_arg, host_defined_option_id);
   }
-  SetHostDefinedOptionSymbol(env, this_arg, host_defined_option_id);
 
   // Match Node's constructor-time syntax validation behavior.
   napi_value precompiled_cache = nullptr;
@@ -3159,7 +3267,8 @@ static napi_value ContextifyScriptRunInContextCallback(napi_env env, napi_callba
   napi_value filename_value = GetNamedPropertyOrUndefined(env, this_arg, "contextifyFilename");
   napi_value line_offset_value = GetNamedPropertyOrUndefined(env, this_arg, "contextifyLineOffset");
   napi_value column_offset_value = GetNamedPropertyOrUndefined(env, this_arg, "contextifyColumnOffset");
-  napi_value host_defined_option_id = GetNamedPropertyOrUndefined(env, this_arg, "contextifyHostDefinedOptionId");
+  napi_value host_defined_option_id = GetContextifyHostDefinedOption(env, this_arg);
+  SetContextifyHostDefinedOption(env, this_arg, host_defined_option_id);
 
   int32_t line_offset = 0;
   int32_t column_offset = 0;
@@ -3183,6 +3292,7 @@ static napi_value ContextifyScriptRunInContextCallback(napi_env env, napi_callba
                                                                break_on_first_line,
                                                                host_defined_option_id,
                                                                &result);
+  ClearContextifyHostDefinedOptionProperties(env, this_arg);
   if (st != napi_ok || result == nullptr) {
     return nullptr;
   }
