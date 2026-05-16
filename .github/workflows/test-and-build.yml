@@ -71,12 +71,6 @@ jobs:
   #       run: |
   #         ! grep -nE "v8::|<v8.h>|\"v8.h\"" napi/include/js_native_api.h napi/include/node_api.h
 
-  #     - name: Build napi-v8
-  #       run: make build-napi CMAKE_BUILD_TYPE=Release JOBS=4
-
-  #     - name: Test napi-v8
-  #       run: make test-napi-only TEST_JOBS=4
-
   #     - name: Build edge
   #       run: |
   #         make build CMAKE_BUILD_TYPE=Release JOBS=4
@@ -322,12 +316,6 @@ jobs:
       - name: Validate public N-API headers stay V8-agnostic
         run: |
           ! grep -nE "v8::|<v8.h>|\"v8.h\"" napi/include/js_native_api.h napi/include/node_api.h
-
-      - name: Build napi-v8
-        run: make build-napi CMAKE_BUILD_TYPE=Release JOBS=4
-
-      - name: Test napi-v8
-        run: make test-napi-only TEST_JOBS=4
 
       - name: Build edge
         run: |

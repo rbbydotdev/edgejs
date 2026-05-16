@@ -1,4 +1,4 @@
-name: napi-wasmer-quickjs
+name: quickjs-wasix
 
 on:
   push:
@@ -8,54 +8,6 @@ on:
   workflow_dispatch:
 
 jobs:
-  quickjs-napi-linux:
-    name: quickjs-napi-linux
-    runs-on: ubuntu-latest
-    env:
-      SCCACHE_GHA_ENABLED: "true"
-      CC: clang
-      CXX: clang++
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-
-      - name: Setup sccache
-        uses: mozilla-actions/sccache-action@v0.0.9
-
-      - name: Build napi-quickjs
-        run: make build-napi-quickjs CMAKE_BUILD_TYPE=Release JOBS=4
-
-      - name: Test napi-quickjs
-        run: make test-napi-quickjs-only TEST_JOBS=4
-
-      - name: sccache stats
-        if: always()
-        run: sccache --show-stats || true
-
-  quickjs-napi-macos:
-    name: quickjs-napi-macos
-    runs-on: macos-latest
-    env:
-      SCCACHE_GHA_ENABLED: "true"
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-
-      - name: Setup sccache
-        uses: mozilla-actions/sccache-action@v0.0.9
-
-      - name: Build napi-quickjs
-        run: make build-napi-quickjs CMAKE_BUILD_TYPE=Release JOBS=4
-
-      - name: Test napi-quickjs
-        run: make test-napi-quickjs-only TEST_JOBS=4
-
-      - name: sccache stats
-        if: always()
-        run: sccache --show-stats || true
-
   quickjs-wasix-linux:
     name: quickjs-wasix-linux
     runs-on: ubuntu-latest

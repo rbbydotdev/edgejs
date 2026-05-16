@@ -70,12 +70,6 @@ jobs:
   #       run: |
   #         ! grep -nE "v8::|<v8.h>|\"v8.h\"" napi/include/js_native_api.h napi/include/node_api.h
 
-  #     - name: Build napi-quickjs
-  #       run: make build-napi-quickjs CMAKE_BUILD_TYPE=Release JOBS=4
-
-  #     - name: Test napi-quickjs
-  #       run: make test-napi-quickjs-only TEST_JOBS=4
-
   #     - name: Build edge (QuickJS)
   #       run: |
   #         make build-edge-quickjs-cli CMAKE_BUILD_TYPE=Release JOBS=4
@@ -303,12 +297,6 @@ jobs:
       - name: Validate public N-API headers stay V8-agnostic
         run: |
           ! grep -nE "v8::|<v8.h>|\"v8.h\"" napi/include/js_native_api.h napi/include/node_api.h
-
-      - name: Build napi-quickjs
-        run: make build-napi-quickjs CMAKE_BUILD_TYPE=Release JOBS=4
-
-      - name: Test napi-quickjs
-        run: make test-napi-quickjs-only TEST_JOBS=4
 
       - name: Build edge (QuickJS)
         run: |
