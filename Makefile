@@ -42,6 +42,12 @@ EDGE_PACKAGE_VERSION := $(EDGE_VERSION_BASE)-$(EDGE_VERSION_COMMIT)
 endif
 EDGE_WASMER_PACKAGE ?= wasmer/edgejs@=$(EDGE_PACKAGE_VERSION)
 
+# QuickJS lacks the WebAssembly global that Undici's lazy llhttp path expects.
+QUICKJS_SKIP_UNDICI_WASM_TESTS := client-proxy/test-http-proxy-fetch.mjs,client-proxy/test-use-env-proxy-cli-http.mjs,parallel/test-fetch.mjs,client-proxy/test-https-proxy-fetch.mjs,client-proxy/test-use-env-proxy-cli-https.mjs
+# QuickJS currently cannot parse explicit resource management `using` syntax.
+QUICKJS_SKIP_USING_PARSER_TESTS := parallel/test-stream-duplex-destroy.js,parallel/test-stream-readable-dispose.js,parallel/test-stream-transform-destroy.js,parallel/test-stream-writable-destroy.js
+QUICKJS_SKIP_TESTS ?= $(QUICKJS_SKIP_UNDICI_WASM_TESTS),$(QUICKJS_SKIP_USING_PARSER_TESTS)
+
 ifeq ($(UNAME_S),Darwin)
 BUILD_ENV := env -u CPPFLAGS -u LDFLAGS
 endif
@@ -139,6 +145,7 @@ test-only:
 
 test-quickjs-only:
 	NODE_TEST_RUNNER=$(BUILD_EDGE_QUICKJS_CLI_DIR)/edge ./test/nodejs_test_harness --category=node:buffer,node:console,node:dgram,node:diagnostics_channel,node:dns,node:events,node:http,node:https,node:os,node:path,node:punycode,node:querystring,node:stream,node:string_decoder,node:tty,node:url,node:zlib,node:crypto,node:domain,node:http2,node:tls,node:sys \
+	  --skip-tests=$(QUICKJS_SKIP_TESTS) \
 	  -j $(TEST_JOBS)
 
 clean-edge-quickjs-cli:
