@@ -333,6 +333,12 @@ A mechanical comparison with Node's V8 N-API implementation lives at:
 plans/napi-v8/node-vs-napi.md
 ```
 
+V8-backed EdgeJS node-test investigations live at:
+
+```text
+plans/napi-v8/development/node-tests.md
+```
+
 The original implementation notes are still under:
 
 ```text

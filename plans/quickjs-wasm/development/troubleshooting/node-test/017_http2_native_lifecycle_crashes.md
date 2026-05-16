@@ -2,7 +2,7 @@
 
 | | | Remarks |
 | --- | --- | --- |
-| **Status** | 🟢 | Fixed in the QuickJS N-API object/external classification layer. |
+| **Status** | ▶️ | Original QuickJS N-API object/external crash fixed; reopened for new QuickJS macOS HTTP/2 crashes. |
 | **Severity** | High | Signal 10/11 crashes affected a large HTTP/2 test cluster and could terminate the QuickJS CLI. |
 
 ## Symptoms
@@ -65,31 +65,22 @@ build-edge/edge test/sequential/test-http2-timeout-large-write.js
 build-edge/edge test/parallel/test-buffer-constants.js
 ```
 
-## V8 JSStream Destroy Follow-up
+## 2026-05-16 QuickJS macOS CI Follow-up
 
-The May 16, 2026 V8 CI log still failed
-`test/parallel/test-http2-client-jsstream-destroy.js` without crashing. The
-failure was an unhandled `ERR_STREAM_DESTROYED` from the JavaScript stream
-wrapped by `internal/js_stream_socket`, reached through:
+The `test and build / quickjs-macos` GitHub Actions log
+`test-failures-qjs-2.log` shows four HTTP/2 failures in the QuickJS runtime
+lane:
 
 ```text
-JSStreamSocket.doWrite()
-JSStream.onwrite()
-process.processImmediate()
+test/parallel/test-http2-client-set-priority.js       -> Signal 11
+test/parallel/test-http2-compat-serverresponse-writehead.js -> Signal 11
+test/parallel/test-http2-response-splitting.js        -> response splitting assertion
+test/parallel/test-http2-reset-flood.js               -> timeout
 ```
 
-The source-side fix stays outside `lib/`: `src/edge_js_stream.cc` now treats a
-pending `ERR_STREAM_DESTROYED` from `JSStream.onwrite` as a write completion
-with `UV_EPIPE`, matching the existing JS wrapper behavior for async write
-errors. Other pending exceptions are rethrown, so unrelated userland callback
-errors still surface.
-
-Verification:
-
-```sh
-cmake --build build-edge --target edge -j4
-build-edge/edge test/parallel/test-http2-client-jsstream-destroy.js
-```
-
-The HTTP/2 test binds a local socket, so sandboxed local runs may need to be
-rerun outside the filesystem sandbox when they fail with `listen EPERM`.
+These are not the same three tests that validated the previous
+`TLSWrap*`/`EdgeStreamBase*` object classification fix. Treat this as an open
+HTTP/2 follow-up and reproduce the two crashing tests under LLDB before editing
+native code. Useful source areas to inspect first are the QuickJS session output
+path and stream reset/priority handling in
+`src/internal_binding/binding_http2.cc`.

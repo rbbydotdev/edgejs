@@ -61,7 +61,7 @@ duplicating issue details.
 | 🟢 | Medium | [014_string_decoder_utf8_boundaries.md](node-test/014_string_decoder_utf8_boundaries.md) | StringDecoder UTF-8 boundaries |
 | ▶️ | Medium | [015_url_and_data_url_validation.md](node-test/015_url_and_data_url_validation.md) | URL and data URL validation |
 | 🟢 | Medium | [016_whatwg_url_inspect_and_searchparams.md](node-test/016_whatwg_url_inspect_and_searchparams.md) | WHATWG URL inspect and search params |
-| 🟢 | High | [017_http2_native_lifecycle_crashes.md](node-test/017_http2_native_lifecycle_crashes.md) | HTTP/2 native lifecycle crashes |
+| ▶️ | High | [017_http2_native_lifecycle_crashes.md](node-test/017_http2_native_lifecycle_crashes.md) | HTTP/2 native lifecycle crashes |
 | 🟢 | High | [018_tls_securecontext_sni_lifetime.md](node-test/018_tls_securecontext_sni_lifetime.md) | TLS SecureContext, SNI, and setKeyCert lifetime |
 
 ## Astro SSR

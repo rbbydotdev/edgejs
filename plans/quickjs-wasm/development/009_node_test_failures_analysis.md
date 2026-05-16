@@ -688,20 +688,17 @@ Smoke checks:
 Both version commands reported `v24.13.2-pre`, and the QuickJS `-e` smoke
 printed `quickjs smoke ok`.
 
-CI/Makefile interpretation:
+QuickJS CI/Makefile interpretation:
 
-- `make build` builds the V8-backed Edge runtime and `libnapi_v8.a` with
-  `EDGE_BUILD_NAPI_TESTS=OFF`.
 - `make build-edge-quickjs-cli` builds the QuickJS-backed Edge runtime,
   `libqjs.a`, and `libnapi_quickjs.a` with `EDGE_BUILD_NAPI_TESTS=OFF`.
 - EdgeJS workflows should not run `test-napi*`, `test-native-*`, standalone
   N-API Cargo test jobs, or the old `napi_wasmer` host-import smoke path. Those
   suites belong in the N-API repository.
 
-Current runtime-test baseline remains:
+Current QuickJS runtime-test baseline remains:
 
 ```text
-V8:     make test-only        -> 1757/1757 passed
 QuickJS: make test-quickjs-only -> 1720 passed / 37 failed
 ```
 
@@ -715,40 +712,89 @@ constraint, the highest-return remaining targets are:
 4. Buffer deprecation node-modules path filtering and other one-off native
    parity fixes.
 
-## 2026-05-15 CI Matrix Simplification
+## 2026-05-15 QuickJS CI Matrix Simplification
 
-The active CI workflow shape now matches the intended build/test matrix without
-duplicate commented jobs or duplicate QuickJS WASIX workflows.
+The active QuickJS CI workflow shape now matches the intended build/test matrix
+without duplicate commented jobs or duplicate QuickJS WASIX workflows.
 
-Build lanes that generate binaries/packages:
+QuickJS build lanes that generate binaries/packages:
 
 | Engine | Target OS | Workflow job | Command |
 | --- | --- | --- | --- |
-| V8 | Linux | `v8-linux` | `make build` |
-| V8 | macOS | `v8-macos` | `make build` |
-| V8 | WASIX | `v8-wasix` | `make build-wasix` |
 | QuickJS | Linux | `quickjs-linux` | `make build-edge-quickjs-cli` |
 | QuickJS | macOS | `quickjs-macos` | `make build-edge-quickjs-cli` |
 | QuickJS | WASIX | `quickjs-wasix` | `make build-quickjs-wasix` |
 
-Runtime test lanes:
+QuickJS runtime test lanes:
 
 | Engine | Host OS | Workflow job | Command |
 | --- | --- | --- | --- |
-| V8 | Linux | `v8-linux` | `make test-only` |
-| V8 | macOS | `v8-macos` | `make test-only` |
 | QuickJS | Linux | `quickjs-linux` | `make test-quickjs-only` |
 | QuickJS | macOS | `quickjs-macos` | `make test-quickjs-only` |
 
-Publish lanes:
+QuickJS publish lane:
 
 | Engine | Workflow job | Gate | Publishes |
 | --- | --- | --- | --- |
-| V8 | `publish-nightly` | `push` to `main` after `metadata`, `v8-linux`, `v8-macos`, and `v8-wasix` pass | `edge-linux-amd64`, `edge-darwin-arm64`, `edge-wasix`, and the V8 WASIX package |
 | QuickJS | `publish-nightly` | `push` to `main` after `metadata`, `quickjs-linux`, `quickjs-macos`, and `quickjs-wasix` pass | `edge-quickjs-linux-amd64`, `edge-quickjs-darwin-arm64`, `edge-quickjs-wasix`, and the QuickJS WASIX package |
 
 The standalone `.github/workflows/napi-wasmer-quickjs.yml` workflow was removed
 because QuickJS WASIX is already covered by
-`.github/workflows/test-and-build-quickjs.yml`. The V8 workflow also no longer
-builds the `napi_wasmer` CLI or runs `test-wasix-napi-cli`; WASIX CI coverage is
-the engine-specific WASIX build lane plus the main-branch publish job.
+`.github/workflows/test-and-build-quickjs.yml`.
+
+## 2026-05-16 QuickJS macOS CI Failure Log
+
+The `test and build / quickjs-macos` log captured in
+`test-failures-qjs-2.log` still matches the expected QuickJS compatibility
+baseline shape: the CI job built and packaged the QuickJS macOS CLI, then
+`make test-quickjs-only TEST_JOBS=4` finished with 1742 passing tests and 37
+failures.
+
+Grouped by likely source-level cause:
+
+- Buffer deprecation filtering: `test-buffer-constructor-node-modules-paths.js`
+  emitted the `Buffer()` deprecation warning from a node_modules fixture path.
+- Console/inspect formatting: `test-console-issue-43095.js` still throws on a
+  revoked proxy during inspection; `pseudo-tty/console_colors.js` still differs
+  in stack/color formatting.
+- DNS/c-ares lifecycle: `test-dns-multi-channel.js` produced `EDESTRUCTION`;
+  `test-dns-channel-timeout.js`, `test-dns-setserver-when-querying.js`, and
+  `test-dns-resolver-max-timeout.js` crashed with signal 6.
+- Fetch/proxy/Undici parser bootstrap:
+  `test-http-proxy-fetch.mjs`, `test-use-env-proxy-cli-http.mjs`,
+  `test-fetch.mjs`, `test-https-proxy-fetch.mjs`, and
+  `test-use-env-proxy-cli-https.mjs` failed because Undici tried to initialize
+  its WebAssembly llhttp path while QuickJS has no global `WebAssembly`.
+- HTTP proxy URL validation/timer: `test-http-proxy-request-invalid-char-in-url.mjs`
+  timed out.
+- Diagnostics/workers: `test-diagnostics-channel-worker-threads.js` timed out.
+- Sync waiting on the main thread: `test-http-keep-alive-timeout-race-condition.js`,
+  `test-fastutf8stream-flush-sync.js`, and `test-fastutf8stream-retry.js` failed
+  with `TypeError: cannot block in this thread`.
+- Explicit resource management syntax: `test-stream-duplex-destroy.js`,
+  `test-stream-readable-dispose.js`, `test-stream-transform-destroy.js`, and
+  `test-stream-writable-destroy.js` failed while parsing `using`.
+- Stream semantics: `test-stream-readable-async-iterators.js` hit a destroy
+  assertion and `test-stream-pipeline.js` called a non-function iterator helper.
+- Crypto/WebCrypto/worker transfer:
+  `test-crypto-dh-modp2-views.js`, `test-crypto-key-objects-messageport.js`,
+  `test-crypto-subtle-cross-realm.js`, `test-webcrypto-digest.js`,
+  `test-crypto-prime.js`, `test-crypto-worker-thread.js`, and
+  `test-webcrypto-cryptokey-workers.js` still fail by a mix of bad DH view
+  handling, MessagePort/key clone semantics, crashes, and worker timeouts.
+- Domain/promise context: `test-domain-vm-promise-isolation.js` still observes
+  the active domain where Node expects `undefined`; `test-domain-multiple-errors.js`
+  timed out.
+- HTTP/2 follow-up:
+  `test-http2-client-set-priority.js` and
+  `test-http2-compat-serverresponse-writehead.js` crashed with signal 11,
+  `test-http2-response-splitting.js` failed a response-splitting assertion, and
+  `test-http2-reset-flood.js` timed out. This reopens
+  `troubleshooting/node-test/017_http2_native_lifecycle_crashes.md` for the new
+  QuickJS macOS crash cluster.
+
+Local reproduction was blocked in this checkout because
+`napi/quickjs/deps/quickjs` is empty, so `make build-edge-quickjs-cli JOBS=4`
+failed during CMake configure before producing `build-edge-quickjs-cli/edge`.
+Repopulate the QuickJS dependency/submodule before rerunning the targeted tests
+and the crash cases under LLDB.
