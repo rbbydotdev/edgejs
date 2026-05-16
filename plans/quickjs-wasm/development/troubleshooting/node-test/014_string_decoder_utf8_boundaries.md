@@ -2,7 +2,7 @@
 
 | | | Remarks |
 | --- | --- | --- |
-| **Status** | ▶️ | Planned investigation. |
+| **Status** | 🟢 | Fixed in native StringDecoder binding. |
 | **Severity** | Medium | Incorrect replacement-character behavior can corrupt streaming UTF-8 decoding. |
 
 Affected tests:
@@ -26,20 +26,36 @@ into one replacement character across chunk/end boundaries. The current native
 decoder state in QuickJS Edge emits one replacement for the bad prefix and
 another for the following byte.
 
-## How Should We Fix It
+## 2026-05-15 Native Decoder Update
 
-Inspect `src/edge_string_decoder.cc` and compare its UTF-8 state machine with
-Node's string decoder behavior for invalid leading bytes, incomplete sequences,
-and `.end()` flushing. The fix should adjust the native decoder state, not the
-JS wrapper, so all consumers of the `string_decoder` binding get the same
-boundary behavior.
+The failing UTF-8 boundary cases now pass without changing `lib/`. The native
+binding had a UTF-8 decoder with the right streaming behavior, but
+`MakeStringFromBytes(...)` tried `Buffer.from(...).toString('utf8')` first.
+That raw Buffer fallback produced too many replacement characters for cases
+such as `f0,b8,41`.
 
-Build a tiny table-driven repro for the failing `f0,b8,41` case before editing,
-then add the Node suite tests as verification.
+The native `StringDecoder` binding now bypasses the Buffer fallback for UTF-8
+and uses its streaming-aware decoder directly. QuickJS Buffer UTF-8 slicing gets
+matching replacement behavior from the QuickJS N-API implementation of
+`napi_create_string_utf8()`, so the shared Buffer binding does not need a
+QuickJS-specific decoder and V8 keeps its native string behavior.
 
-Targeted verification:
+Smoke check:
+
+```text
+new StringDecoder('utf8').write(Buffer.from([0xf0, 0xb8, 0x41])) === '\uFFFDA'
+```
+
+Targeted verification passed:
 
 ```sh
 build-edge-quickjs-cli/edge test/parallel/test-string-decoder.js
 build-edge-quickjs-cli/edge test/parallel/test-string-decoder-end.js
+build-edge-quickjs-cli/edge test/parallel/test-string-decoder-fuzz.js
 ```
+
+## Implementation Notes
+
+Keep future streaming-state fixes in the native StringDecoder binding. Keep raw
+Buffer UTF-8 byte-to-string parity in the N-API backend so engine differences do
+not leak into the shared Buffer binding. The JS wrapper should remain unchanged.
