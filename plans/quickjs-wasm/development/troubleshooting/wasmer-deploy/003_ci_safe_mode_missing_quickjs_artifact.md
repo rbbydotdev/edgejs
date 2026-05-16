@@ -157,8 +157,9 @@ make dist-only BUILD_DIR=build-quickjs-wasix JOBS=4 ZIP_NAME=edge-quickjs-wasix.
 ```
 
 The macOS job matches the Linux QuickJS native job. The old duplicate
-QuickJS-only WASIX workflow was removed; QuickJS WASIX is covered by the
-`quickjs-wasix` job in `.github/workflows/test-and-build-quickjs.yml`. The
-QuickJS workflow also has a `publish-nightly` job gated to `push` on `main`;
-it uploads the QuickJS native/WASIX artifacts to the nightly release and
-publishes the packaged QuickJS WASIX manifest through Wasmer.
+QuickJS-only WASIX workflow was removed; QuickJS native/WASIX coverage is now
+reported as `quickjs-linux`, `quickjs-macos`, and `quickjs-wasix` in
+`.github/workflows/test-and-build-quickjs.yml`. The QuickJS workflow also has a
+`publish-nightly` job gated to `push` on `main`; it uploads the QuickJS
+native/WASIX artifacts to the nightly release and publishes the packaged
+QuickJS WASIX manifest through Wasmer.

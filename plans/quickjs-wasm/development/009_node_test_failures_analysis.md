@@ -744,8 +744,8 @@ Publish lanes:
 
 | Engine | Workflow job | Gate | Publishes |
 | --- | --- | --- | --- |
-| V8 | `publish-nightly` | `push` to `main` after `metadata`, `native`, and `wasix` pass | `edge-linux-amd64`, `edge-darwin-arm64`, `edge-wasix`, and the V8 WASIX package |
-| QuickJS | `publish-nightly` | `push` to `main` after `metadata`, `native`, and `wasix` pass | `edge-quickjs-linux-amd64`, `edge-quickjs-darwin-arm64`, `edge-quickjs-wasix`, and the QuickJS WASIX package |
+| V8 | `publish-nightly` | `push` to `main` after `metadata`, `v8-linux`, `v8-macos`, and `v8-wasix` pass | `edge-linux-amd64`, `edge-darwin-arm64`, `edge-wasix`, and the V8 WASIX package |
+| QuickJS | `publish-nightly` | `push` to `main` after `metadata`, `quickjs-linux`, `quickjs-macos`, and `quickjs-wasix` pass | `edge-quickjs-linux-amd64`, `edge-quickjs-darwin-arm64`, `edge-quickjs-wasix`, and the QuickJS WASIX package |
 
 The standalone `.github/workflows/napi-wasmer-quickjs.yml` workflow was removed
 because QuickJS WASIX is already covered by
