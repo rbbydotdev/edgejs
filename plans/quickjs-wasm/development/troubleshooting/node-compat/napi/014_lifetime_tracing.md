@@ -2892,6 +2892,38 @@ string/object classification snapshots at the slower interval.
 should therefore be owned directly by `napi_env__`, not by the root
 `napi_scope__`.
 
+## 2026-05-16 Platform Task And Contextify Teardown Pass
+
+Follow-up from the Next `entryCSSFiles` investigation:
+
+- Added `edge::HandleScope` to `EdgeRunTaskQueueTickCallback(...)`,
+  `DrainProcessTickCallback(...)`, direct loop microtask checkpoints, callback
+  scope checkpoints, and the Edge runtime platform foreground/immediate task
+  callbacks. These paths can enter JS or run promise jobs without passing
+  through the normal N-API callback trampoline.
+- Investigated the remaining Debug `JS_FreeRuntime(...)` assertion with LLDB.
+  The promise-frame maps were empty; the leaked object was the ESM dynamic
+  import registry value `{ importModuleDynamically, callbackReferrer }`.
+- Fixed the contextify/module-wrap lifetime natively. Script dynamic-import
+  referrer symbols are unregistered after `napi_contextify__::run_script(...)`,
+  and Edge's `ContextifyScript` wrapper now keeps its host-defined option in a
+  native record, restoring it onto JS only while the script is running and
+  clearing the JS properties afterward. Env cleanup detaches these records
+  before QuickJS runtime teardown.
+
+Verification:
+
+```sh
+cmake --build /Users/sadhbh/src/dev/edgejs/build-edge-quickjs-cli-debug --target edge -j4
+/Users/sadhbh/src/dev/edgejs/build-edge-quickjs-cli-debug/edge -e "console.log('hi')"
+/Users/sadhbh/src/dev/edgejs/build-edge-quickjs-cli-debug/edge -e "import('node:fs').then(m => console.log(typeof m.readFile))"
+/Users/sadhbh/src/dev/edgejs/build-edge-quickjs-cli-debug/edge --experimental-vm-modules -e "const vm=require('vm'); const s=new vm.Script('import(\"node:fs\").then(m=>globalThis.n=(globalThis.n||0)+(typeof m.readFile===\"function\"))', { importModuleDynamically: (x)=>import(x) }); s.runInThisContext(); s.runInThisContext(); setImmediate(()=>console.log(globalThis.n));"
+cd /Users/sadhbh/src/dev/edgejs/napi && make test-native-quickjs
+```
+
+Results: Debug teardown assertion no longer reproduces; dynamic import smokes
+print `function` and `2`; native QuickJS tests pass 67/67.
+
 Action plan before code changes:
 
 1. Move `napi_allocator__<napi_ref__>` from `napi_scope__` into `napi_env__`.

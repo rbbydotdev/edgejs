@@ -155,12 +155,22 @@ File:
 ~/src/edgejs/napi/quickjs/src/unofficial_napi.cc
 ```
 
-Added per-env storage for promise context frames:
+The original implementation added per-env storage for promise context frames:
 
 ```cpp
 std::unordered_map<void *, JSValue> promise_context_frames;
 std::vector<JSValue> promise_context_frame_stack;
 ```
+
+The current refactored implementation keeps that behavior in:
+
+```text
+~/src/edgejs/napi/quickjs/src/internal/napi_promises.h
+~/src/edgejs/napi/quickjs/src/internal/napi_promises.cc
+```
+
+`unofficial_napi.cc` now registers and delegates to the `napi_promises__`
+subsystem instead of carrying this state directly.
 
 Added a QuickJS promise hook implementation:
 
@@ -223,6 +233,18 @@ Observed:
 ```text
 als 123
 ```
+
+The N-API test suite now also covers the same behavior directly with an
+ordinary `.then(...)` reaction:
+
+```text
+napi_quickjs_test_35_promise.Test35Promise.PromiseReactionRestoresContinuationPreservedEmbedderData
+```
+
+That test captures `continuation_preserved_embedder_data` when the promise is
+created, changes the current frame before draining microtasks, and verifies the
+captured frame is restored inside the reaction callback before the outside frame
+is restored afterward.
 
 Rebuilt and ran the QuickJS N-API tests:
 

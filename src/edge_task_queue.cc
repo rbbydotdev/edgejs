@@ -1,6 +1,7 @@
 #include "edge_task_queue.h"
 
 #include "edge_environment.h"
+#include "edge_handle_scope.h"
 #include "internal_binding/helpers.h"
 #include "unofficial_napi.h"
 
@@ -197,6 +198,8 @@ napi_status EdgeRunTaskQueueTickCallback(napi_env env, bool* called) {
   if (state == nullptr || state->tick_callback_ref == nullptr) {
     return napi_ok;
   }
+
+  edge::HandleScope scope(env);
 
   napi_value tick_cb = nullptr;
   napi_status status = napi_get_reference_value(env, state->tick_callback_ref, &tick_cb);

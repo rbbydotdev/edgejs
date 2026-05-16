@@ -199,7 +199,7 @@ plans/quickjs-wasm/development/troubleshooting/vite-app/001_standalone_build.md
 Most recent Next app troubleshooting note:
 
 ```text
-plans/quickjs-wasm/development/troubleshooting/next-app/003_route_stack_exhausted.md
+plans/quickjs-wasm/development/troubleshooting/next-app/005_entry_css_work_store_async_context.md
 ```
 
 Most recent Node test troubleshooting note:
