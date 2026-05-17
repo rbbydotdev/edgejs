@@ -5069,6 +5069,9 @@ napi_value BuildJobResult(napi_env env, napi_value err, napi_value value) {
 napi_value RunSyncCall(napi_env env, napi_value this_arg, const char* method, std::vector<napi_value> call_args) {
   napi_value binding = GetBinding(env);
   if (binding == nullptr) return BuildJobResult(env, nullptr, Undefined(env));
+  for (napi_value& arg : call_args) {
+    if (arg == nullptr) arg = Undefined(env);
+  }
   napi_value result = nullptr;
   if (!CallBindingMethod(env, binding, method, call_args.size(), call_args.data(), &result)) {
     bool pending = false;
