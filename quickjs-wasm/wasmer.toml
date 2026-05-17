@@ -1,6 +1,6 @@
 [package]
-name = "sadhbh-c0d3/edgejs-quickjs"
-version = "0.0.5"
+name = "wasmer/edgejs-quickjs"
+version = "0.0.1"
 description = "Edge.js with an embedded QuickJS N-API provider"
 entrypoint = "edge"
 
@@ -14,5 +14,4 @@ name = "edge"
 module = "edge"
 
 [fs]
-"/" = "."
 "/usr/local/ssl" = "../ssl-certs"
