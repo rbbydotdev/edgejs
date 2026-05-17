@@ -60,6 +60,7 @@ napi_value ResolveTraceEvents(napi_env env, const ResolveOptions& options);
 napi_value ResolveTtyWrap(napi_env env, const ResolveOptions& options);
 napi_value ResolveTypes(napi_env env, const ResolveOptions& options);
 napi_value ResolveUdpWrap(napi_env env, const ResolveOptions& options);
+napi_value ResolveUndici(napi_env env, const ResolveOptions& options);
 napi_value ResolveUrl(napi_env env, const ResolveOptions& options);
 napi_value ResolveUrlPattern(napi_env env, const ResolveOptions& options);
 napi_value ResolveUtil(napi_env env, const ResolveOptions& options);
@@ -79,7 +80,7 @@ struct BindingResolverEntry {
   ResolverFn resolver;
 };
 
-constexpr std::array<BindingResolverEntry, 62> kResolvers = {{
+constexpr std::array<BindingResolverEntry, 63> kResolvers = {{
     {"async_wrap", ResolveAsyncWrap},
     {"async_context_frame", ResolveAsyncContextFrame},
     {"block_list", ResolveBlockList},
@@ -133,6 +134,7 @@ constexpr std::array<BindingResolverEntry, 62> kResolvers = {{
     {"tty_wrap", ResolveTtyWrap},
     {"types", ResolveTypes},
     {"udp_wrap", ResolveUdpWrap},
+    {"undici", ResolveUndici},
     {"url", ResolveUrl},
     {"url_pattern", ResolveUrlPattern},
     {"util", ResolveUtil},

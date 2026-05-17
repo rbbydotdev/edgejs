@@ -237,10 +237,11 @@ function fetch (input, init = undefined) {
 
     // 4. Set responseObject to the result of creating a Response object,
     // given response, "immutable", and relevantRealm.
-    responseObject = new WeakRef(fromInnerResponse(response, 'immutable'))
+    const responseValue = fromInnerResponse(response, 'immutable')
+    responseObject = new WeakRef(responseValue)
 
     // 5. Resolve p with responseObject.
-    p.resolve(responseObject.deref())
+    p.resolve(responseValue)
     p = null
   }
 

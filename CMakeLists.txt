@@ -867,6 +867,7 @@ add_library(edge_runtime STATIC
   src/internal_binding/binding_tty_wrap.cc
   src/internal_binding/binding_types.cc
   src/internal_binding/binding_udp_wrap.cc
+  src/internal_binding/binding_undici.cc
   src/internal_binding/binding_url.cc
   src/internal_binding/binding_url_pattern.cc
   src/internal_binding/binding_util.cc
