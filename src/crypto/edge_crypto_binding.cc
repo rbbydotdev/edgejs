@@ -329,6 +329,7 @@ size_t TypedArrayBytesPerElement(napi_typedarray_type type) {
       return 1;
     case napi_int16_array:
     case napi_uint16_array:
+    case napi_float16_array:
       return 2;
     case napi_int32_array:
     case napi_uint32_array:
