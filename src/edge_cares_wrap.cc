@@ -184,6 +184,7 @@ void UnregisterChannelForEnv(ChannelWrap* channel) {
 
 void DestroyChannelCares(ChannelWrap* channel);
 void ScheduleFinalizedChannelDestroy(ChannelWrap* channel);
+void StartChannelTimer(ChannelWrap* channel);
 
 void DeleteChannelActiveRef(ChannelWrap* channel) {
   if (channel == nullptr || channel->env == nullptr || channel->active_ref == nullptr) return;
@@ -477,10 +478,20 @@ void AresTimeout(uv_timer_t* handle) {
   auto* channel = static_cast<ChannelWrap*>(handle->data);
   if (channel == nullptr || channel->channel == nullptr) return;
   ares_process_fd(channel->channel, ARES_SOCKET_BAD, ARES_SOCKET_BAD);
+  if (channel->timer_handle == handle) {
+    StartChannelTimer(channel);
+  }
 }
 
 void StartChannelTimer(ChannelWrap* channel) {
   if (channel == nullptr || channel->env == nullptr || channel->channel == nullptr) return;
+  if (channel->active_query_count <= 0) {
+    if (channel->timer_handle != nullptr) {
+      uv_timer_stop(channel->timer_handle);
+    }
+    return;
+  }
+
   if (channel->timer_handle == nullptr) {
     auto* timer = new uv_timer_t();
     timer->data = channel;
@@ -490,13 +501,25 @@ void StartChannelTimer(ChannelWrap* channel) {
       return;
     }
     channel->timer_handle = timer;
-  } else if (uv_is_active(reinterpret_cast<uv_handle_t*>(channel->timer_handle))) {
+  }
+
+  struct timeval tv {};
+  struct timeval* tvp = ares_timeout(channel->channel, nullptr, &tv);
+  if (tvp == nullptr) {
+    uv_timer_stop(channel->timer_handle);
     return;
   }
 
-  int timeout = channel->timeout;
-  if (timeout <= 0 || timeout > 1000) timeout = 1000;
-  uv_timer_start(channel->timer_handle, AresTimeout, timeout, timeout);
+  uint64_t timeout = 0;
+  if (tvp->tv_sec > 0) {
+    timeout += static_cast<uint64_t>(tvp->tv_sec) * 1000;
+  }
+  if (tvp->tv_usec > 0) {
+    timeout += static_cast<uint64_t>((tvp->tv_usec + 999) / 1000);
+  }
+  if (timeout == 0) timeout = 1;
+
+  uv_timer_start(channel->timer_handle, AresTimeout, timeout, 0);
 }
 
 void ares_poll_close_cb(uv_handle_t* handle) {
@@ -510,18 +533,16 @@ void ares_poll_cb(uv_poll_t* watcher, int status, int events) {
   ChannelWrap* channel = task->channel;
   if (channel->channel == nullptr) return;
 
-  if (channel->timer_handle != nullptr && uv_is_active(reinterpret_cast<uv_handle_t*>(channel->timer_handle))) {
-    uv_timer_again(channel->timer_handle);
-  }
-
   if (status < 0) {
     ares_process_fd(channel->channel, task->sock, task->sock);
+    StartChannelTimer(channel);
     return;
   }
 
   ares_process_fd(channel->channel,
                   (events & UV_READABLE) ? task->sock : ARES_SOCKET_BAD,
                   (events & UV_WRITABLE) ? task->sock : ARES_SOCKET_BAD);
+  StartChannelTimer(channel);
 }
 
 void ares_sockstate_cb(void* data, ares_socket_t sock, int read, int write) {
@@ -533,7 +554,6 @@ void ares_sockstate_cb(void* data, ares_socket_t sock, int read, int write) {
 
   if (read || write) {
     if (task == nullptr) {
-      StartChannelTimer(channel);
       task = new NodeAresTask();
       task->channel = channel;
       task->sock = sock;
@@ -549,6 +569,7 @@ void ares_sockstate_cb(void* data, ares_socket_t sock, int read, int write) {
     uv_poll_start(&task->poll_watcher,
                   (read ? UV_READABLE : 0) | (write ? UV_WRITABLE : 0),
                   ares_poll_cb);
+    StartChannelTimer(channel);
     return;
   }
 
@@ -558,8 +579,10 @@ void ares_sockstate_cb(void* data, ares_socket_t sock, int read, int write) {
     uv_close(reinterpret_cast<uv_handle_t*>(&task->poll_watcher), ares_poll_close_cb);
   }
 
-  if (channel->tasks.empty()) {
+  if (channel->tasks.empty() && channel->active_query_count <= 0) {
     CloseChannelTimer(channel);
+  } else {
+    StartChannelTimer(channel);
   }
 }
 
@@ -1587,6 +1610,7 @@ int DispatchQuery(ChannelWrap* channel, CaresReqWrap* req, const QueryMethodData
                        family,
                        OnReverseQueryComplete,
                        req);
+    StartChannelTimer(channel);
     return 0;
   }
 
@@ -1597,6 +1621,7 @@ int DispatchQuery(ChannelWrap* channel, CaresReqWrap* req, const QueryMethodData
                     OnDnsQueryComplete,
                     req,
                     nullptr);
+  StartChannelTimer(channel);
   return 0;
 }
 

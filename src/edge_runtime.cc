@@ -2217,10 +2217,29 @@ bool ConfigureOpenSslFromExecArgv(const std::vector<std::string>& exec_argv,
 #if OPENSSL_VERSION_MAJOR < 3
   return true;
 #else
+  static std::mutex openssl_config_mutex;
+  static bool openssl_config_loaded = false;
+  std::lock_guard<std::mutex> openssl_config_lock(openssl_config_mutex);
+  if (openssl_config_loaded) return true;
+
   const char* conf_file = nullptr;
   const char* conf_section_name = "nodejs_conf";
   if (ExecArgvHasFlagIn(exec_argv, "--openssl-shared-config")) {
     conf_section_name = "openssl_conf";
+  }
+
+  std::string default_openssl_conf;
+#if defined(__linux__)
+  default_openssl_conf = "/etc/ssl/openssl.cnf";
+#else
+  char* default_conf_file = CONF_get1_default_config_file();
+  if (default_conf_file != nullptr) {
+    default_openssl_conf = default_conf_file;
+    OPENSSL_free(default_conf_file);
+  }
+#endif
+  if (!default_openssl_conf.empty()) {
+    conf_file = default_openssl_conf.c_str();
   }
 
   std::string env_openssl_conf;
@@ -2242,29 +2261,19 @@ bool ConfigureOpenSslFromExecArgv(const std::vector<std::string>& exec_argv,
     conf_file = arg_openssl_conf.c_str();
   }
 
-  OPENSSL_INIT_SETTINGS* settings = OPENSSL_INIT_new();
-  if (settings == nullptr) {
-    if (error_out != nullptr) {
-      *error_out = "Failed to allocate OpenSSL init settings";
-    }
-    return false;
-  }
-
-  OPENSSL_INIT_set_config_filename(settings, conf_file);
-  OPENSSL_INIT_set_config_appname(settings, conf_section_name);
-  OPENSSL_INIT_set_config_file_flags(settings, CONF_MFLAGS_IGNORE_MISSING_FILE);
-
   ERR_clear_error();
-  OPENSSL_init_crypto(OPENSSL_INIT_LOAD_CONFIG, settings);
-  OPENSSL_INIT_free(settings);
+  const int config_result =
+      CONF_modules_load_file(conf_file, conf_section_name, CONF_MFLAGS_IGNORE_MISSING_FILE);
+  const int init_result = OPENSSL_init_crypto(OPENSSL_INIT_NO_LOAD_CONFIG, nullptr);
 
-  if (ERR_peek_error() != 0) {
+  if (config_result <= 0 || init_result != 1 || ERR_peek_error() != 0) {
     if (error_out != nullptr) {
       *error_out = "OpenSSL configuration error:\n" + GetOpenSslErrorString();
     }
     return false;
   }
 
+  openssl_config_loaded = true;
   return true;
 #endif
 }
