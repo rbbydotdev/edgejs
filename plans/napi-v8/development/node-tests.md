@@ -164,11 +164,102 @@ That means the relevant parent TCP wrapper is not marked closing at the point
 `OnConnectDone(...)` invokes `req.oncomplete`, or the destroyed state that
 matters lives on the owning `TLSSocket` rather than the raw handle.
 
-The next native-first path is to inspect the owner stored on the TCP handle via
-`owner_symbol` before invoking `afterConnect`, and suppress or cancel successful
-connect completion when the owner socket is already aborted/destroyed or its
-TLS resource has been cleared. Avoid a broad `lib/internal/tls/wrap.js` guard
-unless native ownership cannot accurately model Node's ordering.
+The next native-first path was initially thought to be inspecting the owner
+stored on the TCP handle via `owner_symbol` before invoking `afterConnect`.
+That turned out to be the wrong layer after comparing Node's implementation:
+Node's native `ConnectionWrap::AfterConnect()` does not inspect JS owner state,
+TLS state, or stream properties. It reports libuv's connect status and
+readable/writable flags, and `lib/net.js` decides whether to ignore late
+callbacks via `if (self.destroyed) return`.
+
+## 2026-05-17 Native Follow-up
+
+The stable Linux/V8 fixes were kept native-only:
+
+- `src/edge_js_stream.cc` activates JSStream write/shutdown requests before
+  entering JS. If `onwrite` throws `ERR_STREAM_DESTROYED`, native now has an
+  active request to complete/mark done instead of letting the exception escape
+  as a top-level fatal exception.
+- `src/internal_binding/binding_http2.cc` schedules session output through the
+  native immediate queue, but stream destroy remains on JS `setImmediate` to
+  match Node's HTTP/2 stream teardown shape.
+- HTTP/2 parent socket writes now mirror Node's
+  `Http2Session::ClearOutgoing()` behavior: stream writes already serialized by
+  nghttp2 complete with status `0`; parent socket errors are used for session
+  bookkeeping, not exposed as user stream write errors.
+- No-error or `NGHTTP2_CANCEL` deferred HTTP/2 stream teardown completes
+  remaining queued stream writes with status `0`; other reset/error codes still
+  complete with `UV_ECANCELED`.
+- `src/edge_tcp_wrap.cc` now mirrors Node's TCP connect callback shape: it
+  passes libuv's status through unchanged and computes the readable/writable
+  booleans with `uv_is_readable()` / `uv_is_writable()` only for successful
+  connects. It does not inspect `owner_symbol` or TLS JS state.
+
+QuickJS regressions caused by the first native pass:
+
+```text
+test/parallel/test-http2-close-while-writing.js
+test/parallel/test-http2-create-client-connect.js
+test/parallel/test-tls-close-notify.js
+```
+
+Root causes:
+
+- a broad HTTP/2 parent `isClosing()` preflight converted normal close races
+  into queued stream write cancellations; it was removed;
+- TLS and HTTP/2 were forwarding internal parent-write `UV_ECANCELED` statuses
+  to JS-visible write completions, unlike Node's hidden parent write path;
+- `test-http2-create-client-connect.js` exposed teardown GC where
+  `TlsWrapFinalize()` notified HTTP/2 stream listeners after environment
+  cleanup had already started.
+
+Additional native hardening:
+
+- `EdgeStreamNotifyClosed()` now saves `next` before invoking listener
+  `on_close` callbacks, so callbacks can remove/mutate listeners safely.
+- `TlsWrapFinalize()` skips JS-facing close notification once
+  `Environment::cleanup_started()` is true; normal close paths still notify.
+- A short-lived TCP owner-state heuristic was removed. It tried to convert
+  late TLS abort completions to `UV_ECANCELED` by reading JS properties such as
+  `encrypted`, `readable`, and `connecting`, but Node never does this and it
+  caused QuickJS HTTP/2/TLS regressions.
+
+Verification after the follow-up:
+
+```sh
+cmake --build build-edge-quickjs-cli --target edge -j4
+python3 test/tools/test.py --timeout 30 --test-root ./test \
+  --shell ./build-edge-quickjs-cli/edge -j 1 \
+  parallel/test-http2-close-while-writing \
+  parallel/test-http2-create-client-connect \
+  parallel/test-tls-close-notify
+
+cmake --build build-edge --target edge -j4
+python3 test/tools/test.py --timeout 30 --test-root ./test \
+  --shell ./build-edge/edge -j 1 \
+  parallel/test-http2-client-jsstream-destroy \
+  parallel/test-tls-connect-abort-controller \
+  parallel/test-http2-close-while-writing \
+  parallel/test-http2-create-client-connect \
+  parallel/test-tls-close-notify
+
+python3 test/tools/test.py --timeout 30 --test-root ./test \
+  --shell ./build-edge/edge -j 1 \
+  parallel/test-dns-channel-timeout \
+  parallel/test-http-server-headers-timeout-keepalive \
+  parallel/test-http-server-request-timeout-keepalive \
+  parallel/test-http2-client-jsstream-destroy \
+  parallel/test-tls-connect-abort-controller
+
+make test-quickjs-only TEST_JOBS=4
+```
+
+The final QuickJS full-suite result after removing the TCP owner-state
+heuristic returned to the previous baseline:
+
+```text
+[06:49|% 100|+ 1757|-  17]: Done
+```
 
 ## Load-Sensitive Failures
 

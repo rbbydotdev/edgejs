@@ -299,12 +299,19 @@ void OnConnectDone(uv_connect_t* req, int status) {
   }
   napi_value req_obj = ConnectReqGetOwner(cr->env, cr);
   napi_value tcp_obj = cr->tcp != nullptr ? EdgeStreamBaseGetWrapper(&cr->tcp->base) : nullptr;
+  bool readable = false;
+  bool writable = false;
+  if (status == 0 && cr->tcp != nullptr) {
+    uv_stream_t* stream = reinterpret_cast<uv_stream_t*>(&cr->tcp->handle);
+    readable = uv_is_readable(stream) != 0;
+    writable = uv_is_writable(stream) != 0;
+  }
   napi_value argv[5] = {
       EdgeStreamBaseMakeInt32(cr->env, status),
       tcp_obj,
       req_obj,
-      EdgeStreamBaseMakeBool(cr->env, true),
-      EdgeStreamBaseMakeBool(cr->env, true),
+      EdgeStreamBaseMakeBool(cr->env, readable),
+      EdgeStreamBaseMakeBool(cr->env, writable),
   };
   if (req_obj != nullptr) {
     EdgeStreamBaseSetReqError(cr->env, req_obj, status);
@@ -556,6 +563,11 @@ napi_value TcpConnectImpl(napi_env env,
   auto* cr = static_cast<ConnectReqWrap*>(nullptr);
   if (req_obj == nullptr || napi_unwrap(env, req_obj, reinterpret_cast<void**>(&cr)) != napi_ok || cr == nullptr) {
     return EdgeStreamBaseMakeInt32(env, UV_EINVAL);
+  }
+  uv_handle_t* handle = reinterpret_cast<uv_handle_t*>(&wrap->handle);
+  if (wrap->base.closed || wrap->base.closing || uv_is_closing(handle)) {
+    EdgeStreamBaseSetReqError(env, req_obj, UV_ECANCELED);
+    return EdgeStreamBaseMakeInt32(env, UV_ECANCELED);
   }
   cr->env = env;
   cr->tcp = wrap;

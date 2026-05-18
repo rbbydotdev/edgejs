@@ -175,6 +175,7 @@ napi_value CallOnWrite(napi_env env,
   }
 
   napi_value argv[2] = {req_obj != nullptr ? req_obj : EdgeStreamBaseUndefined(env), array};
+  EdgeStreamReqActivate(env, req_obj, kEdgeProviderWriteWrap, wrap->base.async_id);
   int32_t status = CallMethodReturningInt32(env, self, wrap->base.async_id, "onwrite", 2, argv, UV_EPROTO);
   if (status == UV_EPROTO && ClearPendingExceptionIfCode(env, "ERR_STREAM_DESTROYED")) {
     status = UV_EPIPE;
@@ -186,7 +187,8 @@ napi_value CallOnWrite(napi_env env,
   }
   if (status == 0) {
     wrap->base.bytes_written += total_bytes;
-    EdgeStreamReqActivate(env, req_obj, kEdgeProviderWriteWrap, wrap->base.async_id);
+  } else {
+    EdgeStreamReqMarkDone(env, req_obj);
   }
   return EdgeStreamBaseMakeInt32(env, status);
 }
@@ -250,9 +252,10 @@ napi_value JsStreamShutdown(napi_env env, napi_callback_info info) {
     return EdgeStreamBaseMakeInt32(env, UV_EINVAL);
   }
   napi_value cb_argv[1] = {argv[0]};
+  EdgeStreamReqActivate(env, argv[0], kEdgeProviderShutdownWrap, wrap->base.async_id);
   int32_t status = CallMethodReturningInt32(env, self, wrap->base.async_id, "onshutdown", 1, cb_argv, UV_EPROTO);
-  if (status == 0) {
-    EdgeStreamReqActivate(env, argv[0], kEdgeProviderShutdownWrap, wrap->base.async_id);
+  if (status != 0) {
+    EdgeStreamReqMarkDone(env, argv[0]);
   }
   return EdgeStreamBaseMakeInt32(env, status);
 }

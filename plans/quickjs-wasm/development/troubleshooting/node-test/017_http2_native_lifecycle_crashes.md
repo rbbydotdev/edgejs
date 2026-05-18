@@ -84,3 +84,96 @@ HTTP/2 follow-up and reproduce the two crashing tests under LLDB before editing
 native code. Useful source areas to inspect first are the QuickJS session output
 path and stream reset/priority handling in
 `src/internal_binding/binding_http2.cc`.
+
+## 2026-05-17 V8 Fix Regression Follow-up
+
+After native fixes for the Linux/V8 JSStream destroyed-write and TLS
+abort-controller late-connect tests, the QuickJS suite regressed from
+17 failures to 20 failures. The new failures were:
+
+```text
+test/parallel/test-http2-close-while-writing.js
+test/parallel/test-http2-create-client-connect.js
+test/parallel/test-tls-close-notify.js
+```
+
+The fixes stayed native-only; no `lib/` JavaScript files were changed.
+
+Findings:
+
+- `test-http2-close-while-writing.js` first failed with `write ECANCELED` from
+  `RunDeferredStreamDestroy(...)`. A broad HTTP/2 parent `isClosing()` guard
+  converted normal close ordering into `UV_EPIPE` before queued HTTP/2 data
+  could flush. Removing that guard was necessary but not sufficient.
+- Node's `Http2Session::ClearOutgoing()` completes stream write wraps with
+  status `0` once nghttp2 has serialized them to the parent socket write.
+  Edge was propagating parent write errors back to stream writes. HTTP/2 now
+  completes those serialized stream writes with `0` and forwards `0` for the
+  internal parent write request.
+- TLS had the same internal parent-write exposure: `ParentStreamOnAfterWrite()`
+  passed `UV_ECANCELED` down the listener chain before checking whether the
+  write was TLS-owned. TLS now forwards status `0` for its own internal parent
+  write request while preserving the real status for TLS bookkeeping.
+- For no-error or `NGHTTP2_CANCEL` stream teardown, deferred HTTP/2 destroy now
+  completes remaining queued stream writes with `0`; reset/error-code teardown
+  still uses `UV_ECANCELED`.
+- `test-http2-create-client-connect.js` then crashed during teardown GC:
+  `TlsWrapFinalize()` called `NotifyTlsStreamClosed()` after environment
+  cleanup had started, reaching HTTP/2 listener state that was already being
+  finalized. TLS finalization now skips JS-facing close notification when
+  `Environment::cleanup_started()` is true.
+- `EdgeStreamNotifyClosed()` also now saves the next listener before invoking
+  `on_close`, allowing close callbacks to remove or mutate listener links
+  safely.
+
+Verification:
+
+```sh
+cmake --build build-edge-quickjs-cli --target edge -j4
+python3 test/tools/test.py --timeout 30 --test-root ./test \
+  --shell ./build-edge-quickjs-cli/edge -j 1 \
+  parallel/test-http2-close-while-writing \
+  parallel/test-http2-create-client-connect \
+  parallel/test-tls-close-notify
+```
+
+Result: `+3 -0`.
+
+## 2026-05-17 TCP connect correction
+
+The first TLS abort-controller pass added a TCP-side owner-state heuristic that
+called into JS from `OnConnectDone(...)`, read the TCP handle's `owner_symbol`,
+and treated a TLS owner with `encrypted === true`, `connecting === true`, and
+`readable === false` as an abort. Source comparison with Node showed this was
+the wrong layer: Node's `ConnectionWrap::AfterConnect()` passes libuv's status
+through unchanged and only derives the readable/writable booleans from
+`uv_is_readable()` / `uv_is_writable()` for successful connects.
+
+That heuristic was removed. The TCP connect callback now follows Node's native
+contract and no longer calls `internalBinding()`, clears pending exceptions, or
+inspects TLS JS properties from native TCP code.
+
+Verification after removing the heuristic:
+
+```sh
+cmake --build build-edge-quickjs-cli --target edge -j4
+python3 test/tools/test.py --timeout 30 --test-root ./test \
+  --shell ./build-edge-quickjs-cli/edge -j 1 \
+  parallel/test-http2-close-while-writing \
+  parallel/test-http2-create-client-connect \
+  parallel/test-tls-close-notify \
+  parallel/test-tls-connect-abort-controller \
+  parallel/test-http2-client-jsstream-destroy
+
+make test-quickjs-only TEST_JOBS=4
+```
+
+Focused result: `+5 -0`.
+
+Full QuickJS result returned to the earlier baseline:
+
+```text
+[06:49|% 100|+ 1757|-  17]: Done
+```
+
+The three regression-only failures were absent from the final failed-test list.

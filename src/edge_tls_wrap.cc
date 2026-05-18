@@ -1320,7 +1320,10 @@ void TlsWrapFinalize(napi_env env, void* data, void* /*hint*/) {
   if (wrap == nullptr) return;
   DestroySsl(wrap);
   ReleaseKeepaliveHandle(wrap);
-  NotifyTlsStreamClosed(wrap);
+  auto* environment = EdgeEnvironmentGet(env);
+  if (environment == nullptr || !environment->cleanup_started()) {
+    NotifyTlsStreamClosed(wrap);
+  }
   RemoveWrapFromState(wrap);
   DeleteRefIfPresent(env, &wrap->parent_ref);
   DeleteRefIfPresent(env, &wrap->context_ref);
@@ -2022,15 +2025,15 @@ bool ParentStreamOnRead(EdgeStreamListener* listener, ssize_t nread, const uv_bu
 
 bool ParentStreamOnAfterWrite(EdgeStreamListener* listener, napi_value req_obj, int status) {
   TlsWrap* wrap = GetWrapFromListener(listener);
-  (void)EdgeStreamPassAfterWrite(listener, req_obj, status);
   if (wrap == nullptr) return true;
 
-  if (wrap->has_active_write_issued_by_prev_listener) {
+  const bool is_active_parent_write = RefMatches(wrap->env, wrap->active_parent_write_req_ref, req_obj);
+  if (wrap->has_active_write_issued_by_prev_listener || !is_active_parent_write) {
+    (void)EdgeStreamPassAfterWrite(listener, req_obj, status);
     return true;
   }
-  if (!RefMatches(wrap->env, wrap->active_parent_write_req_ref, req_obj)) {
-    return true;
-  }
+
+  (void)EdgeStreamPassAfterWrite(listener, req_obj, 0);
 
   wrap->parent_write_in_progress = false;
   DeleteRefIfPresent(wrap->env, &wrap->active_parent_write_req_ref);

@@ -309,9 +309,11 @@ void EdgeStreamNotifyClosed(EdgeStreamListenerState* state) {
   napi_env env = FindStateEnv(state);
   state->current = nullptr;
   while (listener != nullptr) {
+    EdgeStreamListener* next = listener->previous;
     if (listener->on_close != nullptr) {
       ScopedOnClose(listener->env != nullptr ? listener->env : env, listener);
     }
-    listener = listener->previous;
+    listener->previous = nullptr;
+    listener = next;
   }
 }
