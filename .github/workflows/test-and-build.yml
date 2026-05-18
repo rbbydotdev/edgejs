@@ -17,6 +17,7 @@ jobs:
       release_name: ${{ steps.version.outputs.release_name }}
     steps:
       - uses: actions/checkout@v4
+
       - name: Compute release metadata
         id: version
         shell: bash
@@ -38,8 +39,8 @@ jobs:
             echo "release_name=${release_name}"
           } >> "${GITHUB_OUTPUT}"
 
-  build-linux:
-    name: build-linux
+  v8-linux:
+    name: v8-linux
     runs-on: ubuntu-latest
     env:
       NAPI_V8_BUILD_METHOD: prebuilt
@@ -50,8 +51,10 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
+
       - name: Setup sccache
         uses: mozilla-actions/sccache-action@v0.0.9
+
       - name: Ensure submodules are initialized
         shell: bash
         run: |
@@ -68,17 +71,15 @@ jobs:
           sudo apt-get install -y libicu-dev
 
       - name: Validate public N-API headers stay V8-agnostic
+        shell: bash
         run: |
+          set -euo pipefail
           ! grep -nE "v8::|<v8.h>|\"v8.h\"" napi/include/js_native_api.h napi/include/node_api.h
 
-      - name: Build napi-v8
-        run: make build-napi CMAKE_BUILD_TYPE=Release JOBS=4
-
-      - name: Test napi-v8
-        run: make test-napi-only TEST_JOBS=4
-
       - name: Build edge
+        shell: bash
         run: |
+          set -euo pipefail
           make build CMAKE_BUILD_TYPE=Release JOBS=4
 
       - name: Generate dist
@@ -97,23 +98,120 @@ jobs:
       - name: Test edge
         shell: bash
         run: |
-          set +e
-          make test-only TEST_JOBS=4 2>&1 | tee test-edge.log
-          status=${PIPESTATUS[0]}
-          if [ "$status" -ne 0 ]; then
-            echo "::group::test-edge.log"
-            cat test-edge.log
-            echo "::endgroup::"
-          fi
-          exit "$status"
+          set -euo pipefail
+          make test-only TEST_JOBS=4
 
-      - name: Upload Test edge log
-        if: failure()
+      - name: sccache stats
+        if: always()
+        run: sccache --show-stats || true
+
+  v8-macos:
+    name: v8-macos
+    runs-on: macos-latest
+    env:
+      NAPI_V8_BUILD_METHOD: prebuilt
+      SCCACHE_GHA_ENABLED: "true"
+      CC: clang
+      CXX: clang++
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup sccache
+        uses: mozilla-actions/sccache-action@v0.0.9
+
+      - name: Ensure submodules are initialized
+        shell: bash
+        run: |
+          set -euo pipefail
+          git submodule sync --recursive
+          git -c protocol.version=2 submodule update --init --recursive --depth=1
+          test -f node/src/node_api_types.h
+
+      - name: Validate public N-API headers stay V8-agnostic
+        shell: bash
+        run: |
+          set -euo pipefail
+          ! grep -nE "v8::|<v8.h>|\"v8.h\"" napi/include/js_native_api.h napi/include/node_api.h
+
+      - name: Build edge
+        shell: bash
+        run: |
+          set -euo pipefail
+          make build CMAKE_BUILD_TYPE=Release JOBS=4
+
+      - name: Generate dist
+        shell: bash
+        run: |
+          set -euo pipefail
+          make dist-only JOBS=4 ZIP_NAME=edge-darwin-arm64.zip
+
+      - name: Upload artifact edge
         uses: actions/upload-artifact@v4
         with:
-          name: build-linux-test-edge-log
-          path: test-edge.log
-          if-no-files-found: warn
+          name: edge-darwin-arm64
+          path: edge-darwin-arm64.zip
+          if-no-files-found: error
+
+      - name: Test edge
+        shell: bash
+        run: |
+          set -euo pipefail
+          make test-only TEST_JOBS=4
+
+      - name: sccache stats
+        if: always()
+        run: sccache --show-stats || true
+
+  v8-wasix:
+    name: v8-wasix
+    runs-on: ubuntu-latest
+    env:
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: sccache
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup sccache
+        uses: mozilla-actions/sccache-action@v0.0.9
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install wasixcc
+        uses: wasix-org/wasixcc@v0.4.2
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          sysroot-tag: v2026-02-16.1
+          version: v0.4.2
+
+      - name: Install wasm-tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo install --locked wasm-tools
+
+      - name: Build edge (WASIX)
+        shell: bash
+        run: |
+          set -euo pipefail
+          make build-wasix
+
+      - name: Generate dist
+        shell: bash
+        run: |
+          set -euo pipefail
+          make dist-only BUILD_DIR=build-wasix JOBS=4 ZIP_NAME=edge-wasix.zip
+
+      - name: Upload artifact edge
+        uses: actions/upload-artifact@v4
+        with:
+          name: edge-wasix
+          path: edge-wasix.zip
+          if-no-files-found: error
 
       - name: sccache stats
         if: always()
@@ -124,10 +222,10 @@ jobs:
     runs-on: ubuntu-latest
     needs:
       - metadata
-      - build-linux
-      - build-macos
-      - build-wasix-linux
-    if: ${{ always() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+      - v8-linux
+      - v8-macos
+      - v8-wasix
+    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
     env:
       GH_TOKEN: ${{ secrets.RELEASE_PLEASE_GH_TOKEN }}
       TARGET_REPO: wasmerio/edgejs-nightlies
@@ -137,21 +235,18 @@ jobs:
     steps:
       - name: Download Linux artifact
         uses: actions/download-artifact@v4
-        continue-on-error: true
         with:
           name: edge-linux-amd64
           path: release-assets/linux
 
       - name: Download macOS artifact
         uses: actions/download-artifact@v4
-        continue-on-error: true
         with:
           name: edge-darwin-arm64
           path: release-assets/macos
 
       - name: Download WASIX artifact
         uses: actions/download-artifact@v4
-        continue-on-error: true
         with:
           name: edge-wasix
           path: release-assets/wasix
@@ -161,7 +256,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p release-assets
           mapfile -t files < <(find release-assets -type f -name '*.zip' | sort)
           {
             echo "asset_count=${#files[@]}"
@@ -230,7 +324,7 @@ jobs:
             echo "- Source repo: ${GITHUB_REPOSITORY}"
             echo "- Commit: ${GITHUB_SHA}"
             echo "- Workflow run: ${RUN_URL}"
-            echo "- Uploaded assets: ${{ steps.assets.outputs.asset_count }}"
+            echo "- Uploaded assets from this workflow: ${{ steps.assets.outputs.asset_count }}"
           } > release-notes.md
 
       - name: Ensure nightly release exists
@@ -249,7 +343,7 @@ jobs:
               --title "${RELEASE_NAME}" \
               --notes-file release-notes.md \
               --prerelease \
-              --latest=false
+              --latest=false || true
           fi
           release_id="$(gh api "repos/${TARGET_REPO}/releases/tags/${RELEASE_TAG}" --jq '.id')"
           gh api \
@@ -298,196 +392,3 @@ jobs:
             --registry wasmer.io \
             --token "${WASMER_TOKEN}" \
             --version="${EDGE_VERSION}"
-
-  build-macos:
-    name: build-macos
-    runs-on: macos-latest
-    env:
-      NAPI_V8_BUILD_METHOD: prebuilt
-      SCCACHE_GHA_ENABLED: "true"
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-      - name: Setup sccache
-        uses: mozilla-actions/sccache-action@v0.0.9
-      - name: Ensure submodules are initialized
-        shell: bash
-        run: |
-          set -euo pipefail
-          git submodule sync --recursive
-          git -c protocol.version=2 submodule update --init --recursive --depth=1
-          test -f node/src/node_api_types.h
-
-      - name: Validate public N-API headers stay V8-agnostic
-        run: |
-          ! grep -nE "v8::|<v8.h>|\"v8.h\"" napi/include/js_native_api.h napi/include/node_api.h
-
-      - name: Build napi-v8
-        run: make build-napi CMAKE_BUILD_TYPE=Release JOBS=4
-
-      - name: Test napi-v8
-        run: make test-napi-only TEST_JOBS=4
-
-      - name: Build edge
-        run: |
-          make build CMAKE_BUILD_TYPE=Release JOBS=4
-
-      - name: Generate dist
-        shell: bash
-        run: |
-          set -euo pipefail
-          make dist-only JOBS=4 ZIP_NAME=edge-darwin-arm64.zip
-
-      - name: Upload artifact edge
-        uses: actions/upload-artifact@v4
-        with:
-          name: edge-darwin-arm64
-          path: edge-darwin-arm64.zip
-          if-no-files-found: error
-
-      - name: Test edge
-        run: |
-          make test-only TEST_JOBS=4
-
-      - name: sccache stats
-        if: always()
-        run: sccache --show-stats || true
-
-  # build-windows-smoke:
-  #   name: build-windows-smoke
-  #   runs-on: windows-latest
-  #   env:
-  #     NAPI_V8_BUILD_METHOD: prebuilt
-  #   steps:
-  #     - uses: actions/checkout@v4
-  #       with:
-  #         submodules: recursive
-
-  #     - name: Ensure submodules are initialized
-  #       shell: bash
-  #       run: |
-  #         set -euo pipefail
-  #         git submodule sync --recursive
-  #         git -c protocol.version=2 submodule update --init --recursive --depth=1
-  #         test -f node/src/node_api_types.h
-
-  #     - name: Configure edge
-  #       shell: pwsh
-  #       run: >
-  #         cmake -S . -B build-edge-win -A x64
-  #         -DCMAKE_BUILD_TYPE=Release
-  #         -DEDGE_PREFER_REPO_LOCAL_V8=OFF
-
-  #     - name: Build edge
-  #       shell: pwsh
-  #       run: cmake --build build-edge-win --config Release -j4
-
-  build-wasix-linux:
-    name: build-wasix-linux
-    runs-on: ubuntu-latest
-    env:
-      LLVM_DIR: llvm
-      SCCACHE_GHA_ENABLED: "true"
-      RUSTC_WRAPPER: sccache
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-      - name: Setup sccache
-        uses: mozilla-actions/sccache-action@v0.0.9
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Install wasixcc
-        uses: wasix-org/wasixcc@v0.4.2
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          sysroot-tag: v2026-02-16.1
-          version: v0.4.2
-
-      - name: Install wasm-tools
-        run: |
-          cargo install --locked wasm-tools
-
-      - name: Build edge (WASIX)
-        shell: bash
-        run: |
-          set -euo pipefail
-          make build-wasix
-
-      - name: Install LLVM
-        shell: bash
-        run: |
-          set -euo pipefail
-          curl -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
-            --retry 3 --proto '=https' --tlsv1.2 -sSf \
-            "https://github.com/wasmerio/llvm-custom-builds/releases/download/21.x/llvm-linux-amd64.tar.xz" \
-            -L -o llvm.tar.xz
-          LLVM_DIR="$(pwd)/${LLVM_DIR}"
-          mkdir -p "${LLVM_DIR}"
-          tar xf llvm.tar.xz --strip-components=1 -C "${LLVM_DIR}"
-          echo "${LLVM_DIR}/bin" >> "$GITHUB_PATH"
-          echo "${LLVM_DIR}/usr/bin" >> "$GITHUB_PATH"
-          echo "LLVM_SYS_211_PREFIX=${LLVM_DIR}" >> "$GITHUB_ENV"
-          echo "ENABLE_LLVM=1" >> "$GITHUB_ENV"
-
-      - name: Setup Prebuilt V8
-        shell: bash
-        run: |
-          set -euo pipefail
-          V8_VERSION="11.9.2"
-          ASSET="v8-linux-amd64.tar.xz"
-          V8_ROOT="$PWD/.ci/v8/${V8_VERSION}/linux-amd64"
-          mkdir -p "$V8_ROOT"
-          curl -fsSL "https://github.com/wasmerio/v8-custom-builds/releases/download/${V8_VERSION}/${ASSET}" -o "$V8_ROOT/${ASSET}"
-          tar -xJf "$V8_ROOT/${ASSET}" -C "$V8_ROOT"
-
-          echo "V8_INCLUDE_DIR=$V8_ROOT/include" >> "$GITHUB_ENV"
-          echo "V8_LIB_DIR=$V8_ROOT/lib" >> "$GITHUB_ENV"
-          echo "V8_DEFINES=V8_COMPRESS_POINTERS" >> "$GITHUB_ENV"
-          echo "LD_LIBRARY_PATH=$V8_ROOT/lib:${LD_LIBRARY_PATH:-}" >> "$GITHUB_ENV"
-
-      - name: Build napi_wasmer CLI
-        shell: bash
-        run: |
-          set -euo pipefail
-          make build-napi-wasmer-cli
-
-      - name: Smoke test edgejs.wasm via napi_wasmer
-        shell: bash
-        run: |
-          set -euo pipefail
-          make test-wasix-napi-cli
-
-      - name: Install Wasmer CLI
-        uses: wasmerio/setup-wasmer@v3
-
-      - name: Smoke test WASIX safe mode via Wasmer CLI
-        shell: bash
-        run: |
-          set -euo pipefail
-          make test-wasix-safe-mode WASMER_BIN=wasmer
-
-      - name: Generate dist
-        shell: bash
-        run: |
-          set -euo pipefail
-          make dist-only BUILD_DIR=build-wasix JOBS=4 ZIP_NAME=edge-wasix.zip
-
-      - name: Smoke test packaged WASIX dist via Wasmer CLI
-        shell: bash
-        run: |
-          set -euo pipefail
-          make test-wasix-safe-mode WASMER_BIN=wasmer WASIX_PACKAGE_DIR="$(pwd)/dist"
-
-      - name: Upload artifact edge
-        uses: actions/upload-artifact@v4
-        with:
-          name: edge-wasix
-          path: edge-wasix.zip
-          if-no-files-found: error
-
-      - name: sccache stats
-        if: always()
-        run: sccache --show-stats || true

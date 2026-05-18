@@ -23,6 +23,7 @@
 #include "edge_async_wrap.h"
 #include "edge_environment.h"
 #include "edge_env_loop.h"
+#include "edge_handle_scope.h"
 #include "edge_handle_wrap.h"
 #include "edge_module_loader.h"
 #include "edge_runtime.h"
@@ -1106,6 +1107,8 @@ napi_value CreateLastOpenSslError(napi_env env, const char* fallback_code, const
 
 void EmitError(TlsWrap* wrap, napi_value error) {
   if (wrap == nullptr || wrap->env == nullptr || error == nullptr) return;
+  edge::HandleScope scope(wrap->env);
+  if (!scope.is_open()) return;
   napi_value self = GetRefValue(wrap->env, wrap->wrapper_ref);
   napi_value onerror = GetNamedValue(wrap->env, self, "onerror");
   if (!IsFunction(wrap->env, onerror)) return;
@@ -1117,6 +1120,8 @@ void EmitError(TlsWrap* wrap, napi_value error) {
 
 void CompleteReq(TlsWrap* wrap, napi_ref* req_ref, int status) {
   if (wrap == nullptr || wrap->env == nullptr || req_ref == nullptr || *req_ref == nullptr) return;
+  edge::HandleScope scope(wrap->env);
+  if (!scope.is_open()) return;
   napi_value req_obj = GetRefValue(wrap->env, *req_ref);
   if (req_obj != nullptr) {
     EdgeStreamBaseEmitAfterWrite(&wrap->base, req_obj, status);
@@ -1183,7 +1188,9 @@ bool GetArrayBufferBytes(napi_env env,
 }
 
 int32_t CallParentMethodInt(TlsWrap* wrap, const char* method, size_t argc, napi_value* argv, napi_value* result_out) {
-  if (wrap == nullptr || method == nullptr) return UV_EINVAL;
+  if (wrap == nullptr || wrap->env == nullptr || method == nullptr) return UV_EINVAL;
+  edge::HandleScope scope(wrap->env);
+  if (!scope.is_open()) return UV_EINVAL;
   napi_value parent = GetRefValue(wrap->env, wrap->parent_ref);
   if (parent == nullptr) return UV_EINVAL;
   napi_value fn = GetNamedValue(wrap->env, parent, method);
@@ -1228,6 +1235,27 @@ bool SetSecureContextOnSsl(TlsWrap* wrap, edge::crypto::SecureContextHolder* hol
   STACK_OF(X509_NAME)* list = SSL_dup_CA_list(SSL_CTX_get_client_CA_list(holder->ctx));
   SSL_set_client_CA_list(wrap->ssl, list);
   return true;
+}
+
+bool SetSecureContextOnSslAndRetain(TlsWrap* wrap,
+                                    edge::crypto::SecureContextHolder* holder,
+                                    napi_value context) {
+  if (wrap == nullptr || wrap->env == nullptr || context == nullptr) return false;
+
+  napi_ref next_ref = nullptr;
+  if (napi_create_reference(wrap->env, context, 1, &next_ref) != napi_ok || next_ref == nullptr) {
+    return false;
+  }
+
+  bool ok = SetSecureContextOnSsl(wrap, holder);
+  if (ok || wrap->secure_context == holder) {
+    DeleteRefIfPresent(wrap->env, &wrap->context_ref);
+    wrap->context_ref = next_ref;
+  } else {
+    DeleteRefIfPresent(wrap->env, &next_ref);
+  }
+
+  return ok;
 }
 
 void InitSsl(TlsWrap* wrap);
@@ -1292,7 +1320,10 @@ void TlsWrapFinalize(napi_env env, void* data, void* /*hint*/) {
   if (wrap == nullptr) return;
   DestroySsl(wrap);
   ReleaseKeepaliveHandle(wrap);
-  NotifyTlsStreamClosed(wrap);
+  auto* environment = EdgeEnvironmentGet(env);
+  if (environment == nullptr || !environment->cleanup_started()) {
+    NotifyTlsStreamClosed(wrap);
+  }
   RemoveWrapFromState(wrap);
   DeleteRefIfPresent(env, &wrap->parent_ref);
   DeleteRefIfPresent(env, &wrap->context_ref);
@@ -1305,6 +1336,8 @@ void TlsWrapFinalize(napi_env env, void* data, void* /*hint*/) {
 
 void EmitHandshakeCallback(TlsWrap* wrap, const char* name, size_t argc, napi_value* argv) {
   if (wrap == nullptr || wrap->env == nullptr) return;
+  edge::HandleScope scope(wrap->env);
+  if (!scope.is_open()) return;
   napi_value self = GetRefValue(wrap->env, wrap->wrapper_ref);
   napi_value cb = GetNamedValue(wrap->env, self, name);
   if (!IsFunction(wrap->env, cb)) return;
@@ -1323,6 +1356,8 @@ void EmitHandshakeDone(TlsWrap* wrap) {
 
 void OnClientHello(TlsWrap* wrap, const ClientHelloData& hello) {
   if (wrap == nullptr || wrap->env == nullptr) return;
+  edge::HandleScope scope(wrap->env);
+  if (!scope.is_open()) return;
   const uint64_t ctx_options =
       wrap->ssl != nullptr && SSL_get_SSL_CTX(wrap->ssl) != nullptr ? SSL_CTX_get_options(SSL_get_SSL_CTX(wrap->ssl))
                                                                     : 0;
@@ -1362,7 +1397,9 @@ int NewSessionCallback(SSL* ssl, SSL_SESSION* session);
 void SslInfoCallback(const SSL* ssl, int where, int /*ret*/) {
   if ((where & (SSL_CB_HANDSHAKE_START | SSL_CB_HANDSHAKE_DONE)) == 0) return;
   TlsWrap* wrap = static_cast<TlsWrap*>(SSL_get_app_data(ssl));
-  if (wrap == nullptr) return;
+  if (wrap == nullptr || wrap->env == nullptr) return;
+  edge::HandleScope scope(wrap->env);
+  if (!scope.is_open()) return;
   if ((where & SSL_CB_HANDSHAKE_START) != 0) {
     const int64_t now_ms = static_cast<int64_t>(uv_hrtime() / 1000000ULL);
     napi_value argv[1] = {MakeInt64(wrap->env, now_ms)};
@@ -1384,7 +1421,9 @@ void SslInfoCallback(const SSL* ssl, int where, int /*ret*/) {
 
 void KeylogCallback(const SSL* ssl, const char* line) {
   TlsWrap* wrap = static_cast<TlsWrap*>(SSL_get_app_data(ssl));
-  if (wrap == nullptr || line == nullptr) return;
+  if (wrap == nullptr || wrap->env == nullptr || line == nullptr) return;
+  edge::HandleScope scope(wrap->env);
+  if (!scope.is_open()) return;
   const size_t len = std::strlen(line);
   std::vector<uint8_t> bytes(len + 1, 0);
   if (len > 0) std::memcpy(bytes.data(), line, len);
@@ -1410,6 +1449,8 @@ unsigned int PskServerCallback(SSL* ssl,
                                unsigned int max_psk_len) {
   TlsWrap* wrap = static_cast<TlsWrap*>(SSL_get_app_data(ssl));
   if (wrap == nullptr || wrap->env == nullptr) return 0;
+  edge::HandleScope scope(wrap->env);
+  if (!scope.is_open()) return 0;
 
   napi_value self = GetRefValue(wrap->env, wrap->wrapper_ref);
   napi_value cb = GetPropertyBySymbol(wrap->env, self, "onpskexchange");
@@ -1447,6 +1488,8 @@ unsigned int PskClientCallback(SSL* ssl,
                                unsigned int max_psk_len) {
   TlsWrap* wrap = static_cast<TlsWrap*>(SSL_get_app_data(ssl));
   if (wrap == nullptr || wrap->env == nullptr) return 0;
+  edge::HandleScope scope(wrap->env);
+  if (!scope.is_open()) return 0;
 
   napi_value self = GetRefValue(wrap->env, wrap->wrapper_ref);
   napi_value cb = GetPropertyBySymbol(wrap->env, self, "onpskexchange");
@@ -1549,6 +1592,8 @@ bool MaybeEmitClientOcspResponse(TlsWrap* wrap, bool allow_null) {
       wrap->client_ocsp_event_emitted || !wrap->pending_client_ocsp_event) {
     return false;
   }
+  edge::HandleScope scope(wrap->env);
+  if (!scope.is_open()) return false;
 
   const unsigned char* resp = nullptr;
   const int len = SSL_get_tlsext_status_ocsp_resp(wrap->ssl, &resp);
@@ -1584,6 +1629,8 @@ bool MaybeEmitClientOcspResponse(TlsWrap* wrap, bool allow_null) {
 int TLSExtStatusCallback(SSL* ssl, void* /*arg*/) {
   auto* wrap = static_cast<TlsWrap*>(SSL_get_app_data(ssl));
   if (wrap == nullptr || wrap->env == nullptr) return 1;
+  edge::HandleScope scope(wrap->env);
+  if (!scope.is_open()) return 1;
 
   if (!wrap->is_server) {
     wrap->pending_client_ocsp_event = true;
@@ -1624,7 +1671,9 @@ int SelectALPNCallback(SSL* ssl,
                        unsigned int inlen,
                        void* /*arg*/) {
   auto* wrap = static_cast<TlsWrap*>(SSL_get_app_data(ssl));
-  if (wrap == nullptr) return SSL_TLSEXT_ERR_NOACK;
+  if (wrap == nullptr || wrap->env == nullptr) return SSL_TLSEXT_ERR_NOACK;
+  edge::HandleScope scope(wrap->env);
+  if (!scope.is_open()) return SSL_TLSEXT_ERR_NOACK;
 
   if (wrap->alpn_callback_enabled) {
     napi_value self = GetRefValue(wrap->env, wrap->wrapper_ref);
@@ -1677,6 +1726,8 @@ SSL_SESSION* GetSessionCallback(SSL* ssl,
 int NewSessionCallback(SSL* ssl, SSL_SESSION* session) {
   auto* wrap = static_cast<TlsWrap*>(SSL_get_app_data(ssl));
   if (wrap == nullptr || wrap->env == nullptr || session == nullptr) return 1;
+  edge::HandleScope scope(wrap->env);
+  if (!scope.is_open()) return 1;
   if (!wrap->session_callbacks_enabled) return 0;
   napi_value self = GetRefValue(wrap->env, wrap->wrapper_ref);
   napi_value cb = GetNamedValue(wrap->env, self, "onnewsession");
@@ -1974,15 +2025,15 @@ bool ParentStreamOnRead(EdgeStreamListener* listener, ssize_t nread, const uv_bu
 
 bool ParentStreamOnAfterWrite(EdgeStreamListener* listener, napi_value req_obj, int status) {
   TlsWrap* wrap = GetWrapFromListener(listener);
-  (void)EdgeStreamPassAfterWrite(listener, req_obj, status);
   if (wrap == nullptr) return true;
 
-  if (wrap->has_active_write_issued_by_prev_listener) {
+  const bool is_active_parent_write = RefMatches(wrap->env, wrap->active_parent_write_req_ref, req_obj);
+  if (wrap->has_active_write_issued_by_prev_listener || !is_active_parent_write) {
+    (void)EdgeStreamPassAfterWrite(listener, req_obj, status);
     return true;
   }
-  if (!RefMatches(wrap->env, wrap->active_parent_write_req_ref, req_obj)) {
-    return true;
-  }
+
+  (void)EdgeStreamPassAfterWrite(listener, req_obj, 0);
 
   wrap->parent_write_in_progress = false;
   DeleteRefIfPresent(wrap->env, &wrap->active_parent_write_req_ref);
@@ -3600,7 +3651,7 @@ napi_value TlsWrapSetKeyCert(napi_env env, napi_callback_info info) {
   if (wrap == nullptr || wrap->ssl == nullptr || wrap->is_server == false || argc < 1) return Undefined(env);
   edge::crypto::SecureContextHolder* holder = nullptr;
   if (internal_binding::EdgeCryptoGetSecureContextHolderFromObject(env, argv[0], &holder) && holder != nullptr) {
-    if (!SetSecureContextOnSsl(wrap, holder)) {
+    if (!SetSecureContextOnSslAndRetain(wrap, holder, argv[0])) {
       EmitError(wrap, CreateLastOpenSslError(env, "ERR_TLS_INVALID_CONTEXT", "Failed to update secure context"));
     }
   } else {
@@ -3650,7 +3701,7 @@ napi_value TlsWrapCertCbDone(napi_env env, napi_callback_info info) {
       napi_typeof(env, sni_context, &sni_type) == napi_ok &&
       sni_type == napi_object) {
     if (internal_binding::EdgeCryptoGetSecureContextHolderFromObject(env, sni_context, &holder) && holder != nullptr) {
-      if (!SetSecureContextOnSsl(wrap, holder)) {
+      if (!SetSecureContextOnSslAndRetain(wrap, holder, sni_context)) {
         EmitError(wrap, CreateLastOpenSslError(env, "ERR_TLS_INVALID_CONTEXT", "Failed to set SNI context"));
         return Undefined(env);
       }

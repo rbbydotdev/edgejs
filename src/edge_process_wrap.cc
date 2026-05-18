@@ -19,6 +19,7 @@
 #include "edge_active_resource.h"
 #include "edge_async_wrap.h"
 #include "edge_env_loop.h"
+#include "edge_handle_scope.h"
 #include "edge_handle_wrap.h"
 #include "edge_runtime.h"
 #include "edge_stream_base.h"
@@ -318,7 +319,6 @@ void OnProcessClose(uv_handle_t* handle) {
   UntrackLiveChildPid(wrap->pid);
 
   EdgeHandleWrapDetach(&wrap->handle_wrap);
-  EdgeHandleWrapReleaseWrapperRef(&wrap->handle_wrap);
 
   if (wrap->handle_wrap.active_handle_token != nullptr) {
     EdgeUnregisterActiveHandle(wrap->handle_wrap.env, wrap->handle_wrap.active_handle_token);
@@ -334,6 +334,8 @@ void OnProcessClose(uv_handle_t* handle) {
   }
   if (can_delete) {
     delete wrap;
+  } else {
+    EdgeHandleWrapReleaseWrapperRef(&wrap->handle_wrap);
   }
 }
 
@@ -354,6 +356,8 @@ void EmitOnExit(ProcessWrap* wrap, int64_t exit_status, int term_signal) {
       wrap->handle_wrap.finalized) {
     return;
   }
+  edge::HandleScope scope(wrap->handle_wrap.env);
+  if (!scope.is_open()) return;
   napi_value self = EdgeHandleWrapGetRefValue(wrap->handle_wrap.env, wrap->handle_wrap.wrapper_ref);
   if (self == nullptr) return;
 

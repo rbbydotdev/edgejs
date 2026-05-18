@@ -22,6 +22,7 @@
 #include "edge_tcp_wrap.h"
 #include "edge_tls_wrap.h"
 #include "edge_timers_host.h"
+#include "edge_trace.h"
 #include "edge_tty_wrap.h"
 #include "edge_udp_wrap.h"
 #include "edge_url.h"
@@ -38,6 +39,7 @@
 #include <cctype>
 #include <cstring>
 #include <cstdlib>
+#include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <initializer_list>
@@ -79,8 +81,11 @@ namespace fs = std::filesystem;
 
 struct RequireContext;
 struct ModuleLoaderState;
+struct ContextifyScriptInstance;
 
 static bool IsUndefinedValue(napi_env env, napi_value value);
+static napi_value GetNamedPropertyOrUndefined(napi_env env, napi_value object, const char* key);
+static ModuleLoaderState* GetModuleLoaderState(napi_env env);
 static void ResetModuleLoaderState(napi_env env, ModuleLoaderState* state);
 static void DeleteModuleLoaderState(void* data);
 
@@ -113,6 +118,7 @@ struct ModuleLoaderState {
     std::unordered_map<std::string, CategoryBufferState> category_buffers;
   } trace_events_state;
   std::vector<RequireContext*> require_contexts;
+  std::vector<ContextifyScriptInstance*> contextify_scripts;
   std::string entry_dir;
   bool finalized = false;
 };
@@ -121,12 +127,54 @@ struct RequireContext {
   ModuleLoaderState* state;
   std::string base_dir;
 };
+
+struct ContextifyScriptInstance {
+  ModuleLoaderState* state = nullptr;
+  napi_ref wrapper_ref = nullptr;
+  napi_ref host_defined_option_ref = nullptr;
+};
 using TraceEventsBindingState = ModuleLoaderState::TraceEventsBindingState;
 
 void DeleteRefIfPresent(napi_env env, napi_ref* ref) {
   if (env == nullptr || ref == nullptr || *ref == nullptr) return;
   napi_delete_reference(env, *ref);
   *ref = nullptr;
+}
+
+static void ClearContextifyHostDefinedOptionProperties(napi_env env, napi_value target);
+
+static void DestroyContextifyScriptInstance(napi_env env,
+                                            ContextifyScriptInstance* instance,
+                                            bool detach_wrapper) {
+  if (instance == nullptr) return;
+  if (env == nullptr && instance->state != nullptr) env = instance->state->env;
+
+  if (env != nullptr && instance->wrapper_ref != nullptr) {
+    napi_value wrapper = nullptr;
+    if (napi_get_reference_value(env, instance->wrapper_ref, &wrapper) == napi_ok &&
+        wrapper != nullptr) {
+      ClearContextifyHostDefinedOptionProperties(env, wrapper);
+      if (detach_wrapper) {
+        void* removed = nullptr;
+        (void)napi_remove_wrap(env, wrapper, &removed);
+      }
+    }
+  }
+
+  DeleteRefIfPresent(env, &instance->wrapper_ref);
+  DeleteRefIfPresent(env, &instance->host_defined_option_ref);
+  delete instance;
+}
+
+static void ContextifyScriptFinalize(napi_env env, void* data, void* /*hint*/) {
+  auto* instance = static_cast<ContextifyScriptInstance*>(data);
+  if (instance == nullptr) return;
+  ModuleLoaderState* state = GetModuleLoaderState(env);
+  if (state != nullptr && !state->finalized) {
+    auto& scripts = state->contextify_scripts;
+    scripts.erase(std::remove(scripts.begin(), scripts.end(), instance), scripts.end());
+  }
+  DestroyContextifyScriptInstance(env, instance, false);
 }
 
 static ModuleLoaderState* GetModuleLoaderState(napi_env env) {
@@ -176,6 +224,11 @@ static void ResetModuleLoaderState(napi_env env, ModuleLoaderState* state) {
   }
   state->require_contexts.clear();
 
+  for (ContextifyScriptInstance* script : state->contextify_scripts) {
+    DestroyContextifyScriptInstance(env, script, true);
+  }
+  state->contextify_scripts.clear();
+
   for (auto& kv : state->module_cache) {
     DeleteRefIfPresent(env, &kv.second);
   }
@@ -221,8 +274,62 @@ static void FinalizeModuleLoaderState(napi_env env) {
   EdgeEnvironmentClearOpaqueSlot(env, kEdgeEnvironmentSlotModuleLoaderState);
 }
 
+fs::path ResolveSymlinkComponents(const fs::path& path) {
+  fs::path current;
+  for (const fs::path& part : path.lexically_normal()) {
+    if (part == "." || part.empty()) continue;
+    if (part == "..") {
+      current /= part;
+      continue;
+    }
+    if (part == path.root_name() || part == path.root_directory()) {
+      current /= part;
+      continue;
+    }
+
+    fs::path candidate = current.empty() ? part : current / part;
+    std::error_code ec;
+    if (fs::is_symlink(candidate, ec) && !ec) {
+      fs::path target = fs::read_symlink(candidate, ec);
+      if (!ec) {
+        current = target.is_absolute() ? target : candidate.parent_path() / target;
+        current = current.lexically_normal();
+        continue;
+      }
+    }
+    current = candidate;
+  }
+  return current.lexically_normal();
+}
+
+fs::path NormalizeResolvedPath(const fs::path& path) {
+  std::error_code ec;
+  fs::path absolute = path;
+  if (!absolute.is_absolute()) {
+    absolute = fs::absolute(path, ec);
+    if (ec) {
+      absolute = path;
+      ec.clear();
+    }
+  }
+
+  fs::path canonical = fs::weakly_canonical(absolute, ec);
+  if (!ec) return canonical.lexically_normal();
+
+  fs::path resolved = ResolveSymlinkComponents(absolute);
+  if (resolved != absolute.lexically_normal()) return resolved.lexically_normal();
+  return absolute.lexically_normal();
+}
+
 std::string ReadTextFile(const fs::path& path) {
   std::ifstream in(path);
+  if (!in.is_open()) {
+    const fs::path resolved = ResolveSymlinkComponents(path);
+    if (resolved != path.lexically_normal()) {
+      in.clear();
+      in.open(resolved);
+    }
+  }
   if (!in.is_open()) {
     return "";
   }
@@ -420,12 +527,18 @@ std::string ValueToUtf8(napi_env env, napi_value value) {
 
 bool PathExistsRegularFile(const fs::path& path) {
   std::error_code ec;
-  return fs::exists(path, ec) && fs::is_regular_file(path, ec);
+  if (fs::exists(path, ec) && fs::is_regular_file(path, ec)) return true;
+  const fs::path resolved = ResolveSymlinkComponents(path);
+  ec.clear();
+  return resolved != path.lexically_normal() && fs::exists(resolved, ec) && fs::is_regular_file(resolved, ec);
 }
 
 bool PathExistsDirectory(const fs::path& path) {
   std::error_code ec;
-  return fs::exists(path, ec) && fs::is_directory(path, ec);
+  if (fs::exists(path, ec) && fs::is_directory(path, ec)) return true;
+  const fs::path resolved = ResolveSymlinkComponents(path);
+  ec.clear();
+  return resolved != path.lexically_normal() && fs::exists(resolved, ec) && fs::is_directory(resolved, ec);
 }
 
 bool ResolveAsFile(const fs::path& candidate, fs::path* out) {
@@ -566,12 +679,21 @@ ParsePackageStatus ParseSerializedPackageConfig(const fs::path& package_json_pat
                                                 SerializedPackageConfigData* out) {
   if (out == nullptr) return ParsePackageStatus::kInvalid;
 
+  fs::path resolved_package_json_path = package_json_path;
   std::error_code ec;
-  if (!fs::is_regular_file(package_json_path, ec) || ec) {
-    return ParsePackageStatus::kMissing;
+  if (!fs::is_regular_file(resolved_package_json_path, ec) || ec) {
+    const fs::path resolved = ResolveSymlinkComponents(package_json_path);
+    if (resolved == package_json_path.lexically_normal()) {
+      return ParsePackageStatus::kMissing;
+    }
+    resolved_package_json_path = resolved;
+    ec.clear();
+    if (!fs::is_regular_file(resolved_package_json_path, ec) || ec) {
+      return ParsePackageStatus::kMissing;
+    }
   }
 
-  std::ifstream in(package_json_path, std::ios::binary);
+  std::ifstream in(resolved_package_json_path, std::ios::binary);
   if (!in.is_open()) return ParsePackageStatus::kMissing;
   std::ostringstream ss;
   ss << in.rdbuf();
@@ -587,7 +709,7 @@ ParsePackageStatus ParseSerializedPackageConfig(const fs::path& package_json_pat
   }
 
   SerializedPackageConfigData parsed;
-  parsed.file_path = package_json_path.lexically_normal().string();
+  parsed.file_path = resolved_package_json_path.lexically_normal().string();
 
   for (auto field : main_object) {
     simdjson::ondemand::raw_json_string key;
@@ -803,18 +925,7 @@ bool ResolveAsDirectory(const fs::path& candidate, fs::path* out) {
 }
 
 std::string CanonicalPathKey(const fs::path& path) {
-  std::error_code ec;
-  fs::path absolute = path;
-  if (!absolute.is_absolute()) {
-    absolute = fs::absolute(path, ec);
-    if (ec) {
-      absolute = path;
-      ec.clear();
-    }
-  }
-  const fs::path canonical = fs::weakly_canonical(absolute, ec);
-  if (!ec) return edge_path::FromNamespacedPath(canonical.lexically_normal().string());
-  return edge_path::FromNamespacedPath(absolute.lexically_normal().string());
+  return edge_path::FromNamespacedPath(NormalizeResolvedPath(path).string());
 }
 
 // True if request is relative (./, ../, ., ..) or absolute (starts with /).
@@ -961,6 +1072,62 @@ static napi_value ReturnFirstArgCallback(napi_env env, napi_callback_info info) 
   return undefined;
 }
 
+static napi_value InspectorBuiltinFallbackCompileFunction(napi_env env, napi_callback_info info) {
+  size_t argc = 6;
+  napi_value argv[6] = {nullptr, nullptr, nullptr, nullptr, nullptr, nullptr};
+  if (napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr) != napi_ok ||
+      argc < 5 ||
+      argv[2] == nullptr ||
+      argv[4] == nullptr) {
+    napi_throw_error(env, nullptr, "Failed to initialize inspector builtin fallback");
+    return nullptr;
+  }
+  napi_valuetype internal_binding_type = napi_undefined;
+  if (napi_typeof(env, argv[4], &internal_binding_type) != napi_ok ||
+      internal_binding_type != napi_function) {
+    napi_throw_error(env, nullptr, "Failed to initialize inspector builtin fallback");
+    return nullptr;
+  }
+
+  napi_value name = nullptr;
+  if (napi_create_string_utf8(env, "inspector", NAPI_AUTO_LENGTH, &name) != napi_ok ||
+      name == nullptr) {
+    return nullptr;
+  }
+
+  napi_value global = nullptr;
+  if (napi_get_global(env, &global) != napi_ok || global == nullptr) return nullptr;
+
+  napi_value inspector = nullptr;
+  if (napi_call_function(env, global, argv[4], 1, &name, &inspector) != napi_ok ||
+      inspector == nullptr ||
+      IsUndefinedValue(env, inspector)) {
+    return nullptr;
+  }
+
+  if (napi_set_named_property(env, argv[2], "exports", inspector) != napi_ok) {
+    return nullptr;
+  }
+
+  napi_value undefined = nullptr;
+  napi_get_undefined(env, &undefined);
+  return undefined;
+}
+
+static napi_value CreateInspectorBuiltinFallbackCompileFunction(napi_env env) {
+  napi_value compiled = nullptr;
+  if (napi_create_function(env,
+                           "inspector",
+                           NAPI_AUTO_LENGTH,
+                           InspectorBuiltinFallbackCompileFunction,
+                           nullptr,
+                           &compiled) != napi_ok ||
+      compiled == nullptr) {
+    return nullptr;
+  }
+  return compiled;
+}
+
 static napi_value BuiltinsCompileFunctionCallback(napi_env env, napi_callback_info info) {
   size_t argc = 1;
   napi_value argv[1] = {nullptr};
@@ -973,9 +1140,16 @@ static napi_value BuiltinsCompileFunctionCallback(napi_env env, napi_callback_in
   }
 
   const std::string id = ValueToUtf8(env, argv[0]);
+  if (EDGE_TRACE_ENABLED("EDGE_TRACE_BUILTINS")) {
+    std::fprintf(stderr, "EDGE_TRACE_BUILTINS compile %s\n", id.c_str());
+  }
   if (id.empty()) {
     napi_throw_error(env, nullptr, "builtins.compileFunction requires a builtin id");
     return nullptr;
+  }
+
+  if (id == "inspector") {
+    return CreateInspectorBuiltinFallbackCompileFunction(env);
   }
 
   std::string source;
@@ -1353,6 +1527,31 @@ static bool ThrowNativeBuiltinExecutionError(napi_env env,
   return false;
 }
 
+static bool PreservePendingNativeBuiltinExceptionWithContext(napi_env env, const std::string& id) {
+  bool has_exception = false;
+  if (napi_is_exception_pending(env, &has_exception) != napi_ok || !has_exception) {
+    return ThrowNativeBuiltinExecutionError(env, id, "builtin threw");
+  }
+
+  if (auto* environment = EdgeEnvironmentGet(env); environment != nullptr && environment->exiting()) {
+    return false;
+  }
+
+  std::fprintf(stderr, "Failed to execute builtin '%s':\n", id.c_str());
+  return false;
+}
+
+static std::string LastNapiErrorMessage(napi_env env) {
+  const napi_extended_error_info* error_info = nullptr;
+  if (napi_get_last_error_info(env, &error_info) != napi_ok ||
+      error_info == nullptr ||
+      error_info->error_message == nullptr ||
+      error_info->error_message[0] == '\0') {
+    return {};
+  }
+  return error_info->error_message;
+}
+
 static bool ResolveNativeBuiltinCompileInput(napi_env env,
                                              ModuleLoaderState* state,
                                              const std::string& id,
@@ -1492,7 +1691,8 @@ static bool ExecuteBuiltinFromNative(napi_env env, ModuleLoaderState* state, con
   }
 
   napi_value compile_result = nullptr;
-  if (unofficial_napi_contextify_compile_function(env,
+  const napi_status compile_status =
+      unofficial_napi_contextify_compile_function(env,
                                                   code,
                                                   filename,
                                                   0,
@@ -1503,9 +1703,16 @@ static bool ExecuteBuiltinFromNative(napi_env env, ModuleLoaderState* state, con
                                                   undefined,
                                                   params,
                                                   undefined,
-                                                  &compile_result) != napi_ok ||
+                                                  &compile_result);
+  if (compile_status != napi_ok ||
       compile_result == nullptr) {
-    return false;
+    std::string message = "contextify compile failed";
+    const std::string last_error = LastNapiErrorMessage(env);
+    if (!last_error.empty()) {
+      message += ": ";
+      message += last_error;
+    }
+    return ThrowNativeBuiltinExecutionError(env, id, message);
   }
 
   napi_value compiled_fn = nullptr;
@@ -1516,7 +1723,7 @@ static bool ExecuteBuiltinFromNative(napi_env env, ModuleLoaderState* state, con
 
   napi_value call_result = nullptr;
   if (napi_call_function(env, undefined, compiled_fn, argv.size(), argv.data(), &call_result) != napi_ok) {
-    return false;
+    return PreservePendingNativeBuiltinExceptionWithContext(env, id);
   }
 
   if (out != nullptr) {
@@ -2845,6 +3052,61 @@ static void SetHostDefinedOptionSymbol(napi_env env, napi_value target, napi_val
   napi_set_property(env, target, symbol, value);
 }
 
+static void SetContextifyHostDefinedOption(napi_env env, napi_value target, napi_value id_value) {
+  if (env == nullptr || target == nullptr) return;
+  napi_value value = id_value;
+  if (value == nullptr) napi_get_undefined(env, &value);
+  SetHostDefinedOptionSymbol(env, target, value);
+  napi_set_named_property(env, target, "contextifyHostDefinedOptionId", value);
+}
+
+static void ClearContextifyHostDefinedOptionProperties(napi_env env, napi_value target) {
+  if (env == nullptr || target == nullptr) return;
+  napi_value undefined = nullptr;
+  napi_get_undefined(env, &undefined);
+  SetContextifyHostDefinedOption(env, target, undefined);
+}
+
+static ContextifyScriptInstance* TrackContextifyScript(napi_env env,
+                                                       napi_value wrapper,
+                                                       napi_value host_defined_option_id) {
+  ModuleLoaderState* state = GetModuleLoaderState(env);
+  if (state == nullptr || wrapper == nullptr || host_defined_option_id == nullptr ||
+      IsUndefinedValue(env, host_defined_option_id)) {
+    return nullptr;
+  }
+
+  auto* instance = new (std::nothrow) ContextifyScriptInstance();
+  if (instance == nullptr) return nullptr;
+  instance->state = state;
+
+  if (napi_create_reference(env, wrapper, 0, &instance->wrapper_ref) != napi_ok ||
+      napi_create_reference(env, host_defined_option_id, 1, &instance->host_defined_option_ref) != napi_ok ||
+      napi_wrap(env, wrapper, instance, ContextifyScriptFinalize, nullptr, nullptr) != napi_ok) {
+    DestroyContextifyScriptInstance(env, instance, true);
+    return nullptr;
+  }
+
+  state->contextify_scripts.push_back(instance);
+  return instance;
+}
+
+static napi_value GetContextifyHostDefinedOption(napi_env env, napi_value wrapper) {
+  if (env == nullptr || wrapper == nullptr) return nullptr;
+  void* data = nullptr;
+  if (napi_unwrap(env, wrapper, &data) == napi_ok && data != nullptr) {
+    auto* instance = static_cast<ContextifyScriptInstance*>(data);
+    if (instance->host_defined_option_ref != nullptr) {
+      napi_value out = nullptr;
+      if (napi_get_reference_value(env, instance->host_defined_option_ref, &out) == napi_ok &&
+          out != nullptr) {
+        return out;
+      }
+    }
+  }
+  return GetNamedPropertyOrUndefined(env, wrapper, "contextifyHostDefinedOptionId");
+}
+
 static napi_value GetNamedPropertyOrUndefined(napi_env env, napi_value object, const char* key) {
   napi_value value = nullptr;
   if (object != nullptr && napi_get_named_property(env, object, key, &value) == napi_ok && value != nullptr) {
@@ -2921,9 +3183,11 @@ static napi_value ContextifyScriptConstructorCallback(napi_env env, napi_callbac
   napi_value host_defined_option_id = nullptr;
   if (argc >= 8) host_defined_option_id = argv[7];
   if (host_defined_option_id != nullptr) {
-    napi_set_named_property(env, this_arg, "contextifyHostDefinedOptionId", host_defined_option_id);
+    SetContextifyHostDefinedOption(env, this_arg, host_defined_option_id);
+    TrackContextifyScript(env, this_arg, host_defined_option_id);
+  } else {
+    SetHostDefinedOptionSymbol(env, this_arg, host_defined_option_id);
   }
-  SetHostDefinedOptionSymbol(env, this_arg, host_defined_option_id);
 
   // Match Node's constructor-time syntax validation behavior.
   napi_value precompiled_cache = nullptr;
@@ -3003,7 +3267,8 @@ static napi_value ContextifyScriptRunInContextCallback(napi_env env, napi_callba
   napi_value filename_value = GetNamedPropertyOrUndefined(env, this_arg, "contextifyFilename");
   napi_value line_offset_value = GetNamedPropertyOrUndefined(env, this_arg, "contextifyLineOffset");
   napi_value column_offset_value = GetNamedPropertyOrUndefined(env, this_arg, "contextifyColumnOffset");
-  napi_value host_defined_option_id = GetNamedPropertyOrUndefined(env, this_arg, "contextifyHostDefinedOptionId");
+  napi_value host_defined_option_id = GetContextifyHostDefinedOption(env, this_arg);
+  SetContextifyHostDefinedOption(env, this_arg, host_defined_option_id);
 
   int32_t line_offset = 0;
   int32_t column_offset = 0;
@@ -3027,6 +3292,7 @@ static napi_value ContextifyScriptRunInContextCallback(napi_env env, napi_callba
                                                                break_on_first_line,
                                                                host_defined_option_id,
                                                                &result);
+  ClearContextifyHostDefinedOptionProperties(env, this_arg);
   if (st != napi_ok || result == nullptr) {
     return nullptr;
   }
@@ -3198,6 +3464,15 @@ static napi_value ContextifyMakeContextCallback(napi_env env, napi_callback_info
       out == nullptr) {
     return nullptr;
   }
+
+  napi_value context_symbol = GetUtilPrivateSymbolByName(env, "contextify_context_private_symbol");
+  if (context_symbol != nullptr) {
+    napi_value true_value = nullptr;
+    if (napi_get_boolean(env, true, &true_value) == napi_ok && true_value != nullptr) {
+      (void)napi_set_property(env, out, context_symbol, true_value);
+    }
+  }
+
   return out;
 }
 
@@ -3885,6 +4160,12 @@ static napi_value ResolveContextifyBinding(napi_env env) {
   napi_get_undefined(env, &undefined);
 
   ModuleLoaderState* state = GetModuleLoaderState(env);
+  if (EDGE_TRACE_ENABLED("EDGE_TRACE_INTERNAL_BINDING")) {
+    std::fprintf(stderr,
+                 "EDGE_TRACE_INTERNAL_BINDING contextify state=%p finalized=%s\n",
+                 static_cast<void*>(state),
+                 state != nullptr && state->finalized ? "true" : "false");
+  }
   if (state == nullptr || state->finalized) return undefined;
   if (state->contextify_binding_ref != nullptr) {
     napi_value cached = nullptr;
@@ -3918,38 +4199,34 @@ static napi_value ResolveContextifyBinding(napi_env env) {
     napi_set_named_property(env, out, "makeContext", make_context);
   }
 
+  napi_property_descriptor script_properties[] = {
+      {"runInContext",
+       nullptr,
+       ContextifyScriptRunInContextCallback,
+       nullptr,
+       nullptr,
+       nullptr,
+       static_cast<napi_property_attributes>(napi_writable | napi_configurable),
+       nullptr},
+      {"createCachedData",
+       nullptr,
+       ContextifyScriptCreateCachedDataCallback,
+       nullptr,
+       nullptr,
+       nullptr,
+       static_cast<napi_property_attributes>(napi_writable | napi_configurable),
+       nullptr},
+  };
   napi_value contextify_script_ctor = nullptr;
-  if (napi_create_function(env,
-                           "ContextifyScript",
-                           NAPI_AUTO_LENGTH,
-                           ContextifyScriptConstructorCallback,
-                           nullptr,
-                           &contextify_script_ctor) == napi_ok &&
+  if (napi_define_class(env,
+                        "ContextifyScript",
+                        NAPI_AUTO_LENGTH,
+                        ContextifyScriptConstructorCallback,
+                        nullptr,
+                        sizeof(script_properties) / sizeof(script_properties[0]),
+                        script_properties,
+                        &contextify_script_ctor) == napi_ok &&
       contextify_script_ctor != nullptr) {
-    napi_value proto = nullptr;
-    if (napi_get_named_property(env, contextify_script_ctor, "prototype", &proto) == napi_ok && proto != nullptr) {
-      napi_value run_in_context = nullptr;
-      if (napi_create_function(env,
-                               "runInContext",
-                               NAPI_AUTO_LENGTH,
-                               ContextifyScriptRunInContextCallback,
-                               nullptr,
-                               &run_in_context) == napi_ok &&
-          run_in_context != nullptr) {
-        napi_set_named_property(env, proto, "runInContext", run_in_context);
-      }
-
-      napi_value create_cached_data = nullptr;
-      if (napi_create_function(env,
-                               "createCachedData",
-                               NAPI_AUTO_LENGTH,
-                               ContextifyScriptCreateCachedDataCallback,
-                               nullptr,
-                               &create_cached_data) == napi_ok &&
-          create_cached_data != nullptr) {
-      napi_set_named_property(env, proto, "createCachedData", create_cached_data);
-      }
-    }
     napi_set_named_property(env, out, "ContextifyScript", contextify_script_ctor);
   }
 
@@ -4010,6 +4287,9 @@ static napi_value ResolveContextifyBinding(napi_env env) {
 
   DeleteRefIfPresent(env, &state->contextify_binding_ref);
   (void)napi_create_reference(env, out, 1, &state->contextify_binding_ref);
+  if (EDGE_TRACE_ENABLED("EDGE_TRACE_INTERNAL_BINDING")) {
+    std::fprintf(stderr, "EDGE_TRACE_INTERNAL_BINDING contextify resolved\n");
+  }
   return out;
 }
 
@@ -4236,6 +4516,21 @@ static napi_value DispatchGetOrCreateTraceEvents(napi_env env) {
   return GetOrCreateTraceEventsBinding(env);
 }
 
+static internal_binding::ResolveOptions CreateInternalBindingResolveOptions(ModuleLoaderState* state) {
+  internal_binding::ResolveOptions options;
+  options.state = state;
+  options.callbacks.get_or_create_builtins = DispatchGetOrCreateBuiltins;
+  options.callbacks.get_or_create_task_queue = DispatchGetOrCreateTaskQueue;
+  options.callbacks.get_or_create_errors = DispatchGetOrCreateErrors;
+  options.callbacks.get_or_create_trace_events = DispatchGetOrCreateTraceEvents;
+  options.callbacks.resolve_binding = DispatchResolveBinding;
+  options.callbacks.resolve_uv = ResolveUvBinding;
+  options.callbacks.resolve_contextify = ResolveContextifyBinding;
+  options.callbacks.resolve_modules = ResolveModulesBinding;
+  options.callbacks.resolve_options = ResolveOptionsBinding;
+  return options;
+}
+
 static napi_value NativeGetInternalBindingCallback(napi_env env, napi_callback_info info) {
   size_t argc = 1;
   napi_value argv[1] = {nullptr};
@@ -4252,27 +4547,31 @@ static napi_value NativeGetInternalBindingCallback(napi_env env, napi_callback_i
     return undefined;
   }
   const std::string name = ValueToUtf8(env, argv[0]);
+  if (EDGE_TRACE_ENABLED("EDGE_TRACE_INTERNAL_BINDING")) {
+    std::fprintf(stderr, "EDGE_TRACE_INTERNAL_BINDING request %s\n", name.c_str());
+  }
   if (!name.empty() && ShouldCacheInternalBinding(name)) {
     napi_value cached = GetCachedInternalBinding(state, env, name.c_str());
     if (cached != nullptr) {
+      if (EDGE_TRACE_ENABLED("EDGE_TRACE_INTERNAL_BINDING")) {
+        std::fprintf(stderr, "EDGE_TRACE_INTERNAL_BINDING cache-hit %s\n", name.c_str());
+      }
       return cached;
     }
   }
 
-  internal_binding::ResolveOptions options;
-  options.state = state;
-  options.callbacks.get_or_create_builtins = DispatchGetOrCreateBuiltins;
-  options.callbacks.get_or_create_task_queue = DispatchGetOrCreateTaskQueue;
-  options.callbacks.get_or_create_errors = DispatchGetOrCreateErrors;
-  options.callbacks.get_or_create_trace_events = DispatchGetOrCreateTraceEvents;
-  options.callbacks.resolve_binding = DispatchResolveBinding;
-  options.callbacks.resolve_uv = ResolveUvBinding;
-  options.callbacks.resolve_contextify = ResolveContextifyBinding;
-  options.callbacks.resolve_modules = ResolveModulesBinding;
-  options.callbacks.resolve_options = ResolveOptionsBinding;
+  internal_binding::ResolveOptions options = CreateInternalBindingResolveOptions(state);
 
   napi_value resolved = internal_binding::Resolve(env, name, options);
   if (resolved != nullptr) {
+    if (EDGE_TRACE_ENABLED("EDGE_TRACE_INTERNAL_BINDING")) {
+      napi_valuetype resolved_type = napi_undefined;
+      (void)napi_typeof(env, resolved, &resolved_type);
+      std::fprintf(stderr,
+                   "EDGE_TRACE_INTERNAL_BINDING resolved %s type=%d\n",
+                   name.c_str(),
+                   static_cast<int>(resolved_type));
+    }
     if (!name.empty() && ShouldCacheInternalBinding(name) && !IsUndefinedValue(env, resolved)) {
       napi_value cached = CacheInternalBinding(state, env, name.c_str(), resolved);
       if (cached != nullptr) {
@@ -4290,26 +4589,27 @@ static napi_value NativeGetInternalBindingCallback(napi_env env, napi_callback_i
 }
 
 bool ResolveModulePath(const std::string& specifier, const std::string& base_dir, fs::path* out) {
-  std::string resolved_specifier;
-  if (specifier.empty()) {
-    return false;
+  if (out == nullptr || specifier.empty()) return false;
+
+  fs::path base = base_dir.empty() ? fs::current_path() : fs::path(base_dir);
+  base = NormalizeResolvedPath(base);
+
+  fs::path resolved;
+  if (!IsRelativeOrAbsoluteRequest(specifier)) {
+    if (!ResolveNodeModules(specifier, base.string(), &resolved)) {
+      return false;
+    }
+    *out = NormalizeResolvedPath(resolved);
+    return true;
   }
-  if (!specifier.empty() && specifier[0] == '/') {
-    resolved_specifier = edge_path::PathResolve({specifier});
-  } else if (specifier.rfind("./", 0) == 0 || specifier.rfind("../", 0) == 0 || specifier == "." ||
-             specifier == "..") {
-    resolved_specifier = edge_path::PathResolve({base_dir, specifier});
-  } else {
+
+  const fs::path candidate = specifier[0] == '/' ? fs::path(specifier) : base / specifier;
+  if (!ResolveAsFile(candidate, &resolved) && !ResolveAsDirectory(candidate, &resolved)) {
     return false;
   }
 
-  const fs::path normalized = fs::path(edge_path::FromNamespacedPath(resolved_specifier));
-  fs::path resolved;
-  if (ResolveAsFile(normalized, &resolved) || ResolveAsDirectory(normalized, &resolved)) {
-    *out = fs::path(edge_path::FromNamespacedPath(resolved.lexically_normal().string()));
-    return true;
-  }
-  return false;
+  *out = NormalizeResolvedPath(resolved);
+  return true;
 }
 
 napi_value MakeError(napi_env env, const char* code, const std::string& message) {
@@ -4408,8 +4708,7 @@ napi_value CreateResolvedPathString(napi_env env, const fs::path& resolved_path)
 napi_value ResolveSpecifierForContext(napi_env env, RequireContext* context, const std::string& specifier, bool throw_on_error) {
   fs::path resolved_path;
   if (ResolveBuiltinPath(specifier, context->base_dir, &resolved_path) ||
-      ResolveModulePath(specifier, context->base_dir, &resolved_path) ||
-      ResolveNodeModules(specifier, context->base_dir, &resolved_path)) {
+      ResolveModulePath(specifier, context->base_dir, &resolved_path)) {
     return CreateResolvedPathString(env, resolved_path);
   }
   if (throw_on_error) {
@@ -4620,9 +4919,41 @@ bool ParseJsonModule(napi_env env, const fs::path& resolved_path, napi_value mod
 
 bool LoadResolvedModule(napi_env env, ModuleLoaderState* state, const fs::path& resolved_path, napi_value* out_exports);
 
+bool LoadUnavailableInspectorBuiltin(napi_env env, ModuleLoaderState* state, napi_value* out_exports) {
+  if (out_exports != nullptr) *out_exports = nullptr;
+  if (env == nullptr || state == nullptr) return false;
+
+  napi_value internal_binding = GetStateInternalBinding(env, state);
+  if (!IsFunctionValue(env, internal_binding)) return false;
+
+  napi_value name = nullptr;
+  if (napi_create_string_utf8(env, "inspector", NAPI_AUTO_LENGTH, &name) != napi_ok || name == nullptr) {
+    return false;
+  }
+
+  napi_value global = nullptr;
+  if (napi_get_global(env, &global) != napi_ok || global == nullptr) return false;
+
+  napi_value exports = nullptr;
+  if (napi_call_function(env, global, internal_binding, 1, &name, &exports) != napi_ok ||
+      exports == nullptr ||
+      IsUndefinedValue(env, exports)) {
+    return false;
+  }
+
+  if (out_exports != nullptr) *out_exports = exports;
+  return true;
+}
+
 bool CallRequireBuiltinLoader(napi_env env, ModuleLoaderState* state, const std::string& id, napi_value* out_exports) {
   if (out_exports != nullptr) *out_exports = nullptr;
-  if (env == nullptr || state == nullptr || id.empty() || state->require_builtin_loader_ref == nullptr) return false;
+  if (env == nullptr || state == nullptr || id.empty()) return false;
+
+  if (id == "inspector") {
+    return LoadUnavailableInspectorBuiltin(env, state, out_exports);
+  }
+
+  if (state->require_builtin_loader_ref == nullptr) return false;
 
   napi_value require_builtin = nullptr;
   if (napi_get_reference_value(env, state->require_builtin_loader_ref, &require_builtin) != napi_ok ||

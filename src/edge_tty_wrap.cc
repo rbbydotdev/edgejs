@@ -2,6 +2,8 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
+#include <cstdlib>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -12,6 +14,7 @@
 #include "edge_environment.h"
 #include "edge_env_loop.h"
 #include "edge_stream_base.h"
+#include "edge_trace.h"
 
 namespace {
 
@@ -22,6 +25,7 @@ struct TtyWrap {
   bool initialized = false;
   int init_err = 0;
   int32_t fd = -1;
+  bool raw_mode = false;
 };
 
 struct TtyBindingState {
@@ -131,6 +135,13 @@ void OnAlloc(uv_handle_t* handle, size_t suggested_size, uv_buf_t* buf) {
 
 void OnRead(uv_stream_t* stream, ssize_t nread, const uv_buf_t* buf) {
   auto* wrap = stream != nullptr ? static_cast<TtyWrap*>(stream->data) : nullptr;
+  if (EDGE_TRACE_ENABLED("EDGE_TRACE_TTY")) {
+    std::fprintf(stderr,
+                 "EDGE_TRACE_TTY onread fd=%d nread=%zd len=%zu\n",
+                 wrap != nullptr ? wrap->fd : -1,
+                 nread,
+                 buf != nullptr ? buf->len : 0);
+  }
   EdgeStreamBaseOnUvRead(wrap != nullptr ? &wrap->base : nullptr, nread, buf);
 }
 
@@ -153,7 +164,7 @@ napi_value TtyCtor(napi_env env, napi_callback_info info) {
 
   if (fd >= 0) {
     uv_loop_t* loop = EdgeGetEnvLoop(env);
-    wrap->init_err = loop != nullptr ? uv_tty_init(loop, &wrap->handle, fd, 0) : UV_EINVAL;
+    wrap->init_err = loop != nullptr ? uv_tty_init(loop, &wrap->handle, fd, fd == 0 ? 1 : 0) : UV_EINVAL;
   } else {
     wrap->init_err = UV_EINVAL;
   }
@@ -230,7 +241,18 @@ napi_value TtySetRawMode(napi_env env, napi_callback_info info) {
 #else
   const uv_tty_mode_t mode = flag ? UV_TTY_MODE_RAW : UV_TTY_MODE_NORMAL;
 #endif
-  return EdgeStreamBaseMakeInt32(env, uv_tty_set_mode(&wrap->handle, mode));
+  const int rc = uv_tty_set_mode(&wrap->handle, mode);
+  if (rc == 0) {
+    wrap->raw_mode = flag;
+  }
+  if (EDGE_TRACE_ENABLED("EDGE_TRACE_TTY")) {
+    std::fprintf(stderr,
+                 "EDGE_TRACE_TTY setRawMode fd=%d flag=%s rc=%d\n",
+                 wrap->fd,
+                 flag ? "true" : "false",
+                 rc);
+  }
+  return EdgeStreamBaseMakeInt32(env, rc);
 }
 
 napi_value TtySetBlocking(napi_env env, napi_callback_info info) {
@@ -260,6 +282,14 @@ napi_value TtyReadStart(napi_env env, napi_callback_info info) {
 
   int rc = uv_read_start(reinterpret_cast<uv_stream_t*>(&wrap->handle), OnAlloc, OnRead);
   if (rc == UV_EALREADY) rc = 0;
+  if (EDGE_TRACE_ENABLED("EDGE_TRACE_TTY")) {
+    std::fprintf(stderr,
+                 "EDGE_TRACE_TTY readStart fd=%d rc=%d has_ref=%d loop_alive=%d\n",
+                 wrap->fd,
+                 rc,
+                 uv_has_ref(reinterpret_cast<uv_handle_t*>(&wrap->handle)),
+                 uv_loop_alive(wrap->handle.loop));
+  }
   EdgeStreamBaseSetReading(&wrap->base, rc == 0);
   return EdgeStreamBaseMakeInt32(env, rc);
 }
@@ -271,8 +301,23 @@ napi_value TtyReadStop(napi_env env, napi_callback_info info) {
     return EdgeStreamBaseMakeInt32(env, UV_EBADF);
   }
 
+  if (wrap->fd == 0 && wrap->raw_mode) {
+    if (EDGE_TRACE_ENABLED("EDGE_TRACE_TTY")) {
+      std::fprintf(stderr, "EDGE_TRACE_TTY readStop ignored fd=0 raw_mode=true\n");
+    }
+    return EdgeStreamBaseMakeInt32(env, 0);
+  }
+
   int rc = uv_read_stop(reinterpret_cast<uv_stream_t*>(&wrap->handle));
   if (rc == UV_EALREADY) rc = 0;
+  if (EDGE_TRACE_ENABLED("EDGE_TRACE_TTY")) {
+    std::fprintf(stderr,
+                 "EDGE_TRACE_TTY readStop fd=%d rc=%d has_ref=%d loop_alive=%d\n",
+                 wrap->fd,
+                 rc,
+                 uv_has_ref(reinterpret_cast<uv_handle_t*>(&wrap->handle)),
+                 uv_loop_alive(wrap->handle.loop));
+  }
   EdgeStreamBaseSetReading(&wrap->base, false);
   return EdgeStreamBaseMakeInt32(env, rc);
 }
@@ -440,15 +485,23 @@ napi_value TtyWriteQueueSizeGetter(napi_env env, napi_callback_info info) {
 }  // namespace
 
 uv_stream_t* EdgeTtyWrapGetStream(napi_env env, napi_value value) {
+  EdgeStreamBase* base = EdgeTtyWrapGetStreamBase(env, value);
+  return base != nullptr ? reinterpret_cast<uv_stream_t*>(&FromBase(base)->handle) : nullptr;
+}
+
+EdgeStreamBase* EdgeTtyWrapGetStreamBase(napi_env env, napi_value value) {
   if (env == nullptr || value == nullptr) return nullptr;
   napi_valuetype type = napi_undefined;
-  if (napi_typeof(env, value, &type) != napi_ok || type != napi_object) return nullptr;
+  if (napi_typeof(env, value, &type) != napi_ok ||
+      (type != napi_object && type != napi_function && type != napi_external)) {
+    return nullptr;
+  }
   TtyWrap* wrap = nullptr;
   if (napi_unwrap(env, value, reinterpret_cast<void**>(&wrap)) != napi_ok || wrap == nullptr) return nullptr;
   if (!wrap->initialized) return nullptr;
   uv_handle_t* handle = reinterpret_cast<uv_handle_t*>(&wrap->handle);
   if (handle->data != wrap || handle->type != UV_TTY) return nullptr;
-  return reinterpret_cast<uv_stream_t*>(&wrap->handle);
+  return &wrap->base;
 }
 
 napi_value EdgeInstallTtyWrapBinding(napi_env env) {

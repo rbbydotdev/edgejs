@@ -8,7 +8,7 @@ from pathlib import Path
 
 
 NODE_DEPS_BUILTIN_ROOTS = (
-    "undici",
+    "undici/undici.js",
     "acorn",
     "minimatch",
     "cjs-module-lexer",

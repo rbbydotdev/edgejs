@@ -454,9 +454,14 @@ bool ValuePassesPrototypeGetterBrandCheck(napi_env env,
 
 bool IsInternalScriptName(std::string_view script_name) {
   if (script_name.empty()) return false;
-  if (script_name.rfind("node:", 0) == 0) return true;
-  return script_name.find("/lib/") != std::string::npos ||
-         script_name.find("\\lib\\") != std::string::npos;
+  return script_name.rfind("node:", 0) == 0;
+}
+
+bool IsNodeModulesScriptName(std::string_view script_name) {
+  return script_name.find("/node_modules/") != std::string::npos ||
+         script_name.find("\\node_modules\\") != std::string::npos ||
+         script_name.find("/node_modules\\") != std::string::npos ||
+         script_name.find("\\node_modules/") != std::string::npos;
 }
 
 static uint32_t GetUVHandleTypeCode(uv_handle_type type) {
@@ -536,18 +541,16 @@ napi_value IsInsideNodeModulesCallback(napi_env env, napi_callback_info info) {
   if (frame_limit < 1) frame_limit = 1;
 
   bool result = false;
-  uint32_t frames = static_cast<uint32_t>(frame_limit + 32);
-  if (frames < 64) frames = 64;
+  uint32_t frames = static_cast<uint32_t>(frame_limit);
   if (frames > kMaxCallSitesFrames) frames = kMaxCallSitesFrames;
-  const uint32_t raw_frames = RawCallSiteFramesForEdge(frames);
 
   napi_value callsites = nullptr;
-  if (unofficial_napi_get_call_sites(env, raw_frames, &callsites) == napi_ok && callsites != nullptr) {
+  if (unofficial_napi_get_current_stack_trace(env, frames, &callsites) == napi_ok && callsites != nullptr) {
     bool is_array = false;
     if (napi_is_array(env, callsites, &is_array) == napi_ok && is_array) {
       uint32_t length = 0;
       if (napi_get_array_length(env, callsites, &length) == napi_ok) {
-        for (uint32_t i = std::min(kEdgeInternalCallSiteFrames, length); i < length; ++i) {
+        for (uint32_t i = 0; i < length; ++i) {
           napi_value callsite = nullptr;
           if (napi_get_element(env, callsites, i, &callsite) != napi_ok || callsite == nullptr) continue;
 
@@ -562,13 +565,10 @@ napi_value IsInsideNodeModulesCallback(napi_env env, napi_callback_info info) {
           if (script_name_str.empty()) continue;
           if (IsInternalScriptName(script_name_str)) continue;
 
-          if (script_name_str.find("/node_modules/") != std::string::npos ||
-              script_name_str.find("\\node_modules\\") != std::string::npos ||
-              script_name_str.find("/node_modules\\") != std::string::npos ||
-              script_name_str.find("\\node_modules/") != std::string::npos) {
+          if (IsNodeModulesScriptName(script_name_str)) {
             result = true;
-            break;
           }
+          break;
         }
       }
     }

@@ -1075,6 +1075,44 @@ TEST_F(Test1CliPhase01, AsyncLocalStoragePromiseContextSurvivesConcurrentAwaits)
 #endif
 }
 
+TEST_F(Test1CliPhase01, PromiseDetailsReportSettledQuickjsPromises) {
+#if defined(_WIN32)
+  GTEST_SKIP() << "promise details subprocess parity check is POSIX-only";
+#else
+  const auto edge_path = ResolveBuiltEdgeBinary();
+  ASSERT_FALSE(edge_path.empty()) << "Failed to resolve built edge binary";
+
+  const std::string script_path = WriteTempScript(
+      "edge_phase01_cli_promise_details",
+      "const assert = require('assert');\n"
+      "const { getPromiseDetails } = internalBinding('util');\n"
+      "const pending = new Promise(() => {});\n"
+      "const fulfilled = Promise.resolve('ok');\n"
+      "const rejected = Promise.reject(new Error('boom'));\n"
+      "rejected.catch(() => {});\n"
+      "const pendingDetails = getPromiseDetails(pending);\n"
+      "const fulfilledDetails = getPromiseDetails(fulfilled);\n"
+      "const rejectedDetails = getPromiseDetails(rejected);\n"
+      "assert.deepStrictEqual(pendingDetails, [0]);\n"
+      "assert.strictEqual(fulfilledDetails[0], 1);\n"
+      "assert.strictEqual(fulfilledDetails[1], 'ok');\n"
+      "assert.strictEqual(rejectedDetails[0], 2);\n"
+      "assert.strictEqual(rejectedDetails[1].message, 'boom');\n"
+      "console.log(JSON.stringify([pendingDetails[0], fulfilledDetails[0], rejectedDetails[0]]));\n");
+
+  const CommandResult result =
+      RunBuiltBinaryAndCapture(edge_path, {script_path}, "edge_phase01_cli_promise_details_run");
+
+  RemoveTempScript(script_path);
+
+  ASSERT_NE(result.status, -1);
+  ASSERT_TRUE(WIFEXITED(result.status)) << "status=" << result.status;
+  EXPECT_EQ(WEXITSTATUS(result.status), 0) << "stderr=" << result.stderr_output;
+  EXPECT_TRUE(result.stderr_output.empty()) << "stderr=" << result.stderr_output;
+  EXPECT_NE(result.stdout_output.find("[0,1,2]"), std::string::npos) << result.stdout_output;
+#endif
+}
+
 TEST_F(Test1CliPhase01, TextDecoderAcceptsSharedArrayBufferInput) {
 #if defined(_WIN32)
   GTEST_SKIP() << "SharedArrayBuffer subprocess parity check is POSIX-only";
@@ -1098,6 +1136,36 @@ TEST_F(Test1CliPhase01, TextDecoderAcceptsSharedArrayBufferInput) {
   EXPECT_EQ(WEXITSTATUS(result.status), 0) << "stderr=" << result.stderr_output;
   EXPECT_TRUE(result.stderr_output.empty()) << "stderr=" << result.stderr_output;
   EXPECT_NE(result.stdout_output.find("foo"), std::string::npos) << result.stdout_output;
+#endif
+}
+
+TEST_F(Test1CliPhase01, TextDecoderAcceptsArrayBufferViews) {
+#if defined(_WIN32)
+  GTEST_SKIP() << "TextDecoder subprocess parity check is POSIX-only";
+#else
+  const auto edge_path = ResolveBuiltEdgeBinary();
+  ASSERT_FALSE(edge_path.empty()) << "Failed to resolve built edge binary";
+
+  const std::string script_path = WriteTempScript(
+      "edge_phase01_cli_textdecoder_arraybuffer_views",
+      "const result = [\n"
+      "  new TextDecoder().decode(Uint8Array.from([0x66, 0x6f, 0x6f])),\n"
+      "  new TextDecoder().decode(Buffer.from('bar')),\n"
+      "  new TextDecoder().decode(new DataView(Uint8Array.from([0x62, 0x61, 0x7a]).buffer)),\n"
+      "];\n"
+      "console.log(JSON.stringify(result));\n");
+
+  const CommandResult result =
+      RunBuiltBinaryAndCapture(edge_path, {script_path}, "edge_phase01_cli_textdecoder_arraybuffer_views_run");
+
+  RemoveTempScript(script_path);
+
+  ASSERT_NE(result.status, -1);
+  ASSERT_TRUE(WIFEXITED(result.status)) << "status=" << result.status;
+  EXPECT_EQ(WEXITSTATUS(result.status), 0) << "stderr=" << result.stderr_output;
+  EXPECT_TRUE(result.stderr_output.empty()) << "stderr=" << result.stderr_output;
+  EXPECT_NE(result.stdout_output.find("[\"foo\",\"bar\",\"baz\"]"), std::string::npos)
+      << result.stdout_output;
 #endif
 }
 

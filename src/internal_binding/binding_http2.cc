@@ -24,6 +24,7 @@
 #include "edge_environment.h"
 #include "internal_binding/helpers.h"
 #include "../edge_async_wrap.h"
+#include "../edge_handle_scope.h"
 #include "../edge_runtime.h"
 #include "../edge_runtime_platform.h"
 #include "../edge_stream_base.h"
@@ -220,6 +221,11 @@ struct PendingPing {
   std::array<uint8_t, 8> payload{};
 };
 
+struct DeferredSessionFlushTask {
+  Http2SessionWrap* session = nullptr;
+  bool wrapper_refed = false;
+};
+
 struct CustomSettingsState {
   size_t number = 0;
   std::array<nghttp2_settings_entry, kMaxAdditionalSettings> entries{};
@@ -310,6 +316,7 @@ struct Http2StreamWrap {
   bool destroyed = false;
   bool destroy_scheduled = false;
   bool close_pending = false;
+  bool session_ref_held = false;
   uint32_t pending_close_code = NGHTTP2_NO_ERROR;
 };
 
@@ -1250,6 +1257,9 @@ bool CallCallbackRef(napi_env env,
                      size_t argc,
                      napi_value* argv,
                      napi_value* result = nullptr) {
+  if (env == nullptr) return false;
+  edge::HandleScope scope(env);
+  if (!scope.is_open()) return false;
   napi_value callback = GetRefValue(env, callback_ref);
   if (!IsFunction(env, callback) || recv == nullptr) return false;
   napi_value ignored = nullptr;
@@ -1266,6 +1276,9 @@ bool CallCallbackRefWithResource(napi_env env,
                                  size_t argc,
                                  napi_value* argv,
                                  napi_value* result = nullptr) {
+  if (env == nullptr) return false;
+  edge::HandleScope scope(env);
+  if (!scope.is_open()) return false;
   napi_value callback = GetRefValue(env, callback_ref);
   napi_value resource = GetRefValue(env, resource_ref);
   napi_value effective_recv = recv != nullptr ? recv : resource;
@@ -1291,6 +1304,9 @@ bool CallNamedIntMethod(napi_env env,
                         int32_t* out) {
   if (out == nullptr) return false;
   *out = 0;
+  if (env == nullptr) return false;
+  edge::HandleScope scope(env);
+  if (!scope.is_open()) return false;
   napi_value fn = nullptr;
   napi_value result = nullptr;
   return GetNamedValue(env, recv, name, &fn) &&
@@ -1408,6 +1424,13 @@ void CompletePendingPing(napi_env env, PendingPing* pending, bool ack, const uin
 void Http2SessionFinalize(napi_env env, void* data, void* /*hint*/) {
   auto* wrap = static_cast<Http2SessionWrap*>(data);
   if (wrap == nullptr) return;
+  for (auto& entry : wrap->streams) {
+    if (entry.second != nullptr) {
+      entry.second->session = nullptr;
+      entry.second->session_ref_held = false;
+    }
+  }
+  wrap->streams.clear();
   for (auto& pending : wrap->pending_settings) DeletePendingSettings(env, &pending);
   for (auto& pending : wrap->pending_pings) DeletePendingPing(env, &pending);
   ClearPendingParentRead(wrap);
@@ -1495,8 +1518,14 @@ void RemoveStreamFromSession(Http2StreamWrap* stream) {
   if (stream == nullptr || stream->session == nullptr) return;
   Http2SessionWrap* session = stream->session;
   session->streams.erase(stream->id);
-  DeleteRefIfPresent(stream->env, &stream->active_ref);
   MaybeInvokeGracefulClose(session);
+  if (stream->session_ref_held && session->wrapper_ref != nullptr) {
+    uint32_t ignored = 0;
+    (void)napi_reference_unref(session->env, session->wrapper_ref, &ignored);
+  }
+  stream->session_ref_held = false;
+  stream->session = nullptr;
+  DeleteRefIfPresent(stream->env, &stream->active_ref);
 }
 
 bool HasPendingRstStream(Http2SessionWrap* session, int32_t stream_id) {
@@ -1579,6 +1608,12 @@ bool CreateStreamHandle(Http2SessionWrap* session,
   }
   wrap->max_header_length = std::min<size_t>(max_header_length, kMaxMaxHeaderListSize);
   napi_create_reference(session->env, *object_out, 1, &wrap->active_ref);
+  if (session->wrapper_ref != nullptr) {
+    uint32_t ignored = 0;
+    if (napi_reference_ref(session->env, session->wrapper_ref, &ignored) == napi_ok) {
+      wrap->session_ref_held = true;
+    }
+  }
   session->streams[id] = wrap;
   *wrap_out = wrap;
   return true;
@@ -1814,13 +1849,16 @@ void ReleaseParentReadBuffer(const uv_buf_t* buf) {
 }
 
 void ClearPendingParentWrite(Http2SessionWrap* session, int status) {
+  (void)status;
   if (session == nullptr) return;
   session->pending_parent_write_chunks.clear();
   session->pending_parent_write_length = 0;
   while (!session->pending_parent_write_req_refs.empty()) {
     napi_ref req_ref = session->pending_parent_write_req_refs.front();
     session->pending_parent_write_req_refs.pop_front();
-    CompleteReqRef(session->env, &req_ref, status);
+    // Match Node's Http2Session::ClearOutgoing(): once nghttp2 has serialized
+    // stream data to the parent socket write, the stream write itself is done.
+    CompleteReqRef(session->env, &req_ref, 0);
   }
 }
 
@@ -1903,25 +1941,30 @@ void MaybeResumeParentReading(Http2SessionWrap* session) {
   }
 }
 
-napi_value DeferredFlushSessionOutputCallback(napi_env env, napi_callback_info info) {
-  napi_value self = nullptr;
-  void* data = nullptr;
-  size_t argc = 0;
-  napi_get_cb_info(env, info, &argc, nullptr, &self, &data);
-  auto* session = static_cast<Http2SessionWrap*>(data);
-  if (session == nullptr || env == nullptr) {
-    return Undefined(env);
-  }
-  if (session->env == env && !session->destroyed &&
+void RunDeferredSessionFlushTask(napi_env env, void* data) {
+  auto* task = static_cast<DeferredSessionFlushTask*>(data);
+  Http2SessionWrap* session = task != nullptr ? task->session : nullptr;
+  if (session != nullptr && session->env == env && !session->destroyed &&
       !session->parent_write_in_progress && session->write_scheduled) {
     session->write_scheduled = false;
     (void)FlushSessionOutput(session);
   }
-  if (session->wrapper_ref != nullptr) {
+  if (task != nullptr && task->wrapper_refed && session != nullptr && session->wrapper_ref != nullptr) {
+    uint32_t ignored = 0;
+    (void)napi_reference_unref(env, session->wrapper_ref, &ignored);
+    task->wrapper_refed = false;
+  }
+}
+
+void DeleteDeferredSessionFlushTask(napi_env env, void* data) {
+  auto* task = static_cast<DeferredSessionFlushTask*>(data);
+  if (task == nullptr) return;
+  Http2SessionWrap* session = task->session;
+  if (task->wrapper_refed && session != nullptr && session->env == env && session->wrapper_ref != nullptr) {
     uint32_t ignored = 0;
     (void)napi_reference_unref(env, session->wrapper_ref, &ignored);
   }
-  return Undefined(env);
+  delete task;
 }
 
 void MaybeScheduleSessionFlush(Http2SessionWrap* session) {
@@ -1938,6 +1981,8 @@ void MaybeScheduleSessionFlush(Http2SessionWrap* session) {
 
 void ScheduleSessionFlush(Http2SessionWrap* session) {
   if (session == nullptr || session->env == nullptr) return;
+  auto* task = new DeferredSessionFlushTask();
+  task->session = session;
   bool wrapper_refed = false;
   if (session->wrapper_ref != nullptr) {
     uint32_t ignored = 0;
@@ -1945,48 +1990,19 @@ void ScheduleSessionFlush(Http2SessionWrap* session) {
       wrapper_refed = true;
     }
   }
-  napi_value global = GetGlobal(session->env);
-  napi_value set_immediate = nullptr;
-  napi_valuetype set_immediate_type = napi_undefined;
-  if (global == nullptr ||
-      napi_get_named_property(session->env, global, "setImmediate", &set_immediate) != napi_ok ||
-      set_immediate == nullptr ||
-      napi_typeof(session->env, set_immediate, &set_immediate_type) != napi_ok ||
-      set_immediate_type != napi_function) {
+  task->wrapper_refed = wrapper_refed;
+  if (EdgeRuntimePlatformEnqueueTask(session->env,
+                                     RunDeferredSessionFlushTask,
+                                     task,
+                                     DeleteDeferredSessionFlushTask,
+                                     kEdgeRuntimePlatformTaskRefed) != napi_ok) {
     session->write_scheduled = false;
-    if (wrapper_refed && session->wrapper_ref != nullptr) {
-      uint32_t ignored = 0;
-      (void)napi_reference_unref(session->env, session->wrapper_ref, &ignored);
-    }
-    (void)FlushSessionOutput(session);
-    return;
-  }
-
-  napi_value callback = nullptr;
-  if (napi_create_function(session->env,
-                           "__edgeHttp2DeferredFlushSessionOutput",
-                           NAPI_AUTO_LENGTH,
-                           DeferredFlushSessionOutputCallback,
-                           session,
-                           &callback) != napi_ok ||
-      callback == nullptr) {
-    session->write_scheduled = false;
-    if (wrapper_refed && session->wrapper_ref != nullptr) {
-      uint32_t ignored = 0;
-      (void)napi_reference_unref(session->env, session->wrapper_ref, &ignored);
-    }
-    (void)FlushSessionOutput(session);
-    return;
-  }
-
-  napi_value argv[1] = {callback};
-  napi_value ignored = nullptr;
-  if (napi_call_function(session->env, global, set_immediate, 1, argv, &ignored) != napi_ok) {
-    session->write_scheduled = false;
-    if (wrapper_refed && session->wrapper_ref != nullptr) {
+    if (task->wrapper_refed && session->wrapper_ref != nullptr) {
       uint32_t ref_ignored = 0;
       (void)napi_reference_unref(session->env, session->wrapper_ref, &ref_ignored);
+      task->wrapper_refed = false;
     }
+    delete task;
     (void)FlushSessionOutput(session);
   }
 }
@@ -1994,10 +2010,20 @@ void ScheduleSessionFlush(Http2SessionWrap* session) {
 void RunDeferredStreamDestroy(Http2StreamWrap* stream) {
   if (stream == nullptr) return;
   stream->destroy_scheduled = false;
+  if (stream->session != nullptr &&
+      stream->session->session != nullptr &&
+      !stream->session->destroyed &&
+      !stream->session->parent_write_in_progress &&
+      stream->session->write_scheduled) {
+    stream->session->write_scheduled = false;
+    (void)FlushSessionOutput(stream->session);
+  }
+  const int pending_write_status =
+      (stream->rst_code == NGHTTP2_NO_ERROR || stream->rst_code == NGHTTP2_CANCEL) ? 0 : UV_ECANCELED;
   while (!stream->outbound_chunks.empty()) {
     OutboundChunk chunk = std::move(stream->outbound_chunks.front());
     stream->outbound_chunks.pop_front();
-    CompleteStreamReq(stream, &chunk.req_ref, UV_ECANCELED);
+    CompleteStreamReq(stream, &chunk.req_ref, pending_write_status);
   }
   stream->available_outbound_length = 0;
   CompleteStreamReq(stream, &stream->shutdown_req_ref, UV_ECANCELED, true);
@@ -2218,7 +2244,7 @@ bool ParentStreamOnAfterWrite(EdgeStreamListener* listener, napi_value req_obj, 
   }
   MaybeNotifyGracefulCloseComplete(session);
   MaybeResumeParentReading(session);
-  (void)EdgeStreamPassAfterWrite(listener, req_obj, status);
+  (void)EdgeStreamPassAfterWrite(listener, req_obj, 0);
   if (session->destroyed) {
     NotifySessionDone(session, true);
     return true;
@@ -4010,7 +4036,6 @@ napi_value SessionCtor(napi_env env, napi_callback_info info) {
     return nullptr;
   }
   (void)napi_create_reference(env, fields_ta, 1, &wrap->fields_ref);
-  (void)napi_set_named_property(env, self, "fields", fields_ta);
   (void)napi_set_named_property(env, self, "ondone", Undefined(env));
   (void)napi_set_named_property(env, self, "ongracefulclosecomplete", Undefined(env));
   (void)napi_set_named_property(env, self, "chunksSentSinceLastWrite", EdgeStreamBaseMakeDouble(env, 0));

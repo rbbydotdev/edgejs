@@ -329,6 +329,7 @@ size_t TypedArrayBytesPerElement(napi_typedarray_type type) {
       return 1;
     case napi_int16_array:
     case napi_uint16_array:
+    case napi_float16_array:
       return 2;
     case napi_int32_array:
     case napi_uint32_array:
@@ -1851,6 +1852,7 @@ napi_value CryptoSecureContextInit(napi_env env, napi_callback_info info) {
   holder->ticket_callback_installed = false;
   EnsureTicketCallback(holder);
   if (old_ctx != nullptr) {
+    ClearSecureContextAppData(old_ctx);
     SSL_CTX_free(old_ctx);
   }
   napi_value true_v = nullptr;

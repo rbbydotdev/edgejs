@@ -13,6 +13,7 @@
 #include "edge_environment.h"
 #include "edge_runtime.h"
 #include "edge_env_loop.h"
+#include "edge_handle_scope.h"
 #include "edge_timers_host.h"
 #include "unofficial_napi.h"
 
@@ -200,6 +201,11 @@ void RunScheduledForegroundTask(uv_timer_t* handle) {
   if (state != nullptr &&
       !state->cleanup_started.load(std::memory_order_acquire) &&
       scheduled->task.callback != nullptr) {
+    edge::HandleScope scope(state->env);
+    if (!scope.is_open()) {
+      CloseScheduledForegroundTask(scheduled);
+      return;
+    }
     scheduled->task.callback(state->env, scheduled->task.data);
     if (HasPendingException(state->env)) {
       bool handled = false;
@@ -333,6 +339,14 @@ size_t DrainForegroundTasksFromState(PlatformTaskState* state,
     if (task.callback == nullptr) {
       CleanupTask(state->env, &task);
       continue;
+    }
+    edge::HandleScope scope(state->env);
+    if (!scope.is_open()) {
+      CleanupTask(state->env, &task);
+      state->draining_foreground = false;
+      if (status_out != nullptr) *status_out = scope.status();
+      if (ran_out != nullptr) *ran_out = ran;
+      return ran;
     }
     task.callback(state->env, task.data);
     ++ran;
@@ -638,6 +652,15 @@ size_t EdgeRuntimePlatformDrainImmediateTasks(napi_env env, bool only_refed) {
       PlatformTask task = std::move(batch.front());
       batch.pop_front();
 
+      edge::HandleScope scope(env);
+      if (!scope.is_open()) {
+        CleanupTask(env, &task);
+        state->draining_immediates = false;
+        if (state->refed_immediate_count == 0) {
+          EdgeToggleImmediateRefFromNative(env, false);
+        }
+        return ran;
+      }
       task.callback(env, task.data);
       ran++;
       CleanupTask(env, &task);

@@ -173,6 +173,7 @@ enum EdgeEnvironmentSlotId : size_t {
   kEdgeEnvironmentSlotMessagingBindingState,
   kEdgeEnvironmentSlotBlobBindingState,
   kEdgeEnvironmentSlotWasmWebApiBindingState,
+  kEdgeEnvironmentSlotUndiciBindingState,
   kEdgeEnvironmentSlotCryptoBindingState,
   kEdgeEnvironmentSlotModuleLoaderState,
   kEdgeEnvironmentSlotContextifyRecords,

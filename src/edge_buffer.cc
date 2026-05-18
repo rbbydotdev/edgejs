@@ -29,7 +29,15 @@ using edge::encoding_ids::kEncUtf8;
 
 constexpr double kEdgeBufferMaxLength = 9007199254740991.0;
 constexpr double kEdgeUnsafeArrayBufferAllocCap = 2147483647.0;
-constexpr size_t kEdgeStringMaxLength = 0x1fffffe8;
+#if defined(EDGE_NAPI_QUICKJS)
+constexpr size_t kEdgeStringMaxLength = 0x3fffffff;
+constexpr const char* kEdgeStringMaxLengthHex = "0x3fffffff";
+#else
+constexpr size_t kEdgeStringMaxLength =
+    sizeof(void*) == 4 ? static_cast<size_t>(0x18ffffe8) : static_cast<size_t>(0x1fffffe8);
+constexpr const char* kEdgeStringMaxLengthHex =
+    sizeof(void*) == 4 ? "0x18ffffe8" : "0x1fffffe8";
+#endif
 
 std::string GetUtf8String(napi_env env, napi_value value);
 
@@ -994,11 +1002,17 @@ napi_value SliceByEncoding(napi_env env, napi_callback_info info, int32_t enc) {
   const size_t n = static_cast<size_t>(end - start);
 
   if ((enc == kEncUtf8 || enc == kEncAscii || enc == kEncLatin1) && n > kEdgeStringMaxLength) {
-    napi_throw_error(env, "ERR_STRING_TOO_LONG", "Cannot create a string longer than 0x1fffffe8 characters");
+    std::string message = "Cannot create a string longer than ";
+    message += kEdgeStringMaxLengthHex;
+    message += " characters";
+    napi_throw_error(env, "ERR_STRING_TOO_LONG", message.c_str());
     return nullptr;
   }
   if (enc == kEncUtf16Le && (n / 2) > kEdgeStringMaxLength) {
-    napi_throw_error(env, "ERR_STRING_TOO_LONG", "Cannot create a string longer than 0x1fffffe8 characters");
+    std::string message = "Cannot create a string longer than ";
+    message += kEdgeStringMaxLengthHex;
+    message += " characters";
+    napi_throw_error(env, "ERR_STRING_TOO_LONG", message.c_str());
     return nullptr;
   }
 
@@ -1322,7 +1336,7 @@ napi_value EdgeInstallBufferBinding(napi_env env) {
   SetMethod(env, binding, "createUnsafeArrayBuffer", BindingCreateUnsafeArrayBuffer);
 
   SetNumberConst(env, binding, "kMaxLength", kEdgeBufferMaxLength);
-  SetIntConst(env, binding, "kStringMaxLength", 0x1fffffe8);
+  SetIntConst(env, binding, "kStringMaxLength", static_cast<int32_t>(kEdgeStringMaxLength));
 
   return binding;
 }

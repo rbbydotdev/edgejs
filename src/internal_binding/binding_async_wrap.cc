@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "edge_environment.h"
+#include "edge_handle_scope.h"
 #include "internal_binding/helpers.h"
 #include "unofficial_napi.h"
 #include "edge_runtime_platform.h"
@@ -94,6 +95,7 @@ napi_value GetRefValue(napi_env env, napi_ref ref) {
 
 bool IsDestroyHookAlreadyHandled(napi_env env, napi_ref destroyed_ref) {
   if (env == nullptr || destroyed_ref == nullptr) return false;
+  edge::HandleScope scope(env);
   napi_value destroyed_obj = GetRefValue(env, destroyed_ref);
   if (destroyed_obj == nullptr) return false;
   bool has_flag = false;
@@ -106,6 +108,7 @@ bool IsDestroyHookAlreadyHandled(napi_env env, napi_ref destroyed_ref) {
 }
 
 void EmitDestroyHookForAsyncId(napi_env env, double async_id) {
+  edge::HandleScope scope(env);
   AsyncWrapState* state = GetState(env);
   if (state == nullptr || state->hooks_ref == nullptr) return;
   napi_value hooks = GetRefValue(env, state->hooks_ref);

@@ -23,6 +23,7 @@
 #include "edge_active_resource.h"
 #include "edge_async_wrap.h"
 #include "edge_env_loop.h"
+#include "edge_handle_scope.h"
 #include "edge_handle_wrap.h"
 #include "edge_runtime.h"
 #include "edge_worker_env.h"
@@ -671,21 +672,25 @@ bool IsCloneableTransferableValue(napi_env env, napi_value value) {
 
   napi_value transfer_mode_symbol = GetUtilPrivateSymbol(env, "transfer_mode_private_symbol");
   napi_value clone_symbol = GetMessagingSymbol(env, "messaging_clone_symbol");
-  if (transfer_mode_symbol == nullptr || clone_symbol == nullptr) return false;
+  if (clone_symbol == nullptr) return false;
+
+  napi_value clone_method = nullptr;
+  if (napi_get_property(env, value, clone_symbol, &clone_method) != napi_ok || !IsFunction(env, clone_method)) {
+    return false;
+  }
+  if (transfer_mode_symbol == nullptr) return true;
 
   bool has_mode = false;
-  if (napi_has_property(env, value, transfer_mode_symbol, &has_mode) != napi_ok || !has_mode) return false;
+  if (napi_has_property(env, value, transfer_mode_symbol, &has_mode) != napi_ok || !has_mode) return true;
 
   napi_value transfer_mode = nullptr;
   if (napi_get_property(env, value, transfer_mode_symbol, &transfer_mode) != napi_ok || transfer_mode == nullptr) {
-    return false;
+    return true;
   }
 
   uint32_t mode = 0;
   if (napi_get_value_uint32(env, transfer_mode, &mode) != napi_ok || (mode & 2u) == 0) return false;
-
-  napi_value clone_method = nullptr;
-  return napi_get_property(env, value, clone_symbol, &clone_method) == napi_ok && IsFunction(env, clone_method);
+  return true;
 }
 
 bool IsTransferableValue(napi_env env, napi_value value) {
@@ -967,6 +972,7 @@ bool PrepareJSTransferableCloneData(
     napi_env env, napi_value value, napi_value* data_out, napi_value* deserialize_info_out);
 napi_value CreateJSTransferableCloneMarker(napi_env env, napi_value value);
 napi_value DeserializeJSTransferableCloneMarker(napi_env env, napi_value data, napi_value deserialize_info);
+napi_value CallJSTransferableCloneFallback(napi_env env, napi_value value);
 napi_value CloneRootJSTransferableValueForQueue(napi_env env, napi_value value);
 bool IsPlainObjectContainer(napi_env env, napi_value value);
 napi_value CreateGlobalInstance(napi_env env, const char* ctor_name);
@@ -1317,18 +1323,23 @@ bool PrepareJSTransferableCloneData(
     napi_env env, napi_value value, napi_value* data_out, napi_value* deserialize_info_out) {
   if (data_out != nullptr) *data_out = nullptr;
   if (deserialize_info_out != nullptr) *deserialize_info_out = nullptr;
-  if (!IsCloneableTransferableValue(env, value)) return false;
-
-  napi_value clone_symbol = GetMessagingSymbol(env, "messaging_clone_symbol");
-  napi_value clone_method = nullptr;
-  if (clone_symbol == nullptr ||
-      napi_get_property(env, value, clone_symbol, &clone_method) != napi_ok ||
-      !IsFunction(env, clone_method)) {
-    return false;
-  }
 
   napi_value clone_result = nullptr;
-  if (napi_call_function(env, value, clone_method, 0, nullptr, &clone_result) != napi_ok || clone_result == nullptr) {
+  napi_value clone_symbol = GetMessagingSymbol(env, "messaging_clone_symbol");
+  napi_value clone_method = nullptr;
+  if (clone_symbol != nullptr &&
+      napi_get_property(env, value, clone_symbol, &clone_method) == napi_ok &&
+      IsFunction(env, clone_method)) {
+    if (napi_call_function(env, value, clone_method, 0, nullptr, &clone_result) != napi_ok) {
+      clone_result = nullptr;
+    }
+  }
+  if (clone_result == nullptr) {
+    ClearPendingException(env);
+    clone_result = CallJSTransferableCloneFallback(env, value);
+  }
+  if (clone_result == nullptr || IsUndefinedValue(env, clone_result)) {
+    ClearPendingException(env);
     return false;
   }
 
@@ -1342,6 +1353,48 @@ bool PrepareJSTransferableCloneData(
   if (data_out != nullptr) *data_out = prepared_data;
   if (deserialize_info_out != nullptr) *deserialize_info_out = deserialize_info;
   return true;
+}
+
+napi_value CallJSTransferableCloneFallback(napi_env env, napi_value value) {
+  if (env == nullptr || value == nullptr) return nullptr;
+
+  napi_value internal_binding = EdgeGetInternalBinding(env);
+  if (!IsFunction(env, internal_binding)) {
+    napi_value global = GetGlobal(env);
+    internal_binding = GetNamed(env, global, "internalBinding");
+  }
+  if (!IsFunction(env, internal_binding)) return nullptr;
+
+  static const char kSource[] =
+      "(function(value, internalBinding) {"
+      "  if ((typeof value !== 'object' && typeof value !== 'function') || value === null) return undefined;"
+      "  const symbols = internalBinding('symbols');"
+      "  const util = internalBinding('util');"
+      "  const clone = value[symbols.messaging_clone_symbol];"
+      "  if (typeof clone !== 'function') return undefined;"
+      "  const mode = value[util.privateSymbols.transfer_mode_private_symbol];"
+      "  if (mode !== undefined && (mode & util.constants.kCloneable) === 0) return undefined;"
+      "  return clone.call(value);"
+      "})";
+
+  napi_value source = nullptr;
+  napi_value fn = nullptr;
+  if (napi_create_string_utf8(env, kSource, NAPI_AUTO_LENGTH, &source) != napi_ok ||
+      source == nullptr ||
+      napi_run_script(env, source, &fn) != napi_ok ||
+      !IsFunction(env, fn)) {
+    ClearPendingException(env);
+    return nullptr;
+  }
+
+  napi_value undefined = Undefined(env);
+  napi_value argv[2] = {value, internal_binding};
+  napi_value out = nullptr;
+  if (napi_call_function(env, undefined, fn, 2, argv, &out) != napi_ok) {
+    ClearPendingException(env);
+    return nullptr;
+  }
+  return out;
 }
 
 bool PrepareJSTransferableTransferData(napi_env env,
@@ -1419,7 +1472,7 @@ napi_value CloneRootJSTransferableValueForQueue(napi_env env, napi_value value) 
   if (marker == nullptr) return nullptr;
 
   napi_value cloned = nullptr;
-  if (unofficial_napi_structured_clone(env, marker, nullptr, &cloned) != napi_ok ||
+  if (unofficial_napi_structured_clone(env, marker, &cloned) != napi_ok ||
       cloned == nullptr) {
     return nullptr;
   }
@@ -1500,7 +1553,7 @@ bool CreateTransferredJSTransferableMarkerForQueue(
   }
 
   napi_value cloned_marker = nullptr;
-  if (unofficial_napi_structured_clone(env, marker, nullptr, &cloned_marker) != napi_ok ||
+  if (unofficial_napi_structured_clone(env, marker, &cloned_marker) != napi_ok ||
       cloned_marker == nullptr) {
     return false;
   }
@@ -1701,7 +1754,7 @@ bool TransferRootJSTransferableValueForQueue(
   }
 
   napi_value cloned = nullptr;
-  if (unofficial_napi_structured_clone(env, marker, nullptr, &cloned) != napi_ok ||
+  if (unofficial_napi_structured_clone(env, marker, &cloned) != napi_ok ||
       cloned == nullptr) {
     return false;
   }
@@ -1720,7 +1773,7 @@ napi_value StructuredCloneJSTransferableValue(napi_env env, napi_value value) {
   }
 
   napi_value cloned_data = nullptr;
-  if (unofficial_napi_structured_clone(env, prepared_data, nullptr, &cloned_data) != napi_ok ||
+  if (unofficial_napi_structured_clone(env, prepared_data, &cloned_data) != napi_ok ||
       cloned_data == nullptr) {
     return nullptr;
   }
@@ -2696,7 +2749,8 @@ napi_value CloneMessageValueWithTransfers(napi_env env, napi_value value, napi_v
     napi_value arraybuffer_transfer_list = CreateArrayBufferTransferList(env, normalized_transfer_arg);
     napi_value cloned = nullptr;
     const napi_status clone_status =
-        unofficial_napi_structured_clone(env, clone_input, arraybuffer_transfer_list, &cloned);
+        unofficial_napi_structured_clone_with_transfer(
+            env, clone_input, arraybuffer_transfer_list, &cloned);
     if (clone_status != napi_ok || cloned == nullptr) {
       bool has_pending = false;
       if (napi_is_exception_pending(env, &has_pending) == napi_ok && has_pending) {
@@ -2748,7 +2802,7 @@ napi_value CloneMessageValue(napi_env env, napi_value value, napi_value transfer
   auto clone_prepared_value = [&](napi_value prepared_value) -> napi_value {
     napi_value cloned = nullptr;
     const napi_status clone_status =
-        unofficial_napi_structured_clone(env, prepared_value, nullptr, &cloned);
+        unofficial_napi_structured_clone(env, prepared_value, &cloned);
     if (clone_status != napi_ok || cloned == nullptr) {
       bool has_pending = false;
       if (napi_is_exception_pending(env, &has_pending) == napi_ok && has_pending) {
@@ -3536,7 +3590,6 @@ void OnMessagePortClosed(uv_handle_t* handle) {
   }
   DisentanglePeer(wrap->handle_wrap.env, wrap, true);
   EdgeHandleWrapDetach(&wrap->handle_wrap);
-  EdgeHandleWrapReleaseWrapperRef(&wrap->handle_wrap);
   if (wrap->handle_wrap.active_handle_token != nullptr) {
     EdgeUnregisterActiveHandle(wrap->handle_wrap.env, wrap->handle_wrap.active_handle_token);
     wrap->handle_wrap.active_handle_token = nullptr;
@@ -3566,11 +3619,15 @@ void OnMessagePortClosed(uv_handle_t* handle) {
     EdgeAsyncWrapQueueDestroyId(wrap->handle_wrap.env, wrap->async_id);
     wrap->async_id = 0;
   }
+  EdgeHandleWrapReleaseWrapperRef(&wrap->handle_wrap);
 }
 
 void OnMessagePortAsync(uv_async_t* handle) {
   auto* wrap = static_cast<MessagePortWrap*>(handle != nullptr ? handle->data : nullptr);
-  if (wrap == nullptr) return;
+  if (wrap == nullptr || wrap->handle_wrap.env == nullptr) return;
+  edge::HandleScope scope(wrap->handle_wrap.env);
+  if (!scope.is_open()) return;
+
   size_t processing_limit = 1000;
   if (wrap->data) {
     std::lock_guard<std::mutex> lock(wrap->data->mutex);

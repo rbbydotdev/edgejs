@@ -19,7 +19,8 @@ constexpr int kBufferedBytes = 5;
 constexpr int kEncodingField = 6;
 constexpr int kSize = 7;
 constexpr int kNumFields = 7;
-constexpr size_t kEdgeStringMaxLength = 0x1fffffe8;
+constexpr size_t kEdgeStringMaxLength =
+    sizeof(void*) == 4 ? static_cast<size_t>(0x18ffffe8) : static_cast<size_t>(0x1fffffe8);
 
 using edge::encoding_ids::kEncAscii;
 using edge::encoding_ids::kEncBase64;
@@ -212,8 +213,10 @@ napi_value MakeStringFromBytes(napi_env env, const uint8_t* data, size_t len, ui
   if (ThrowIfStringTooLong(env, max_decoded_length)) return nullptr;
 
   // First try global Buffer.from(...).toString(enc) so we match the runtime's
-  // exact Buffer decoding behavior used by tests for comparison.
-  {
+  // exact Buffer decoding behavior used by tests for comparison. UTF-8 is
+  // decoded below because StringDecoder has streaming boundary rules that are
+  // stricter than a raw Buffer decode fallback.
+  if (enc != kEncUtf8) {
     napi_value global = nullptr;
     napi_value buffer_ctor = nullptr;
     napi_value from_fn = nullptr;
@@ -523,6 +526,12 @@ napi_value DecodeBinding(napi_env env, napi_callback_info info) {
 
   const uint8_t enc = state[kEncodingField];
   const bool variable = (enc == kEncUtf8 || enc == kEncUtf16Le || enc == kEncBase64 || enc == kEncBase64Url);
+  const size_t max_input_for_string =
+      enc == kEncUtf16Le ? kEdgeStringMaxLength * 2 : kEdgeStringMaxLength;
+  if (nread > max_input_for_string) {
+    napi_throw_range_error(env, "ERR_STRING_TOO_LONG", "Cannot create a string longer than the maximum allowed length");
+    return nullptr;
+  }
   if (!variable) {
     return MakeStringFromBytes(env, data, nread, enc);
   }

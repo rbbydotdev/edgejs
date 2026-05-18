@@ -24,6 +24,7 @@
 #include "edge_async_wrap.h"
 #include "edge_environment.h"
 #include "edge_env_loop.h"
+#include "edge_handle_scope.h"
 #include "edge_runtime.h"
 
 #ifndef AI_ALL
@@ -95,6 +96,7 @@ struct NodeAresTask {
 struct ChannelWrap {
   napi_env env = nullptr;
   napi_ref wrapper_ref = nullptr;
+  napi_ref active_ref = nullptr;
   ares_channel channel = nullptr;
   bool library_inited = false;
   bool query_last_ok = true;
@@ -103,6 +105,8 @@ struct ChannelWrap {
   int32_t tries = 4;
   int32_t max_timeout = 0;
   int active_query_count = 0;
+  bool finalized = false;
+  bool destroy_scheduled = false;
   uv_timer_t* timer_handle = nullptr;
   std::unordered_map<ares_socket_t, NodeAresTask*> tasks;
 };
@@ -176,6 +180,23 @@ void UnregisterChannelForEnv(ChannelWrap* channel) {
   CaresEnvState* state = GetCaresState(channel->env);
   if (state == nullptr) return;
   state->channels.erase(channel);
+}
+
+void DestroyChannelCares(ChannelWrap* channel);
+void ScheduleFinalizedChannelDestroy(ChannelWrap* channel);
+void StartChannelTimer(ChannelWrap* channel);
+
+void DeleteChannelActiveRef(ChannelWrap* channel) {
+  if (channel == nullptr || channel->env == nullptr || channel->active_ref == nullptr) return;
+  napi_delete_reference(channel->env, channel->active_ref);
+  channel->active_ref = nullptr;
+}
+
+void HoldChannelActiveRef(ChannelWrap* channel, napi_value self) {
+  if (channel == nullptr || channel->env == nullptr || self == nullptr || channel->active_ref != nullptr) return;
+  if (napi_create_reference(channel->env, self, 1, &channel->active_ref) != napi_ok) {
+    channel->active_ref = nullptr;
+  }
 }
 
 void TrackPendingReq(napi_env env, CaresReqWrap* req) {
@@ -447,6 +468,7 @@ void CloseChannelTimer(ChannelWrap* channel) {
   uv_timer_t* timer = channel->timer_handle;
   channel->timer_handle = nullptr;
   uv_timer_stop(timer);
+  timer->data = nullptr;
   uv_close(reinterpret_cast<uv_handle_t*>(timer), [](uv_handle_t* handle) {
     delete reinterpret_cast<uv_timer_t*>(handle);
   });
@@ -456,10 +478,20 @@ void AresTimeout(uv_timer_t* handle) {
   auto* channel = static_cast<ChannelWrap*>(handle->data);
   if (channel == nullptr || channel->channel == nullptr) return;
   ares_process_fd(channel->channel, ARES_SOCKET_BAD, ARES_SOCKET_BAD);
+  if (channel->timer_handle == handle) {
+    StartChannelTimer(channel);
+  }
 }
 
 void StartChannelTimer(ChannelWrap* channel) {
   if (channel == nullptr || channel->env == nullptr || channel->channel == nullptr) return;
+  if (channel->active_query_count <= 0) {
+    if (channel->timer_handle != nullptr) {
+      uv_timer_stop(channel->timer_handle);
+    }
+    return;
+  }
+
   if (channel->timer_handle == nullptr) {
     auto* timer = new uv_timer_t();
     timer->data = channel;
@@ -469,13 +501,25 @@ void StartChannelTimer(ChannelWrap* channel) {
       return;
     }
     channel->timer_handle = timer;
-  } else if (uv_is_active(reinterpret_cast<uv_handle_t*>(channel->timer_handle))) {
+  }
+
+  struct timeval tv {};
+  struct timeval* tvp = ares_timeout(channel->channel, nullptr, &tv);
+  if (tvp == nullptr) {
+    uv_timer_stop(channel->timer_handle);
     return;
   }
 
-  int timeout = channel->timeout;
-  if (timeout <= 0 || timeout > 1000) timeout = 1000;
-  uv_timer_start(channel->timer_handle, AresTimeout, timeout, timeout);
+  uint64_t timeout = 0;
+  if (tvp->tv_sec > 0) {
+    timeout += static_cast<uint64_t>(tvp->tv_sec) * 1000;
+  }
+  if (tvp->tv_usec > 0) {
+    timeout += static_cast<uint64_t>((tvp->tv_usec + 999) / 1000);
+  }
+  if (timeout == 0) timeout = 1;
+
+  uv_timer_start(channel->timer_handle, AresTimeout, timeout, 0);
 }
 
 void ares_poll_close_cb(uv_handle_t* handle) {
@@ -487,19 +531,18 @@ void ares_poll_cb(uv_poll_t* watcher, int status, int events) {
   auto* task = static_cast<NodeAresTask*>(watcher->data);
   if (task == nullptr || task->channel == nullptr) return;
   ChannelWrap* channel = task->channel;
-
-  if (channel->timer_handle != nullptr && uv_is_active(reinterpret_cast<uv_handle_t*>(channel->timer_handle))) {
-    uv_timer_again(channel->timer_handle);
-  }
+  if (channel->channel == nullptr) return;
 
   if (status < 0) {
     ares_process_fd(channel->channel, task->sock, task->sock);
+    StartChannelTimer(channel);
     return;
   }
 
   ares_process_fd(channel->channel,
                   (events & UV_READABLE) ? task->sock : ARES_SOCKET_BAD,
                   (events & UV_WRITABLE) ? task->sock : ARES_SOCKET_BAD);
+  StartChannelTimer(channel);
 }
 
 void ares_sockstate_cb(void* data, ares_socket_t sock, int read, int write) {
@@ -511,7 +554,6 @@ void ares_sockstate_cb(void* data, ares_socket_t sock, int read, int write) {
 
   if (read || write) {
     if (task == nullptr) {
-      StartChannelTimer(channel);
       task = new NodeAresTask();
       task->channel = channel;
       task->sock = sock;
@@ -527,6 +569,7 @@ void ares_sockstate_cb(void* data, ares_socket_t sock, int read, int write) {
     uv_poll_start(&task->poll_watcher,
                   (read ? UV_READABLE : 0) | (write ? UV_WRITABLE : 0),
                   ares_poll_cb);
+    StartChannelTimer(channel);
     return;
   }
 
@@ -536,16 +579,21 @@ void ares_sockstate_cb(void* data, ares_socket_t sock, int read, int write) {
     uv_close(reinterpret_cast<uv_handle_t*>(&task->poll_watcher), ares_poll_close_cb);
   }
 
-  if (channel->tasks.empty()) {
+  if (channel->tasks.empty() && channel->active_query_count <= 0) {
     CloseChannelTimer(channel);
+  } else {
+    StartChannelTimer(channel);
   }
 }
 
 void DestroyChannelCares(ChannelWrap* channel) {
   if (channel == nullptr) return;
 
+  DeleteChannelActiveRef(channel);
+
   for (auto& [_, task] : channel->tasks) {
     if (task != nullptr) {
+      task->channel = nullptr;
       uv_poll_stop(&task->poll_watcher);
       uv_close(reinterpret_cast<uv_handle_t*>(&task->poll_watcher), ares_poll_close_cb);
     }
@@ -645,26 +693,60 @@ void EnsureServers(ChannelWrap* channel) {
   }
 }
 
+void ScheduleFinalizedChannelDestroy(ChannelWrap* channel) {
+  if (channel == nullptr || !channel->finalized || channel->active_query_count > 0 ||
+      channel->destroy_scheduled) {
+    return;
+  }
+
+  uv_loop_t* loop = EdgeGetEnvLoop(channel->env);
+  auto* timer = new uv_timer_t();
+  if (loop == nullptr || uv_timer_init(loop, timer) != 0) {
+    delete timer;
+    DestroyChannelCares(channel);
+    delete channel;
+    return;
+  }
+
+  channel->destroy_scheduled = true;
+  timer->data = channel;
+  uv_timer_start(timer, [](uv_timer_t* handle) {
+    auto* channel = static_cast<ChannelWrap*>(handle != nullptr ? handle->data : nullptr);
+    if (handle != nullptr) {
+      handle->data = nullptr;
+      uv_timer_stop(handle);
+      uv_close(reinterpret_cast<uv_handle_t*>(handle), [](uv_handle_t* close_handle) {
+        delete reinterpret_cast<uv_timer_t*>(close_handle);
+      });
+    }
+    if (channel == nullptr) return;
+    DestroyChannelCares(channel);
+    delete channel;
+  }, 0, 0);
+}
+
 void ModifyActivityQueryCount(ChannelWrap* channel, int delta) {
   if (channel == nullptr) return;
   const int prev = channel->active_query_count;
   channel->active_query_count += delta;
   if (channel->active_query_count < 0) channel->active_query_count = 0;
 
-  if (channel->env == nullptr || channel->wrapper_ref == nullptr) return;
-
-  if (prev == 0 && channel->active_query_count > 0) {
-    uint32_t ref_count = 0;
-    (void)napi_reference_ref(channel->env, channel->wrapper_ref, &ref_count);
-  } else if (prev > 0 && channel->active_query_count == 0) {
-    // During env cleanup, avoid dropping the last ref from inside c-ares
-    // callbacks; ChannelFinalize will run as part of env teardown.
-    if (EnvCleanupInProgress(channel->env)) {
-      return;
+  if (channel->env != nullptr && channel->wrapper_ref != nullptr) {
+    if (prev == 0 && channel->active_query_count > 0) {
+      uint32_t ref_count = 0;
+      (void)napi_reference_ref(channel->env, channel->wrapper_ref, &ref_count);
+    } else if (prev > 0 && channel->active_query_count == 0) {
+      DeleteChannelActiveRef(channel);
+      // During env cleanup, avoid dropping the last ref from inside c-ares
+      // callbacks; ChannelFinalize will run as part of env teardown.
+      if (!EnvCleanupInProgress(channel->env)) {
+        uint32_t ref_count = 0;
+        (void)napi_reference_unref(channel->env, channel->wrapper_ref, &ref_count);
+      }
     }
-    uint32_t ref_count = 0;
-    (void)napi_reference_unref(channel->env, channel->wrapper_ref, &ref_count);
   }
+
+  ScheduleFinalizedChannelDestroy(channel);
 }
 
 void CleanupReqAfterAsync(CaresReqWrap* req) {
@@ -1365,7 +1447,23 @@ void CompleteQuery(CaresReqWrap* req,
   if (env == nullptr) {
     MarkReqComplete(req);
     MaybeDeleteReq(req);
-  } else if (status != ARES_SUCCESS) {
+    if (channel != nullptr) {
+      ModifyActivityQueryCount(channel, -1);
+    }
+    return;
+  }
+
+  edge::HandleScope scope(env);
+  if (!scope.is_open()) {
+    MarkReqComplete(req);
+    CleanupReqAfterAsync(req);
+    if (channel != nullptr) {
+      ModifyActivityQueryCount(channel, -1);
+    }
+    return;
+  }
+
+  if (status != ARES_SUCCESS) {
     // Do not invoke JS callbacks once env teardown has started.
     if (!env_cleaning) {
       CallOnCompleteError(req, status);
@@ -1512,6 +1610,7 @@ int DispatchQuery(ChannelWrap* channel, CaresReqWrap* req, const QueryMethodData
                        family,
                        OnReverseQueryComplete,
                        req);
+    StartChannelTimer(channel);
     return 0;
   }
 
@@ -1522,6 +1621,7 @@ int DispatchQuery(ChannelWrap* channel, CaresReqWrap* req, const QueryMethodData
                     OnDnsQueryComplete,
                     req,
                     nullptr);
+  StartChannelTimer(channel);
   return 0;
 }
 
@@ -1591,14 +1691,18 @@ void ChannelFinalize(napi_env env, void* data, void* /*hint*/) {
   auto* channel = static_cast<ChannelWrap*>(data);
   if (channel == nullptr) return;
 
+  channel->finalized = true;
   UnregisterChannelForEnv(channel);
   if (channel->wrapper_ref != nullptr) {
     napi_delete_reference(env, channel->wrapper_ref);
     channel->wrapper_ref = nullptr;
   }
 
-  DestroyChannelCares(channel);
-  delete channel;
+  if (channel->active_query_count > 0) {
+    return;
+  }
+
+  ScheduleFinalizedChannelDestroy(channel);
 }
 
 napi_value ReqCtor(napi_env env, napi_callback_info info) {
@@ -1665,6 +1769,13 @@ void OnGetAddrInfo(uv_getaddrinfo_t* req, int status, addrinfo* res) {
     MarkReqComplete(wrap);
     if (res != nullptr) uv_freeaddrinfo(res);
     MaybeDeleteReq(wrap);
+    return;
+  }
+  edge::HandleScope scope(env);
+  if (!scope.is_open()) {
+    MarkReqComplete(wrap);
+    if (res != nullptr) uv_freeaddrinfo(res);
+    CleanupReqAfterAsync(wrap);
     return;
   }
 
@@ -1738,6 +1849,12 @@ void OnGetNameInfo(uv_getnameinfo_t* req,
   if (env == nullptr) {
     MarkReqComplete(wrap);
     MaybeDeleteReq(wrap);
+    return;
+  }
+  edge::HandleScope scope(env);
+  if (!scope.is_open()) {
+    MarkReqComplete(wrap);
+    CleanupReqAfterAsync(wrap);
     return;
   }
 
@@ -2182,6 +2299,7 @@ napi_value ChannelQueryNative(napi_env env, napi_callback_info info) {
 
   PinReqObject(req);
   TrackPendingReq(env, req);
+  HoldChannelActiveRef(channel, self);
 
   const int rc = DispatchQuery(channel, req, method);
   if (rc != 0) {

@@ -1,0 +1,43 @@
+# Node Compatibility Troubleshooting
+
+| | | Remarks |
+| --- | --- | --- |
+| **Status** | ▶️ | Node compatibility known-issue registry. |
+| **Severity** | Low | Documentation registry only; individual issue pages carry runtime severity. |
+
+This directory is the known-issue registry for Node compatibility in the
+QuickJS WASIX work. It does not describe a C++ compatibility layer. Each page
+records the current incompatibility, status, and ownership boundary.
+
+Some issues are intentionally accepted for now because the QuickJS N-API backend
+is not trying to be a full Node runtime. Others are active work items for
+EdgeJS bootstrap/runtime code, deployment tooling, or focused QuickJS N-API
+internals.
+
+## Areas
+
+- [N-API known issues](napi/README.md): QuickJS N-API behavior, intentional
+  non-Node behavior, and focused internal subsystems under `napi/quickjs/src/internal`.
+- [EdgeJS runtime](edgejs/README.md): work that belongs in EdgeJS runtime source
+  or JavaScript bootstrap code under `src/` and `lib/`.
+- [Deploy and packaging](deploy/README.md): build, packaging, npm graph, and
+  deployment issues.
+
+## Current Status
+
+The cleanup direction is to keep QuickJS N-API small and explicit, keep real
+Node-runtime behavior in EdgeJS itself when it is required, and route module
+loading through Node's JavaScript loaders/translators instead of rebuilding
+Node's loader policy in C++.
+
+The C++ CJS/module-loader hack has been removed from `napi/quickjs/src`. The
+removed files were `unofficial_module_loader.{h,cc}` and
+`quickjs_cjs_exports.{h,cc}`. This means current QuickJS N-API behavior is
+intentionally without that parser/resolver.
+
+The missing engine-side module primitives were added to the vendored QuickJS
+submodule in `577fb31caf2e973b111431b6cb009f7595cc5f7d`, and the current
+`napi_module_wrap__` implementation adapts the V8-shaped `module_wrap` surface
+onto those APIs. This keeps module mechanics in QuickJS while leaving package
+resolution, CommonJS wrapping, package conditions, and builtin policy in
+EdgeJS/Node loader code.

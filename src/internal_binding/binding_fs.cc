@@ -1,5 +1,7 @@
 #include "internal_binding/dispatch.h"
 
+#include "edge_trace.h"
+
 #include <algorithm>
 #include <cstddef>
 #include <cerrno>
@@ -10,6 +12,7 @@
 #include <fcntl.h>
 #include <functional>
 #include <limits>
+#include <cstdio>
 #include <sstream>
 #include <string>
 #include <sys/stat.h>
@@ -23,6 +26,7 @@
 #include "edge_environment.h"
 #include "internal_binding/helpers.h"
 #include "../edge_env_loop.h"
+#include "../edge_handle_scope.h"
 #include "../edge_handle_wrap.h"
 #include "../edge_async_wrap.h"
 #include "../edge_stream_base.h"
@@ -78,6 +82,34 @@ FsBindingState* GetState(napi_env env) {
 FsBindingState& EnsureState(napi_env env) {
   return EdgeEnvironmentGetOrCreateSlotData<FsBindingState>(
       env, kEdgeEnvironmentSlotFsBindingState);
+}
+
+std::filesystem::path ResolveSymlinkComponentsForModuleResolution(const std::filesystem::path& path) {
+  std::filesystem::path current;
+  for (const std::filesystem::path& part : path.lexically_normal()) {
+    if (part == "." || part.empty()) continue;
+    if (part == "..") {
+      current /= part;
+      continue;
+    }
+    if (part == path.root_name() || part == path.root_directory()) {
+      current /= part;
+      continue;
+    }
+
+    std::filesystem::path candidate = current.empty() ? part : current / part;
+    std::error_code ec;
+    if (std::filesystem::is_symlink(candidate, ec) && !ec) {
+      std::filesystem::path target = std::filesystem::read_symlink(candidate, ec);
+      if (!ec) {
+        current = target.is_absolute() ? target : candidate.parent_path() / target;
+        current = current.lexically_normal();
+        continue;
+      }
+    }
+    current = candidate;
+  }
+  return current.lexically_normal();
 }
 
 napi_value GetRefValue(napi_env env, napi_ref ref) {
@@ -917,7 +949,7 @@ ReqKind ParseReq(napi_env env, napi_value candidate, napi_value* oncomplete) {
   }
 
   napi_valuetype t = napi_undefined;
-  if (napi_typeof(env, candidate, &t) == napi_ok && t == napi_object) {
+  if (napi_typeof(env, candidate, &t) == napi_ok && (t == napi_object || t == napi_external)) {
     napi_value fn = nullptr;
     napi_valuetype fn_t = napi_undefined;
     if (napi_get_named_property(env, candidate, "oncomplete", &fn) == napi_ok &&
@@ -1616,6 +1648,15 @@ void FinishAsyncFsReq(AsyncFsReq* async_req, int result) {
 void AfterAsyncFsReq(uv_fs_t* req) {
   auto* async_req = static_cast<AsyncFsReq*>(req != nullptr ? req->data : nullptr);
   if (async_req == nullptr) return;
+  if (async_req->env == nullptr) {
+    DestroyAsyncFsReq(async_req);
+    return;
+  }
+  edge::HandleScope scope(async_req->env);
+  if (!scope.is_open()) {
+    DestroyAsyncFsReq(async_req);
+    return;
+  }
   if (!async_req->delayed_open_completion &&
       ShouldDelayOpenCompletion(async_req, static_cast<int>(req->result))) {
     async_req->delayed_open_completion = true;
@@ -1807,6 +1848,13 @@ void FinishFileHandleClose(FileHandleCloseReq* close_req, int result) {
   if (close_req == nullptr) return;
   FileHandleWrap* wrap = close_req->wrap;
   napi_env env = close_req->env;
+  if (EDGE_TRACE_ENABLED("EDGE_TRACE_TTY")) {
+    std::fprintf(stderr,
+                 "EDGE_TRACE_TTY fs FileHandleClose finish fd=%d result=%d deferred=%p\n",
+                 wrap != nullptr ? wrap->fd : -1,
+                 result,
+                 wrap != nullptr ? wrap->closing_deferred : nullptr);
+  }
 
   auto delete_close_req = [env](FileHandleCloseReq* req) {
     if (req == nullptr) return;
@@ -1885,6 +1933,36 @@ void FinishFileHandleClose(FileHandleCloseReq* close_req, int result) {
 void AfterFileHandleClose(uv_fs_t* req) {
   auto* close_req = static_cast<FileHandleCloseReq*>(req != nullptr ? req->data : nullptr);
   if (close_req == nullptr) return;
+  napi_env env = close_req->wrap != nullptr ? close_req->wrap->env : nullptr;
+  if (env != nullptr) {
+    edge::HandleScope scope(env);
+    if (!scope.is_open()) {
+      if (close_req->active_request_token != nullptr) {
+        EdgeUnregisterActiveRequestToken(env, close_req->active_request_token);
+        close_req->active_request_token = nullptr;
+      }
+      ResetRef(env, &close_req->req_ref);
+      uv_fs_req_cleanup(&close_req->req);
+      delete close_req;
+      return;
+    }
+    if (EDGE_TRACE_ENABLED("EDGE_TRACE_TTY")) {
+      auto* wrap = close_req->wrap;
+      std::fprintf(stderr,
+                   "EDGE_TRACE_TTY fs FileHandleClose after fd=%d result=%zd\n",
+                   wrap != nullptr ? wrap->fd : -1,
+                   req != nullptr ? req->result : -1);
+    }
+    FinishFileHandleClose(close_req, static_cast<int>(req->result));
+    return;
+  }
+  if (EDGE_TRACE_ENABLED("EDGE_TRACE_TTY")) {
+    auto* wrap = close_req->wrap;
+    std::fprintf(stderr,
+                 "EDGE_TRACE_TTY fs FileHandleClose after fd=%d result=%zd\n",
+                 wrap != nullptr ? wrap->fd : -1,
+                 req != nullptr ? req->result : -1);
+  }
   FinishFileHandleClose(close_req, static_cast<int>(req->result));
 }
 
@@ -1899,8 +1977,7 @@ void DestroyFileHandleBase(EdgeStreamBase* base) {
 
 int FileHandleReadStopInternal(FileHandleWrap* wrap);
 
-void AfterFileHandleRead(uv_fs_t* req) {
-  auto* read_req = static_cast<FileHandleReadReq*>(req != nullptr ? req->data : nullptr);
+void FinishFileHandleRead(FileHandleReadReq* read_req, uv_fs_t* req) {
   if (read_req == nullptr) return;
 
   FileHandleWrap* wrap = read_req->wrap;
@@ -1949,6 +2026,27 @@ void AfterFileHandleRead(uv_fs_t* req) {
   }
 
   delete read_req;
+}
+
+void AfterFileHandleRead(uv_fs_t* req) {
+  auto* read_req = static_cast<FileHandleReadReq*>(req != nullptr ? req->data : nullptr);
+  if (read_req == nullptr) return;
+
+  napi_env env = read_req->wrap != nullptr ? read_req->wrap->env : nullptr;
+  if (env == nullptr) {
+    FinishFileHandleRead(read_req, req);
+    return;
+  }
+
+  edge::HandleScope scope(env);
+  if (!scope.is_open()) {
+    if (read_req->storage != nullptr) free(read_req->storage);
+    uv_fs_req_cleanup(req);
+    delete read_req;
+    return;
+  }
+
+  FinishFileHandleRead(read_req, req);
 }
 
 int FileHandleReadStartInternal(FileHandleWrap* wrap) {
@@ -2246,6 +2344,13 @@ napi_value FileHandleClose(napi_env env, napi_callback_info info) {
   uv_loop_t* loop = EdgeGetEnvLoop(env);
   const int rc = loop != nullptr ? uv_fs_close(loop, &close_req->req, wrap->fd, AfterFileHandleClose)
                                  : UV_EINVAL;
+  if (EDGE_TRACE_ENABLED("EDGE_TRACE_TTY")) {
+    std::fprintf(stderr,
+                 "EDGE_TRACE_TTY fs FileHandleClose start fd=%d rc=%d loop=%p\n",
+                 wrap->fd,
+                 rc,
+                 static_cast<void*>(loop));
+  }
   if (rc < 0) {
     FinishFileHandleClose(close_req, rc);
   }
@@ -2440,7 +2545,6 @@ void OnStatWatcherClosed(uv_handle_t* handle) {
     EdgeUnregisterActiveHandle(wrap->handle_wrap.env, wrap->handle_wrap.active_handle_token);
     wrap->handle_wrap.active_handle_token = nullptr;
   }
-  EdgeHandleWrapReleaseWrapperRef(&wrap->handle_wrap);
   EdgeHandleWrapMaybeCallOnClose(&wrap->handle_wrap);
   bool can_delete = wrap->handle_wrap.finalized;
   if (!can_delete && wrap->handle_wrap.delete_on_close) {
@@ -2449,6 +2553,8 @@ void OnStatWatcherClosed(uv_handle_t* handle) {
   if (can_delete) {
     EdgeHandleWrapDeleteRefIfPresent(wrap->handle_wrap.env, &wrap->handle_wrap.wrapper_ref);
     delete wrap;
+  } else {
+    EdgeHandleWrapReleaseWrapperRef(&wrap->handle_wrap);
   }
 }
 
@@ -2465,6 +2571,8 @@ void CloseStatWatcherForCleanup(void* data) {
 void OnStatWatcherChange(uv_fs_poll_t* handle, int status, const uv_stat_t* prev, const uv_stat_t* curr) {
   auto* wrap = static_cast<StatWatcherWrap*>(handle != nullptr ? handle->data : nullptr);
   if (wrap == nullptr || wrap->handle_wrap.env == nullptr) return;
+  edge::HandleScope scope(wrap->handle_wrap.env);
+  if (!scope.is_open()) return;
 
   napi_value self = EdgeHandleWrapGetRefValue(wrap->handle_wrap.env, wrap->handle_wrap.wrapper_ref);
   if (self == nullptr) return;
@@ -2728,6 +2836,30 @@ napi_value FsStatCommon(napi_env env,
   napi_value raw_out = nullptr;
   napi_value err = nullptr;
   if (!CallRaw(env, raw_name, 1, call_argv, &raw_out, &err)) {
+    if (std::strcmp(raw_name, "stat") == 0 &&
+        (ErrorCodeEquals(env, err, "ENOENT") || ErrorCodeEquals(env, err, "ENOTDIR"))) {
+      std::string path;
+      if (ValueToPathString(env, argc >= 1 ? argv[0] : nullptr, &path)) {
+        const std::filesystem::path resolved = ResolveSymlinkComponentsForModuleResolution(path);
+        if (resolved != std::filesystem::path(path).lexically_normal()) {
+          napi_value resolved_arg = nullptr;
+          const std::string resolved_path = resolved.string();
+          napi_create_string_utf8(env, resolved_path.c_str(), resolved_path.size(), &resolved_arg);
+          napi_value retry_out = nullptr;
+          napi_value retry_err = nullptr;
+          napi_value retry_argv[1] = {resolved_arg != nullptr ? resolved_arg : call_argv[0]};
+          if (CallRaw(env, raw_name, 1, retry_argv, &retry_out, &retry_err)) {
+            raw_out = retry_out;
+            err = nullptr;
+          } else if (retry_err != nullptr) {
+            err = retry_err;
+          }
+        }
+      }
+    }
+  }
+
+  if (raw_out == nullptr && err != nullptr) {
     if (!throw_if_no_entry &&
         (ErrorCodeEquals(env, err, "ENOENT") || ErrorCodeEquals(env, err, "ENOTDIR"))) {
       if (req_kind == ReqKind::kPromise) return MakeDeferredResolvedPromise(env, Undefined(env));
@@ -3974,7 +4106,14 @@ napi_value FsInternalModuleStat(napi_env env, napi_callback_info info) {
   if (argc < 1 || !ValueToUtf8(env, argv[0], &path)) return Undefined(env);
 
   std::error_code ec;
-  const auto status = std::filesystem::status(path, ec);
+  auto status = std::filesystem::status(path, ec);
+  if (ec) {
+    const std::filesystem::path resolved = ResolveSymlinkComponentsForModuleResolution(path);
+    if (resolved != std::filesystem::path(path).lexically_normal()) {
+      ec.clear();
+      status = std::filesystem::status(resolved, ec);
+    }
+  }
   int32_t out_value = -1;
   if (!ec) {
     if (std::filesystem::is_directory(status)) out_value = 1;

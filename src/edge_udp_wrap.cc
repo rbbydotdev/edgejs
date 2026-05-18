@@ -24,6 +24,7 @@
 #include "edge_async_wrap.h"
 #include "edge_environment.h"
 #include "edge_env_loop.h"
+#include "edge_handle_scope.h"
 #include "edge_handle_wrap.h"
 #include "edge_udp_listener.h"
 
@@ -508,6 +509,15 @@ class UdpWrap final : public EdgeUdpWrapBase, public EdgeUdpListener {
               const sockaddr* addr,
               unsigned int flags) override {
     (void)flags;
+    if (handle_wrap.env == nullptr) {
+      free(buf.base);
+      return;
+    }
+    edge::HandleScope scope(handle_wrap.env);
+    if (!scope.is_open()) {
+      free(buf.base);
+      return;
+    }
     if (nread == 0 && addr == nullptr) {
       free(buf.base);
       return;
@@ -637,6 +647,17 @@ class UdpWrap final : public EdgeUdpWrapBase, public EdgeUdpListener {
 
   void OnSendDone(EdgeUdpSendWrap* wrap, int status) override {
     auto* req_wrap = static_cast<SendWrap*>(wrap);
+    if (req_wrap == nullptr || req_wrap->env == nullptr) {
+      QueueSendWrapDestroyIfNeeded(req_wrap);
+      ReleaseSendWrapState(req_wrap);
+      return;
+    }
+    edge::HandleScope scope(req_wrap->env);
+    if (!scope.is_open()) {
+      QueueSendWrapDestroyIfNeeded(req_wrap);
+      ReleaseSendWrapState(req_wrap);
+      return;
+    }
     napi_value req_obj = req_wrap->object(req_wrap->env);
     if (req_wrap->have_callback && req_obj != nullptr) {
       napi_value argv[2] = {
@@ -826,7 +847,6 @@ void OnClosed(uv_handle_t* h) {
   if (wrap == nullptr) return;
   wrap->handle_wrap.state = kEdgeHandleClosed;
   EdgeHandleWrapDetach(&wrap->handle_wrap);
-  EdgeHandleWrapReleaseWrapperRef(&wrap->handle_wrap);
   if (wrap->handle_wrap.active_handle_token != nullptr) {
     EdgeUnregisterActiveHandle(wrap->handle_wrap.env, wrap->handle_wrap.active_handle_token);
     wrap->handle_wrap.active_handle_token = nullptr;
@@ -840,6 +860,8 @@ void OnClosed(uv_handle_t* h) {
   if (can_delete) {
     EdgeHandleWrapDeleteRefIfPresent(wrap->handle_wrap.env, &wrap->handle_wrap.wrapper_ref);
     delete wrap;
+  } else {
+    EdgeHandleWrapReleaseWrapperRef(&wrap->handle_wrap);
   }
 }
 

@@ -1,6 +1,7 @@
 #include "edge_task_queue.h"
 
 #include "edge_environment.h"
+#include "edge_handle_scope.h"
 #include "internal_binding/helpers.h"
 #include "unofficial_napi.h"
 
@@ -90,7 +91,7 @@ static napi_value TaskQueueSetPromiseRejectCallback(napi_env env, napi_callback_
   napi_value argv[1] = {nullptr};
   if (napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr) != napi_ok || argc < 1) return nullptr;
 
-#if defined(EDGE_BUNDLED_NAPI_V8)
+#if defined(EDGE_EMBEDDED_NAPI_PROVIDER)
   (void)unofficial_napi_set_promise_reject_callback(env, argv[0]);
 #endif
 
@@ -197,6 +198,8 @@ napi_status EdgeRunTaskQueueTickCallback(napi_env env, bool* called) {
   if (state == nullptr || state->tick_callback_ref == nullptr) {
     return napi_ok;
   }
+
+  edge::HandleScope scope(env);
 
   napi_value tick_cb = nullptr;
   napi_status status = napi_get_reference_value(env, state->tick_callback_ref, &tick_cb);

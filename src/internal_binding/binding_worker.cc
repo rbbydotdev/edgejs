@@ -27,6 +27,7 @@
 #include "edge_environment.h"
 #include "edge_environment_runtime.h"
 #include "edge_env_loop.h"
+#include "edge_handle_scope.h"
 #include "edge_handle_wrap.h"
 #include "edge_napi_embedder_hooks.h"
 #include "edge_option_helpers.h"
@@ -833,6 +834,8 @@ void OnWorkerTaskInterrupt(napi_env worker_env, void* data) {
 void OnWorkerCompletionAsync(uv_async_t* handle) {
   auto* wrap = static_cast<Worker*>(handle != nullptr ? handle->data : nullptr);
   if (wrap == nullptr || wrap->env == nullptr) return;
+  edge::HandleScope scope(wrap->env);
+  if (!scope.is_open()) return;
 
   std::deque<std::unique_ptr<WorkerTask>> completed;
   {

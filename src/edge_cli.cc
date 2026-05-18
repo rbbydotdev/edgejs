@@ -1,5 +1,7 @@
 #include "edge_cli.h"
 
+#include "edge_trace.h"
+
 #include <cctype>
 #include <csignal>
 #include <cstdlib>
@@ -257,6 +259,12 @@ int RunWithFreshEnv(const std::function<int(napi_env)>& runner,
 
   const int exit_code = runner(env);
   EDGE_STARTUP_TRACE(startup_trace, "cli.env.runner-returned");
+  if (EDGE_TRACE_ENABLED("EDGE_TRACE_BOOTSTRAP")) {
+    std::fprintf(stderr,
+                 "EDGE_TRACE_BOOTSTRAP runner exit_code=%d error=%s\n",
+                 exit_code,
+                 (error_out != nullptr && !error_out->empty()) ? error_out->c_str() : "<none>");
+  }
   EdgeEnvironmentRunCleanup(env);
   EdgeEnvironmentRunAtExitCallbacks(env);
   EDGE_STARTUP_TRACE(startup_trace, "cli.env.cleanup");

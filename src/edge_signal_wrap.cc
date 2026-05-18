@@ -9,6 +9,7 @@
 // #include "edge_async_wrap.h"
 #include "edge_active_resource.h"
 #include "edge_env_loop.h"
+#include "edge_handle_scope.h"
 #include "edge_handle_wrap.h"
 #include "edge_runtime.h"
 
@@ -100,6 +101,9 @@ void OnClosed(uv_handle_t* handle);
 void OnSignal(uv_signal_t* handle, int signum) {
   auto* wrap = static_cast<SignalWrap*>(handle->data);
   if (wrap == nullptr) return;
+  if (wrap->handle_wrap.env == nullptr) return;
+  edge::HandleScope scope(wrap->handle_wrap.env);
+  if (!scope.is_open()) return;
   napi_value self = EdgeHandleWrapGetRefValue(wrap->handle_wrap.env, wrap->handle_wrap.wrapper_ref);
   if (self == nullptr) return;
   napi_value onsignal = nullptr;

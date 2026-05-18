@@ -28,6 +28,7 @@ napi_value ResolveHeapUtils(napi_env env, const ResolveOptions& options);
 napi_value ResolveHttp2(napi_env env, const ResolveOptions& options);
 napi_value ResolveHttpParser(napi_env env, const ResolveOptions& options);
 napi_value ResolveIcu(napi_env env, const ResolveOptions& options);
+napi_value ResolveInspector(napi_env env, const ResolveOptions& options);
 napi_value ResolveJsUdpWrap(napi_env env, const ResolveOptions& options);
 napi_value ResolveJsStream(napi_env env, const ResolveOptions& options);
 napi_value ResolveInternalOnlyV8(napi_env env, const ResolveOptions& options);
@@ -59,6 +60,7 @@ napi_value ResolveTraceEvents(napi_env env, const ResolveOptions& options);
 napi_value ResolveTtyWrap(napi_env env, const ResolveOptions& options);
 napi_value ResolveTypes(napi_env env, const ResolveOptions& options);
 napi_value ResolveUdpWrap(napi_env env, const ResolveOptions& options);
+napi_value ResolveUndici(napi_env env, const ResolveOptions& options);
 napi_value ResolveUrl(napi_env env, const ResolveOptions& options);
 napi_value ResolveUrlPattern(napi_env env, const ResolveOptions& options);
 napi_value ResolveUtil(napi_env env, const ResolveOptions& options);
@@ -78,7 +80,7 @@ struct BindingResolverEntry {
   ResolverFn resolver;
 };
 
-constexpr std::array<BindingResolverEntry, 61> kResolvers = {{
+constexpr std::array<BindingResolverEntry, 63> kResolvers = {{
     {"async_wrap", ResolveAsyncWrap},
     {"async_context_frame", ResolveAsyncContextFrame},
     {"block_list", ResolveBlockList},
@@ -100,6 +102,7 @@ constexpr std::array<BindingResolverEntry, 61> kResolvers = {{
     {"http2", ResolveHttp2},
     {"http_parser", ResolveHttpParser},
     {"icu", ResolveIcu},
+    {"inspector", ResolveInspector},
     {"js_udp_wrap", ResolveJsUdpWrap},
     {"js_stream", ResolveJsStream},
     {"internal_only_v8", ResolveInternalOnlyV8},
@@ -131,6 +134,7 @@ constexpr std::array<BindingResolverEntry, 61> kResolvers = {{
     {"tty_wrap", ResolveTtyWrap},
     {"types", ResolveTypes},
     {"udp_wrap", ResolveUdpWrap},
+    {"undici", ResolveUndici},
     {"url", ResolveUrl},
     {"url_pattern", ResolveUrlPattern},
     {"util", ResolveUtil},

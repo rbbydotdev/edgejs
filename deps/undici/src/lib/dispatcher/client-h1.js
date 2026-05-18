@@ -1,6 +1,6 @@
 'use strict'
 
-/* global WebAssembly */
+/* global WebAssembly, UNDICI_USE_NATIVE_LLHTTP */
 
 const assert = require('node:assert')
 const util = require('../core/util.js')
@@ -54,6 +54,9 @@ const {
 } = require('../core/symbols.js')
 
 const constants = require('../llhttp/constants.js')
+const nativeLlhttp = typeof UNDICI_USE_NATIVE_LLHTTP !== 'undefined' && UNDICI_USE_NATIVE_LLHTTP
+  ? require('../llhttp/native.js')
+  : null
 const EMPTY_BUF = Buffer.alloc(0)
 const FastBuffer = Buffer[Symbol.species]
 const removeAllListeners = util.removeAllListeners
@@ -61,119 +64,126 @@ const removeAllListeners = util.removeAllListeners
 let extractBody
 
 function lazyllhttp () {
-  const llhttpWasmData = process.env.JEST_WORKER_ID ? require('../llhttp/llhttp-wasm.js') : undefined
-
-  let mod
-
-  // We disable wasm SIMD on ppc64 as it seems to be broken on Power 9 architectures.
-  let useWasmSIMD = process.arch !== 'ppc64'
-  // The Env Variable UNDICI_NO_WASM_SIMD allows explicitly overriding the default behavior
-  if (process.env.UNDICI_NO_WASM_SIMD === '1') {
-    useWasmSIMD = true
-  } else if (process.env.UNDICI_NO_WASM_SIMD === '0') {
-    useWasmSIMD = false
+  if (typeof UNDICI_USE_NATIVE_LLHTTP !== 'undefined' && UNDICI_USE_NATIVE_LLHTTP) {
+    return nativeLlhttp()
   }
 
-  if (useWasmSIMD) {
-    try {
-      mod = new WebAssembly.Module(require('../llhttp/llhttp_simd-wasm.js'))
-    } catch {
+  // eslint-disable-next-line no-labels
+  UNDICI_WASM_LLHTTP: {
+    const llhttpWasmData = process.env.JEST_WORKER_ID ? require('../llhttp/llhttp-wasm.js') : undefined
+
+    let mod
+
+    // We disable wasm SIMD on ppc64 as it seems to be broken on Power 9 architectures.
+    let useWasmSIMD = process.arch !== 'ppc64'
+    // The Env Variable UNDICI_NO_WASM_SIMD allows explicitly overriding the default behavior
+    if (process.env.UNDICI_NO_WASM_SIMD === '1') {
+      useWasmSIMD = true
+    } else if (process.env.UNDICI_NO_WASM_SIMD === '0') {
+      useWasmSIMD = false
     }
-  }
 
-  if (!mod) {
-    // We could check if the error was caused by the simd option not
-    // being enabled, but the occurring of this other error
-    // * https://github.com/emscripten-core/emscripten/issues/11495
-    // got me to remove that check to avoid breaking Node 12.
-    mod = new WebAssembly.Module(llhttpWasmData || require('../llhttp/llhttp-wasm.js'))
-  }
+    if (useWasmSIMD) {
+      try {
+        mod = new WebAssembly.Module(require('../llhttp/llhttp_simd-wasm.js'))
+      } catch {
+      }
+    }
 
-  return new WebAssembly.Instance(mod, {
-    env: {
+    if (!mod) {
+      // We could check if the error was caused by the simd option not
+      // being enabled, but the occurring of this other error
+      // * https://github.com/emscripten-core/emscripten/issues/11495
+      // got me to remove that check to avoid breaking Node 12.
+      mod = new WebAssembly.Module(llhttpWasmData || require('../llhttp/llhttp-wasm.js'))
+    }
+
+    return new WebAssembly.Instance(mod, {
+      env: {
       /**
        * @param {number} p
        * @param {number} at
        * @param {number} len
        * @returns {number}
        */
-      wasm_on_url: (p, at, len) => {
-        return 0
-      },
-      /**
+        wasm_on_url: (p, at, len) => {
+          return 0
+        },
+        /**
        * @param {number} p
        * @param {number} at
        * @param {number} len
        * @returns {number}
        */
-      wasm_on_status: (p, at, len) => {
-        assert(currentParser.ptr === p)
-        const start = at - currentBufferPtr + currentBufferRef.byteOffset
-        return currentParser.onStatus(new FastBuffer(currentBufferRef.buffer, start, len))
-      },
-      /**
+        wasm_on_status: (p, at, len) => {
+          assert(currentParser.ptr === p)
+          const start = at - currentBufferPtr + currentBufferRef.byteOffset
+          return currentParser.onStatus(new FastBuffer(currentBufferRef.buffer, start, len))
+        },
+        /**
        * @param {number} p
        * @returns {number}
        */
-      wasm_on_message_begin: (p) => {
-        assert(currentParser.ptr === p)
-        return currentParser.onMessageBegin()
-      },
-      /**
-       * @param {number} p
-       * @param {number} at
-       * @param {number} len
-       * @returns {number}
-       */
-      wasm_on_header_field: (p, at, len) => {
-        assert(currentParser.ptr === p)
-        const start = at - currentBufferPtr + currentBufferRef.byteOffset
-        return currentParser.onHeaderField(new FastBuffer(currentBufferRef.buffer, start, len))
-      },
-      /**
+        wasm_on_message_begin: (p) => {
+          assert(currentParser.ptr === p)
+          return currentParser.onMessageBegin()
+        },
+        /**
        * @param {number} p
        * @param {number} at
        * @param {number} len
        * @returns {number}
        */
-      wasm_on_header_value: (p, at, len) => {
-        assert(currentParser.ptr === p)
-        const start = at - currentBufferPtr + currentBufferRef.byteOffset
-        return currentParser.onHeaderValue(new FastBuffer(currentBufferRef.buffer, start, len))
-      },
-      /**
+        wasm_on_header_field: (p, at, len) => {
+          assert(currentParser.ptr === p)
+          const start = at - currentBufferPtr + currentBufferRef.byteOffset
+          return currentParser.onHeaderField(new FastBuffer(currentBufferRef.buffer, start, len))
+        },
+        /**
+       * @param {number} p
+       * @param {number} at
+       * @param {number} len
+       * @returns {number}
+       */
+        wasm_on_header_value: (p, at, len) => {
+          assert(currentParser.ptr === p)
+          const start = at - currentBufferPtr + currentBufferRef.byteOffset
+          return currentParser.onHeaderValue(new FastBuffer(currentBufferRef.buffer, start, len))
+        },
+        /**
        * @param {number} p
        * @param {number} statusCode
        * @param {0|1} upgrade
        * @param {0|1} shouldKeepAlive
        * @returns {number}
        */
-      wasm_on_headers_complete: (p, statusCode, upgrade, shouldKeepAlive) => {
-        assert(currentParser.ptr === p)
-        return currentParser.onHeadersComplete(statusCode, upgrade === 1, shouldKeepAlive === 1)
-      },
-      /**
+        wasm_on_headers_complete: (p, statusCode, upgrade, shouldKeepAlive) => {
+          assert(currentParser.ptr === p)
+          return currentParser.onHeadersComplete(statusCode, upgrade === 1, shouldKeepAlive === 1)
+        },
+        /**
        * @param {number} p
        * @param {number} at
        * @param {number} len
        * @returns {number}
        */
-      wasm_on_body: (p, at, len) => {
-        assert(currentParser.ptr === p)
-        const start = at - currentBufferPtr + currentBufferRef.byteOffset
-        return currentParser.onBody(new FastBuffer(currentBufferRef.buffer, start, len))
-      },
-      /**
+        wasm_on_body: (p, at, len) => {
+          assert(currentParser.ptr === p)
+          const start = at - currentBufferPtr + currentBufferRef.byteOffset
+          return currentParser.onBody(new FastBuffer(currentBufferRef.buffer, start, len))
+        },
+        /**
        * @param {number} p
        * @returns {number}
        */
-      wasm_on_message_complete: (p) => {
-        assert(currentParser.ptr === p)
-        return currentParser.onMessageComplete()
-      }
+        wasm_on_message_complete: (p) => {
+          assert(currentParser.ptr === p)
+          return currentParser.onMessageComplete()
+        }
 
-    }
-  })
+      }
+    })
+  }
 }
 
 let llhttpInstance = null
@@ -209,7 +219,9 @@ class Parser {
      */
   constructor (client, socket, { exports }) {
     this.llhttp = exports
-    this.ptr = this.llhttp.llhttp_alloc(constants.TYPE.RESPONSE)
+    this.ptr = this.llhttp.native
+      ? this.llhttp.llhttp_alloc(constants.TYPE.RESPONSE, this)
+      : this.llhttp.llhttp_alloc(constants.TYPE.RESPONSE)
     this.client = client
     /**
      * @type {import('net').Socket}
@@ -312,36 +324,42 @@ class Parser {
 
     const { socket, llhttp } = this
 
-    // Allocate a new buffer if the current buffer is too small.
-    if (chunk.length > currentBufferSize) {
-      if (currentBufferPtr) {
-        llhttp.free(currentBufferPtr)
-      }
-      // Allocate a buffer that is a multiple of 4096 bytes.
-      currentBufferSize = Math.ceil(chunk.length / 4096) * 4096
-      currentBufferPtr = llhttp.malloc(currentBufferSize)
-    }
-
-    new Uint8Array(llhttp.memory.buffer, currentBufferPtr, currentBufferSize).set(chunk)
-
-    // Call `execute` on the wasm parser.
-    // We pass the `llhttp_parser` pointer address, the pointer address of buffer view data,
-    // and finally the length of bytes to parse.
-    // The return value is an error code or `constants.ERROR.OK`.
     try {
       let ret
 
       try {
-        currentBufferRef = chunk
         currentParser = this
-        ret = llhttp.llhttp_execute(this.ptr, currentBufferPtr, chunk.length)
+        if (llhttp.native) {
+          ret = llhttp.llhttp_execute(this.ptr, chunk)
+        } else {
+          // Allocate a new buffer if the current buffer is too small.
+          if (chunk.length > currentBufferSize) {
+            if (currentBufferPtr) {
+              llhttp.free(currentBufferPtr)
+            }
+            // Allocate a buffer that is a multiple of 4096 bytes.
+            currentBufferSize = Math.ceil(chunk.length / 4096) * 4096
+            currentBufferPtr = llhttp.malloc(currentBufferSize)
+          }
+
+          new Uint8Array(llhttp.memory.buffer, currentBufferPtr, currentBufferSize).set(chunk)
+
+          // Call `execute` on the wasm parser.
+          // We pass the `llhttp_parser` pointer address, the pointer address of buffer view data,
+          // and finally the length of bytes to parse.
+          // The return value is an error code or `constants.ERROR.OK`.
+          currentBufferRef = chunk
+          ret = llhttp.llhttp_execute(this.ptr, currentBufferPtr, chunk.length)
+        }
       } finally {
         currentParser = null
         currentBufferRef = null
       }
 
       if (ret !== constants.ERROR.OK) {
-        const data = chunk.subarray(llhttp.llhttp_get_error_pos(this.ptr) - currentBufferPtr)
+        const data = llhttp.native
+          ? chunk.subarray(llhttp.llhttp_get_error_pos(this.ptr))
+          : chunk.subarray(llhttp.llhttp_get_error_pos(this.ptr) - currentBufferPtr)
 
         if (ret === constants.ERROR.PAUSED_UPGRADE) {
           this.onUpgrade(data)
@@ -349,9 +367,11 @@ class Parser {
           this.paused = true
           socket.unshift(data)
         } else {
-          const ptr = llhttp.llhttp_get_error_reason(this.ptr)
+          const ptr = llhttp.native ? 0 : llhttp.llhttp_get_error_reason(this.ptr)
           let message = ''
-          if (ptr) {
+          if (llhttp.native) {
+            message = llhttp.llhttp_get_error_reason_string(this.ptr) || ''
+          } else if (ptr) {
             const len = new Uint8Array(llhttp.memory.buffer, ptr).indexOf(0)
             message =
               'Response does not match the HTTP/1.1 protocol (' +
