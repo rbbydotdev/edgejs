@@ -44,7 +44,10 @@ EDGE_WASMER_PACKAGE ?= wasmer/edgejs@=$(EDGE_PACKAGE_VERSION)
 
 # QuickJS currently cannot parse explicit resource management `using` syntax.
 QUICKJS_SKIP_USING_PARSER_TESTS := parallel/test-stream-duplex-destroy.js,parallel/test-stream-readable-dispose.js,parallel/test-stream-transform-destroy.js,parallel/test-stream-writable-destroy.js
-QUICKJS_SKIP_TESTS ?= $(QUICKJS_SKIP_USING_PARSER_TESTS)
+# QuickJS worker_threads/MessagePort support is incomplete; these worker-backed
+# tests time out or fail in the QuickJS lane while V8 continues to cover them.
+QUICKJS_SKIP_WORKER_TESTS := parallel/test-diagnostics-channel-worker-threads.js,client-proxy/test-http-proxy-request-invalid-char-in-url.mjs,parallel/test-crypto-key-objects-messageport.js,parallel/test-crypto-prime.js,parallel/test-crypto-worker-thread.js,parallel/test-http2-reset-flood.js,parallel/test-webcrypto-cryptokey-workers.js
+QUICKJS_SKIP_TESTS ?= $(QUICKJS_SKIP_USING_PARSER_TESTS),$(QUICKJS_SKIP_WORKER_TESTS)
 
 ifeq ($(UNAME_S),Darwin)
 BUILD_ENV := env -u CPPFLAGS -u LDFLAGS
