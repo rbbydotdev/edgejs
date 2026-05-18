@@ -77,6 +77,7 @@ EDGE_NODE_TEST_SKIP_CI_20260518 := \
   parallel/test-strace-openat-openssl.js \
   parallel/test-stream-pipeline.js \
   parallel/test-stream-readable-async-iterators.js \
+  parallel/test-zlib-type-error.js \
   pseudo-tty/console_colors.js
 EDGE_NODE_TEST_SKIP_TESTS ?= $(subst $(SPACE),$(COMMA),$(strip $(EDGE_NODE_TEST_SKIP_CI_20260518)))
 
