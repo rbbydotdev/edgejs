@@ -1258,14 +1258,18 @@ bool CallCallbackRef(napi_env env,
                      napi_value* argv,
                      napi_value* result = nullptr) {
   if (env == nullptr) return false;
-  edge::HandleScope scope(env);
+  if (result != nullptr) *result = nullptr;
+  edge::EscapableHandleScope scope(env);
   if (!scope.is_open()) return false;
   napi_value callback = GetRefValue(env, callback_ref);
   if (!IsFunction(env, callback) || recv == nullptr) return false;
-  napi_value ignored = nullptr;
-  napi_value* out = result != nullptr ? result : &ignored;
-  return EdgeAsyncWrapMakeCallback(
-             env, async_id, recv, recv, callback, argc, argv, out, kEdgeMakeCallbackNone) == napi_ok;
+  napi_value local_result = nullptr;
+  const bool ok = EdgeAsyncWrapMakeCallback(
+                      env, async_id, recv, recv, callback, argc, argv, &local_result, kEdgeMakeCallbackNone) == napi_ok;
+  if (ok && result != nullptr && local_result != nullptr) {
+    *result = scope.Escape(local_result);
+  }
+  return ok;
 }
 
 bool CallCallbackRefWithResource(napi_env env,
@@ -1277,23 +1281,27 @@ bool CallCallbackRefWithResource(napi_env env,
                                  napi_value* argv,
                                  napi_value* result = nullptr) {
   if (env == nullptr) return false;
-  edge::HandleScope scope(env);
+  if (result != nullptr) *result = nullptr;
+  edge::EscapableHandleScope scope(env);
   if (!scope.is_open()) return false;
   napi_value callback = GetRefValue(env, callback_ref);
   napi_value resource = GetRefValue(env, resource_ref);
   napi_value effective_recv = recv != nullptr ? recv : resource;
   if (!IsFunction(env, callback) || effective_recv == nullptr) return false;
-  napi_value ignored = nullptr;
-  napi_value* out = result != nullptr ? result : &ignored;
-  return EdgeAsyncWrapMakeCallback(env,
-                                  async_id,
-                                  resource != nullptr ? resource : effective_recv,
-                                  effective_recv,
-                                  callback,
-                                  argc,
-                                  argv,
-                                  out,
-                                  kEdgeMakeCallbackNone) == napi_ok;
+  napi_value local_result = nullptr;
+  const bool ok = EdgeAsyncWrapMakeCallback(env,
+                                           async_id,
+                                           resource != nullptr ? resource : effective_recv,
+                                           effective_recv,
+                                           callback,
+                                           argc,
+                                           argv,
+                                           &local_result,
+                                           kEdgeMakeCallbackNone) == napi_ok;
+  if (ok && result != nullptr && local_result != nullptr) {
+    *result = scope.Escape(local_result);
+  }
+  return ok;
 }
 
 bool CallNamedIntMethod(napi_env env,
