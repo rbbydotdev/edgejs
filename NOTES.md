@@ -5,6 +5,71 @@ out the browser target. Newest entries first.
 
 ---
 
+## 2026-05-20 — MILESTONE: edge.js runs user JS in browser
+
+```
+[stdout] hello from edgejs in browser
+_start ran 164 ms (returned)
+```
+
+`edge -e "console.log('hello from edgejs in browser')"` executed cleanly
+in the browser harness.  Real Node.js code running inside the wasm,
+writing to stdout via fd_write, returning normally (no error exit).
+
+What got us here in this session:
+
+1. **#14 uv_cwd EIO** — root-caused to edge mutating `globalThis.TextEncoder`
+   mid-bootstrap; fixed by caching the native instance at module load.
+   See entry below.
+2. **`compile_function_for_cjs_loader` wrong signature** — was 13 args,
+   native is 6.  Fixed to match `napi/src/guest/napi.rs:5182` and
+   synthesize the CJS params array internally.
+3. **`this`-binding bug in 3 delegation sites** — `wrapImpl` in
+   `imports-generated.ts` drops `this`.  Refactored to `impls.X`
+   closure pattern.
+4. **Exit code 13 = kUnsettledTopLevelAwait** (NOT kGenericUserError as
+   originally diagnosed).  Three impl bugs caused it:
+   - `get_promise_details` had a phantom `_napiEnv` arg that shifted the
+     state_ptr write to the wrong address; edge's IsPromisePending then
+     read its stack-default 0 (pending), cascading into the TLA gate.
+   - `module_wrap_check_unsettled_top_level_await` defaulted to 0
+     (unsettled).  Flipped to 1 (settled) since our module_wrap impls
+     are stubs that don't host real TLA semantics.
+   - `contextify_run_script` had a phantom `_ctx` arg that shifted
+     `sourceHandle` to read the *filename* ("[eval]") instead of the
+     user code.  `new Function("return ([eval]);")` returned a JS array
+     instead of executing console.log.
+
+### #!~debt: systemic phantom `_napiEnv` in unofficial_napi_* impls
+
+A pattern audit found that **several `unofficial_napi_*` impls have an
+extra `_napiEnv` parameter that doesn't exist in the wasm signature.**
+The wasmer host's `FunctionEnvMut<NapiEnv>` is implicit on the Rust side,
+so wasm calls have exactly one env handle, not two.
+
+Confirmed misaligned (only `get_promise_details`, `contextify_run_script`,
+and `check_unsettled_top_level_await` correctly-aligned-but-wrong-default
+were fixed above):
+
+- `unofficial_napi_get_proxy_details` — wasm 4 args, our 5
+- `unofficial_napi_contextify_make_context` — wasm 9 args, our 7
+- `unofficial_napi_contextify_contains_module_syntax` — wasm 6 args, our 7
+- likely more across the 80-function surface
+
+These are silent landmines.  They don't trigger today because they're
+not called yet, but they will misbehave once edge runs real workloads.
+**Follow-up: systematic audit pass — diff every unofficial_napi_* impl
+arity in `unofficial.ts` against the guest sig in
+`napi/src/guest/napi.rs`.**  Tracked as a new task.
+
+### Lesson saved to memory
+
+Pattern saved at `~/.claude/projects/-Users-robertpolana-etc-projects-edgejs/memory/project-globalthis-mutation.md`
+covering the globalThis mutation issue.  Also worth keeping: the systemic
+phantom-arg pattern documented here.
+
+---
+
 ## 2026-05-20 — #14 uv_cwd EIO: FIXED
 
 The TextEncoder root cause from attempt #6 (entry below) was fixed by

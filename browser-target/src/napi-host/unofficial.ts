@@ -354,13 +354,21 @@ export function createUnofficialNapi(ctx: UnofficialHostContext): Record<string,
     unofficial_napi_stop_heap_profile(_env: number, _napiEnv: number, _resultOut: number): number { return 0; },
     unofficial_napi_take_heap_snapshot(_env: number, _napiEnv: number, _resultOut: number): number { return 0; },
 
-    // Promise introspection — say "not a promise, no fulfillment value".
+    // Promise introspection.  Wasm sig (5 args, see napi/src/guest/napi.rs:364):
+    // (napi_env, promise, state_ptr, result_ptr, has_result_ptr).  Earlier
+    // impl declared a phantom _napiEnv parameter, so stateOut wrote to the
+    // wrong address — the real state_ptr (arg 2) stayed uninitialized.
+    // Edge's IsPromisePending then read its own stack-default of 0 (pending),
+    // which downstream cascaded into the unsettled-TLA gate (exit 13).
+    // Honest stub: say "fulfilled with no result" so the C++ caller doesn't
+    // wait for resolution.
     unofficial_napi_get_promise_details(
-      _env: number, _napiEnv: number, _promise: number,
-      stateOut: number, resultOut: number,
+      _envHandle: number, _promiseHandle: number,
+      stateOut: number, resultOut: number, hasResultOut: number,
     ): number {
-      if (stateOut > 0) dv(memory).setInt32(stateOut, 0, true); // 0 = pending
+      if (stateOut > 0) dv(memory).setInt32(stateOut, 1, true);    // 1 = fulfilled
       if (resultOut > 0) dv(memory).setUint32(resultOut, 0, true);
+      if (hasResultOut > 0) dv(memory).setInt32(hasResultOut, 0, true);
       return 0;
     },
     unofficial_napi_mark_promise_as_handled(_env: number, _napiEnv: number, _promise: number): number { return 0; },
@@ -533,10 +541,18 @@ export function createUnofficialNapi(ctx: UnofficialHostContext): Record<string,
       }
       return 0;
     },
+    // Wasm sig (12 args, napi/src/guest/napi.rs:1378):
+    // (napi_env, sandbox_or_null, source, filename, line_offset, column_offset,
+    //  timeout: i64, display_errors, break_on_sigint, break_on_first_line,
+    //  host_defined_option_id, result_ptr).  Earlier impl had a phantom
+    // `_ctx` placeholder and shifted everything by one — sourceHandle was
+    // actually reading the filename string "[eval]", so `new Function`
+    // evaluated "return ([eval]);" (a JS array literal) instead of the user
+    // code.  console.log was never called.
     unofficial_napi_contextify_run_script(
-      _env: number, envHandle: number, _ctx: number, sourceHandle: number,
-      _filename: number, _lineOffset: number, _columnOffset: number,
-      _cachedData: number, _produceCachedData: number, _parsingContext: number,
+      envHandle: number, _sandboxOrNull: number, sourceHandle: number, _filenameHandle: number,
+      _lineOffset: number, _columnOffset: number, _timeout: bigint,
+      _displayErrors: number, _breakOnSigint: number, _breakOnFirstLine: number,
       _hostDefinedOptionId: number, resultOut: number,
     ): number {
       const env = envs.get(envHandle);
@@ -547,7 +563,10 @@ export function createUnofficialNapi(ctx: UnofficialHostContext): Record<string,
       try {
         // #!~debt eval-via-Function: real vm.Script supports break-on-sigint,
         // timeout, displayErrors.  We drop all.  Syntax errors throw to JS.
-        value = new Function(`return (${source});`)();
+        // Wrap in an IIFE so statements (not just expressions) work; if the
+        // user passed `console.log(…)` we still want it to execute even
+        // though it has no return value.
+        value = new Function(`${source}`)();
       } catch (e) {
         // #!~debt should surface as napi exception; currently just status 1.
         console.warn("contextify_run_script failed:", e);
@@ -750,10 +769,14 @@ export function createUnofficialNapi(ctx: UnofficialHostContext): Record<string,
       if (resultOut > 0) dv(memory).setInt32(resultOut, 0, true);
       return 0;
     },
+    // Wasm reads `*resultOut` as "settled? 1 : 0".  Default to settled (1)
+    // since our module_wrap_* impls don't host top-level await semantics —
+    // returning 0 (unsettled) triggers edge's kUnsettledTopLevelAwait exit
+    // path (code 13) at the end of every run.  See NOTES.md 2026-05-20.
     unofficial_napi_module_wrap_check_unsettled_top_level_await(
       _env: number, _napiEnv: number, _handle: number, resultOut: number,
     ): number {
-      if (resultOut > 0) dv(memory).setInt32(resultOut, 0, true);
+      if (resultOut > 0) dv(memory).setInt32(resultOut, 1, true);
       return 0;
     },
     unofficial_napi_module_wrap_set_export(
