@@ -3,6 +3,7 @@
 #include "edge_env_loop.h"
 #include "edge_module_loader.h"
 #include "edge_option_helpers.h"
+#include "edge_path.h"
 #include "edge_runtime.h"
 #include "edge_worker_env.h"
 #include "edge_environment.h"
@@ -257,6 +258,45 @@ bool TryGetCurrentWorkingDirectoryString(std::string* out, int* uv_error_out = n
     cwd_len += 1;
   }
   return false;
+}
+
+bool TryRealpath(const std::string& path, std::string* out) {
+  if (out == nullptr || path.empty()) return false;
+
+  uv_fs_t req;
+  const std::string namespaced = edge_path::ToNamespacedPath(path);
+  int err = uv_fs_realpath(nullptr, &req, namespaced.c_str(), nullptr);
+  if (err < 0 || req.ptr == nullptr) {
+    uv_fs_req_cleanup(&req);
+    return false;
+  }
+
+  *out = edge_path::FromNamespacedPath(static_cast<const char*>(req.ptr));
+  uv_fs_req_cleanup(&req);
+  return true;
+}
+
+std::string ResolvePathForFollowOperation(const std::string& path) {
+  std::string resolved;
+  if (TryRealpath(path, &resolved)) return resolved;
+
+  std::filesystem::path current(path);
+  std::vector<std::filesystem::path> tail;
+  while (!current.empty()) {
+    const std::filesystem::path parent = current.parent_path();
+    const std::filesystem::path filename = current.filename();
+    if (filename.empty() || parent == current) break;
+
+    tail.push_back(filename);
+    current = parent;
+    if (TryRealpath(current.string(), &resolved)) {
+      std::filesystem::path out(resolved);
+      for (auto it = tail.rbegin(); it != tail.rend(); ++it) out /= *it;
+      return out.string();
+    }
+  }
+
+  return path;
 }
 
 void DeleteRefIfPresent(napi_env env, napi_ref* ref) {
@@ -3477,7 +3517,8 @@ napi_value ProcessChdirCallback(napi_env env, napi_callback_info info) {
   if (napi_get_value_string_utf8(env, args[0], buf.data(), buf.size(), &copied) != napi_ok) return nullptr;
   const std::string dest(buf.data(), copied);
   const std::string oldcwd = GetCurrentWorkingDirectoryForErrors();
-  const int rc = uv_chdir(dest.c_str());
+  const std::string chdir_dest = ResolvePathForFollowOperation(dest);
+  const int rc = uv_chdir(chdir_dest.c_str());
   if (rc != 0) {
     const char* code = uv_err_name(rc);
     if (code == nullptr) code = "UNKNOWN";

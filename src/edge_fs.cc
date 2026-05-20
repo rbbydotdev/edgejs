@@ -115,6 +115,52 @@ bool PathFromValueStrict(napi_env env, napi_value value, std::string* out) {
   return true;
 }
 
+bool TryRealpath(const std::string& path, std::string* out) {
+  if (out == nullptr || path.empty()) return false;
+
+  uv_fs_t req;
+  const std::string namespaced = edge_path::ToNamespacedPath(path);
+  int err = uv_fs_realpath(nullptr, &req, namespaced.c_str(), nullptr);
+  if (err < 0 || req.ptr == nullptr) {
+    uv_fs_req_cleanup(&req);
+    return false;
+  }
+
+  *out = edge_path::FromNamespacedPath(static_cast<const char*>(req.ptr));
+  uv_fs_req_cleanup(&req);
+  return true;
+}
+
+std::string ResolvePathForFollowOperation(const std::string& path) {
+  std::string resolved;
+  if (TryRealpath(path, &resolved)) return resolved;
+
+  std::filesystem::path current(path);
+  std::vector<std::filesystem::path> tail;
+  while (!current.empty()) {
+    const std::filesystem::path parent = current.parent_path();
+    const std::filesystem::path filename = current.filename();
+    if (filename.empty() || parent == current) break;
+
+    tail.push_back(filename);
+    current = parent;
+    if (TryRealpath(current.string(), &resolved)) {
+      std::filesystem::path out(resolved);
+      for (auto it = tail.rbegin(); it != tail.rend(); ++it) out /= *it;
+      return out.string();
+    }
+  }
+
+  return path;
+}
+
+bool ShouldResolveOpenPath(int32_t flags) {
+#if UV_FS_O_NOFOLLOW != 0
+  if ((flags & UV_FS_O_NOFOLLOW) != 0) return false;
+#endif
+  return true;
+}
+
 bool ValueToBool(napi_env env, napi_value value, bool* out) {
   if (out == nullptr) return false;
   if (napi_get_value_bool(env, value, out) == napi_ok) return true;
@@ -349,8 +395,11 @@ napi_value BindingReadFileUtf8(napi_env env, napi_callback_info info) {
     return nullptr;
   }
 
+  const std::string open_path = ShouldResolveOpenPath(flags)
+                                    ? ResolvePathForFollowOperation(path)
+                                    : path;
   uv_fs_t req;
-  uv_file file = uv_fs_open(nullptr, &req, path.c_str(), flags, 0666, nullptr);
+  uv_file file = uv_fs_open(nullptr, &req, open_path.c_str(), flags, 0666, nullptr);
   uv_fs_req_cleanup(&req);
   if (file < 0) {
     ThrowUVException(env, static_cast<int>(file), "open", path.c_str());
@@ -433,7 +482,10 @@ napi_value BindingWriteFileUtf8(napi_env env, napi_callback_info info) {
   if (path_is_fd) {
     file = static_cast<uv_file>(fd);
   } else {
-    file = uv_fs_open(nullptr, &req, path.c_str(), flags, mode, nullptr);
+    const std::string open_path = ShouldResolveOpenPath(flags)
+                                      ? ResolvePathForFollowOperation(path)
+                                      : path;
+    file = uv_fs_open(nullptr, &req, open_path.c_str(), flags, mode, nullptr);
     uv_fs_req_cleanup(&req);
     if (file < 0) {
       ThrowUVException(env, static_cast<int>(file), "open", path.c_str());
@@ -554,10 +606,11 @@ napi_value BindingMkdir(napi_env env, napi_callback_info info) {
     return nullptr;
   }
 
+  const std::string mkdir_path = ResolvePathForFollowOperation(path);
   if (recursive) {
     std::string first_path;
     int err = 0;
-    if (!MkdirpSync(path, mode, &first_path, &err)) {
+    if (!MkdirpSync(mkdir_path, mode, &first_path, &err)) {
       ThrowUVException(env, err, "mkdir", path.c_str());
       return nullptr;
     }
@@ -572,7 +625,7 @@ napi_value BindingMkdir(napi_env env, napi_callback_info info) {
   }
 
   uv_fs_t req;
-  int err = uv_fs_mkdir(nullptr, &req, path.c_str(), mode, nullptr);
+  int err = uv_fs_mkdir(nullptr, &req, mkdir_path.c_str(), mode, nullptr);
   uv_fs_req_cleanup(&req);
   if (err < 0) {
     ThrowUVException(env, err, "mkdir", path.c_str());
@@ -713,8 +766,9 @@ napi_value BindingReaddir(napi_env env, napi_callback_info info) {
     return nullptr;
   }
 
+  const std::string scan_path = ResolvePathForFollowOperation(path);
   uv_fs_t req;
-  int err = uv_fs_scandir(nullptr, &req, path.c_str(), 0, nullptr);
+  int err = uv_fs_scandir(nullptr, &req, scan_path.c_str(), 0, nullptr);
   if (err < 0) {
     uv_fs_req_cleanup(&req);
     ThrowUVException(env, err, "scandir", path.c_str());
@@ -936,8 +990,9 @@ napi_value BindingExistsSync(napi_env env, napi_callback_info info) {
     if (napi_get_boolean(env, false, &false_val) == napi_ok) return false_val;
     return nullptr;
   }
+  const std::string access_path = ResolvePathForFollowOperation(path);
   uv_fs_t req;
-  int err = uv_fs_access(nullptr, &req, path.c_str(), 0, nullptr);
+  int err = uv_fs_access(nullptr, &req, access_path.c_str(), 0, nullptr);
   uv_fs_req_cleanup(&req);
   napi_value result = nullptr;
   if (napi_get_boolean(env, err == 0, &result) != napi_ok) return nullptr;
@@ -958,8 +1013,9 @@ napi_value BindingAccessSync(napi_env env, napi_callback_info info) {
       napi_get_value_int32(env, argv[1], &mode) != napi_ok) {
     return nullptr;
   }
+  const std::string access_path = ResolvePathForFollowOperation(path);
   uv_fs_t req;
-  int err = uv_fs_access(nullptr, &req, path.c_str(), mode, nullptr);
+  int err = uv_fs_access(nullptr, &req, access_path.c_str(), mode, nullptr);
   uv_fs_req_cleanup(&req);
   if (err < 0) {
     ThrowUVException(env, err, "access", path.c_str());
@@ -985,8 +1041,11 @@ napi_value BindingOpen(napi_env env, napi_callback_info info) {
   if (argc >= 3 && napi_get_value_int32(env, argv[2], &mode) != napi_ok) {
     return nullptr;
   }
+  const std::string open_path = ShouldResolveOpenPath(flags)
+                                    ? ResolvePathForFollowOperation(path)
+                                    : path;
   uv_fs_t req;
-  uv_file file = uv_fs_open(nullptr, &req, path.c_str(), flags, mode, nullptr);
+  uv_file file = uv_fs_open(nullptr, &req, open_path.c_str(), flags, mode, nullptr);
   uv_fs_req_cleanup(&req);
   if (file < 0) {
     ThrowUVException(env, static_cast<int>(file), "open", path.c_str());
@@ -1422,8 +1481,9 @@ napi_value BindingSymlink(napi_env env, napi_callback_info info) {
     if (napi_get_value_int32(env, argv[2], &flags) != napi_ok) return nullptr;
   }
 #if defined(_WIN32)
+  const std::string link_path = ResolvePathForFollowOperation(path);
   uv_fs_t req;
-  int err = uv_fs_symlink(nullptr, &req, target.c_str(), path.c_str(), flags, nullptr);
+  int err = uv_fs_symlink(nullptr, &req, target.c_str(), link_path.c_str(), flags, nullptr);
   uv_fs_req_cleanup(&req);
   if (err < 0) {
     ThrowUVException(env, err, "symlink", path.c_str());
@@ -1431,7 +1491,8 @@ napi_value BindingSymlink(napi_env env, napi_callback_info info) {
   }
 #else
   (void)flags;
-  if (::symlink(target.c_str(), path.c_str()) != 0) {
+  const std::string link_path = ResolvePathForFollowOperation(path);
+  if (::symlink(target.c_str(), link_path.c_str()) != 0) {
     ThrowErrnoException(env, errno, "symlink", strerror(errno), path.c_str());
     return nullptr;
   }
@@ -1728,8 +1789,9 @@ napi_value BindingAccess(napi_env env, napi_callback_info info) {
       napi_get_value_int32(env, argv[1], &mode) != napi_ok) {
     return nullptr;
   }
+  const std::string access_path = ResolvePathForFollowOperation(path);
   uv_fs_t req;
-  int err = uv_fs_access(nullptr, &req, path.c_str(), mode, nullptr);
+  int err = uv_fs_access(nullptr, &req, access_path.c_str(), mode, nullptr);
   uv_fs_req_cleanup(&req);
   if (err < 0) {
     ThrowUVException(env, err, "access", path.c_str());

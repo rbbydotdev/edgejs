@@ -112,6 +112,45 @@ std::filesystem::path ResolveSymlinkComponentsForModuleResolution(const std::fil
   return current.lexically_normal();
 }
 
+bool TryRealpath(const std::string& path, std::string* out) {
+  if (out == nullptr || path.empty()) return false;
+
+  uv_fs_t req;
+  const std::string namespaced = edge_path::ToNamespacedPath(path);
+  int err = uv_fs_realpath(nullptr, &req, namespaced.c_str(), nullptr);
+  if (err < 0 || req.ptr == nullptr) {
+    uv_fs_req_cleanup(&req);
+    return false;
+  }
+
+  *out = edge_path::FromNamespacedPath(static_cast<const char*>(req.ptr));
+  uv_fs_req_cleanup(&req);
+  return true;
+}
+
+std::string ResolvePathForFollowOperation(const std::string& path) {
+  std::string resolved;
+  if (TryRealpath(path, &resolved)) return resolved;
+
+  std::filesystem::path current(path);
+  std::vector<std::filesystem::path> tail;
+  while (!current.empty()) {
+    const std::filesystem::path parent = current.parent_path();
+    const std::filesystem::path filename = current.filename();
+    if (filename.empty() || parent == current) break;
+
+    tail.push_back(filename);
+    current = parent;
+    if (TryRealpath(current.string(), &resolved)) {
+      std::filesystem::path out(resolved);
+      for (auto it = tail.rbegin(); it != tail.rend(); ++it) out /= *it;
+      return out.string();
+    }
+  }
+
+  return path;
+}
+
 napi_value GetRefValue(napi_env env, napi_ref ref) {
   if (ref == nullptr) return nullptr;
   napi_value out = nullptr;
@@ -3027,7 +3066,7 @@ napi_value FsMkdir(napi_env env, napi_callback_info info) {
     return nullptr;
   }
 
-  path = edge_path::ToNamespacedPath(path);
+  path = edge_path::ToNamespacedPath(ResolvePathForFollowOperation(path));
   int32_t mode = 0;
   bool recursive = false;
   if (argc >= 2 && argv[1] != nullptr) napi_get_value_int32(env, argv[1], &mode);
@@ -3202,7 +3241,7 @@ napi_value FsSymlink(napi_env env, napi_callback_info info) {
     return nullptr;
   }
 
-  path = edge_path::ToNamespacedPath(path);
+  path = edge_path::ToNamespacedPath(ResolvePathForFollowOperation(path));
   int32_t flags = 0;
   if (argc >= 3 && argv[2] != nullptr) napi_get_value_int32(env, argv[2], &flags);
 
