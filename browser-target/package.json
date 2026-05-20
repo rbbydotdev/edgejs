@@ -1,0 +1,21 @@
+{
+  "name": "edgejs-browser-target",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "gen:napi-stubs": "node scripts/gen-napi-stubs.mjs"
+  },
+  "dependencies": {
+    "@emnapi/core": "^1.10.0",
+    "@emnapi/runtime": "^1.10.0",
+    "@emnapi/wasi-threads": "^1.2.1",
+    "@wasmer/sdk": "^0.9.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.3",
+    "vite": "^5.4.10"
+  }
+}

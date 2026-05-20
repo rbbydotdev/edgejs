@@ -1,0 +1,495 @@
+diff --git a/Cargo.standalone.toml b/Cargo.standalone.toml
+index 3a884b9..ad7c7e9 100644
+--- a/Cargo.standalone.toml
++++ b/Cargo.standalone.toml
+@@ -14,6 +14,9 @@ cli = [
+     "dep:tokio",
+     "dep:virtual-fs",
+     "dep:wasmer-types",
++    "dep:tracing",
++    "dep:tracing-subscriber",
++    "dep:serde_json",
+ ]
+ 
+ [dependencies]
+@@ -27,6 +30,9 @@ wasmer-types = { version = "=7.1.0", optional = true }
+ wasmer-wasix = { version = "=0.701.0", optional = true }
+ virtual-fs = { version = "=0.701.0", optional = true }
+ tokio = { version = "1", features = ["rt-multi-thread"], optional = true}
++tracing = { version = "0.1", optional = true }
++tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = true }
++serde_json = { version = "1", optional = true }
+ enum-iterator = "2.3.0"
+ 
+ [build-dependencies]
+diff --git a/Cargo.toml b/Cargo.toml
+index 9e7d96f..478e6d2 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -14,6 +14,9 @@ cli = [
+     "dep:tokio",
+     "dep:virtual-fs",
+     "dep:wasmer-types",
++    "dep:tracing",
++    "dep:tracing-subscriber",
++    "dep:serde_json",
+ ]
+ 
+ [dependencies]
+@@ -34,6 +37,9 @@ wasmer-types = { version = "=7.1.0", path = "../types", optional = true }
+ wasmer-wasix = { version = "=0.701.0", path = "../wasix", optional = true }
+ virtual-fs = { version = "=0.701.0", path = "../virtual-fs", optional = true }
+ tokio = { version = "1", features = ["rt-multi-thread"], optional = true}
++tracing = { version = "0.1", optional = true }
++tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = true }
++serde_json = { version = "1", optional = true }
+ enum-iterator = "2.3.0"
+ 
+ [build-dependencies]
+diff --git a/src/bin/napi_wasmer.rs b/src/bin/napi_wasmer.rs
+index d16ef82..64edfb7 100644
+--- a/src/bin/napi_wasmer.rs
++++ b/src/bin/napi_wasmer.rs
+@@ -1,8 +1,11 @@
+ use anyhow::{Context, Result, anyhow, bail};
+ use std::path::{Path, PathBuf};
++use tracing_subscriber::layer::SubscriberExt;
++use tracing_subscriber::util::SubscriberInitExt;
++use tracing_subscriber::EnvFilter;
+ use wasmer_napi::{
+     NapiCtx,
+-    cli::{GuestMount, run_wasix_main_capture_stdio_with_ctx},
++    cli::{GuestMount, JsonlTraceLayer, run_wasix_main_capture_stdio_with_ctx},
+ };
+ 
+ const BUILTIN_JS_GUEST_PATH: &str = "/edgejs-builtins";
+@@ -183,6 +186,7 @@ fn main() -> Result<()> {
+     let mut extra_mounts = Vec::new();
+     let mut guest_args = Vec::new();
+     let mut forwarding_guest_args = false;
++    let mut trace_wasi_path: Option<String> = None;
+ 
+     while let Some(arg) = argv.next() {
+         if forwarding_guest_args {
+@@ -191,6 +195,15 @@ fn main() -> Result<()> {
+         }
+         match arg.as_str() {
+             "--" => forwarding_guest_args = true,
++            "--trace-wasi" => {
++                trace_wasi_path = Some(
++                    argv.next()
++                        .ok_or_else(|| anyhow!("--trace-wasi requires an output path"))?,
++                );
++            }
++            _ if arg.starts_with("--trace-wasi=") => {
++                trace_wasi_path = Some(arg.trim_start_matches("--trace-wasi=").to_string());
++            }
+             "--app-dir" => {
+                 let host_dir = argv
+                     .next()
+@@ -229,6 +242,27 @@ fn main() -> Result<()> {
+     maybe_remap_first_guest_arg_to_app_mount(&mut guest_args, &mut extra_mounts)?;
+     maybe_add_builtin_mounts(&mut extra_mounts, builtin_js_dir)?;
+ 
++    // Optional: install a tracing subscriber that emits JSONL host-call
++    // records to a file.  The output is intended for diff against the
++    // browser harness trace.  Off by default (zero overhead) — only active
++    // when --trace-wasi <path> is passed.
++    if let Some(path) = trace_wasi_path {
++        let layer = JsonlTraceLayer::new(
++            &path,
++            // Targets that wasmer-wasix uses for #[instrument] spans.  Add
++            // more as we identify them.
++            vec!["wasmer_wasix::syscalls", "wasmer_wasix"],
++        )
++        .with_context(|| format!("opening trace file {}", path))?;
++        let env_filter = EnvFilter::try_from_default_env()
++            .unwrap_or_else(|_| EnvFilter::new("wasmer_wasix::syscalls=trace,wasmer_wasix=trace"));
++        tracing_subscriber::registry()
++            .with(env_filter)
++            .with(layer)
++            .init();
++        eprintln!("[napi_wasmer] tracing host calls to {}", path);
++    }
++
+     let ctx = NapiCtx::default();
+     let (exit_code, _stdout, _stderr) =
+         run_wasix_main_capture_stdio_with_ctx(&ctx, &wasm_path, &guest_args, &extra_mounts)?;
+diff --git a/src/cli.rs b/src/cli/mod.rs
+similarity index 99%
+rename from src/cli.rs
+rename to src/cli/mod.rs
+index 2f6b544..d9091f0 100644
+--- a/src/cli.rs
++++ b/src/cli/mod.rs
+@@ -14,6 +14,9 @@ use wasmer_wasix::{
+     runtime::task_manager::tokio::TokioTaskManager,
+ };
+ 
++mod trace_layer;
++pub use trace_layer::JsonlTraceLayer;
++
+ use crate::NapiCtx;
+ 
+ #[derive(Debug, Clone)]
+diff --git a/src/cli/trace_layer.rs b/src/cli/trace_layer.rs
+new file mode 100644
+index 0000000..c90fe31
+--- /dev/null
++++ b/src/cli/trace_layer.rs
+@@ -0,0 +1,151 @@
++// JSONL trace layer.  Captures every tracing span (wasmer-wasix already
++// instruments each syscall with `#[instrument(level = "trace")]`) and
++// writes one JSON line per span close, including all recorded fields.
++//
++// Output schema matches the browser harness so a simple `diff -u` over the
++// two files highlights syscall divergence.  See
++// `browser-target/src/trace.ts` for the matching shape on the JS side.
++
++use std::collections::BTreeMap;
++use std::fs::File;
++use std::io::{BufWriter, Write};
++use std::path::Path;
++use std::sync::Mutex;
++use std::time::Instant;
++
++use tracing::field::{Field, Visit};
++use tracing::span::{Attributes, Id, Record};
++use tracing::Subscriber;
++use tracing_subscriber::Layer;
++use tracing_subscriber::layer::Context;
++use tracing_subscriber::registry::LookupSpan;
++
++#[derive(Default)]
++struct FieldVisitor {
++    values: BTreeMap<String, serde_json::Value>,
++}
++
++impl Visit for FieldVisitor {
++    fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
++        self.values
++            .insert(field.name().to_string(), serde_json::Value::String(format!("{:?}", value)));
++    }
++    fn record_str(&mut self, field: &Field, value: &str) {
++        self.values
++            .insert(field.name().to_string(), serde_json::Value::String(value.to_string()));
++    }
++    fn record_i64(&mut self, field: &Field, value: i64) {
++        self.values
++            .insert(field.name().to_string(), serde_json::Value::Number(value.into()));
++    }
++    fn record_u64(&mut self, field: &Field, value: u64) {
++        self.values
++            .insert(field.name().to_string(), serde_json::Value::Number(value.into()));
++    }
++    fn record_bool(&mut self, field: &Field, value: bool) {
++        self.values
++            .insert(field.name().to_string(), serde_json::Value::Bool(value));
++    }
++}
++
++/// A `tracing` Layer that emits one JSONL record per closed span.  Only
++/// captures spans whose target starts with the configured prefixes (so we
++/// don't drown in unrelated subsystems).
++pub struct JsonlTraceLayer {
++    writer: Mutex<BufWriter<File>>,
++    start: Instant,
++    target_prefixes: Vec<&'static str>,
++}
++
++impl JsonlTraceLayer {
++    pub fn new<P: AsRef<Path>>(
++        path: P,
++        target_prefixes: Vec<&'static str>,
++    ) -> std::io::Result<Self> {
++        let file = File::create(path)?;
++        Ok(Self {
++            writer: Mutex::new(BufWriter::new(file)),
++            start: Instant::now(),
++            target_prefixes,
++        })
++    }
++
++    fn matches_target(&self, target: &str) -> bool {
++        self.target_prefixes.is_empty()
++            || self.target_prefixes.iter().any(|p| target.starts_with(p))
++    }
++}
++
++impl<S> Layer<S> for JsonlTraceLayer
++where
++    S: Subscriber + for<'lookup> LookupSpan<'lookup>,
++{
++    fn on_new_span(&self, attrs: &Attributes<'_>, id: &Id, ctx: Context<'_, S>) {
++        let span = match ctx.span(id) {
++            Some(s) => s,
++            None => return,
++        };
++        if !self.matches_target(span.metadata().target()) {
++            return;
++        }
++        let mut visitor = FieldVisitor::default();
++        attrs.record(&mut visitor);
++        span.extensions_mut().insert(visitor);
++    }
++
++    fn on_record(&self, id: &Id, values: &Record<'_>, ctx: Context<'_, S>) {
++        let span = match ctx.span(id) {
++            Some(s) => s,
++            None => return,
++        };
++        if !self.matches_target(span.metadata().target()) {
++            return;
++        }
++        let mut exts = span.extensions_mut();
++        if let Some(v) = exts.get_mut::<FieldVisitor>() {
++            values.record(v);
++        }
++    }
++
++    fn on_close(&self, id: Id, ctx: Context<'_, S>) {
++        let span = match ctx.span(&id) {
++            Some(s) => s,
++            None => return,
++        };
++        let metadata = span.metadata();
++        if !self.matches_target(metadata.target()) {
++            return;
++        }
++        let exts = span.extensions();
++        let visitor = match exts.get::<FieldVisitor>() {
++            Some(v) => v,
++            None => return,
++        };
++        let elapsed = self.start.elapsed();
++        let target = metadata.target();
++        // Normalize target to a short category so browser ↔ native diffs
++        // can match on the same identifiers.  Mirrors `categorize` in
++        // browser-target/src/trace.ts.
++        let category = if target.starts_with("wasmer_wasix::syscalls::wasi::") {
++            "wasi"
++        } else if target.starts_with("wasmer_wasix::syscalls::wasix::") {
++            "wasix"
++        } else if target.starts_with("wasmer_wasix::syscalls") {
++            "wasix"
++        } else {
++            "internal"
++        };
++        let record = serde_json::json!({
++            "t_ms": elapsed.as_secs_f64() * 1000.0,
++            "category": category,
++            "name": metadata.name(),
++            "target": target,
++            "fields": visitor.values,
++        });
++        if let Ok(mut w) = self.writer.lock() {
++            let _ = writeln!(*w, "{}", record);
++            // Flush eagerly — if the wasm crashes we want the last call on disk.
++            let _ = w.flush();
++        }
++    }
++}
+diff --git a/src/ctx.rs b/src/ctx.rs
+index a638817..62a61ce 100644
+--- a/src/ctx.rs
++++ b/src/ctx.rs
+@@ -224,6 +224,12 @@ impl NapiRuntimeHooks {
+ 
+         let session = self.ctx.prepare_module(module)?;
+         let imports = session.create_imports(store)?;
++        // DEBUG: dump what we registered
++        let count = imports.iter().count();
++        eprintln!("[debug] imports total entries: {count}");
++        for (ns, name, _ext) in imports.iter().take(20) {
++            eprintln!("  {ns}.{name}");
++        }
+         let mut sessions = self
+             .sessions
+             .lock()
+diff --git a/src/guest/napi.rs b/src/guest/napi.rs
+index 9871cc0..f5aecd7 100644
+--- a/src/guest/napi.rs
++++ b/src/guest/napi.rs
+@@ -666,6 +666,26 @@ fn guest_unofficial_napi_request_interrupt(
+     })
+ }
+ 
++// 3-arg adapter for prebuilt edgejs.wasm releases that dropped the
++// transfer_list parameter.  Forwards to the 4-arg impl with empty transfer.
++fn guest_unofficial_napi_structured_clone_3arg(
++    mut env: FunctionEnvMut<NapiEnv>,
++    napi_env: i32,
++    value: i32,
++    result_ptr: i32,
++) -> i32 {
++    let env_handle = snapi_env(&env, napi_env);
++    let value_id = if value > 0 { value as u32 } else { 0 };
++    let mut out = 0u32;
++    let status = unsafe {
++        snapi_bridge_unofficial_structured_clone(env_handle, value_id, 0, &mut out)
++    };
++    if status == 0 && result_ptr > 0 {
++        write_guest_u32(&mut env, result_ptr as u32, out);
++    }
++    status
++}
++
+ fn guest_unofficial_napi_structured_clone(
+     mut env: FunctionEnvMut<NapiEnv>,
+     napi_env: i32,
+@@ -5054,7 +5074,10 @@ pub fn register_napi_imports(
+         "unofficial_napi_terminate_execution" => Function::new_typed_with_env(store, fe, guest_unofficial_napi_terminate_execution),
+         "unofficial_napi_cancel_terminate_execution" => Function::new_typed_with_env(store, fe, guest_unofficial_napi_cancel_terminate_execution),
+         "unofficial_napi_request_interrupt" => Function::new_typed_with_env(store, fe, guest_unofficial_napi_request_interrupt),
+-        "unofficial_napi_structured_clone" => Function::new_typed_with_env(store, fe, guest_unofficial_napi_structured_clone),
++        // Prebuilt edgejs.wasm (newer) calls structured_clone with 3 args
++        // (no transfer_list), so route through a 3-arg adapter; the
++        // _with_transfer variant keeps the original 4-arg shape.
++        "unofficial_napi_structured_clone" => Function::new_typed_with_env(store, fe, guest_unofficial_napi_structured_clone_3arg),
+         "unofficial_napi_structured_clone_with_transfer" => Function::new_typed_with_env(store, fe, guest_unofficial_napi_structured_clone),
+         "unofficial_napi_serialize_value" => Function::new_typed_with_env(store, fe, guest_unofficial_napi_serialize_value),
+         "unofficial_napi_deserialize_value" => Function::new_typed_with_env(store, fe, guest_unofficial_napi_deserialize_value),
+@@ -5114,15 +5137,122 @@ pub fn register_napi_imports(
+         "unofficial_napi_module_wrap_set_import_module_dynamically_callback" => Function::new_typed_with_env(store, fe, guest_unofficial_napi_module_wrap_set_import_module_dynamically_callback),
+         "unofficial_napi_module_wrap_set_initialize_import_meta_object_callback" => Function::new_typed_with_env(store, fe, guest_unofficial_napi_module_wrap_set_initialize_import_meta_object_callback),
+         "unofficial_napi_module_wrap_create_required_module_facade" => Function::new_typed_with_env(store, fe, guest_unofficial_napi_module_wrap_create_required_module_facade),
++        // Stubbed symbols added downstream in the wasm but not yet implemented
++        // here.  Returning 1 (generic napi_status error) makes any actual use
++        // surface loudly rather than silently mis-behaving.
++        "unofficial_napi_contextify_compile_function_for_cjs_loader" => Function::new_typed_with_env(store, fe, guest_stub_unofficial_napi_contextify_compile_function_for_cjs_loader),
++        "unofficial_napi_get_current_stack_trace" => Function::new_typed_with_env(store, fe, guest_stub_unofficial_napi_get_current_stack_trace),
++        "unofficial_napi_module_wrap_import_module_dynamically" => Function::new_typed_with_env(store, fe, guest_stub_unofficial_napi_module_wrap_import_module_dynamically),
+     };
+ 
+     io.register_namespace(NAPI_MODULE_NAME, napi_namespace);
++    // Newer prebuilt edgejs.wasm releases collapse unofficial_napi_*
++    // into the "napi" module rather than the "napi_extension_wasmer_v0"
++    // module the host expects.  Expose every extension entry under both
++    // module names so either wasm shape resolves.
++    for (name, ext) in napi_extension_wasmer_namespace.iter() {
++        io.define(NAPI_MODULE_NAME, name, ext.clone());
++    }
+     io.register_namespace(
+         NAPI_EXTENSION_WASMER_MODULE_NAME,
+         napi_extension_wasmer_namespace,
+     );
+ }
+ 
++// ---- Stubs for symbols added downstream in newer wasm releases. ----
++// These must exist so wasmer can satisfy all imports during instantiation.
++// Returning 1 surfaces any actual call as a napi_status error.
++
++// CJS loader variant of contextify_compile_function.
++//
++// Wasm signature (6 args): (napi_env, code, filename, is_sea_main, should_detect_module, result_ptr).
++// Node expects an *object* in `result_ptr` with at least a `function` field; the
++// function itself must be CJS-wrapped, i.e. take (exports, require, module,
++// __filename, __dirname) as parameters so the wrapper code can bind them.
++//
++// We synthesize this by:
++//   1. Building a napi array ["exports", "require", "module", "__filename", "__dirname"]
++//   2. Calling the standard contextify_compile_function with that array as `params`
++//   3. Wrapping the resulting function handle in a fresh object with `function` set
++//
++// `sourceMapURL`/`cachedData`/`cachedDataRejected` are omitted; Node reads them
++// with `?.` so missing fields are tolerated.  When we want true cached-data
++// support we'd thread the C++-side bridge through, but this is enough for
++// boot-time CJS execution and is the entire point of the baseline run.
++fn guest_stub_unofficial_napi_contextify_compile_function_for_cjs_loader(
++    mut env: FunctionEnvMut<NapiEnv>,
++    napi_env: i32,
++    code: i32,
++    filename: i32,
++    _is_sea_main: i32,
++    _should_detect_module: i32,
++    result_ptr: i32,
++) -> i32 {
++    const CJS_PARAMS: [&str; 5] = ["exports", "require", "module", "__filename", "__dirname"];
++    let snapi = snapi_env(&env, napi_env);
++
++    // Build napi string handles for the 5 wrapper-param names.
++    let mut param_ids = [0u32; 5];
++    for (i, name) in CJS_PARAMS.iter().enumerate() {
++        let cs = CString::new(*name).unwrap();
++        let status = unsafe {
++            snapi_bridge_create_string_utf8(snapi, cs.as_ptr(), name.len() as u32, &mut param_ids[i])
++        };
++        if status != 0 {
++            return status;
++        }
++    }
++
++    // Wrap them in an array (the `params` argument).
++    let mut params_array_id = 0u32;
++    if unsafe { snapi_bridge_create_array(snapi, &mut params_array_id) } != 0 {
++        return 1;
++    }
++    for (i, pid) in param_ids.iter().enumerate() {
++        if unsafe { snapi_bridge_set_element(snapi, params_array_id, i as u32, *pid) } != 0 {
++            return 1;
++        }
++    }
++
++    // Delegate to the regular contextify_compile_function.  Its result_out
++    // is *already* the `{ function, sourceURL, sourceMapURL, ... }` shape
++    // Node's wrapSafe expects (see napi/v8/src/unofficial_napi_contextify.cc),
++    // so we just write that handle straight into the guest's result slot.
++    let mut wrapper_object_id = 0u32;
++    let status = unsafe {
++        snapi_bridge_unofficial_contextify_compile_function(
++            snapi,
++            if code > 0 { code as u32 } else { 0 },
++            if filename > 0 { filename as u32 } else { 0 },
++            0, 0, 0, 0, 0, 0,
++            params_array_id,
++            0,
++            &mut wrapper_object_id,
++        )
++    };
++    if status != 0 {
++        return status;
++    }
++    if result_ptr > 0 {
++        write_guest_u32(&mut env, result_ptr as u32, wrapper_object_id);
++    }
++    0
++}
++
++fn guest_stub_unofficial_napi_get_current_stack_trace(
++    _env: FunctionEnvMut<NapiEnv>,
++    _a: i32, _b: i32, _c: i32,
++) -> i32 {
++    1
++}
++
++fn guest_stub_unofficial_napi_module_wrap_import_module_dynamically(
++    _env: FunctionEnvMut<NapiEnv>,
++    _a: i32, _b: i32, _c: i32, _d: i32,
++) -> i32 {
++    1
++}
++
+ fn guest_env_uv_cpu_info(_cpu_infos_out: i32, _count_out: i32) -> i32 {
+     -1
+ }
+diff --git a/src/lib.rs b/src/lib.rs
+index 8ee2830..3acb10b 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -31,9 +31,15 @@ impl Display for NapiVersion {
+ 
+ impl NapiVersion {
+     pub const fn is_compatible_with(self, other: Self) -> bool {
++        // Permissive: accept Unknown-on-the-wasm so prebuilt edgejs.wasm
++        // releases that introduce newer unofficial_napi_* symbols still
++        // instantiate.  Missing symbols are stubbed in register_napi_imports.
+         matches!(
+             (self, other),
+-            (Self::V10, Self::V10) | (Self::Unknown, Self::V10)
++            (Self::V10, Self::V10)
++                | (Self::Unknown, Self::V10)
++                | (Self::V10, Self::Unknown)
++                | (Self::Unknown, Self::Unknown)
+         )
+     }
+ }

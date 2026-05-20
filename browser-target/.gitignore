@@ -1,0 +1,7 @@
+node_modules/
+dist/
+.vite/
+*.log
+
+# 25MB build artifact — see SETUP/README for how to obtain.
+edgejs.wasm

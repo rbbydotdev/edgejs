@@ -1,0 +1,784 @@
+// Implementations of the ~86 `unofficial_napi_*` functions that edgejs.wasm
+// imports.  These are NOT part of standard N-API; they're edge.js's V8
+// embedding hooks for things Node uses internally — module wrapping, script
+// compilation, structured clone, heap inspection, etc.
+//
+// Each starts as a logging stub returning a sensible status (mostly napi_ok).
+// As the probe runs and we see which ones edge actually invokes during boot,
+// we fill them in one at a time.  The Rust file in napi/src/guest/napi.rs is
+// the reference spec for behavior; the napi/src/napi_bridge_init.cc shows
+// what V8 ops they map to — both useful when porting a given function.
+
+import type { Context, Env } from "@emnapi/runtime";
+
+// Capture native text-codec instances at module load.  Edge mutates
+// globalThis.TextEncoder/Decoder mid-boot with a polyfill that goes
+// through V8 string ops we don't host — same root cause as #14.
+// See NOTES.md 2026-05-20 "uv_cwd EIO: attempt #6".
+const encoder = new TextEncoder();
+const decoder = new TextDecoder();
+
+export interface UnofficialHostContext {
+  context: Context;
+  memory: WebAssembly.Memory;
+  /** The Env we created during `unofficial_napi_create_env`; lookup table by env handle. */
+  envs: Map<number, Env>;
+}
+
+function dv(memory: WebAssembly.Memory): DataView {
+  return new DataView(memory.buffer);
+}
+
+export function createUnofficialNapi(ctx: UnofficialHostContext): Record<string, Function> {
+  const { context, memory, envs } = ctx;
+
+  // Tracks "scope handle ID" → "env ID" so we can release scopes by their
+  // own handle, which is what wasm passes back.
+  const scopeToEnv = new Map<number, number>();
+
+  // Build the impls object first so methods can reference each other via
+  // `impls.X` (closure) rather than `this.X` — wasm calls reach us through
+  // `imports-generated.ts:wrapImpl` which invokes `fn(...args)` with no
+  // `this` binding, so `(this as Record<string, Function>).X` is undefined.
+  // See NOTES.md 2026-05-20 "uv_cwd EIO: FIXED" for the broader pattern.
+  const impls: Record<string, Function> = {
+    // --- Env lifecycle ---
+
+    // (module_api_version, env_out_ptr, scope_out_ptr) -> napi_status
+    unofficial_napi_create_env(_apiVersion: number, envOutPtr: number, scopeOutPtr: number): number {
+      const env = context.createEnv(
+        "edgejs",
+        8, // module API version
+        // makeDynCall_vppp / makeDynCall_vp: called when emnapi needs to invoke
+        // a wasm function pointer (for finalizers, callbacks).  We don't have
+        // wasmTable here yet — it'll be set later via setWasmTable().
+        (() => () => { throw new Error("dynCall before table ready"); }) as never,
+        (() => () => { throw new Error("dynCall before table ready"); }) as never,
+        (msg?: string) => { throw new Error(`napi abort: ${msg ?? "(no message)"}`); },
+        undefined,
+      );
+      envs.set(env.id, env);
+
+      const scope = context.openScope(env);
+      scopeToEnv.set(scope.id, env.id);
+
+      const view = dv(memory);
+      if (envOutPtr > 0) view.setUint32(envOutPtr, env.id, true);
+      if (scopeOutPtr > 0) view.setUint32(scopeOutPtr, scope.id, true);
+      return 0; // napi_ok
+    },
+
+    // (api_version, options_ptr, env_out_ptr, scope_out_ptr) -> status
+    unofficial_napi_create_env_with_options(
+      _apiVersion: number,
+      _optionsPtr: number,
+      envOutPtr: number,
+      scopeOutPtr: number,
+    ): number {
+      return impls.unofficial_napi_create_env(0, envOutPtr, scopeOutPtr);
+    },
+
+    // #!~debt no-op: doesn't actually release the emnapi env/scope we
+    // created in unofficial_napi_create_env.  Envs accumulate across runs.
+    // Fine for single-shot scripts; leaks for long-lived sessions.
+    unofficial_napi_release_env(_scopePtr: number): number {
+      return 0;
+    },
+    unofficial_napi_release_env_with_loop(_scopePtr: number, _loopPtr: number): number {
+      return 0;
+    },
+
+    // --- V8 flags (no-op; we don't have V8 here, browser engine is what it is) ---
+
+    unofficial_napi_set_flags_from_string(_strPtr: number, _strLen: number): number {
+      return 0;
+    },
+
+    // --- V8-specific extensions backed by browser-engine equivalents ---
+
+    // V8's "private symbol" is a Symbol that isn't visible via reflection.
+    // Browsers don't expose that knob; a regular Symbol() is close enough for
+    // edge's bootstrap (private-property hiding doesn't matter when nothing
+    // else can observe it anyway).  Returns the new handle in result_ptr.
+    unofficial_napi_create_private_symbol(
+      envHandle: number,
+      descPtr: number,
+      descLen: number,
+      resultPtr: number,
+    ): number {
+      const env = envs.get(envHandle);
+      if (!env) return 1;
+      let description: string | undefined;
+      if (descPtr > 0) {
+        const mem = new Uint8Array(memory.buffer);
+        let end: number;
+        if (descLen === -1 || descLen === 0xFFFFFFFF) {
+          end = descPtr;
+          while (mem[end] !== 0 && end < mem.length) end++;
+        } else {
+          end = descPtr + descLen;
+        }
+        // TextDecoder refuses shared buffers; copy first.
+        const copy = new Uint8Array(end - descPtr);
+        copy.set(mem.subarray(descPtr, end));
+        description = decoder.decode(copy);
+      }
+      const sym = description ? Symbol(description) : Symbol();
+      const handle = context.ensureHandle(sym);
+      dv(memory).setUint32(resultPtr, handle.id, true);
+      return 0;
+    },
+
+    // V8's vm.compileFunction equivalent.  Used by Node to compile internal
+    // bootstrap scripts and user CJS modules.  We build a JS Function with
+    // the given parameter names (so CJS wrappers get `exports`, `require`,
+    // etc. as injected args).  Returns an object wrapping the function +
+    // sourceMap metadata — matches the shape edge expects (see
+    // napi/v8/src/unofficial_napi_contextify.cc:1876 in the native ref).
+    unofficial_napi_contextify_compile_function(
+      _envHandle: number,
+      codeHandle: number,
+      filenameHandle: number,
+      _lineOffset: number,
+      _columnOffset: number,
+      _cachedData: number,
+      _produceCachedData: number,
+      _parsingContext: number,
+      _contextExtensions: number,
+      paramsHandle: number,
+      _hostDefinedOptionId: number,
+      resultPtr: number,
+    ): number {
+      const code = context.handleStore.get(codeHandle)?.value as string | undefined;
+      const filename = context.handleStore.get(filenameHandle)?.value as string | undefined;
+      if (typeof code !== "string") return 1;
+
+      // params: optional array of strings (the wrapper-function arg names).
+      let paramNames: string[] = [];
+      if (paramsHandle > 0) {
+        const arr = context.handleStore.get(paramsHandle)?.value;
+        if (Array.isArray(arr)) paramNames = arr.map(String);
+      }
+
+      let compiled: Function;
+      try {
+        // #!~debt approximation: `new Function` ≠ vm.compileFunction.  Differences:
+        //   - new Function runs in the GLOBAL scope of this worker; vm runs in
+        //     the script's parsingContext (we pass 0/undefined so this happens
+        //     to match for boot, but it diverges if edge passes a real context).
+        //   - new Function can't accept `parsingContext`, `contextExtensions`,
+        //     `cachedData`, or `produceCachedData` — we silently drop all four.
+        //   - Syntax errors surface as JS exceptions here, not napi statuses;
+        //     we return generic-failure (status 1) without populating the
+        //     pending exception on the napi env.
+        compiled = new Function(...paramNames, `//# sourceURL=${filename ?? "[edgejs]"}\n${code}`);
+      } catch (e) {
+        // #!~debt error reporting: should surface as a napi exception
+        // (napi_throw_error or similar) so edge sees it via napi_is_exception_pending.
+        // Currently the compile-fail just returns status 1 — edge then sees a
+        // bogus "compile succeeded but result is undefined" downstream.
+        console.warn("compile_function failed:", e);
+        return 1;
+      }
+
+      // Wrap in the result-object shape edge's wrapSafe expects.
+      const wrapper = {
+        function: compiled,
+        sourceURL: filename,
+        sourceMapURL: undefined,
+        cachedDataRejected: false,
+      };
+      const handle = context.ensureHandle(wrapper);
+      dv(memory).setUint32(resultPtr, handle.id, true);
+      return 0;
+    },
+
+    // --- Callback-registration extensions ---
+    // Edge registers various lifecycle / introspection callbacks via these.
+    // We record-but-never-invoke for now (browser has no equivalent runtime
+    // hook to wire them into).  Returning napi_ok lets edge proceed.
+
+    // Foreground task queue callback — edge.js uses this to drain microtasks
+    // and async work onto the V8 event loop.  We record-but-never-invoke.
+    // #!~debt no-op: should wire to queueMicrotask/postMessage so async work
+    // and timers actually fire.  Browser-only event loop is the right binding.
+    unofficial_napi_set_enqueue_foreground_task_callback(
+      _env: number,
+      _callback: number,
+      _data: number,
+    ): number {
+      return 0;
+    },
+
+    // #!~debt no-op: callbacks are accepted but never invoked.  Fatal errors
+    // currently surface only via JS throw paths, not these callbacks.
+    unofficial_napi_set_fatal_error_callbacks(
+      _env: number,
+      _fatalErrorCb: number,
+      _oomErrorCb: number,
+    ): number {
+      return 0;
+    },
+
+    // #!~debt no-op: Error.prepareStackTrace customization is unhooked.  When
+    // edge throws an Error, we get the browser's default stack format rather
+    // than node's.  Cosmetic until userland depends on the v8 formatting.
+    unofficial_napi_set_prepare_stack_trace_callback(_env: number, _callback: number): number {
+      return 0;
+    },
+
+    // #!~debt no-op: promise hooks (init/before/after/resolve) are dropped.
+    // Node uses these for async_hooks tracing.  Anything depending on
+    // async_hooks won't see lifecycle events until this is wired.
+    unofficial_napi_set_promise_hooks(
+      _env: number,
+      _initCb: number,
+      _beforeCb: number,
+      _afterCb: number,
+      _resolveCb: number,
+    ): number {
+      return 0;
+    },
+
+    // --- Introspection: report no positions / no proxy ---
+
+    // #!~debt no-op: returns success without writing position out-params.
+    // edge's error formatting tolerates missing positions but stack frames
+    // will lack precise column info.
+    unofficial_napi_get_error_source_positions(
+      _env: number,
+      _error: number,
+      _startLineOut: number,
+      _startColumnOut: number,
+      _endLineOut: number,
+      _endColumnOut: number,
+    ): number {
+      return 0;
+    },
+
+    // #!~debt incomplete: always reports "not a proxy".  Real impl would
+    // detect Proxy via internal slot inspection (not directly exposed in
+    // browser JS) or by typeof+heuristics.  Anything inspecting Proxy
+    // internals via this path will think every value is non-Proxy.
+    unofficial_napi_get_proxy_details(
+      _env: number,
+      _value: number,
+      isProxyOut: number,
+      _targetOut: number,
+      _handlerOut: number,
+    ): number {
+      if (isProxyOut > 0) {
+        new DataView(memory.buffer).setInt32(isProxyOut, 0, true);
+      }
+      return 0;
+    },
+
+    // --- Below: 67 #!~debt stubs that fill the remaining unofficial_napi_*
+    //     surface so wasm calls don't fall through to the generic logging
+    //     fallback.  Each writes sensible defaults to its out-params and
+    //     returns napi_ok (0).  Promote individual entries to real impls as
+    //     workloads light them up.  See napi/src/guest/napi.rs for behaviors.
+
+    // Heap/process stats — all return zeros, which is honest for "no V8 here".
+    // Edge inspects these for process.memoryUsage() and v8.getHeapStatistics().
+    // Returning zero counts is wrong but non-fatal — caller sees an idle heap.
+    unofficial_napi_get_heap_statistics(_env: number, _napiEnv: number, statsPtr: number): number {
+      // v8::HeapStatistics is 13 size_t fields → zero out 13 * 4 bytes.
+      if (statsPtr > 0) new Uint8Array(memory.buffer, statsPtr, 13 * 4).fill(0);
+      return 0;
+    },
+    unofficial_napi_get_heap_space_count(_env: number, _napiEnv: number, countOut: number): number {
+      if (countOut > 0) dv(memory).setUint32(countOut, 0, true);
+      return 0;
+    },
+    unofficial_napi_get_heap_space_statistics(_env: number, _napiEnv: number, _index: number, statsPtr: number): number {
+      if (statsPtr > 0) new Uint8Array(memory.buffer, statsPtr, 8 * 4).fill(0);
+      return 0;
+    },
+    unofficial_napi_get_heap_code_statistics(_env: number, _napiEnv: number, statsPtr: number): number {
+      if (statsPtr > 0) new Uint8Array(memory.buffer, statsPtr, 4 * 4).fill(0);
+      return 0;
+    },
+    unofficial_napi_get_process_memory_info(
+      _env: number, _napiEnv: number,
+      heapTotalOut: number, heapUsedOut: number, externalOut: number, arrayBuffersOut: number, rssOut: number,
+    ): number {
+      const d = dv(memory);
+      for (const p of [heapTotalOut, heapUsedOut, externalOut, arrayBuffersOut, rssOut]) {
+        if (p > 0) { d.setBigUint64(p, 0n, true); }
+      }
+      return 0;
+    },
+    unofficial_napi_get_hash_seed(_env: number, _napiEnv: number, hashSeedOut: number): number {
+      if (hashSeedOut > 0) dv(memory).setBigUint64(hashSeedOut, 0n, true);
+      return 0;
+    },
+
+    // Profiling / GC controls — no real V8 to drive, so accept and discard.
+    unofficial_napi_low_memory_notification(_env: number): number { return 0; },
+    unofficial_napi_request_gc_for_testing(_env: number, _napiEnv: number): number { return 0; },
+    unofficial_napi_process_microtasks(_env: number, _napiEnv: number): number {
+      // queueMicrotask drains naturally in the worker; nothing to do here.
+      return 0;
+    },
+    unofficial_napi_terminate_execution(_env: number, _napiEnv: number): number { return 0; },
+    unofficial_napi_cancel_terminate_execution(_env: number, _napiEnv: number): number { return 0; },
+    unofficial_napi_request_interrupt(_env: number, _napiEnv: number, _callback: number, _data: number): number { return 0; },
+    unofficial_napi_set_stack_limit(_env: number, _napiEnv: number, _limit: number): number { return 0; },
+    unofficial_napi_set_near_heap_limit_callback(_env: number, _napiEnv: number, _cb: number, _data: number): number { return 0; },
+    unofficial_napi_remove_near_heap_limit_callback(_env: number, _napiEnv: number, _heapLimit: number): number { return 0; },
+    unofficial_napi_notify_datetime_configuration_change(_env: number, _napiEnv: number): number { return 0; },
+
+    // Continuation-preserved embedder data — used by AsyncContext.  Per-env
+    // storage; we just round-trip a single slot per env.
+    unofficial_napi_get_continuation_preserved_embedder_data(
+      _env: number, envHandle: number, valueOut: number,
+    ): number {
+      const e = envs.get(envHandle);
+      const slot = (e as unknown as { _contData?: number })?._contData ?? 0;
+      if (valueOut > 0) dv(memory).setUint32(valueOut, slot, true);
+      return 0;
+    },
+    unofficial_napi_set_continuation_preserved_embedder_data(
+      _env: number, envHandle: number, valueHandle: number,
+    ): number {
+      const e = envs.get(envHandle);
+      if (e) (e as unknown as { _contData?: number })._contData = valueHandle;
+      return 0;
+    },
+
+    // CPU/heap profiling — never start, never stop, no data emitted.
+    unofficial_napi_start_cpu_profile(_env: number, _napiEnv: number, _title: number, _options: number): number { return 0; },
+    unofficial_napi_stop_cpu_profile(_env: number, _napiEnv: number, _title: number, _resultOut: number): number { return 0; },
+    unofficial_napi_start_heap_profile(_env: number, _napiEnv: number, _options: number): number { return 0; },
+    unofficial_napi_stop_heap_profile(_env: number, _napiEnv: number, _resultOut: number): number { return 0; },
+    unofficial_napi_take_heap_snapshot(_env: number, _napiEnv: number, _resultOut: number): number { return 0; },
+
+    // Promise introspection — say "not a promise, no fulfillment value".
+    unofficial_napi_get_promise_details(
+      _env: number, _napiEnv: number, _promise: number,
+      stateOut: number, resultOut: number,
+    ): number {
+      if (stateOut > 0) dv(memory).setInt32(stateOut, 0, true); // 0 = pending
+      if (resultOut > 0) dv(memory).setUint32(resultOut, 0, true);
+      return 0;
+    },
+    unofficial_napi_mark_promise_as_handled(_env: number, _napiEnv: number, _promise: number): number { return 0; },
+
+    // Stack inspection — return empty arrays / null locations.
+    unofficial_napi_get_call_sites(
+      _env: number, envHandle: number, _frames: number, callsitesOut: number,
+    ): number {
+      const env = envs.get(envHandle);
+      if (env && callsitesOut > 0) {
+        const arr = context.ensureHandle([]);
+        dv(memory).setUint32(callsitesOut, arr.id, true);
+      }
+      return 0;
+    },
+    unofficial_napi_get_caller_location(_env: number, _napiEnv: number, locationOut: number): number {
+      if (locationOut > 0) dv(memory).setUint32(locationOut, 0, true);
+      return 0;
+    },
+    unofficial_napi_get_current_stack_trace(
+      _env: number, envHandle: number, _frameLimit: number, traceOut: number,
+    ): number {
+      const env = envs.get(envHandle);
+      if (env && traceOut > 0) {
+        const arr = context.ensureHandle([]);
+        dv(memory).setUint32(traceOut, arr.id, true);
+      }
+      return 0;
+    },
+    unofficial_napi_preserve_error_source_message(_env: number, _napiEnv: number, _error: number): number { return 0; },
+
+    // ArrayBuffer / Buffer helpers.
+    unofficial_napi_arraybuffer_view_has_buffer(
+      _env: number, envHandle: number, valueHandle: number, resultOut: number,
+    ): number {
+      const env = envs.get(envHandle);
+      const value = env ? context.handleStore.get(valueHandle)?.value : undefined;
+      const has = ArrayBuffer.isView(value) && (value as ArrayBufferView).buffer != null;
+      if (resultOut > 0) dv(memory).setInt32(resultOut, has ? 1 : 0, true);
+      return 0;
+    },
+    unofficial_napi_get_constructor_name(
+      _env: number, envHandle: number, valueHandle: number, nameOut: number,
+    ): number {
+      const env = envs.get(envHandle);
+      if (!env) return 1;
+      const v = context.handleStore.get(valueHandle)?.value;
+      const name = v == null ? "" : (v as object)?.constructor?.name ?? "";
+      if (nameOut > 0) {
+        const h = context.ensureHandle(name);
+        dv(memory).setUint32(nameOut, h.id, true);
+      }
+      return 0;
+    },
+    unofficial_napi_get_own_non_index_properties(
+      _env: number, envHandle: number, valueHandle: number, _filter: number, resultOut: number,
+    ): number {
+      const env = envs.get(envHandle);
+      if (!env) return 1;
+      const v = context.handleStore.get(valueHandle)?.value;
+      const keys = (v && typeof v === "object")
+        ? Object.getOwnPropertyNames(v).filter((k) => !/^[0-9]+$/.test(k))
+        : [];
+      if (resultOut > 0) {
+        const h = context.ensureHandle(keys);
+        dv(memory).setUint32(resultOut, h.id, true);
+      }
+      return 0;
+    },
+    unofficial_napi_preview_entries(
+      _env: number, envHandle: number, valueHandle: number, isKeyValueOut: number, resultOut: number,
+    ): number {
+      const env = envs.get(envHandle);
+      if (!env) return 1;
+      const v = context.handleStore.get(valueHandle)?.value;
+      let entries: unknown[] = [];
+      let isKeyValue = false;
+      if (v instanceof Map) { entries = Array.from(v.entries()).flat(); isKeyValue = true; }
+      else if (v instanceof Set) { entries = Array.from(v); isKeyValue = false; }
+      if (isKeyValueOut > 0) dv(memory).setInt32(isKeyValueOut, isKeyValue ? 1 : 0, true);
+      if (resultOut > 0) {
+        const h = context.ensureHandle(entries);
+        dv(memory).setUint32(resultOut, h.id, true);
+      }
+      return 0;
+    },
+    // V8 buffer-data free; we let the JS GC manage memory, no-op.
+    unofficial_napi_free_buffer(_env: number, _data: number): number { return 0; },
+
+    // Structured-clone family — use structuredClone() when supported, fall
+    // back to JSON roundtrip.  Transfer list is dropped (no real handles).
+    unofficial_napi_structured_clone(
+      _env: number, envHandle: number, valueHandle: number, _transferList: number, resultOut: number,
+    ): number {
+      const env = envs.get(envHandle);
+      if (!env) return 1;
+      const v = context.handleStore.get(valueHandle)?.value;
+      let cloned: unknown;
+      try { cloned = (globalThis as { structuredClone?: <T>(v: T) => T }).structuredClone?.(v) ?? v; }
+      catch { cloned = v; }
+      if (resultOut > 0) {
+        const h = context.ensureHandle(cloned);
+        dv(memory).setUint32(resultOut, h.id, true);
+      }
+      return 0;
+    },
+    unofficial_napi_structured_clone_with_transfer(
+      env: number, envHandle: number, valueHandle: number, transferList: number, resultOut: number,
+    ): number {
+      // #!~debt drops transfer list; same impl as 4-arg structured_clone.
+      return impls.unofficial_napi_structured_clone(env, envHandle, valueHandle, transferList, resultOut);
+    },
+    // v8 serializer/deserializer — wrap in a JSON-compat shim.  Real impl
+    // would expose v8.serialize/v8.deserialize semantics (preserves
+    // structured-clone-able shapes); JSON loses functions, undefined, etc.
+    unofficial_napi_create_serdes_binding(_env: number, _napiEnv: number, resultOut: number): number {
+      if (resultOut > 0) {
+        const stub = context.ensureHandle({ serialize: (v: unknown) => JSON.stringify(v), deserialize: (s: string) => JSON.parse(s) });
+        dv(memory).setUint32(resultOut, stub.id, true);
+      }
+      return 0;
+    },
+    unofficial_napi_serialize_value(
+      _env: number, envHandle: number, valueHandle: number, resultOut: number,
+    ): number {
+      const env = envs.get(envHandle);
+      if (!env) return 1;
+      const v = context.handleStore.get(valueHandle)?.value;
+      const bytes = encoder.encode(JSON.stringify(v ?? null));
+      if (resultOut > 0) {
+        const ab = new ArrayBuffer(bytes.length);
+        new Uint8Array(ab).set(bytes);
+        const h = context.ensureHandle(ab);
+        dv(memory).setUint32(resultOut, h.id, true);
+      }
+      return 0;
+    },
+    unofficial_napi_deserialize_value(
+      _env: number, envHandle: number, payloadHandle: number, resultOut: number,
+    ): number {
+      const env = envs.get(envHandle);
+      if (!env) return 1;
+      const buf = context.handleStore.get(payloadHandle)?.value as ArrayBuffer | undefined;
+      let value: unknown = null;
+      if (buf) {
+        try { value = JSON.parse(decoder.decode(new Uint8Array(buf))); } catch { /* leave null */ }
+      }
+      if (resultOut > 0) {
+        const h = context.ensureHandle(value);
+        dv(memory).setUint32(resultOut, h.id, true);
+      }
+      return 0;
+    },
+    unofficial_napi_release_serialized_value(_env: number, _payload: number): number { return 0; },
+
+    // Contextify (vm.*) — minimal pass-through.  Run-script is the most
+    // load-bearing: edge uses it for sourceText eval.  We use Function() so
+    // it runs in the worker's global scope, no real context isolation.
+    unofficial_napi_contextify_make_context(
+      _env: number, envHandle: number, _sandboxOrSymbol: number, _name: number,
+      _allowCodeGen: number, _options: number, resultOut: number,
+    ): number {
+      const env = envs.get(envHandle);
+      if (env && resultOut > 0) {
+        // #!~debt context object is just an empty marker; real vm.Context
+        // has its own globalThis, intrinsics, etc.  Boot tolerates this
+        // because edge mostly uses the default context anyway.
+        const h = context.ensureHandle({ __edge_context__: true });
+        dv(memory).setUint32(resultOut, h.id, true);
+      }
+      return 0;
+    },
+    unofficial_napi_contextify_run_script(
+      _env: number, envHandle: number, _ctx: number, sourceHandle: number,
+      _filename: number, _lineOffset: number, _columnOffset: number,
+      _cachedData: number, _produceCachedData: number, _parsingContext: number,
+      _hostDefinedOptionId: number, resultOut: number,
+    ): number {
+      const env = envs.get(envHandle);
+      if (!env) return 1;
+      const source = context.handleStore.get(sourceHandle)?.value as string | undefined;
+      if (typeof source !== "string") return 1;
+      let value: unknown;
+      try {
+        // #!~debt eval-via-Function: real vm.Script supports break-on-sigint,
+        // timeout, displayErrors.  We drop all.  Syntax errors throw to JS.
+        value = new Function(`return (${source});`)();
+      } catch (e) {
+        // #!~debt should surface as napi exception; currently just status 1.
+        console.warn("contextify_run_script failed:", e);
+        return 1;
+      }
+      if (resultOut > 0) {
+        const h = context.ensureHandle(value);
+        dv(memory).setUint32(resultOut, h.id, true);
+      }
+      return 0;
+    },
+    // Wasm signature is (napi_env, code, filename, is_sea_main, should_detect_module, result_ptr).
+    // Node's CJS loader expects an object with at least a `function` field; the
+    // function itself must be CJS-wrapped, i.e. take (exports, require, module,
+    // __filename, __dirname) as parameters.  We synthesize the params array,
+    // hand the work to `unofficial_napi_contextify_compile_function`, and write
+    // the resulting wrapper handle into the caller's result slot.
+    // Mirrors napi/src/guest/napi.rs:guest_stub_unofficial_napi_contextify_compile_function_for_cjs_loader.
+    unofficial_napi_contextify_compile_function_for_cjs_loader(
+      envHandle: number,
+      codeHandle: number,
+      filenameHandle: number,
+      _isSeaMain: number,
+      _shouldDetectModule: number,
+      resultOut: number,
+    ): number {
+      const env = envs.get(envHandle);
+      if (!env) return 1;
+      const paramsArray = ["exports", "require", "module", "__filename", "__dirname"];
+      const paramsHandle = context.ensureHandle(paramsArray).id;
+      return impls.unofficial_napi_contextify_compile_function(
+        envHandle, codeHandle, filenameHandle, 0, 0, 0, 0, 0, 0, paramsHandle, 0, resultOut,
+      );
+    },
+    unofficial_napi_contextify_contains_module_syntax(
+      _env: number, envHandle: number, codeHandle: number, _filename: number,
+      _lineOffset: number, _columnOffset: number, resultOut: number,
+    ): number {
+      const env = envs.get(envHandle);
+      if (!env) return 1;
+      const code = context.handleStore.get(codeHandle)?.value as string | undefined;
+      // #!~debt naïve regex check — misses dynamic import, commented imports,
+      // template-literal exports.  Real impl parses with acorn.  Good enough
+      // for the "is this ESM or CJS?" boot heuristic.
+      const has = typeof code === "string" && /^(?:\s*\/\/[^\n]*\n|\s*\/\*[\s\S]*?\*\/|\s)*(?:import|export)\s/m.test(code);
+      if (resultOut > 0) dv(memory).setInt32(resultOut, has ? 1 : 0, true);
+      return 0;
+    },
+    unofficial_napi_contextify_create_cached_data(
+      _env: number, _napiEnv: number, _code: number, _filename: number,
+      _lineOffset: number, _columnOffset: number, resultOut: number,
+    ): number {
+      // No V8 cache — return an empty ArrayBuffer.
+      if (resultOut > 0) {
+        const h = context.ensureHandle(new ArrayBuffer(0));
+        dv(memory).setUint32(resultOut, h.id, true);
+      }
+      return 0;
+    },
+
+    // ESM module wrap — the 18-function surface that backs SourceTextModule
+    // and SyntheticModule.  Implementing these properly means a real
+    // module-graph linker; we stub with handles that round-trip but don't
+    // execute.  Edge boots fine on CJS; ESM workloads fail at link/evaluate.
+    // #!~debt module_wrap_* whole family: every call here is a no-op or
+    // returns a handle that points at a marker object.  Promote piece by
+    // piece when ESM workloads need to work.
+
+    unofficial_napi_module_wrap_create_source_text(
+      _env: number, envHandle: number, wrapper: number, url: number,
+      source: number, _lineOffset: number, _columnOffset: number,
+      _cachedData: number, _hostDefinedOptionId: number, resultOut: number,
+    ): number {
+      const env = envs.get(envHandle);
+      if (!env) return 1;
+      const mod = { kind: "source-text", wrapper, url, source, status: 0, namespace: {} };
+      if (resultOut > 0) {
+        const h = context.ensureHandle(mod);
+        dv(memory).setUint32(resultOut, h.id, true);
+      }
+      return 0;
+    },
+    unofficial_napi_module_wrap_create_synthetic(
+      _env: number, envHandle: number, wrapper: number, url: number,
+      exportNames: number, _evaluator: number, resultOut: number,
+    ): number {
+      const env = envs.get(envHandle);
+      if (!env) return 1;
+      const mod = { kind: "synthetic", wrapper, url, exportNames, status: 0, namespace: {} };
+      if (resultOut > 0) {
+        const h = context.ensureHandle(mod);
+        dv(memory).setUint32(resultOut, h.id, true);
+      }
+      return 0;
+    },
+    unofficial_napi_module_wrap_create_required_module_facade(
+      _env: number, envHandle: number, _module: number, resultOut: number,
+    ): number {
+      const env = envs.get(envHandle);
+      if (env && resultOut > 0) {
+        const h = context.ensureHandle({ kind: "required-facade", exports: {} });
+        dv(memory).setUint32(resultOut, h.id, true);
+      }
+      return 0;
+    },
+    unofficial_napi_module_wrap_create_cached_data(
+      _env: number, _napiEnv: number, _module: number, resultOut: number,
+    ): number {
+      if (resultOut > 0) {
+        const h = context.ensureHandle(new ArrayBuffer(0));
+        dv(memory).setUint32(resultOut, h.id, true);
+      }
+      return 0;
+    },
+    unofficial_napi_module_wrap_destroy(_env: number, _napiEnv: number, _handle: number): number { return 0; },
+    unofficial_napi_module_wrap_get_module_requests(
+      _env: number, envHandle: number, _handle: number, resultOut: number,
+    ): number {
+      const env = envs.get(envHandle);
+      if (env && resultOut > 0) {
+        const h = context.ensureHandle([]);
+        dv(memory).setUint32(resultOut, h.id, true);
+      }
+      return 0;
+    },
+    unofficial_napi_module_wrap_link(
+      _env: number, _napiEnv: number, _handle: number, _count: number, _resolvers: number,
+    ): number { return 0; },
+    unofficial_napi_module_wrap_instantiate(_env: number, _napiEnv: number, _handle: number): number { return 0; },
+    unofficial_napi_module_wrap_evaluate(
+      _env: number, envHandle: number, _handle: number, resultOut: number,
+    ): number {
+      const env = envs.get(envHandle);
+      if (env && resultOut > 0) {
+        const h = context.ensureHandle(Promise.resolve(undefined));
+        dv(memory).setUint32(resultOut, h.id, true);
+      }
+      return 0;
+    },
+    unofficial_napi_module_wrap_evaluate_sync(
+      _env: number, envHandle: number, _handle: number, resultOut: number,
+    ): number {
+      const env = envs.get(envHandle);
+      if (env && resultOut > 0) {
+        const h = context.ensureHandle(undefined);
+        dv(memory).setUint32(resultOut, h.id, true);
+      }
+      return 0;
+    },
+    unofficial_napi_module_wrap_get_namespace(
+      _env: number, envHandle: number, handle: number, resultOut: number,
+    ): number {
+      const env = envs.get(envHandle);
+      if (!env) return 1;
+      const mod = context.handleStore.get(handle)?.value as { namespace?: object } | undefined;
+      if (resultOut > 0) {
+        const h = context.ensureHandle(mod?.namespace ?? {});
+        dv(memory).setUint32(resultOut, h.id, true);
+      }
+      return 0;
+    },
+    unofficial_napi_module_wrap_get_status(
+      _env: number, _napiEnv: number, _handle: number, statusOut: number,
+    ): number {
+      if (statusOut > 0) dv(memory).setInt32(statusOut, 4, true); // 4 = Evaluated
+      return 0;
+    },
+    unofficial_napi_module_wrap_get_error(
+      _env: number, envHandle: number, _handle: number, resultOut: number,
+    ): number {
+      const env = envs.get(envHandle);
+      if (env && resultOut > 0) {
+        const h = context.ensureHandle(undefined);
+        dv(memory).setUint32(resultOut, h.id, true);
+      }
+      return 0;
+    },
+    unofficial_napi_module_wrap_get_module_source_object(
+      _env: number, envHandle: number, _handle: number, resultOut: number,
+    ): number {
+      const env = envs.get(envHandle);
+      if (env && resultOut > 0) {
+        const h = context.ensureHandle(undefined);
+        dv(memory).setUint32(resultOut, h.id, true);
+      }
+      return 0;
+    },
+    unofficial_napi_module_wrap_set_module_source_object(
+      _env: number, _napiEnv: number, _handle: number, _value: number,
+    ): number { return 0; },
+    unofficial_napi_module_wrap_has_top_level_await(
+      _env: number, _napiEnv: number, _handle: number, resultOut: number,
+    ): number {
+      if (resultOut > 0) dv(memory).setInt32(resultOut, 0, true);
+      return 0;
+    },
+    unofficial_napi_module_wrap_has_async_graph(
+      _env: number, _napiEnv: number, _handle: number, resultOut: number,
+    ): number {
+      if (resultOut > 0) dv(memory).setInt32(resultOut, 0, true);
+      return 0;
+    },
+    unofficial_napi_module_wrap_check_unsettled_top_level_await(
+      _env: number, _napiEnv: number, _handle: number, resultOut: number,
+    ): number {
+      if (resultOut > 0) dv(memory).setInt32(resultOut, 0, true);
+      return 0;
+    },
+    unofficial_napi_module_wrap_set_export(
+      _env: number, _napiEnv: number, _handle: number, _name: number, _value: number,
+    ): number { return 0; },
+    unofficial_napi_module_wrap_import_module_dynamically(
+      _env: number, envHandle: number, _specifier: number, _refModule: number, _attributes: number, resultOut: number,
+    ): number {
+      const env = envs.get(envHandle);
+      if (env && resultOut > 0) {
+        const h = context.ensureHandle(Promise.resolve({}));
+        dv(memory).setUint32(resultOut, h.id, true);
+      }
+      return 0;
+    },
+    unofficial_napi_module_wrap_set_import_module_dynamically_callback(
+      _env: number, _napiEnv: number, _callback: number,
+    ): number { return 0; },
+    unofficial_napi_module_wrap_set_initialize_import_meta_object_callback(
+      _env: number, _napiEnv: number, _callback: number,
+    ): number { return 0; },
+
+    // --- end of #!~debt batch ---
+    // Anything not listed here falls through to the generic per-namespace
+    // stub from imports-generated.ts (returns 0 for the `napi` namespace).
+  };
+  return impls;
+}
