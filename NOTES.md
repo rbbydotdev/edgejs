@@ -5,6 +5,77 @@ out the browser target. Newest entries first.
 
 ---
 
+## 2026-05-20 — MILESTONE: edge.js serves HTTP in browser (chunk C)
+
+```js
+// Worker runs:
+require('http').createServer((req,res) => res.end('hi from edge\n')).listen(3000, () => console.log('listening'));
+
+// Page does:
+await fetch('/_edge/test').then(r => r.text());
+// → "hi from edge\n"  (status 200)
+```
+
+Full HTTP roundtrip end-to-end through the browser.  Real Node
+`http.createServer` callback fires for each request, real response is
+shipped back to the `fetch()` caller on the page.
+
+### Architecture
+
+```
+page fetch('/_edge/*')
+  → Service Worker intercepts
+  → posts {edge-req} to page (SAB doesn't cross postMessage→SW on Chrome 148)
+  → page writes JSON into bridgeSab, Atomics.notify(wakeSab, 0)
+  → worker's blocked Atomics.wait wakes
+  → drainBridgeSab() pulls request out of SAB
+  → bus.pushRequest() queues it on listening socket
+  → sock_accept_v2 dequeues, allocates conn fd, stages raw HTTP/1.1 bytes
+  → edge calls fd_fdstat_get (we classify as SOCKET_STREAM = 6)
+  → edge calls fd_read, copies the HTTP request into wasm memory
+  → edge's lib/http parses, dispatches to user handler
+  → user handler: res.end('hi from edge\n')
+  → edge calls fd_write with full HTTP response (~108 bytes)
+  → shim auto-detects complete response (parses Content-Length), closes
+  → closeConnection parses sendBuf, fires responder
+  → worker postMessages {page-edge-res} to page
+  → page sw.postMessage()s to SW
+  → SW resolves the original fetch event with the Response
+```
+
+### Bug chain hit during bring-up (all fixed)
+
+1. **`fd_fdstat_get` returned CHARACTER_DEVICE for socket fds.**  Edge's
+   libuv treated the fd as a tty and skipped recv entirely.  Fixed: return
+   `6` (SOCKET_STREAM) when `sockets.has(fd)`.
+
+2. **Edge writes the response but never calls `fd_close` or `sock_shutdown`.**
+   HTTP/1.1 server expects the client to close after `Connection: close`.
+   Our virtual loopback has no real client.  Fixed: added `sock_shutdown`
+   impl (was falling through to ENOSYS stub), and added an
+   `isHttpResponseComplete()` heuristic that auto-closes the connection
+   in `writeBytesToFd` as soon as the sendBuf holds a full HTTP/1.1
+   response (Content-Length detected).
+
+3. **SAB doesn't cross MessagePort.postMessage into a Service Worker on
+   Chrome 148.**  Plain objects on the same port arrive fine, anything
+   containing a SAB silently drops with no error event.  Routing through
+   the page (SW → Clients.postMessage → page → SAB write + Atomics.notify)
+   is the only working path.
+
+### #!~debt added
+
+- `single-listener` — one listening socket at a time
+- `no-keep-alive` — request synthesizer adds `Connection: close`
+- `no-chunked-encoding` — auto-flush requires Content-Length in response
+- `no-outbound` — `sock_connect` returns ENOSYS
+- `no-socketpair` — `sock_pair` returns ENOSYS
+- `no-sendfile` — `sock_send_file` returns ENOSYS
+- `sw-sab-incompat` — workaround for Chrome's SW/SAB issue
+- `single-flight` — one inflight request at a time in `sw.js`
+
+---
+
 ## 2026-05-20 — `unofficial_napi_*` phantom-arg audit (FIXED)
 
 Systematic audit of all 80 `unofficial_napi_*` impls in

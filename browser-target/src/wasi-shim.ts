@@ -11,6 +11,10 @@
 // FILE I/O ROUTES THROUGH THE FileSystem FACADE (./host/fs/types.ts).
 // This file MUST NOT know about HTTP, OPFS, or bundled content.  Adapters
 // behind the facade own that.
+//
+// SOCKETS — see the "virtual socket table" block below.  The shim hosts
+// a tiny in-memory loopback that the bridge port talks to via the
+// SocketBus interface returned from createWasiShim.  No real network.
 
 import {
   type FileStat,
@@ -22,7 +26,16 @@ import {
 
 const ERRNO_SUCCESS = 0;
 const ERRNO_BADF = 8;
+const ERRNO_AGAIN = 6;
 const ERRNO_NOSYS = 52;
+
+// Cache native globals at module load.  Edge mutates globalThis during
+// bootstrap (TextEncoder, performance, possibly more); resolving these
+// through the global object in hot paths is a tested-and-shipped bug
+// pattern (NOTES.md 2026-05-20 attempt #6).
+const NativeAtomics = Atomics;
+const NativeInt32Array = Int32Array;
+const NativeUint8Array = Uint8Array;
 
 const WASI_STDOUT_FD = 1;
 const WASI_STDERR_FD = 2;
@@ -69,6 +82,45 @@ export interface ShimContext {
   postExit: (code: number) => void;
 }
 
+/** Inbound HTTP request the bridge port wants edge to handle. */
+export interface BridgeRequest {
+  reqId: number;
+  method: string;
+  path: string;
+  headers: Record<string, string>;
+  body: ArrayBuffer | null;
+}
+
+/** Outbound HTTP response edge produced for a previously-queued request. */
+export interface BridgeResponse {
+  reqId: number;
+  status: number;
+  headers: Record<string, string>;
+  body: Uint8Array;
+}
+
+/** The bus exposed by the shim — the bridge port handler talks to this. */
+export interface SocketBus {
+  /** Push a request onto any listening socket and wake an accept() that's
+   *  blocked.  Returns false when no listener exists (shouldn't happen
+   *  once edge has called listen). */
+  pushRequest(req: BridgeRequest): boolean;
+  /** Register the responder; called whenever a connection socket closes
+   *  with bytes accumulated in its send buffer.  The shim parses the
+   *  raw HTTP/1.1 bytes and invokes this. */
+  setResponder(fn: (res: BridgeResponse) => void): void;
+  /** Install a poll hook the shim calls each time it wakes from
+   *  Atomics.wait inside accept_v2 / poll_oneoff.  Lets the worker
+   *  drain a SAB-backed transport (the only path to deliver messages
+   *  while the wasm has the worker's event loop blocked). */
+  setWakePoll(fn: () => void): void;
+  /** The Int32Array view the shim uses for accept-wake notifications.
+   *  External notifiers (the Service Worker, when it has a request
+   *  ready) call Atomics.add+notify on index 0 of this view to wake
+   *  the worker's blocked Atomics.wait. */
+  wakeView: Int32Array;
+}
+
 function view(memory: WebAssembly.Memory): DataView {
   return new DataView(memory.buffer);
 }
@@ -97,6 +149,7 @@ export function createWasiShim(ctx: ShimContext): {
   wasi_snapshot_preview1: Record<string, Function>;
   wasix_32v1: Record<string, Function>;
   wasi: Record<string, Function>;
+  bus: SocketBus;
 } {
   // ---- stdout/stderr buffering for postLog ----
   const stdoutBuf: number[] = [];
@@ -119,6 +172,22 @@ export function createWasiShim(ctx: ShimContext): {
     if (fd === WASI_STDERR_FD) {
       for (const b of data) stderrBuf.push(b);
       flushBuf(stderrBuf, "warn");
+      return data.length;
+    }
+    // Socket fds buffer writes until close OR until the buffer holds a
+    // complete HTTP response, whichever comes first.  Edge's HTTP server
+    // doesn't call shutdown/close after writing the response — it expects
+    // the client to close the connection.  In our virtual loopback there's
+    // no real client; the "close" is implicit when the response is complete.
+    // So we eagerly flush as soon as the sendBuf contains a full HTTP/1.1
+    // message (status line + headers + Content-Length bytes of body).
+    const sock = sockets.get(fd);
+    if (sock && sock.state === SOCK_STATE_CONNECTED) {
+      for (const b of data) sock.sendBuf.push(b);
+      if (isHttpResponseComplete(sock.sendBuf)) {
+        closeConnection(sock);
+        sockets.delete(fd);
+      }
       return data.length;
     }
     const vfd = vfds.get(fd);
@@ -149,7 +218,7 @@ export function createWasiShim(ctx: ShimContext): {
   // returned by path_open/fd_pipe.  Anything else → BADF, so the wasm
   // doesn't iterate forever thinking arbitrary fds are alive.
   function isKnownFd(fd: number): boolean {
-    return (fd >= 0 && fd <= 2) || PREOPEN_FDS.has(fd) || vfds.has(fd);
+    return (fd >= 0 && fd <= 2) || PREOPEN_FDS.has(fd) || vfds.has(fd) || sockets.has(fd);
   }
 
   function urandomFd(): VirtualFd {
@@ -231,6 +300,312 @@ export function createWasiShim(ctx: ShimContext): {
     dv.setBigUint64(statPtr + 56, stat.ctimNs, true);
   }
 
+  // ---- virtual socket table ----
+  //
+  // The wasm runs synchronously; sockets are async by nature.  We model a
+  // tiny in-memory loopback: edge calls sock_open → sock_bind → sock_listen
+  // → sock_accept_v2 (blocks), the bridge port pushes an incoming HTTP
+  // request which wakes accept_v2, hands edge a new "connection" fd that
+  // exposes the request bytes via sock_recv_from / sock_recv, edge writes
+  // response bytes via sock_send_to, then closes the fd.  fd_close parses
+  // the accumulated send buffer and posts the response back through the
+  // bridge.
+  //
+  // For wakeups we use a small SAB+Int32Array — one slot per socket fd.
+  // Atomics.wait is allowed inside a dedicated worker.  When the bridge
+  // pushes a request, we increment the slot and Atomics.notify it.
+  //
+  // #!~debt single-listener: any incoming edge-req goes to whatever
+  // listening socket exists, regardless of the port edge bound to.  The
+  // SW path is already /_edge/* so the port is irrelevant for routing.
+  // Real impl would match the path/port to a specific listener.
+  //
+  // #!~debt no-ipv6 / no-real-addr-validation: sock_bind/sock_open only
+  // honors TCP IPv4.  Anything else gets shunted into a NOTSUP-ish ack
+  // (we still return SUCCESS to keep edge progressing, but no semantics).
+
+  const SOCK_STATE_FRESH = 0;     // sock_open done, no bind yet
+  const SOCK_STATE_BOUND = 1;     // sock_bind done
+  const SOCK_STATE_LISTEN = 2;    // sock_listen done; queue may have requests
+  const SOCK_STATE_CONNECTED = 3; // connection socket from accept
+  const SOCK_STATE_CLOSED = 4;
+  type SockState =
+    | typeof SOCK_STATE_FRESH
+    | typeof SOCK_STATE_BOUND
+    | typeof SOCK_STATE_LISTEN
+    | typeof SOCK_STATE_CONNECTED
+    | typeof SOCK_STATE_CLOSED;
+
+  interface Socket {
+    fd: number;
+    state: SockState;
+    nonblock: boolean;
+    /** For listening sockets: incoming requests awaiting accept. */
+    pendingReqs: BridgeRequest[];
+    /** For connection sockets: the request bytes edge will read. */
+    recvBuf: Uint8Array;
+    /** Read cursor into recvBuf. */
+    recvOff: number;
+    /** For connection sockets: bytes edge has written so far. */
+    sendBuf: number[];
+    /** Bind address (port only — we don't validate IP). */
+    boundPort: number;
+    /** Per-connection reqId so we can post the response back. */
+    reqId: number;
+  }
+
+  // Wakeup memory — single SAB shared across all sockets.  Layout:
+  //   [0] accept-ready counter (incremented when a request is pushed)
+  //   [N>=1] recv-ready counter per connection fd (indexed by socket.fd)
+  // Atomics.wait blocks on the relevant index; notify wakes it.
+  const WAKE_SAB = new SharedArrayBuffer(4 * 256);
+  const wake = new NativeInt32Array(WAKE_SAB);
+  const WAKE_ACCEPT_IDX = 0;
+
+  const sockets = new Map<number, Socket>();
+  // The single listening socket fd — used by the bridge port to push
+  // incoming requests.  Set on sock_listen; cleared on close.
+  let listenFd: number | null = null;
+  let responder: ((res: BridgeResponse) => void) | null = null;
+
+  function nextSockFd(): number {
+    const fd = NEXT_VFD++;
+    return fd;
+  }
+
+  function wakeIndexFor(fd: number): number {
+    // Map socket fds (typically 100+) onto a small ring of wake slots.
+    // Slot 0 reserved for accept; the rest are per-connection recv.
+    // #!~debt wake-slot-collisions: with only 255 conn slots, fds beyond
+    // ~355 would alias.  Plenty for one-shot bootstraps; bounded later.
+    return 1 + (fd % 255);
+  }
+
+  function parseAddrPort(addrPtr: number): { port: number } | null {
+    // __wasi_addr_port_t: { u8 tag; u8 pad; [u8;18] octs }
+    // Inet4 octs layout: [port_lo, port_hi, ip0, ip1, ip2, ip3, 0...]
+    // (port is NE per the wasmer-wasix read_ip_port we mirrored.)
+    if (addrPtr === 0) return null;
+    const mem = bytes(ctx.memory);
+    const tag = mem[addrPtr];
+    if (tag !== 0 /* Unspec */ && tag !== 1 /* Inet4 */) {
+      // Inet6 / other — accept the bind, port unused for routing.
+      return { port: 0 };
+    }
+    const port = mem[addrPtr + 2] | (mem[addrPtr + 3] << 8);
+    return { port };
+  }
+
+  function writePeerAddr(addrPtr: number): void {
+    // Write a fake 127.0.0.1:0 into the out-addr so libc / node sees a
+    // valid peer.  #!~debt fake-peer: no real peer info.
+    if (addrPtr === 0) return;
+    const mem = bytes(ctx.memory);
+    mem[addrPtr] = 1; // Addressfamily::Inet4
+    mem[addrPtr + 1] = 0; // pad
+    // port (network order): 0
+    mem[addrPtr + 2] = 0;
+    mem[addrPtr + 3] = 0;
+    // ip 127.0.0.1
+    mem[addrPtr + 4] = 127;
+    mem[addrPtr + 5] = 0;
+    mem[addrPtr + 6] = 0;
+    mem[addrPtr + 7] = 1;
+    for (let i = 8; i < 20; i++) mem[addrPtr + i] = 0;
+  }
+
+  // Heuristic: does the byte buffer hold a complete HTTP/1.1 response?
+  // Scan for "\r\n\r\n" header terminator, parse Content-Length if present,
+  // and check the buffer has Content-Length body bytes past the header.
+  // Returns true when the buffer is ready to ship as a complete response.
+  // #!~debt no-chunked-encoding: assumes Content-Length is present.  HTTP
+  // responses without CL (chunked or connection-close framing) are
+  // misidentified.  Acceptable for HTTP server output that uses CL.
+  function isHttpResponseComplete(buf: number[]): boolean {
+    let headerEnd = -1;
+    for (let i = 0; i + 3 < buf.length; i++) {
+      if (buf[i] === 13 && buf[i + 1] === 10 && buf[i + 2] === 13 && buf[i + 3] === 10) {
+        headerEnd = i + 4;
+        break;
+      }
+    }
+    if (headerEnd < 0) return false;
+    // Parse headers naively to find Content-Length.
+    let i = 0;
+    let cl = -1;
+    while (i < headerEnd) {
+      let lineEnd = i;
+      while (lineEnd < headerEnd && !(buf[lineEnd] === 13 && buf[lineEnd + 1] === 10)) lineEnd++;
+      const line = decoder.decode(new NativeUint8Array(buf.slice(i, lineEnd)));
+      const colon = line.indexOf(":");
+      if (colon > 0) {
+        const name = line.slice(0, colon).trim().toLowerCase();
+        if (name === "content-length") {
+          cl = parseInt(line.slice(colon + 1).trim(), 10);
+        }
+      }
+      i = lineEnd + 2;
+    }
+    if (cl < 0) {
+      // No Content-Length — assume the headers ARE the complete response
+      // (e.g. 204 No Content).  Better than hanging forever.
+      return true;
+    }
+    return buf.length >= headerEnd + cl;
+  }
+
+  function formatHttpRequest(req: BridgeRequest): Uint8Array {
+    // Hand-rolled HTTP/1.1 formatter.  Avoids pulling in a parser dep —
+    // the surface needed for one method/path/headers/body roundtrip is
+    // a dozen lines.  #!~debt no-keep-alive: Connection: close is implied.
+    // #!~debt no-chunked-encoding: body is forwarded as a single chunk
+    // with explicit Content-Length.
+    const bodyBytes = req.body ? new NativeUint8Array(req.body) : new NativeUint8Array(0);
+    const headerLines: string[] = [];
+    headerLines.push(`${req.method} ${req.path} HTTP/1.1`);
+    // Synthesize Host if the client didn't provide one — Node's http
+    // parser requires it for HTTP/1.1.
+    let hasHost = false;
+    let hasContentLength = false;
+    for (const [k, v] of Object.entries(req.headers)) {
+      if (k.toLowerCase() === "host") hasHost = true;
+      if (k.toLowerCase() === "content-length") hasContentLength = true;
+      headerLines.push(`${k}: ${v}`);
+    }
+    if (!hasHost) headerLines.push("Host: edge.local");
+    if (!hasContentLength) headerLines.push(`Content-Length: ${bodyBytes.length}`);
+    headerLines.push("Connection: close");
+    const head = encoder.encode(headerLines.join("\r\n") + "\r\n\r\n");
+    const out = new NativeUint8Array(head.length + bodyBytes.length);
+    out.set(head, 0);
+    out.set(bodyBytes, head.length);
+    return out;
+  }
+
+  function parseHttpResponse(raw: Uint8Array): BridgeResponse {
+    // Find header/body split.  #!~debt no-error-recovery: malformed
+    // responses produce {status:500, body:""} so the bridge always
+    // resolves.
+    let split = -1;
+    for (let i = 0; i + 3 < raw.length; i++) {
+      if (raw[i] === 13 && raw[i + 1] === 10 && raw[i + 2] === 13 && raw[i + 3] === 10) {
+        split = i;
+        break;
+      }
+    }
+    if (split < 0) {
+      return { reqId: 0, status: 500, headers: { "content-type": "text/plain" }, body: encoder.encode("malformed response from edge\n") };
+    }
+    const headBytes = raw.subarray(0, split);
+    const bodyBytes = raw.subarray(split + 4);
+    const headText = decoder.decode(headBytes);
+    const lines = headText.split("\r\n");
+    const statusLine = lines[0] ?? "HTTP/1.1 500";
+    const m = statusLine.match(/^HTTP\/\d+\.\d+\s+(\d+)/);
+    const status = m ? parseInt(m[1]!, 10) : 500;
+    const headers: Record<string, string> = {};
+    for (let i = 1; i < lines.length; i++) {
+      const line = lines[i];
+      if (!line) continue;
+      const sep = line.indexOf(":");
+      if (sep < 0) continue;
+      const k = line.slice(0, sep).trim();
+      const v = line.slice(sep + 1).trim();
+      headers[k] = v;
+    }
+    return { reqId: 0, status, headers, body: bodyBytes };
+  }
+
+  function closeConnection(sock: Socket): void {
+    // Connection closing — parse the accumulated send buffer as an HTTP
+    // response and ship it back through the bridge.
+    if (sock.state === SOCK_STATE_CONNECTED && sock.sendBuf.length > 0) {
+      const raw = NativeUint8Array.from(sock.sendBuf);
+      const parsed = parseHttpResponse(raw);
+      parsed.reqId = sock.reqId;
+      if (responder) responder(parsed);
+    }
+    sock.state = SOCK_STATE_CLOSED;
+  }
+
+  // External wake-poll hook: every time the shim wakes from Atomics.wait
+  // (timeout or notify), this runs.  The worker uses it to drain a
+  // SAB-backed inbox (writes from the Service Worker) and push fresh
+  // requests onto pendingReqs.  Without it, accept_v2 spins until
+  // shutdown because the worker can't read MessagePort traffic while
+  // blocked inside a sync wasm call.
+  let wakePoll: (() => void) | null = null;
+  const bus: SocketBus = {
+    pushRequest(req: BridgeRequest): boolean {
+      if (listenFd === null) return false;
+      const listener = sockets.get(listenFd);
+      if (!listener) return false;
+      listener.pendingReqs.push(req);
+      NativeAtomics.add(wake, WAKE_ACCEPT_IDX, 1);
+      NativeAtomics.notify(wake, WAKE_ACCEPT_IDX);
+      return true;
+    },
+    setResponder(fn) {
+      responder = fn;
+    },
+    setWakePoll(fn) {
+      wakePoll = fn;
+    },
+    wakeView: wake,
+  };
+
+  function readFromSocket(sock: Socket, iovsPtr: number, iovsLen: number, nreadPtr: number): number {
+    const dvw = view(ctx.memory);
+    const mem = bytes(ctx.memory);
+    // Block until at least one byte is available (or socket closed).
+    // #!~debt blocking-only-no-shutdown-signal: a closed-but-empty socket
+    // returns 0 bytes (EOF).  Real impl distinguishes RST vs FIN.
+    while (sock.recvOff >= sock.recvBuf.length && sock.state === SOCK_STATE_CONNECTED) {
+      if (sock.nonblock) {
+        dvw.setUint32(nreadPtr, 0, true);
+        return ERRNO_AGAIN;
+      }
+      // Wait on the per-connection wake slot.
+      const idx = wakeIndexFor(sock.fd);
+      const seen = NativeAtomics.load(wake, idx);
+      NativeAtomics.wait(wake, idx, seen, 5000);
+      // For our loopback we stage all request bytes at accept time, so
+      // the loop should exit immediately on first iteration.  This wait
+      // path only fires if buffer was somehow empty post-accept.
+      break;
+    }
+    let total = 0;
+    for (let i = 0; i < iovsLen; i++) {
+      const base = dvw.getUint32(iovsPtr + i * 8, true);
+      const len = dvw.getUint32(iovsPtr + i * 8 + 4, true);
+      if (len === 0) continue;
+      const avail = sock.recvBuf.length - sock.recvOff;
+      if (avail <= 0) break;
+      const take = Math.min(len, avail);
+      mem.set(sock.recvBuf.subarray(sock.recvOff, sock.recvOff + take), base);
+      sock.recvOff += take;
+      total += take;
+      if (take < len) break;
+    }
+    dvw.setUint32(nreadPtr, total, true);
+    return ERRNO_SUCCESS;
+  }
+
+  function writeIovsToSocket(sock: Socket, iovsPtr: number, iovsLen: number): number {
+    const dvw = view(ctx.memory);
+    const mem = bytes(ctx.memory);
+    let total = 0;
+    for (let i = 0; i < iovsLen; i++) {
+      const base = dvw.getUint32(iovsPtr + i * 8, true);
+      const len = dvw.getUint32(iovsPtr + i * 8 + 4, true);
+      if (len === 0) continue;
+      const slice = mem.subarray(base, base + len);
+      for (let j = 0; j < slice.length; j++) sock.sendBuf.push(slice[j]!);
+      total += len;
+    }
+    return total;
+  }
+
   // ---- wasi_snapshot_preview1 ----
   const wasi_snapshot_preview1: Record<string, Function> = {
     proc_exit(code: number) {
@@ -262,6 +637,14 @@ export function createWasiShim(ctx: ShimContext): {
     },
 
     fd_close(fd: number) {
+      // Socket close: flush response and tear down.
+      const sock = sockets.get(fd);
+      if (sock) {
+        closeConnection(sock);
+        sockets.delete(fd);
+        if (listenFd === fd) listenFd = null;
+        return ERRNO_SUCCESS;
+      }
       const vfd = vfds.get(fd);
       if (vfd?.fsHandle !== undefined) {
         // Best-effort: release the FS handle, ignore errno (we're closing
@@ -318,6 +701,11 @@ export function createWasiShim(ctx: ShimContext): {
       return ERRNO_SUCCESS;
     },
     fd_read(fd: number, iovsPtr: number, iovsLen: number, nreadPtr: number) {
+      // Socket fds: read from recv buffer.
+      const sock = sockets.get(fd);
+      if (sock) {
+        return readFromSocket(sock, iovsPtr, iovsLen, nreadPtr);
+      }
       const vfd = vfds.get(fd);
       if (!vfd) {
         view(ctx.memory).setUint32(nreadPtr, 0, true);
@@ -416,16 +804,18 @@ export function createWasiShim(ctx: ShimContext): {
       const mem = bytes(ctx.memory);
       // Zero the 24-byte struct first.
       for (let i = 0; i < 24; i++) mem[statPtr + i] = 0;
-      // Filetype: stdio + virtual fds → CHARACTER_DEVICE
-      dv.setUint8(statPtr + 0, FILETYPE_CHARACTER_DEVICE);
+      // Classify the fd.  Misclassifying a socket as a character device makes
+      // edge's libuv treat it as a tty and skip recv() entirely — which was
+      // why HTTP request bytes never reached edge after accept_v2 returned.
+      const filetype = sockets.has(fd)
+        ? 6 /* SOCKET_STREAM */
+        : FILETYPE_CHARACTER_DEVICE;
+      dv.setUint8(statPtr + 0, filetype);
       // Flags: 0 (default)
       dv.setUint16(statPtr + 2, 0, true);
       // Rights: grant everything so caller doesn't reject the fd
       dv.setBigUint64(statPtr + 8, ~0n, true);
       dv.setBigUint64(statPtr + 16, ~0n, true);
-      // Mark known fds as character devices; unknown still gets the default
-      // character-device classification (good enough for libuv's checks).
-      void fd;
       return ERRNO_SUCCESS;
     },
 
@@ -517,14 +907,192 @@ export function createWasiShim(ctx: ShimContext): {
       return ERRNO_SUCCESS;
     },
 
-    // #!~debt no-wait: returns "0 events ready" immediately regardless of
-    // subscriptions.  Sufficient for one-shot scripts where libuv drains
-    // and exits.  Blocks: setTimeout fires immediately, async I/O never
-    // signals readiness, anything depending on FD events spins.  Real impl
-    // needs SAB+Atomics.wait or proper Worker scheduling.
-    poll_oneoff(_inPtr: number, _outPtr: number, _nsubs: number, neventsPtr: number) {
-      view(ctx.memory).setUint32(neventsPtr, 0, true);
+    // poll_oneoff — Reads the subscription array, walks each one, and
+    // writes any events that are immediately ready.  Sleeps (via
+    // Atomics.wait on the accept slot) if every sub is blocked AND the
+    // earliest clock-deadline is non-zero.
+    //
+    // Subscription layout (Wasix manual.rs:54): { u64 userdata; u8 type;
+    // [pad]; union { Clock(clock_id:u32, timeout:u64, prec:u64, flags:u16),
+    // FdReadwrite(fd:u32) } }.  size = 48 bytes (8 ud + 8 padded type +
+    // 24 union + 8 trailing pad).
+    //
+    // Event layout: { u64 userdata; u16 error; u8 type; [pad]; union
+    // { clock:u8, fd_readwrite:{ nbytes:u64, flags:u16 } } }.  size = 32.
+    //
+    // #!~debt rough-poll: we only honor Clock (sleep) and FdRead/FdWrite
+    // (always ready for non-socket fds; for socket fds, ready iff there
+    // are pending requests / recv bytes).  No multi-event coalescing,
+    // no proper precision, no absolute-vs-relative clock distinction —
+    // we treat all clock timeouts as relative-nanoseconds and clamp.
+    poll_oneoff(inPtr: number, outPtr: number, nsubs: number, neventsPtr: number) {
+      const dv = view(ctx.memory);
+      const SUB_SIZE = 48;
+      const EVT_SIZE = 32;
+      let nWritten = 0;
+      let minTimeoutNs = -1; // -1 = no clock sub seen
+      for (let i = 0; i < nsubs; i++) {
+        const base = inPtr + i * SUB_SIZE;
+        const userdata = dv.getBigUint64(base + 0, true);
+        const ty = dv.getUint8(base + 8);
+        let ready = false;
+        let nbytes = 0n;
+        let evtType = ty;
+        let errno = 0;
+        if (ty === 0) {
+          // Clock: union at base+16: clock_id(u32) timeout(u64) prec(u64) flags(u16)
+          const timeoutNs = dv.getBigUint64(base + 24, true);
+          // Track min for the post-loop sleep.
+          const asNum = Number(timeoutNs);
+          if (minTimeoutNs < 0 || asNum < minTimeoutNs) minTimeoutNs = asNum;
+        } else if (ty === 1 || ty === 2) {
+          // FdRead / FdWrite: union at base+16: file_descriptor (u32)
+          const fd = dv.getUint32(base + 16, true);
+          const sock = sockets.get(fd);
+          if (sock) {
+            if (ty === 1) {
+              // Read-ready: a listener with queued requests OR a connection
+              // with unread bytes.
+              if (sock.state === SOCK_STATE_LISTEN) {
+                ready = sock.pendingReqs.length > 0;
+                nbytes = ready ? 1n : 0n;
+              } else if (sock.state === SOCK_STATE_CONNECTED) {
+                const avail = sock.recvBuf.length - sock.recvOff;
+                ready = avail > 0;
+                nbytes = BigInt(avail);
+              }
+            } else {
+              // Write-ready: always ready for connection sockets.
+              ready = sock.state === SOCK_STATE_CONNECTED;
+              nbytes = ready ? 65536n : 0n;
+            }
+          } else {
+            const vfd = vfds.get(fd);
+            if (vfd?.fsHandle !== undefined) {
+              // Regular file — always ready for read.
+              ready = true;
+              nbytes = 0n;
+            } else if (vfd) {
+              // Pipe / virtual fd: not ready (no producer in this run).
+              // Reporting "ready" here turns into a spin loop because the
+              // subsequent fd_read returns 0 bytes and libuv re-polls.
+              ready = false;
+            } else if (fd <= 2 || PREOPEN_FDS.has(fd)) {
+              // stdio / preopens: report ready.
+              ready = true;
+              nbytes = 0n;
+            } else {
+              errno = ERRNO_BADF;
+              ready = true;
+            }
+          }
+        }
+        if (ready) {
+          const eb = outPtr + nWritten * EVT_SIZE;
+          dv.setBigUint64(eb + 0, userdata, true);
+          dv.setUint16(eb + 8, errno, true);
+          dv.setUint8(eb + 10, evtType);
+          // pad through 16
+          for (let p = 11; p < 16; p++) dv.setUint8(eb + p, 0);
+          // event_fd_readwrite { nbytes: u64; flags: u16 }
+          dv.setBigUint64(eb + 16, nbytes, true);
+          dv.setUint16(eb + 24, 0, true);
+          for (let p = 26; p < EVT_SIZE; p++) dv.setUint8(eb + p, 0);
+          nWritten++;
+        }
+      }
+      // Check if any sub is on a socket fd — if so we should block until
+      // a request arrives (Atomics.wait on the wake slot), not return 0
+      // and spin.
+      let hasSocketSub = false;
+      for (let i = 0; i < nsubs && !hasSocketSub; i++) {
+        const base = inPtr + i * SUB_SIZE;
+        const ty = dv.getUint8(base + 8);
+        if (ty === 1 || ty === 2) {
+          const fd = dv.getUint32(base + 16, true);
+          if (sockets.has(fd)) hasSocketSub = true;
+        }
+      }
+      if (nWritten === 0 && (minTimeoutNs >= 0 || hasSocketSub)) {
+        // Block until either the timeout expires or a request lands.
+        // If no clock sub provided, fall back to a 30s poll window
+        // (matches wasmer-wasix accept-timeout default).
+        const idx = WAKE_ACCEPT_IDX;
+        const seen = NativeAtomics.load(wake, idx);
+        const ms = minTimeoutNs >= 0
+          ? Math.max(0, Math.min(60_000, Math.ceil(minTimeoutNs / 1_000_000)))
+          : 30_000;
+        NativeAtomics.wait(wake, idx, seen, ms);
+        if (wakePoll) wakePoll();
+        // If wakePoll dropped a request onto a listening socket, surface
+        // a corresponding fd-ready event for any matching subscription.
+        for (let i = 0; i < nsubs; i++) {
+          const base = inPtr + i * SUB_SIZE;
+          const userdata = dv.getBigUint64(base + 0, true);
+          const ty = dv.getUint8(base + 8);
+          if (ty !== 1) continue; // FdRead only
+          const fd = dv.getUint32(base + 16, true);
+          const s = sockets.get(fd);
+          if (s && s.state === SOCK_STATE_LISTEN && s.pendingReqs.length > 0) {
+            const eb = outPtr + nWritten * EVT_SIZE;
+            dv.setBigUint64(eb + 0, userdata, true);
+            dv.setUint16(eb + 8, 0, true);
+            dv.setUint8(eb + 10, ty);
+            for (let p = 11; p < 16; p++) dv.setUint8(eb + p, 0);
+            dv.setBigUint64(eb + 16, 1n, true);
+            dv.setUint16(eb + 24, 0, true);
+            for (let p = 26; p < EVT_SIZE; p++) dv.setUint8(eb + p, 0);
+            nWritten++;
+          }
+        }
+        // After waking, surface any clock subscriptions as fired.  Same
+        // walk but emit Clock events.
+        for (let i = 0; i < nsubs; i++) {
+          const base = inPtr + i * SUB_SIZE;
+          const userdata = dv.getBigUint64(base + 0, true);
+          const ty = dv.getUint8(base + 8);
+          if (ty !== 0) continue;
+          const eb = outPtr + nWritten * EVT_SIZE;
+          dv.setBigUint64(eb + 0, userdata, true);
+          dv.setUint16(eb + 8, 0, true);
+          dv.setUint8(eb + 10, 0);
+          for (let p = 11; p < EVT_SIZE; p++) dv.setUint8(eb + p, 0);
+          nWritten++;
+          break; // emit one clock; the rest fold in next call
+        }
+      }
+      dv.setUint32(neventsPtr, nWritten, true);
       return ERRNO_SUCCESS;
+    },
+
+    // sock_shutdown(fd, how) — `how` is a bitmask: 1=RD, 2=WR, 3=BOTH.
+    // Edge's HTTP server calls shutdown(WR) to signal "response complete"
+    // after the last fd_write.  We treat any shutdown (WR or BOTH) on a
+    // connection socket as the trigger to parse the accumulated sendBuf
+    // and ship the response back through the bridge responder, then
+    // close the connection.
+    sock_shutdown(fd: number, how: number) {
+      const sock = sockets.get(fd);
+      if (!sock) return ERRNO_BADF;
+      // RD-only shutdown: nothing to do (we already drained the recvBuf).
+      if (how === 1) return ERRNO_SUCCESS;
+      // WR or BOTH: flush response and tear down.
+      closeConnection(sock);
+      sockets.delete(fd);
+      return ERRNO_SUCCESS;
+    },
+
+    // sock_recv (preview1).  Same as fd_read for socket fds, but writes
+    // the message-flags out-pointer.
+    sock_recv(fd: number, iovsPtr: number, iovsLen: number, _riFlags: number, nreadPtr: number, roFlagsPtr: number) {
+      const sock = sockets.get(fd);
+      if (!sock) {
+        view(ctx.memory).setUint32(nreadPtr, 0, true);
+        return ERRNO_BADF;
+      }
+      const errno = readFromSocket(sock, iovsPtr, iovsLen, nreadPtr);
+      if (roFlagsPtr) view(ctx.memory).setUint16(roFlagsPtr, 0, true);
+      return errno;
     },
   };
 
@@ -614,12 +1182,15 @@ export function createWasiShim(ctx: ShimContext): {
       return ERRNO_SUCCESS;
     },
 
-    // fd_pipe — allocate a pipe pair.  Returns two virtual fds.
-    // #!~debt incomplete: read/write ends aren't actually connected.  The
-    // read side has a buffer that NOTHING writes into (the write side
-    // doesn't have a `write` impl that pushes to it).  Writes are accepted
-    // and discarded by writeBytesToFd's default branch.  Real IPC will need
-    // shared ring buffers, with reader blocking on Atomics.wait.
+    // fd_pipe — allocate a pipe pair.  Read end pulls bytes the write
+    // end pushed.  No SAB/blocking — synchronous semantics are sufficient
+    // because pipes are used during bootstrap as a sync-fd contract that
+    // mostly carries small metadata.
+    //
+    // #!~debt no-blocking-pipe: a reader that reads-before-write returns
+    // 0 (EOF-ish).  Real impl would block on Atomics.wait like the socket
+    // recv path.  Fine for bootstrap probes; userland child_process I/O
+    // would need the upgrade.
     fd_pipe(fdReadOutPtr: number, fdWriteOutPtr: number) {
       const buffer: number[] = [];
       const readFd = NEXT_VFD++;
@@ -633,6 +1204,10 @@ export function createWasiShim(ctx: ShimContext): {
       });
       vfds.set(writeFd, {
         read() { return 0; },
+        write(data) {
+          for (let i = 0; i < data.length; i++) buffer.push(data[i]!);
+          return data.length;
+        },
       });
       const dv = view(ctx.memory);
       dv.setUint32(fdReadOutPtr, readFd, true);
@@ -677,6 +1252,183 @@ export function createWasiShim(ctx: ShimContext): {
     proc_signal(_pid: number, _signo: number) {
       return ERRNO_SUCCESS;
     },
+
+    // ---- socket layer (TCP IPv4 loopback) ----
+
+    // sock_open(af, ty, pt, ro_sock_ptr) — allocate a fresh socket fd.
+    sock_open(_af: number, _ty: number, _pt: number, roSockPtr: number) {
+      const fd = nextSockFd();
+      sockets.set(fd, {
+        fd,
+        state: SOCK_STATE_FRESH,
+        nonblock: false,
+        pendingReqs: [],
+        recvBuf: new NativeUint8Array(0),
+        recvOff: 0,
+        sendBuf: [],
+        boundPort: 0,
+        reqId: 0,
+      });
+      view(ctx.memory).setUint32(roSockPtr, fd, true);
+      return ERRNO_SUCCESS;
+    },
+
+    sock_bind(sock: number, addrPtr: number) {
+      const s = sockets.get(sock);
+      if (!s) return ERRNO_BADF;
+      const parsed = parseAddrPort(addrPtr);
+      s.boundPort = parsed?.port ?? 0;
+      s.state = SOCK_STATE_BOUND;
+      return ERRNO_SUCCESS;
+    },
+
+    sock_listen(sock: number, _backlog: number) {
+      const s = sockets.get(sock);
+      if (!s) return ERRNO_BADF;
+      s.state = SOCK_STATE_LISTEN;
+      // Single-listener policy.  #!~debt single-listener (NOTES.md).
+      listenFd = sock;
+      return ERRNO_SUCCESS;
+    },
+
+    // sock_accept_v2(sock, fd_flags, ro_fd_ptr, ro_addr_ptr) — accept a
+    // pending request, allocate a connection fd, stage the raw HTTP/1.1
+    // bytes onto its recv buffer, return.  Blocks via Atomics.wait if
+    // queue empty and fdflags lacks NONBLOCK.
+    sock_accept_v2(sock: number, fdFlags: number, roFdPtr: number, roAddrPtr: number) {
+      const listener = sockets.get(sock);
+      if (!listener || listener.state !== SOCK_STATE_LISTEN) return ERRNO_BADF;
+      const nonblock = (fdFlags & 0x0004) !== 0; // Fdflags::NONBLOCK = 1<<2
+
+      while (listener.pendingReqs.length === 0) {
+        if (nonblock) return ERRNO_AGAIN;
+        // The worker's JS event loop is blocked while we're inside this
+        // sync wasm call, so MessagePort messages won't be delivered.
+        // The Service Worker writes incoming requests into a SAB-backed
+        // inbox AND calls Atomics.notify on our `wake` view.  We then
+        // wake from Atomics.wait, call wakePoll to drain the SAB into
+        // listener.pendingReqs, and re-check.
+        const idx = WAKE_ACCEPT_IDX;
+        const seen = NativeAtomics.load(wake, idx);
+        NativeAtomics.wait(wake, idx, seen);
+        if (wakePoll) wakePoll();
+      }
+      const req = listener.pendingReqs.shift()!;
+      const connFd = nextSockFd();
+      const raw = formatHttpRequest(req);
+      sockets.set(connFd, {
+        fd: connFd,
+        state: SOCK_STATE_CONNECTED,
+        nonblock: false,
+        pendingReqs: [],
+        recvBuf: raw,
+        recvOff: 0,
+        sendBuf: [],
+        boundPort: listener.boundPort,
+        reqId: req.reqId,
+      });
+      view(ctx.memory).setUint32(roFdPtr, connFd, true);
+      writePeerAddr(roAddrPtr);
+      return ERRNO_SUCCESS;
+    },
+
+    sock_connect(_sock: number, _addrPtr: number) {
+      // Outbound connections not supported in this chunk.
+      // #!~debt no-outbound: any fs/http client inside edge will fail.
+      return ERRNO_NOSYS;
+    },
+
+    sock_pair(_af: number, _ty: number, _pt: number, _ro1: number, _ro2: number) {
+      // Socketpair not exercised by HTTP server bootstrap.
+      // #!~debt no-socketpair: child_process etc. relies on this.
+      return ERRNO_NOSYS;
+    },
+
+    sock_addr_local(sock: number, roAddrPtr: number) {
+      const s = sockets.get(sock);
+      if (!s) return ERRNO_BADF;
+      // Write 127.0.0.1:port as the local addr.
+      // #!~debt fake-local-addr: doesn't reflect what edge bound to (we
+      // don't store the IP, only the port via parseAddrPort).
+      const mem = bytes(ctx.memory);
+      mem[roAddrPtr] = 1; // Inet4
+      mem[roAddrPtr + 1] = 0;
+      mem[roAddrPtr + 2] = s.boundPort & 0xff;
+      mem[roAddrPtr + 3] = (s.boundPort >> 8) & 0xff;
+      mem[roAddrPtr + 4] = 127;
+      mem[roAddrPtr + 5] = 0;
+      mem[roAddrPtr + 6] = 0;
+      mem[roAddrPtr + 7] = 1;
+      for (let i = 8; i < 20; i++) mem[roAddrPtr + i] = 0;
+      return ERRNO_SUCCESS;
+    },
+
+    sock_addr_peer(sock: number, roAddrPtr: number) {
+      const s = sockets.get(sock);
+      if (!s) return ERRNO_BADF;
+      writePeerAddr(roAddrPtr);
+      return ERRNO_SUCCESS;
+    },
+
+    sock_recv_from(
+      sock: number,
+      iovsPtr: number,
+      iovsLen: number,
+      _riFlags: number,
+      roDataLenPtr: number,
+      roFlagsPtr: number,
+      roAddrPtr: number,
+    ) {
+      const s = sockets.get(sock);
+      if (!s) {
+        view(ctx.memory).setUint32(roDataLenPtr, 0, true);
+        return ERRNO_BADF;
+      }
+      const errno = readFromSocket(s, iovsPtr, iovsLen, roDataLenPtr);
+      if (roFlagsPtr) view(ctx.memory).setUint16(roFlagsPtr, 0, true);
+      if (roAddrPtr) writePeerAddr(roAddrPtr);
+      return errno;
+    },
+
+    sock_send_to(
+      sock: number,
+      iovsPtr: number,
+      iovsLen: number,
+      _siFlags: number,
+      _addrPtr: number,
+      retDataLenPtr: number,
+    ) {
+      const s = sockets.get(sock);
+      if (!s || s.state !== SOCK_STATE_CONNECTED) {
+        view(ctx.memory).setUint32(retDataLenPtr, 0, true);
+        return ERRNO_BADF;
+      }
+      const total = writeIovsToSocket(s, iovsPtr, iovsLen);
+      view(ctx.memory).setUint32(retDataLenPtr, total, true);
+      return ERRNO_SUCCESS;
+    },
+
+    sock_send_file(_sock: number, _inFd: number, _offset: bigint, _count: bigint, _retPtr: number) {
+      // #!~debt no-sendfile: zero-copy file→socket not implemented.
+      return ERRNO_NOSYS;
+    },
+
+    sock_get_opt_flag(_sock: number, _opt: number, outPtr: number) {
+      view(ctx.memory).setUint8(outPtr, 0);
+      return ERRNO_SUCCESS;
+    },
+    sock_get_opt_size(_sock: number, _opt: number, outPtr: number) {
+      view(ctx.memory).setBigUint64(outPtr, 0n, true);
+      return ERRNO_SUCCESS;
+    },
+    sock_get_opt_time(_sock: number, _opt: number, outPtr: number) {
+      // option_timestamp { tag:u8, value:u64 }; write tag=0 (None).
+      view(ctx.memory).setUint8(outPtr, 0);
+      return ERRNO_SUCCESS;
+    },
+    sock_set_opt_flag(_sock: number, _opt: number, _flag: number) { return ERRNO_SUCCESS; },
+    sock_set_opt_size(_sock: number, _opt: number, _size: bigint) { return ERRNO_SUCCESS; },
+    sock_set_opt_time(_sock: number, _opt: number, _timePtr: number) { return ERRNO_SUCCESS; },
   };
 
   // ---- wasi.thread-spawn (orphan namespace) ----
@@ -686,7 +1438,7 @@ export function createWasiShim(ctx: ShimContext): {
     },
   };
 
-  return { wasi_snapshot_preview1, wasix_32v1, wasi };
+  return { wasi_snapshot_preview1, wasix_32v1, wasi, bus };
 }
 
 export class ExitSignal {

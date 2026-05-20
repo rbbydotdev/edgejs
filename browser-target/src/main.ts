@@ -34,6 +34,18 @@ if (!crossOriginIsolated) {
 }
 
 const worker = new Worker(new URL("./worker.ts", import.meta.url), { type: "module" });
+// Holds the active SW once setupBridge resolves.  Used to forward edge
+// responses (edge-res) back via sw.postMessage so the SW can resolve
+// the pending fetch.
+let activeSW: ServiceWorker | null = null;
+// The SABs the worker exposes for the HTTP bridge transport.  Set when
+// the worker posts "relay-bridge-sab" with the boot SAB pair.
+let bridgeI32: Int32Array | null = null;
+let bridgeU8: Uint8Array | null = null;
+let wakeI32: Int32Array | null = null;
+const BRIDGE_SAB_HEADER_BYTES = 16;
+const bridgeEncoder = new TextEncoder();
+
 worker.onmessage = (e) => {
   const { kind } = e.data;
   if (kind === "log") {
@@ -46,8 +58,57 @@ worker.onmessage = (e) => {
   } else if (kind === "report") {
     if (e.data.json) installDownload(e.data.json, "json");
     if (e.data.jsonl) installDownload(e.data.jsonl, "jsonl");
+  } else if (kind === "relay-bridge-sab") {
+    bridgeI32 = new Int32Array(e.data.bridgeSab);
+    bridgeU8 = new Uint8Array(e.data.bridgeSab);
+    wakeI32 = new Int32Array(e.data.wakeSab);
+    append("bridge: SAB transport ready (page-mediated)", "info");
+  } else if (kind === "page-edge-res") {
+    // Worker → SW response relay.  See setupBridge handler comment.
+    if (activeSW) {
+      activeSW.postMessage({
+        kind: "edge-res",
+        reqId: e.data.reqId,
+        status: e.data.status,
+        headers: e.data.headers,
+        body: e.data.body,
+      });
+    }
   }
 };
+
+function arrayBufferToBase64(buf: ArrayBuffer): string {
+  const u8 = new Uint8Array(buf);
+  let s = "";
+  for (let i = 0; i < u8.length; i++) s += String.fromCharCode(u8[i]!);
+  return btoa(s);
+}
+
+function dispatchEdgeReq(reqId: number, method: string, path: string, headers: Record<string, string>, body: ArrayBuffer | null): void {
+  if (!bridgeI32 || !bridgeU8 || !wakeI32) {
+    append("bridge: edge-req arrived before SAB transport was ready", "warn");
+    return;
+  }
+  append(`bridge: dispatchEdgeReq id=${reqId} wakeBefore=${Atomics.load(wakeI32, 0)} bridgeBefore=${Atomics.load(bridgeI32, 0)}`, "info");
+  const payload = {
+    method,
+    path,
+    headers,
+    bodyB64: body && body.byteLength > 0 ? arrayBufferToBase64(body) : undefined,
+  };
+  const json = bridgeEncoder.encode(JSON.stringify(payload));
+  if (json.length > bridgeU8.length - BRIDGE_SAB_HEADER_BYTES) {
+    append("bridge: request too large for SAB", "warn");
+    return;
+  }
+  bridgeU8.set(json, BRIDGE_SAB_HEADER_BYTES);
+  Atomics.store(bridgeI32, 1, json.length);
+  Atomics.store(bridgeI32, 2, reqId);
+  Atomics.add(bridgeI32, 0, 1);
+  Atomics.add(wakeI32, 0, 1);
+  const notified = Atomics.notify(wakeI32, 0);
+  append(`bridge: dispatchEdgeReq notified=${notified} wakeAfter=${Atomics.load(wakeI32, 0)} bridgeAfter=${Atomics.load(bridgeI32, 0)}`, "info");
+}
 worker.onerror = (e) => {
   append(`WORKER ERROR: ${e.message} (${e.filename}:${e.lineno})`, "err");
   statusEl.textContent = "worker crashed";
@@ -98,10 +159,33 @@ async function setupBridge() {
     await navigator.serviceWorker.ready;
     const sw = reg.active ?? navigator.serviceWorker.controller;
     if (!sw) { append("bridge: no active SW after registration", "warn"); return; }
-    const { port1, port2 } = new MessageChannel();
-    sw.postMessage({ kind: "bridge-port", port: port1 }, [port1]);
-    worker.postMessage({ kind: "bridge-port", port: port2 }, [port2]);
-    append("bridge: SW registered, port handed to worker", "info");
+    activeSW = sw;
+    // #!~debt sw-sab-relay: SharedArrayBuffer payloads silently fail to
+    // cross postMessage hops into a Service Worker on Chrome 148 — even
+    // direct page → SW with SAB in the payload doesn't deliver.  So the
+    // SW never sees the SABs.  All per-request traffic flows:
+    //
+    //   SW (fetch intercept)
+    //     ↓ postMessage(edge-req) to page (Client)
+    //   page (here)
+    //     ↓ writes JSON into bridgeSab, Atomics.notify(wakeSab, 0)
+    //   worker (blocked in Atomics.wait inside accept_v2)
+    //     ↓ reads JSON, runs through edge, writes response
+    //     ↓ postMessage(page-edge-res) back to page
+    //   page
+    //     ↓ postMessage(edge-res) to SW
+    //   SW resolves the original fetch
+    navigator.serviceWorker.addEventListener("message", (e) => {
+      if (e.data?.kind === "sw-log") {
+        append(String(e.data.text), "info");
+        return;
+      }
+      if (e.data?.kind === "edge-req") {
+        append(`bridge: page got edge-req reqId=${e.data.reqId} path=${e.data.path}`, "info");
+        dispatchEdgeReq(e.data.reqId, e.data.method, e.data.path, e.data.headers, e.data.body ?? null);
+      }
+    });
+    append("bridge: SW registered", "info");
   } catch (err) {
     append(`bridge: SW registration failed — ${(err as Error).message}`, "warn");
   }

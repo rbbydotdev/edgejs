@@ -4,7 +4,7 @@
 //      hand-rolled unofficial_napi_* layer + the WASI shim.
 
 import { buildImports } from "./imports-generated";
-import { createWasiShim, ExitSignal } from "./wasi-shim";
+import { createWasiShim, ExitSignal, type BridgeRequest } from "./wasi-shim";
 import { Trace, toUnifiedJsonl } from "./trace";
 import { createNapiHost } from "./napi-host";
 import { createBundledFs } from "./host/fs/adapters/bundled";
@@ -93,9 +93,15 @@ async function runEdgeWithEmnapi() {
   });
 
   // Wasi shim — provides wasi_snapshot_preview1, wasix_32v1, wasi.thread-spawn
+  // and a SocketBus we wire to the HTTP bridge port below.
   const shim = createWasiShim({
     memory,
-    args: ["edgejs", "-e", "console.log('hello from edgejs in browser')"],
+    // Small HTTP server: opens a TCP listener on :3000, replies to any
+    // request with "hi from edge\n".  The path/port are not used for
+    // routing — the SW intercepts /_edge/* and pushes any request onto
+    // whatever listener edge has open (single-listener policy, see
+    // wasi-shim.ts).
+    args: ["edgejs", "-e", "require('http').createServer((req,res)=>{res.end('hi from edge\\n')}).listen(3000,()=>console.log('listening'))"],
     // Match native napi_wasmer baseline — wasmer-wasix passes no env by
     // default and edge boots fine.  Adding env vars made wasi-libc trigger
     // a different init path that breaks uv_cwd downstream.
@@ -108,6 +114,47 @@ async function runEdgeWithEmnapi() {
     },
     postExit: () => { /* via ExitSignal */ },
   });
+
+  // Wire the bridge to the socket bus.  Two channels:
+  //   1) The page (relaying for the SW) writes incoming HTTP requests
+  //      into bridgeSab and calls Atomics.notify on the shim's wakeView.
+  //      The shim blocks on wakeView[0] inside accept_v2; our wakePoll
+  //      hook reads from bridgeSab and pushes the request through the
+  //      bus once it wakes.
+  //   2) The shim's responder fires when a connection closes with
+  //      response bytes.  We post {kind:"page-edge-res"} to the main
+  //      thread; main.ts forwards to the SW via sw.postMessage.
+  shim.bus.setResponder((res) => {
+    // res.body is a Uint8Array (subarray of recvBuf or fresh allocation).
+    // Copy to a plain ArrayBuffer so postMessage doesn't drag in the SAB.
+    const bodyCopy = new Uint8Array(res.body.length);
+    bodyCopy.set(res.body);
+    post("log", { text: `[worker] dispatching response reqId=${res.reqId} status=${res.status} bytes=${bodyCopy.length}`, level: "info" });
+    self.postMessage({
+      kind: "page-edge-res",
+      reqId: res.reqId,
+      status: res.status,
+      headers: res.headers,
+      body: bodyCopy.buffer,
+    }, [bodyCopy.buffer]);
+  });
+  shim.bus.setWakePoll(() => {
+    // Drain the SAB inbox.  Each wake corresponds to (at most) one
+    // request from the page (relayed from the SW).
+    const req = drainBridgeSab();
+    if (req) shim.bus.pushRequest(req);
+  });
+  // SAB doesn't survive MessagePort.postMessage to a Service Worker in
+  // current Chrome; the message is silently dropped (verified — a plain
+  // {kind:"ping"} on the same port arrives, a payload that includes a
+  // SAB does not).  We relay through the page (main thread), which can
+  // sw.postMessage() the SABs directly.
+  self.postMessage({
+    kind: "relay-bridge-sab",
+    bridgeSab,
+    wakeSab: shim.bus.wakeView.buffer,
+  });
+  post("log", { text: "[worker] relay-bridge-sab posted to page (SW-bound)", level: "info" });
 
   // If the page enabled memory-snapshot debugging for specific symbols,
   // wrap those namespaces so each call captures bytes around pointer args.
@@ -153,7 +200,7 @@ async function runEdgeWithEmnapi() {
   // Real impl should be a watchdog timer (e.g. abort if >N seconds since
   // any new symbol fired) or progress-based (abort if call mix becomes
   // monotonous).  Count cap will misfire once we run real workloads.
-  const CALL_LIMIT = 20000;
+  const CALL_LIMIT = 100000;
   let callCount = 0;
   const wasmImports = buildImports(memory, overrides, (ns, sym, args, ret, stub) => {
     // If the mem-snapshot wrapper just ran on this call, it left snapshots
@@ -299,34 +346,81 @@ let memSnapshotSymbols: Set<string> = new Set();
 let runDiagnosticsFirst = false;
 let watchByteLength = false;
 
-// HTTP bridge: SW gives us a MessagePort.  Each {kind:"edge-req"} that
-// arrives is an HTTP request the SW intercepted at /_edge/*; we translate
-// it into a JS call against whatever HTTP server edge.js exposes inside
-// the sandbox, then post the response back.
+// HTTP bridge: requests come in via a SharedArrayBuffer the SW writes
+// directly into.  This is the only way to get data through to the worker
+// while the wasm has it stuck inside Atomics.wait — a MessagePort message
+// would queue but never get drained until the worker yields back to its
+// event loop, which doesn't happen during a sync wasm call.
 //
-// Gated on #14 — until edge boots cleanly there's nothing to dispatch to.
-// We still accept the port so the connection survives across edge restarts.
-let bridgePort: MessagePort | null = null;
-function onBridgeMessage(e: MessageEvent) {
-  const msg = e.data as { kind: string; reqId: number; method: string; path: string; headers: Record<string, string>; body?: ArrayBuffer | null };
-  if (msg?.kind !== "edge-req") return;
-  // #!~debt stub responder: real impl dispatches to a JS-side handle on
-  // the running edge instance (probably via an emnapi-exposed callback or
-  // a virtual loopback socket pump).  Until #14 unblocks, just 501.
-  const bodyText = `edge bridge stub — ${msg.method} ${msg.path}\n#14 must unblock first`;
-  bridgePort?.postMessage({
-    kind: "edge-res",
-    reqId: msg.reqId,
-    status: 501,
-    headers: { "content-type": "text/plain" },
-    bodyText,
-  });
+// Layout of bridgeSab (Int32 indices into a SharedArrayBuffer):
+//   [0] wake counter — incremented + Atomics.notify'd by SW on a new req,
+//                       blocked on by the shim inside accept_v2 / poll
+//   [1] payload length (in bytes) of the JSON request at offset 16
+//   [2] reqId
+//   [3] reserved
+//   bytes [16..]: JSON-encoded { method, path, headers, bodyB64 } and
+//                  optionally a binary body appended after.
+//
+// Responses go back via self.postMessage to the page (kind:"page-edge-res"),
+// which forwards to the SW via sw.postMessage.  SAB doesn't survive postMessage
+// to a Service Worker on current Chrome, so the page-mediated relay is the
+// only working path.
+const BRIDGE_SAB_SIZE = 256 * 1024; // 256 KB scratch — request body max
+const bridgeSab = new SharedArrayBuffer(BRIDGE_SAB_SIZE);
+const bridgeI32 = new Int32Array(bridgeSab);
+const bridgeU8 = new Uint8Array(bridgeSab);
+const BRIDGE_HEADER_BYTES = 16;
+let lastBridgeCounter = 0;
+const bridgeDecoder = new TextDecoder("utf-8", { fatal: false });
+
+function drainBridgeSab(): BridgeRequest | null {
+  // Called by the shim's wait-and-poll path when Atomics.wait returns.
+  // Reads any pending request out of the SAB and clears the slot.
+  const counter = Atomics.load(bridgeI32, 0);
+  post("log", { text: `[worker] drainBridgeSab counter=${counter} last=${lastBridgeCounter}`, level: "info" });
+  if (counter === lastBridgeCounter) return null;
+  lastBridgeCounter = counter;
+  const len = Atomics.load(bridgeI32, 1);
+  const reqId = Atomics.load(bridgeI32, 2);
+  post("log", { text: `[worker] drainBridgeSab len=${len} reqId=${reqId}`, level: "info" });
+  if (len <= 0 || len > BRIDGE_SAB_SIZE - BRIDGE_HEADER_BYTES) return null;
+  // Copy JSON out of the SAB (TextDecoder rejects SAB views).
+  const jsonBytes = new Uint8Array(len);
+  jsonBytes.set(bridgeU8.subarray(BRIDGE_HEADER_BYTES, BRIDGE_HEADER_BYTES + len));
+  let parsed: { method: string; path: string; headers: Record<string, string>; bodyB64?: string };
+  try {
+    parsed = JSON.parse(bridgeDecoder.decode(jsonBytes));
+  } catch {
+    return null;
+  }
+  let body: ArrayBuffer | null = null;
+  if (parsed.bodyB64) {
+    const bin = atob(parsed.bodyB64);
+    const buf = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) buf[i] = bin.charCodeAt(i);
+    body = buf.buffer;
+  }
+  return {
+    reqId,
+    method: parsed.method,
+    path: parsed.path,
+    headers: parsed.headers,
+    body,
+  };
+}
+
+function onBridgeMessage(_e: MessageEvent) {
+  // Legacy MessagePort path — kept as a no-op for compatibility with the
+  // earlier scaffold.  The SW now writes requests directly into bridgeSab;
+  // this handler only fires for protocol messages we don't use yet.
+  // (Responses go SW-bound via bridgePort.postMessage, so the SW does
+  // listen to the port — but the WORKER does not need to receive port
+  // messages for the request path.)
 }
 
 self.onmessage = (e) => {
   if (e.data?.kind === "bridge-port" && e.data.port instanceof MessagePort) {
     const port = e.data.port as MessagePort;
-    bridgePort = port;
     port.onmessage = onBridgeMessage;
     port.start();
     return;

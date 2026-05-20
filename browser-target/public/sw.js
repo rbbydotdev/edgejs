@@ -1,46 +1,52 @@
 // Service Worker HTTP bridge for edgejs-in-browser.
 //
-// The dedicated worker running edge.js can host an HTTP server on a virtual
-// "loopback" socket inside the wasm sandbox.  Browsers can't speak directly
-// to that socket — fetch() goes to the network or to whatever the SW
-// intercepts.  This SW intercepts /_edge/* and forwards the request to the
-// edge worker via MessageChannel.
+// The dedicated worker hosts edge.js inside a wasm sandbox.  Browsers
+// can't speak directly to the virtual sockets edge has open — fetch()
+// goes to the network or to whatever the SW intercepts.  This SW
+// intercepts /_edge/* and forwards the request to the *page* (which
+// has direct access to the SAB transport shared with the worker).
 //
-// Wiring:
-//   1. page registers SW (main.ts)
-//   2. page exchanges a MessagePort pair with SW once "controllerchange"
-//      fires; one port goes to the dedicated worker, the other lives in
-//      the SW.  SW now talks directly to the worker without page involvement.
-//   3. SW translates fetch ↔ {req, res} JSON over the port.
+// Why the page-mediated relay (not SW-direct):
+//   SharedArrayBuffer payloads silently fail to cross postMessage hops
+//   into a Service Worker on Chrome 148 — empirically verified:
+//   plain-object messages on the same channel arrive fine, anything
+//   containing a SAB does not (no error, no event).  So the SW stays
+//   "stateless" relative to SABs: it forwards the request to the page
+//   via Clients.postMessage, the page does the SAB write +
+//   Atomics.notify, then the page reports the response back, and the
+//   SW resolves the fetch.
 //
-// #!~debt one-port-one-worker: each page registers a single port; if the
-// page spawns multiple edge workers we'd need port multiplexing.  Defer
-// until #14 unblocks and we know which workloads need parallel hosting.
+// #!~debt single-flight: one inflight request at a time per SW
+// instance.  Fine for the bring-up roundtrip; serving real concurrent
+// load needs a per-request channel or a ring buffer.
 
 const BRIDGE_PREFIX = "/_edge/";
-let workerPort = null;
-const pending = new Map(); // requestId -> { resolve, reject }
+const pending = new Map(); // reqId → { resolve, reject }
 let nextReqId = 1;
+
+async function swLog(msg) {
+  console.log(msg);
+  try {
+    const clients = await self.clients.matchAll();
+    for (const c of clients) c.postMessage({ kind: "sw-log", text: msg });
+  } catch {}
+}
 
 self.addEventListener("install", () => { self.skipWaiting(); });
 self.addEventListener("activate", (e) => { e.waitUntil(self.clients.claim()); });
 
 self.addEventListener("message", (e) => {
-  // The page sends us a MessagePort that's connected to the edge worker.
-  if (e.data?.kind === "bridge-port" && e.data.port) {
-    workerPort = e.data.port;
-    workerPort.onmessage = onWorkerMessage;
-    workerPort.start?.();
+  if (e.data?.kind === "edge-res") {
+    const slot = pending.get(e.data.reqId);
+    if (!slot) return;
+    pending.delete(e.data.reqId);
+    slot.resolve(e.data);
   }
 });
 
-function onWorkerMessage(e) {
-  const msg = e.data;
-  if (msg?.kind !== "edge-res") return;
-  const slot = pending.get(msg.reqId);
-  if (!slot) return;
-  pending.delete(msg.reqId);
-  slot.resolve(msg);
+async function getClient() {
+  const all = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
+  return all[0] ?? null;
 }
 
 self.addEventListener("fetch", (event) => {
@@ -48,27 +54,32 @@ self.addEventListener("fetch", (event) => {
   if (!url.pathname.startsWith(BRIDGE_PREFIX)) return; // pass-through
 
   event.respondWith((async () => {
-    if (!workerPort) {
-      return new Response("edge bridge not ready (worker port not registered)", {
-        status: 503, headers: { "content-type": "text/plain" },
-      });
-    }
     const reqId = nextReqId++;
+    swLog("[sw] fetch intercept reqId=" + reqId + " path=" + url.pathname);
     const body = event.request.body ? await event.request.arrayBuffer() : null;
     const headers = {};
     event.request.headers.forEach((v, k) => { headers[k] = v; });
-
+    const req = {
+      method: event.request.method,
+      path: url.pathname.slice(BRIDGE_PREFIX.length - 1) + url.search,
+      headers,
+    };
+    const client = await getClient();
+    if (!client) {
+      return new Response("edge bridge: no client to relay through", {
+        status: 503, headers: { "content-type": "text/plain" },
+      });
+    }
     const result = await new Promise((resolve, reject) => {
       pending.set(reqId, { resolve, reject });
-      workerPort.postMessage({
+      client.postMessage({
         kind: "edge-req",
         reqId,
-        method: event.request.method,
-        path: url.pathname.slice(BRIDGE_PREFIX.length - 1) + url.search, // strip prefix, keep leading "/"
-        headers,
+        method: req.method,
+        path: req.path,
+        headers: req.headers,
         body,
       }, body ? [body] : []);
-      // Watchdog — if the worker never responds, fall back to a 504.
       setTimeout(() => {
         if (pending.has(reqId)) {
           pending.delete(reqId);
@@ -80,7 +91,6 @@ self.addEventListener("fetch", (event) => {
       body: new TextEncoder().encode(String(err)),
     }));
 
-    // body precedence: bodyText (string), then body (ArrayBuffer/Blob), else null.
     const responseBody = result.bodyText ?? result.body ?? null;
     return new Response(responseBody, {
       status: result.status ?? 200,
