@@ -177,3 +177,64 @@ Full QuickJS result returned to the earlier baseline:
 ```
 
 The three regression-only failures were absent from the final failed-test list.
+
+## 2026-05-19 Debug `test-http2-status-code` Handle Scope Assertion
+
+Debug QuickJS builds reproduced another allocator assertion in:
+
+```text
+test/parallel/test-http2-status-code.js
+Assertion failed: (!block->is_free(slot)), function unsafe_owner, file napi_allocator.h
+```
+
+Sandboxed reproduction stops earlier with `listen EPERM`, so the focused repro
+must run outside the sandbox or in the normal local terminal.
+
+LLDB showed a stale local `napi_value`, not a stale `napi_ref`:
+
+```text
+napi_allocator__<napi_value__, napi_scope__>::unsafe_owner(...)
+  napi_env__::value_from_handle(...)
+  napi_typeof(...)
+  InvokeStreamCloseCallback(...)
+  OnStreamClose(...)
+  nghttp2_session_mem_send(...)
+  FlushSessionOutput(...)
+  RunDeferredSessionFlushTask(...)
+```
+
+Root cause: `CallCallbackRef(...)` opens an `edge::HandleScope`, calls
+`EdgeAsyncWrapMakeCallback(...)`, stores the callback return value in an output
+`napi_value`, then returns to its caller after the helper scope has closed.
+`InvokeStreamCloseCallback(...)` then calls `napi_typeof(...)` on that returned
+local handle.
+
+Action plan before code changes:
+
+1. Keep HTTP/2 native callback dispatch scoped.
+2. When `CallCallbackRef(...)` or `CallCallbackRefWithResource(...)` has an
+   output result, use an escapable scope and escape exactly that result to the
+   caller's outer scope.
+3. Leave no-result callback dispatch on plain `edge::HandleScope`.
+4. Rebuild the QuickJS Edge CLI and rerun `test-http2-status-code` outside the
+   sandbox, plus the earlier `test-eventemitter-asyncresource` crash repro.
+
+Implemented in `src/internal_binding/binding_http2.cc`: HTTP/2 callback
+dispatch now uses `edge::EscapableHandleScope` and only escapes the callback
+return value when the caller supplied a result out-parameter.
+
+Verification:
+
+```sh
+cmake --build build-edge-quickjs-cli --target edge -j4
+build-edge-quickjs-cli/edge test/parallel/test-http2-status-code.js
+build-edge-quickjs-cli/edge test/parallel/test-eventemitter-asyncresource.js
+python3 test/tools/test.py --timeout 30 --test-root ./test \
+  --shell ./build-edge-quickjs-cli/edge -j 1 \
+  parallel/test-http2-status-code \
+  parallel/test-http2-close-while-writing \
+  parallel/test-http2-create-client-connect \
+  parallel/test-http2-client-jsstream-destroy
+```
+
+The focused HTTP/2 cluster passed `+4 -0`.
