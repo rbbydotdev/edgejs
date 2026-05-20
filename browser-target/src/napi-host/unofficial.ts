@@ -1,4 +1,4 @@
-// Implementations of the ~86 `unofficial_napi_*` functions that edgejs.wasm
+// Implementations of the ~80 `unofficial_napi_*` functions that edgejs.wasm
 // imports.  These are NOT part of standard N-API; they're edge.js's V8
 // embedding hooks for things Node uses internally — module wrapping, script
 // compilation, structured clone, heap inspection, etc.
@@ -8,6 +8,14 @@
 // we fill them in one at a time.  The Rust file in napi/src/guest/napi.rs is
 // the reference spec for behavior; the napi/src/napi_bridge_init.cc shows
 // what V8 ops they map to — both useful when porting a given function.
+//
+// AUDIT NOTE 2026-05-20: the Rust guest functions take `FunctionEnvMut<NapiEnv>`
+// as their first param — that's a wasmer host construct, NOT a wasm-visible
+// argument.  Wasm callers pass exactly ONE env handle.  Earlier impls in this
+// file declared a phantom `_napiEnv` second parameter, which shifted every
+// subsequent out-pointer arg by one slot.  Every impl in this file has been
+// verified against `napi/src/guest/napi.rs:fn guest_unofficial_napi_*` arity.
+// See NOTES.md 2026-05-20 "phantom-arg audit" entry.
 
 import type { Context, Env } from "@emnapi/runtime";
 
@@ -135,6 +143,10 @@ export function createUnofficialNapi(ctx: UnofficialHostContext): Record<string,
     // etc. as injected args).  Returns an object wrapping the function +
     // sourceMap metadata — matches the shape edge expects (see
     // napi/v8/src/unofficial_napi_contextify.cc:1876 in the native ref).
+    // Wasm sig (12 args, napi/src/guest/napi.rs:1440):
+    // (napi_env, code, filename, line_offset, column_offset, cached_data,
+    //  produce_cached_data, parsing_context, context_extensions, params,
+    //  host_defined_option_id, result_ptr)
     unofficial_napi_contextify_compile_function(
       _envHandle: number,
       codeHandle: number,
@@ -203,9 +215,9 @@ export function createUnofficialNapi(ctx: UnofficialHostContext): Record<string,
     // #!~debt no-op: should wire to queueMicrotask/postMessage so async work
     // and timers actually fire.  Browser-only event loop is the right binding.
     unofficial_napi_set_enqueue_foreground_task_callback(
-      _env: number,
+      _envHandle: number,
       _callback: number,
-      _data: number,
+      _target: number,
     ): number {
       return 0;
     },
@@ -213,7 +225,7 @@ export function createUnofficialNapi(ctx: UnofficialHostContext): Record<string,
     // #!~debt no-op: callbacks are accepted but never invoked.  Fatal errors
     // currently surface only via JS throw paths, not these callbacks.
     unofficial_napi_set_fatal_error_callbacks(
-      _env: number,
+      _envHandle: number,
       _fatalErrorCb: number,
       _oomErrorCb: number,
     ): number {
@@ -223,7 +235,7 @@ export function createUnofficialNapi(ctx: UnofficialHostContext): Record<string,
     // #!~debt no-op: Error.prepareStackTrace customization is unhooked.  When
     // edge throws an Error, we get the browser's default stack format rather
     // than node's.  Cosmetic until userland depends on the v8 formatting.
-    unofficial_napi_set_prepare_stack_trace_callback(_env: number, _callback: number): number {
+    unofficial_napi_set_prepare_stack_trace_callback(_envHandle: number, _callback: number): number {
       return 0;
     },
 
@@ -231,7 +243,7 @@ export function createUnofficialNapi(ctx: UnofficialHostContext): Record<string,
     // Node uses these for async_hooks tracing.  Anything depending on
     // async_hooks won't see lifecycle events until this is wired.
     unofficial_napi_set_promise_hooks(
-      _env: number,
+      _envHandle: number,
       _initCb: number,
       _beforeCb: number,
       _afterCb: number,
@@ -242,38 +254,43 @@ export function createUnofficialNapi(ctx: UnofficialHostContext): Record<string,
 
     // --- Introspection: report no positions / no proxy ---
 
-    // #!~debt no-op: returns success without writing position out-params.
-    // edge's error formatting tolerates missing positions but stack frames
-    // will lack precise column info.
+    // Wasm sig (3 args, napi/src/guest/napi.rs:873):
+    // (napi_env, error, positions_ptr).  positions_ptr is ONE pointer to a
+    // 20-byte struct of { source_line_id:u32, script_resource_name_id:u32,
+    // line_number:i32, start_column:i32, end_column:i32 }.
+    // #!~debt no-op: returns success and zero-fills the struct so caller
+    // sees "no position info" cleanly.  Stack frames lack precise column info.
     unofficial_napi_get_error_source_positions(
-      _env: number,
+      _envHandle: number,
       _error: number,
-      _startLineOut: number,
-      _startColumnOut: number,
-      _endLineOut: number,
-      _endColumnOut: number,
+      positionsPtr: number,
     ): number {
-      return 0;
-    },
-
-    // #!~debt incomplete: always reports "not a proxy".  Real impl would
-    // detect Proxy via internal slot inspection (not directly exposed in
-    // browser JS) or by typeof+heuristics.  Anything inspecting Proxy
-    // internals via this path will think every value is non-Proxy.
-    unofficial_napi_get_proxy_details(
-      _env: number,
-      _value: number,
-      isProxyOut: number,
-      _targetOut: number,
-      _handlerOut: number,
-    ): number {
-      if (isProxyOut > 0) {
-        new DataView(memory.buffer).setInt32(isProxyOut, 0, true);
+      if (positionsPtr > 0) {
+        new Uint8Array(memory.buffer, positionsPtr, 20).fill(0);
       }
       return 0;
     },
 
-    // --- Below: 67 #!~debt stubs that fill the remaining unofficial_napi_*
+    // Wasm sig (4 args, napi/src/guest/napi.rs:401):
+    // (napi_env, proxy, target_ptr, handler_ptr).  There is NO is_proxy_out
+    // field; the C++ caller infers "is proxy" from successful population of
+    // target/handler.  We zero both and return ok — caller sees a degenerate
+    // "proxy with no target/handler" which it'll treat as not-a-proxy.
+    // #!~debt incomplete: real impl would detect Proxy via internal slot
+    // inspection (not directly exposed in browser JS).
+    unofficial_napi_get_proxy_details(
+      _envHandle: number,
+      _proxy: number,
+      targetPtr: number,
+      handlerPtr: number,
+    ): number {
+      const d = dv(memory);
+      if (targetPtr > 0) d.setUint32(targetPtr, 0, true);
+      if (handlerPtr > 0) d.setUint32(handlerPtr, 0, true);
+      return 0;
+    },
+
+    // --- Below: #!~debt stubs that fill the remaining unofficial_napi_*
     //     surface so wasm calls don't fall through to the generic logging
     //     fallback.  Each writes sensible defaults to its out-params and
     //     returns napi_ok (0).  Promote individual entries to real impls as
@@ -282,65 +299,72 @@ export function createUnofficialNapi(ctx: UnofficialHostContext): Record<string,
     // Heap/process stats — all return zeros, which is honest for "no V8 here".
     // Edge inspects these for process.memoryUsage() and v8.getHeapStatistics().
     // Returning zero counts is wrong but non-fatal — caller sees an idle heap.
-    unofficial_napi_get_heap_statistics(_env: number, _napiEnv: number, statsPtr: number): number {
-      // v8::HeapStatistics is 13 size_t fields → zero out 13 * 4 bytes.
-      if (statsPtr > 0) new Uint8Array(memory.buffer, statsPtr, 13 * 4).fill(0);
+    // Wasm sig (2 args): (napi_env, stats_ptr).  Struct is 14 size_t (u32) fields = 56 bytes.
+    unofficial_napi_get_heap_statistics(_envHandle: number, statsPtr: number): number {
+      if (statsPtr > 0) new Uint8Array(memory.buffer, statsPtr, 14 * 4).fill(0);
       return 0;
     },
-    unofficial_napi_get_heap_space_count(_env: number, _napiEnv: number, countOut: number): number {
+    unofficial_napi_get_heap_space_count(_envHandle: number, countOut: number): number {
       if (countOut > 0) dv(memory).setUint32(countOut, 0, true);
       return 0;
     },
-    unofficial_napi_get_heap_space_statistics(_env: number, _napiEnv: number, _index: number, statsPtr: number): number {
-      if (statsPtr > 0) new Uint8Array(memory.buffer, statsPtr, 8 * 4).fill(0);
+    // Wasm sig (3 args): (napi_env, space_index, stats_ptr).
+    // Struct is SnapiUnofficialHeapSpaceStatistics: 64-byte name + 4 u32 fields = 80 bytes.
+    unofficial_napi_get_heap_space_statistics(_envHandle: number, _index: number, statsPtr: number): number {
+      if (statsPtr > 0) new Uint8Array(memory.buffer, statsPtr, 64 + 4 * 4).fill(0);
       return 0;
     },
-    unofficial_napi_get_heap_code_statistics(_env: number, _napiEnv: number, statsPtr: number): number {
+    // Wasm sig (2 args): (napi_env, stats_ptr).  Struct = 4 u32 fields.
+    unofficial_napi_get_heap_code_statistics(_envHandle: number, statsPtr: number): number {
       if (statsPtr > 0) new Uint8Array(memory.buffer, statsPtr, 4 * 4).fill(0);
       return 0;
     },
+    // Wasm sig (5 args, napi/src/guest/napi.rs:819):
+    // (napi_env, heap_total_out, heap_used_out, external_out, array_buffers_out).
+    // Each out-ptr is an f64 (write_guest_f64), not u64.  No `rss` field.
     unofficial_napi_get_process_memory_info(
-      _env: number, _napiEnv: number,
-      heapTotalOut: number, heapUsedOut: number, externalOut: number, arrayBuffersOut: number, rssOut: number,
+      _envHandle: number,
+      heapTotalOut: number, heapUsedOut: number, externalOut: number, arrayBuffersOut: number,
     ): number {
       const d = dv(memory);
-      for (const p of [heapTotalOut, heapUsedOut, externalOut, arrayBuffersOut, rssOut]) {
-        if (p > 0) { d.setBigUint64(p, 0n, true); }
+      for (const p of [heapTotalOut, heapUsedOut, externalOut, arrayBuffersOut]) {
+        if (p > 0) { d.setFloat64(p, 0, true); }
       }
       return 0;
     },
-    unofficial_napi_get_hash_seed(_env: number, _napiEnv: number, hashSeedOut: number): number {
+    unofficial_napi_get_hash_seed(_envHandle: number, hashSeedOut: number): number {
       if (hashSeedOut > 0) dv(memory).setBigUint64(hashSeedOut, 0n, true);
       return 0;
     },
 
     // Profiling / GC controls — no real V8 to drive, so accept and discard.
-    unofficial_napi_low_memory_notification(_env: number): number { return 0; },
-    unofficial_napi_request_gc_for_testing(_env: number, _napiEnv: number): number { return 0; },
-    unofficial_napi_process_microtasks(_env: number, _napiEnv: number): number {
+    unofficial_napi_low_memory_notification(_envHandle: number): number { return 0; },
+    unofficial_napi_request_gc_for_testing(_envHandle: number): number { return 0; },
+    unofficial_napi_process_microtasks(_envHandle: number): number {
       // queueMicrotask drains naturally in the worker; nothing to do here.
       return 0;
     },
-    unofficial_napi_terminate_execution(_env: number, _napiEnv: number): number { return 0; },
-    unofficial_napi_cancel_terminate_execution(_env: number, _napiEnv: number): number { return 0; },
-    unofficial_napi_request_interrupt(_env: number, _napiEnv: number, _callback: number, _data: number): number { return 0; },
-    unofficial_napi_set_stack_limit(_env: number, _napiEnv: number, _limit: number): number { return 0; },
-    unofficial_napi_set_near_heap_limit_callback(_env: number, _napiEnv: number, _cb: number, _data: number): number { return 0; },
-    unofficial_napi_remove_near_heap_limit_callback(_env: number, _napiEnv: number, _heapLimit: number): number { return 0; },
-    unofficial_napi_notify_datetime_configuration_change(_env: number, _napiEnv: number): number { return 0; },
+    unofficial_napi_terminate_execution(_envHandle: number): number { return 0; },
+    unofficial_napi_cancel_terminate_execution(_envHandle: number): number { return 0; },
+    unofficial_napi_request_interrupt(_envHandle: number, _callback: number, _data: number): number { return 0; },
+    unofficial_napi_set_stack_limit(_envHandle: number, _limit: number): number { return 0; },
+    unofficial_napi_set_near_heap_limit_callback(_envHandle: number, _cb: number, _data: number): number { return 0; },
+    unofficial_napi_remove_near_heap_limit_callback(_envHandle: number, _heapLimit: number): number { return 0; },
+    unofficial_napi_notify_datetime_configuration_change(_envHandle: number): number { return 0; },
 
     // Continuation-preserved embedder data — used by AsyncContext.  Per-env
     // storage; we just round-trip a single slot per env.
+    // Wasm sig (2 args): (napi_env, result_ptr).
     unofficial_napi_get_continuation_preserved_embedder_data(
-      _env: number, envHandle: number, valueOut: number,
+      envHandle: number, resultPtr: number,
     ): number {
       const e = envs.get(envHandle);
       const slot = (e as unknown as { _contData?: number })?._contData ?? 0;
-      if (valueOut > 0) dv(memory).setUint32(valueOut, slot, true);
+      if (resultPtr > 0) dv(memory).setUint32(resultPtr, slot, true);
       return 0;
     },
     unofficial_napi_set_continuation_preserved_embedder_data(
-      _env: number, envHandle: number, valueHandle: number,
+      envHandle: number, valueHandle: number,
     ): number {
       const e = envs.get(envHandle);
       if (e) (e as unknown as { _contData?: number })._contData = valueHandle;
@@ -348,11 +372,48 @@ export function createUnofficialNapi(ctx: UnofficialHostContext): Record<string,
     },
 
     // CPU/heap profiling — never start, never stop, no data emitted.
-    unofficial_napi_start_cpu_profile(_env: number, _napiEnv: number, _title: number, _options: number): number { return 0; },
-    unofficial_napi_stop_cpu_profile(_env: number, _napiEnv: number, _title: number, _resultOut: number): number { return 0; },
-    unofficial_napi_start_heap_profile(_env: number, _napiEnv: number, _options: number): number { return 0; },
-    unofficial_napi_stop_heap_profile(_env: number, _napiEnv: number, _resultOut: number): number { return 0; },
-    unofficial_napi_take_heap_snapshot(_env: number, _napiEnv: number, _resultOut: number): number { return 0; },
+    // Wasm sig (3 args): (napi_env, result_ptr, profile_id_ptr).
+    unofficial_napi_start_cpu_profile(_envHandle: number, resultPtr: number, profileIdPtr: number): number {
+      const d = dv(memory);
+      if (resultPtr > 0) d.setInt32(resultPtr, 0, true);
+      if (profileIdPtr > 0) d.setUint32(profileIdPtr, 0, true);
+      return 0;
+    },
+    // Wasm sig (5 args): (napi_env, profile_id, found_ptr, json_ptr, json_len_ptr).
+    // found_ptr is a u8 (bool), json_ptr and json_len_ptr are u32.
+    unofficial_napi_stop_cpu_profile(
+      _envHandle: number, _profileId: number, foundPtr: number, jsonPtr: number, jsonLenPtr: number,
+    ): number {
+      const d = dv(memory);
+      if (foundPtr > 0) d.setUint8(foundPtr, 0);
+      if (jsonPtr > 0) d.setUint32(jsonPtr, 0, true);
+      if (jsonLenPtr > 0) d.setUint32(jsonLenPtr, 0, true);
+      return 0;
+    },
+    // Wasm sig (2 args): (napi_env, started_ptr).  started_ptr is u8.
+    unofficial_napi_start_heap_profile(_envHandle: number, startedPtr: number): number {
+      if (startedPtr > 0) dv(memory).setUint8(startedPtr, 0);
+      return 0;
+    },
+    // Wasm sig (4 args): (napi_env, found_ptr, json_ptr, json_len_ptr).
+    unofficial_napi_stop_heap_profile(
+      _envHandle: number, foundPtr: number, jsonPtr: number, jsonLenPtr: number,
+    ): number {
+      const d = dv(memory);
+      if (foundPtr > 0) d.setUint8(foundPtr, 0);
+      if (jsonPtr > 0) d.setUint32(jsonPtr, 0, true);
+      if (jsonLenPtr > 0) d.setUint32(jsonLenPtr, 0, true);
+      return 0;
+    },
+    // Wasm sig (4 args): (napi_env, options_ptr, json_ptr, json_len_ptr).
+    unofficial_napi_take_heap_snapshot(
+      _envHandle: number, _optionsPtr: number, jsonPtr: number, jsonLenPtr: number,
+    ): number {
+      const d = dv(memory);
+      if (jsonPtr > 0) d.setUint32(jsonPtr, 0, true);
+      if (jsonLenPtr > 0) d.setUint32(jsonLenPtr, 0, true);
+      return 0;
+    },
 
     // Promise introspection.  Wasm sig (5 args, see napi/src/guest/napi.rs:364):
     // (napi_env, promise, state_ptr, result_ptr, has_result_ptr).  Earlier
@@ -360,22 +421,25 @@ export function createUnofficialNapi(ctx: UnofficialHostContext): Record<string,
     // wrong address — the real state_ptr (arg 2) stayed uninitialized.
     // Edge's IsPromisePending then read its own stack-default of 0 (pending),
     // which downstream cascaded into the unsettled-TLA gate (exit 13).
+    // state_ptr is i32, result_ptr is u32, has_result_ptr is u8.
     // Honest stub: say "fulfilled with no result" so the C++ caller doesn't
     // wait for resolution.
     unofficial_napi_get_promise_details(
       _envHandle: number, _promiseHandle: number,
       stateOut: number, resultOut: number, hasResultOut: number,
     ): number {
-      if (stateOut > 0) dv(memory).setInt32(stateOut, 1, true);    // 1 = fulfilled
-      if (resultOut > 0) dv(memory).setUint32(resultOut, 0, true);
-      if (hasResultOut > 0) dv(memory).setInt32(hasResultOut, 0, true);
+      const d = dv(memory);
+      if (stateOut > 0) d.setInt32(stateOut, 1, true);    // 1 = fulfilled
+      if (resultOut > 0) d.setUint32(resultOut, 0, true);
+      if (hasResultOut > 0) d.setUint8(hasResultOut, 0);  // 1-byte bool
       return 0;
     },
-    unofficial_napi_mark_promise_as_handled(_env: number, _napiEnv: number, _promise: number): number { return 0; },
+    unofficial_napi_mark_promise_as_handled(_envHandle: number, _promise: number): number { return 0; },
 
     // Stack inspection — return empty arrays / null locations.
+    // Wasm sig (3 args): (napi_env, frames, callsites_ptr).
     unofficial_napi_get_call_sites(
-      _env: number, envHandle: number, _frames: number, callsitesOut: number,
+      envHandle: number, _frames: number, callsitesOut: number,
     ): number {
       const env = envs.get(envHandle);
       if (env && callsitesOut > 0) {
@@ -384,34 +448,35 @@ export function createUnofficialNapi(ctx: UnofficialHostContext): Record<string,
       }
       return 0;
     },
-    unofficial_napi_get_caller_location(_env: number, _napiEnv: number, locationOut: number): number {
+    // Wasm sig (2 args): (napi_env, location_ptr).
+    unofficial_napi_get_caller_location(_envHandle: number, locationOut: number): number {
       if (locationOut > 0) dv(memory).setUint32(locationOut, 0, true);
       return 0;
     },
+    // Stub function in Rust (napi.rs:5242) takes 3 raw i32 args (a, b, c) and
+    // returns 1.  We mirror: return 1 = napi_invalid_arg.
     unofficial_napi_get_current_stack_trace(
-      _env: number, envHandle: number, _frameLimit: number, traceOut: number,
+      _a: number, _b: number, _c: number,
     ): number {
-      const env = envs.get(envHandle);
-      if (env && traceOut > 0) {
-        const arr = context.ensureHandle([]);
-        dv(memory).setUint32(traceOut, arr.id, true);
-      }
-      return 0;
+      return 1;
     },
-    unofficial_napi_preserve_error_source_message(_env: number, _napiEnv: number, _error: number): number { return 0; },
+    // Wasm sig (2 args): (napi_env, error).
+    unofficial_napi_preserve_error_source_message(_envHandle: number, _error: number): number { return 0; },
 
     // ArrayBuffer / Buffer helpers.
+    // Wasm sig (3 args): (napi_env, value, result_ptr).  result_ptr is u8.
     unofficial_napi_arraybuffer_view_has_buffer(
-      _env: number, envHandle: number, valueHandle: number, resultOut: number,
+      envHandle: number, valueHandle: number, resultOut: number,
     ): number {
       const env = envs.get(envHandle);
       const value = env ? context.handleStore.get(valueHandle)?.value : undefined;
       const has = ArrayBuffer.isView(value) && (value as ArrayBufferView).buffer != null;
-      if (resultOut > 0) dv(memory).setInt32(resultOut, has ? 1 : 0, true);
+      if (resultOut > 0) dv(memory).setUint8(resultOut, has ? 1 : 0);
       return 0;
     },
+    // Wasm sig (3 args): (napi_env, value, name_ptr).
     unofficial_napi_get_constructor_name(
-      _env: number, envHandle: number, valueHandle: number, nameOut: number,
+      envHandle: number, valueHandle: number, nameOut: number,
     ): number {
       const env = envs.get(envHandle);
       if (!env) return 1;
@@ -423,8 +488,9 @@ export function createUnofficialNapi(ctx: UnofficialHostContext): Record<string,
       }
       return 0;
     },
+    // Wasm sig (4 args): (napi_env, value, filter, result_out_ptr).
     unofficial_napi_get_own_non_index_properties(
-      _env: number, envHandle: number, valueHandle: number, _filter: number, resultOut: number,
+      envHandle: number, valueHandle: number, _filter: number, resultOut: number,
     ): number {
       const env = envs.get(envHandle);
       if (!env) return 1;
@@ -438,8 +504,10 @@ export function createUnofficialNapi(ctx: UnofficialHostContext): Record<string,
       }
       return 0;
     },
+    // Wasm sig (4 args, napi.rs:432): (napi_env, value, entries_ptr, is_key_value_ptr).
+    // entries_ptr is u32, is_key_value_ptr is u8.
     unofficial_napi_preview_entries(
-      _env: number, envHandle: number, valueHandle: number, isKeyValueOut: number, resultOut: number,
+      envHandle: number, valueHandle: number, entriesOut: number, isKeyValueOut: number,
     ): number {
       const env = envs.get(envHandle);
       if (!env) return 1;
@@ -448,20 +516,25 @@ export function createUnofficialNapi(ctx: UnofficialHostContext): Record<string,
       let isKeyValue = false;
       if (v instanceof Map) { entries = Array.from(v.entries()).flat(); isKeyValue = true; }
       else if (v instanceof Set) { entries = Array.from(v); isKeyValue = false; }
-      if (isKeyValueOut > 0) dv(memory).setInt32(isKeyValueOut, isKeyValue ? 1 : 0, true);
-      if (resultOut > 0) {
+      if (entriesOut > 0) {
         const h = context.ensureHandle(entries);
-        dv(memory).setUint32(resultOut, h.id, true);
+        dv(memory).setUint32(entriesOut, h.id, true);
       }
+      if (isKeyValueOut > 0) dv(memory).setUint8(isKeyValueOut, isKeyValue ? 1 : 0);
       return 0;
     },
     // V8 buffer-data free; we let the JS GC manage memory, no-op.
-    unofficial_napi_free_buffer(_env: number, _data: number): number { return 0; },
+    // Wasm sig (1 arg): (data) → void.
+    unofficial_napi_free_buffer(_data: number): void { /* no-op */ },
 
-    // Structured-clone family — use structuredClone() when supported, fall
-    // back to JSON roundtrip.  Transfer list is dropped (no real handles).
+    // Structured-clone family.  IMPORTANT: per napi.rs:5080-5081, the symbol
+    // `unofficial_napi_structured_clone` is wired to the 3-arg adapter, and
+    // `unofficial_napi_structured_clone_with_transfer` is the full 4-arg flavor.
+    //
+    // Wasm sig for `structured_clone` (3 args, napi.rs:671):
+    // (napi_env, value, result_ptr) — no transfer list.
     unofficial_napi_structured_clone(
-      _env: number, envHandle: number, valueHandle: number, _transferList: number, resultOut: number,
+      envHandle: number, valueHandle: number, resultOut: number,
     ): number {
       const env = envs.get(envHandle);
       if (!env) return 1;
@@ -475,39 +548,44 @@ export function createUnofficialNapi(ctx: UnofficialHostContext): Record<string,
       }
       return 0;
     },
+    // Wasm sig (4 args, napi.rs:689):
+    // (napi_env, value, transfer_list, result_ptr).
     unofficial_napi_structured_clone_with_transfer(
-      env: number, envHandle: number, valueHandle: number, transferList: number, resultOut: number,
+      envHandle: number, valueHandle: number, _transferList: number, resultOut: number,
     ): number {
-      // #!~debt drops transfer list; same impl as 4-arg structured_clone.
-      return impls.unofficial_napi_structured_clone(env, envHandle, valueHandle, transferList, resultOut);
+      // #!~debt drops transfer list; same impl as 3-arg structured_clone.
+      return impls.unofficial_napi_structured_clone(envHandle, valueHandle, resultOut);
     },
     // v8 serializer/deserializer — wrap in a JSON-compat shim.  Real impl
     // would expose v8.serialize/v8.deserialize semantics (preserves
     // structured-clone-able shapes); JSON loses functions, undefined, etc.
-    unofficial_napi_create_serdes_binding(_env: number, _napiEnv: number, resultOut: number): number {
+    // Wasm sig (2 args): (napi_env, result_ptr).
+    unofficial_napi_create_serdes_binding(_envHandle: number, resultOut: number): number {
       if (resultOut > 0) {
         const stub = context.ensureHandle({ serialize: (v: unknown) => JSON.stringify(v), deserialize: (s: string) => JSON.parse(s) });
         dv(memory).setUint32(resultOut, stub.id, true);
       }
       return 0;
     },
+    // Wasm sig (3 args, napi.rs:713): (napi_env, value, payload_out_ptr).
     unofficial_napi_serialize_value(
-      _env: number, envHandle: number, valueHandle: number, resultOut: number,
+      envHandle: number, valueHandle: number, payloadOut: number,
     ): number {
       const env = envs.get(envHandle);
       if (!env) return 1;
       const v = context.handleStore.get(valueHandle)?.value;
       const bytes = encoder.encode(JSON.stringify(v ?? null));
-      if (resultOut > 0) {
+      if (payloadOut > 0) {
         const ab = new ArrayBuffer(bytes.length);
         new Uint8Array(ab).set(bytes);
         const h = context.ensureHandle(ab);
-        dv(memory).setUint32(resultOut, h.id, true);
+        dv(memory).setUint32(payloadOut, h.id, true);
       }
       return 0;
     },
+    // Wasm sig (3 args, napi.rs:725): (napi_env, payload, result_out_ptr).
     unofficial_napi_deserialize_value(
-      _env: number, envHandle: number, payloadHandle: number, resultOut: number,
+      envHandle: number, payloadHandle: number, resultOut: number,
     ): number {
       const env = envs.get(envHandle);
       if (!env) return 1;
@@ -522,14 +600,19 @@ export function createUnofficialNapi(ctx: UnofficialHostContext): Record<string,
       }
       return 0;
     },
-    unofficial_napi_release_serialized_value(_env: number, _payload: number): number { return 0; },
+    // Wasm sig (1 arg, napi.rs:737): (payload) → void.
+    unofficial_napi_release_serialized_value(_payload: number): void { /* no-op */ },
 
     // Contextify (vm.*) — minimal pass-through.  Run-script is the most
     // load-bearing: edge uses it for sourceText eval.  We use Function() so
     // it runs in the worker's global scope, no real context isolation.
+    // Wasm sig (9 args, napi.rs:1336):
+    // (napi_env, sandbox_or_symbol, name, origin_or_undefined, allow_code_gen_strings,
+    //  allow_code_gen_wasm, own_microtask_queue, host_defined_option_id, result_ptr).
     unofficial_napi_contextify_make_context(
-      _env: number, envHandle: number, _sandboxOrSymbol: number, _name: number,
-      _allowCodeGen: number, _options: number, resultOut: number,
+      envHandle: number, _sandboxOrSymbol: number, _name: number, _originOrUndefined: number,
+      _allowCodeGenStrings: number, _allowCodeGenWasm: number, _ownMicrotaskQueue: number,
+      _hostDefinedOptionId: number, resultOut: number,
     ): number {
       const env = envs.get(envHandle);
       if (env && resultOut > 0) {
@@ -541,7 +624,11 @@ export function createUnofficialNapi(ctx: UnofficialHostContext): Record<string,
       }
       return 0;
     },
-    // Wasm sig (12 args, napi/src/guest/napi.rs:1378):
+    // Wasm sig (2 args, napi.rs:1425): (napi_env, sandbox_or_context_global).
+    unofficial_napi_contextify_dispose_context(_envHandle: number, _sandboxOrContextGlobal: number): number {
+      return 0;
+    },
+    // Wasm sig (12 args, napi.rs:1378):
     // (napi_env, sandbox_or_null, source, filename, line_offset, column_offset,
     //  timeout: i64, display_errors, break_on_sigint, break_on_first_line,
     //  host_defined_option_id, result_ptr).  Earlier impl had a phantom
@@ -578,13 +665,13 @@ export function createUnofficialNapi(ctx: UnofficialHostContext): Record<string,
       }
       return 0;
     },
-    // Wasm signature is (napi_env, code, filename, is_sea_main, should_detect_module, result_ptr).
+    // Wasm sig (6 args, napi.rs:5182):
+    // (napi_env, code, filename, is_sea_main, should_detect_module, result_ptr).
     // Node's CJS loader expects an object with at least a `function` field; the
     // function itself must be CJS-wrapped, i.e. take (exports, require, module,
     // __filename, __dirname) as parameters.  We synthesize the params array,
     // hand the work to `unofficial_napi_contextify_compile_function`, and write
     // the resulting wrapper handle into the caller's result slot.
-    // Mirrors napi/src/guest/napi.rs:guest_stub_unofficial_napi_contextify_compile_function_for_cjs_loader.
     unofficial_napi_contextify_compile_function_for_cjs_loader(
       envHandle: number,
       codeHandle: number,
@@ -601,9 +688,12 @@ export function createUnofficialNapi(ctx: UnofficialHostContext): Record<string,
         envHandle, codeHandle, filenameHandle, 0, 0, 0, 0, 0, 0, paramsHandle, 0, resultOut,
       );
     },
+    // Wasm sig (6 args, napi.rs:1301):
+    // (napi_env, code, filename, resource_name_or_undefined, cjs_var_in_scope, result_ptr).
+    // result_ptr is u8 (bool).
     unofficial_napi_contextify_contains_module_syntax(
-      _env: number, envHandle: number, codeHandle: number, _filename: number,
-      _lineOffset: number, _columnOffset: number, resultOut: number,
+      envHandle: number, codeHandle: number, _filename: number,
+      _resourceNameOrUndefined: number, _cjsVarInScope: number, resultOut: number,
     ): number {
       const env = envs.get(envHandle);
       if (!env) return 1;
@@ -612,12 +702,14 @@ export function createUnofficialNapi(ctx: UnofficialHostContext): Record<string,
       // template-literal exports.  Real impl parses with acorn.  Good enough
       // for the "is this ESM or CJS?" boot heuristic.
       const has = typeof code === "string" && /^(?:\s*\/\/[^\n]*\n|\s*\/\*[\s\S]*?\*\/|\s)*(?:import|export)\s/m.test(code);
-      if (resultOut > 0) dv(memory).setInt32(resultOut, has ? 1 : 0, true);
+      if (resultOut > 0) dv(memory).setUint8(resultOut, has ? 1 : 0);
       return 0;
     },
+    // Wasm sig (7 args, napi.rs:1500):
+    // (napi_env, code, filename, line_offset, column_offset, host_defined_option_id, result_ptr).
     unofficial_napi_contextify_create_cached_data(
-      _env: number, _napiEnv: number, _code: number, _filename: number,
-      _lineOffset: number, _columnOffset: number, resultOut: number,
+      _envHandle: number, _code: number, _filename: number,
+      _lineOffset: number, _columnOffset: number, _hostDefinedOptionId: number, resultOut: number,
     ): number {
       // No V8 cache — return an empty ArrayBuffer.
       if (resultOut > 0) {
@@ -635,35 +727,41 @@ export function createUnofficialNapi(ctx: UnofficialHostContext): Record<string,
     // returns a handle that points at a marker object.  Promote piece by
     // piece when ESM workloads need to work.
 
+    // Wasm sig (9 args, napi.rs:1534):
+    // (napi_env, wrapper, url, context_or_undefined, source, line_offset,
+    //  column_offset, cached_data_or_id, handle_ptr).
     unofficial_napi_module_wrap_create_source_text(
-      _env: number, envHandle: number, wrapper: number, url: number,
+      envHandle: number, wrapper: number, url: number, _contextOrUndefined: number,
       source: number, _lineOffset: number, _columnOffset: number,
-      _cachedData: number, _hostDefinedOptionId: number, resultOut: number,
+      _cachedDataOrId: number, handlePtr: number,
     ): number {
       const env = envs.get(envHandle);
       if (!env) return 1;
       const mod = { kind: "source-text", wrapper, url, source, status: 0, namespace: {} };
-      if (resultOut > 0) {
+      if (handlePtr > 0) {
         const h = context.ensureHandle(mod);
-        dv(memory).setUint32(resultOut, h.id, true);
+        dv(memory).setUint32(handlePtr, h.id, true);
       }
       return 0;
     },
+    // Wasm sig (7 args, napi.rs:1576):
+    // (napi_env, wrapper, url, context_or_undefined, export_names, synthetic_eval_steps, handle_ptr).
     unofficial_napi_module_wrap_create_synthetic(
-      _env: number, envHandle: number, wrapper: number, url: number,
-      exportNames: number, _evaluator: number, resultOut: number,
+      envHandle: number, wrapper: number, url: number, _contextOrUndefined: number,
+      exportNames: number, _syntheticEvalSteps: number, handlePtr: number,
     ): number {
       const env = envs.get(envHandle);
       if (!env) return 1;
       const mod = { kind: "synthetic", wrapper, url, exportNames, status: 0, namespace: {} };
-      if (resultOut > 0) {
+      if (handlePtr > 0) {
         const h = context.ensureHandle(mod);
-        dv(memory).setUint32(resultOut, h.id, true);
+        dv(memory).setUint32(handlePtr, h.id, true);
       }
       return 0;
     },
+    // Wasm sig (3 args): (napi_env, handle, result_ptr).
     unofficial_napi_module_wrap_create_required_module_facade(
-      _env: number, envHandle: number, _module: number, resultOut: number,
+      envHandle: number, _handle: number, resultOut: number,
     ): number {
       const env = envs.get(envHandle);
       if (env && resultOut > 0) {
@@ -672,8 +770,9 @@ export function createUnofficialNapi(ctx: UnofficialHostContext): Record<string,
       }
       return 0;
     },
+    // Wasm sig (3 args): (napi_env, handle, result_ptr).
     unofficial_napi_module_wrap_create_cached_data(
-      _env: number, _napiEnv: number, _module: number, resultOut: number,
+      _envHandle: number, _handle: number, resultOut: number,
     ): number {
       if (resultOut > 0) {
         const h = context.ensureHandle(new ArrayBuffer(0));
@@ -681,9 +780,11 @@ export function createUnofficialNapi(ctx: UnofficialHostContext): Record<string,
       }
       return 0;
     },
-    unofficial_napi_module_wrap_destroy(_env: number, _napiEnv: number, _handle: number): number { return 0; },
+    // Wasm sig (2 args): (napi_env, handle).
+    unofficial_napi_module_wrap_destroy(_envHandle: number, _handle: number): number { return 0; },
+    // Wasm sig (3 args): (napi_env, handle, result_ptr).
     unofficial_napi_module_wrap_get_module_requests(
-      _env: number, envHandle: number, _handle: number, resultOut: number,
+      envHandle: number, _handle: number, resultOut: number,
     ): number {
       const env = envs.get(envHandle);
       if (env && resultOut > 0) {
@@ -692,12 +793,17 @@ export function createUnofficialNapi(ctx: UnofficialHostContext): Record<string,
       }
       return 0;
     },
+    // Wasm sig (4 args, napi.rs:1639):
+    // (napi_env, handle, count, linked_handles_ptr).
     unofficial_napi_module_wrap_link(
-      _env: number, _napiEnv: number, _handle: number, _count: number, _resolvers: number,
+      _envHandle: number, _handle: number, _count: number, _linkedHandlesPtr: number,
     ): number { return 0; },
-    unofficial_napi_module_wrap_instantiate(_env: number, _napiEnv: number, _handle: number): number { return 0; },
+    // Wasm sig (2 args, napi.rs:1666): (napi_env, handle).
+    unofficial_napi_module_wrap_instantiate(_envHandle: number, _handle: number): number { return 0; },
+    // Wasm sig (5 args, napi.rs:1675):
+    // (napi_env, handle, timeout: i64, break_on_sigint, result_ptr).
     unofficial_napi_module_wrap_evaluate(
-      _env: number, envHandle: number, _handle: number, resultOut: number,
+      envHandle: number, _handle: number, _timeout: bigint, _breakOnSigint: number, resultOut: number,
     ): number {
       const env = envs.get(envHandle);
       if (env && resultOut > 0) {
@@ -706,8 +812,10 @@ export function createUnofficialNapi(ctx: UnofficialHostContext): Record<string,
       }
       return 0;
     },
+    // Wasm sig (5 args, napi.rs:1700):
+    // (napi_env, handle, filename, parent_filename, result_ptr).
     unofficial_napi_module_wrap_evaluate_sync(
-      _env: number, envHandle: number, _handle: number, resultOut: number,
+      envHandle: number, _handle: number, _filename: number, _parentFilename: number, resultOut: number,
     ): number {
       const env = envs.get(envHandle);
       if (env && resultOut > 0) {
@@ -716,8 +824,9 @@ export function createUnofficialNapi(ctx: UnofficialHostContext): Record<string,
       }
       return 0;
     },
+    // Wasm sig (3 args): (napi_env, handle, result_ptr).
     unofficial_napi_module_wrap_get_namespace(
-      _env: number, envHandle: number, handle: number, resultOut: number,
+      envHandle: number, handle: number, resultOut: number,
     ): number {
       const env = envs.get(envHandle);
       if (!env) return 1;
@@ -728,14 +837,16 @@ export function createUnofficialNapi(ctx: UnofficialHostContext): Record<string,
       }
       return 0;
     },
+    // Wasm sig (3 args): (napi_env, handle, status_ptr).  status_ptr is i32.
     unofficial_napi_module_wrap_get_status(
-      _env: number, _napiEnv: number, _handle: number, statusOut: number,
+      _envHandle: number, _handle: number, statusOut: number,
     ): number {
       if (statusOut > 0) dv(memory).setInt32(statusOut, 4, true); // 4 = Evaluated
       return 0;
     },
+    // Wasm sig (3 args): (napi_env, handle, result_ptr).
     unofficial_napi_module_wrap_get_error(
-      _env: number, envHandle: number, _handle: number, resultOut: number,
+      envHandle: number, _handle: number, resultOut: number,
     ): number {
       const env = envs.get(envHandle);
       if (env && resultOut > 0) {
@@ -744,8 +855,9 @@ export function createUnofficialNapi(ctx: UnofficialHostContext): Record<string,
       }
       return 0;
     },
+    // Wasm sig (3 args): (napi_env, handle, result_ptr).
     unofficial_napi_module_wrap_get_module_source_object(
-      _env: number, envHandle: number, _handle: number, resultOut: number,
+      envHandle: number, _handle: number, resultOut: number,
     ): number {
       const env = envs.get(envHandle);
       if (env && resultOut > 0) {
@@ -754,49 +866,55 @@ export function createUnofficialNapi(ctx: UnofficialHostContext): Record<string,
       }
       return 0;
     },
+    // Wasm sig (3 args): (napi_env, handle, source_object).
     unofficial_napi_module_wrap_set_module_source_object(
-      _env: number, _napiEnv: number, _handle: number, _value: number,
+      _envHandle: number, _handle: number, _sourceObject: number,
     ): number { return 0; },
+    // Wasm sig (3 args): (napi_env, handle, result_ptr).  result_ptr is u8.
     unofficial_napi_module_wrap_has_top_level_await(
-      _env: number, _napiEnv: number, _handle: number, resultOut: number,
+      _envHandle: number, _handle: number, resultOut: number,
     ): number {
-      if (resultOut > 0) dv(memory).setInt32(resultOut, 0, true);
+      if (resultOut > 0) dv(memory).setUint8(resultOut, 0);
       return 0;
     },
+    // Wasm sig (3 args): (napi_env, handle, result_ptr).  result_ptr is u8.
     unofficial_napi_module_wrap_has_async_graph(
-      _env: number, _napiEnv: number, _handle: number, resultOut: number,
+      _envHandle: number, _handle: number, resultOut: number,
     ): number {
-      if (resultOut > 0) dv(memory).setInt32(resultOut, 0, true);
+      if (resultOut > 0) dv(memory).setUint8(resultOut, 0);
       return 0;
     },
-    // Wasm reads `*resultOut` as "settled? 1 : 0".  Default to settled (1)
+    // Wasm sig (4 args, napi.rs:1818):
+    // (napi_env, module_wrap, warnings, settled_ptr).  settled_ptr is u8.
+    // Wasm reads `*settled_ptr` as "settled? 1 : 0".  Default to settled (1)
     // since our module_wrap_* impls don't host top-level await semantics —
     // returning 0 (unsettled) triggers edge's kUnsettledTopLevelAwait exit
     // path (code 13) at the end of every run.  See NOTES.md 2026-05-20.
     unofficial_napi_module_wrap_check_unsettled_top_level_await(
-      _env: number, _napiEnv: number, _handle: number, resultOut: number,
+      _envHandle: number, _moduleWrap: number, _warnings: number, settledOut: number,
     ): number {
-      if (resultOut > 0) dv(memory).setInt32(resultOut, 1, true);
+      if (settledOut > 0) dv(memory).setUint8(settledOut, 1);
       return 0;
     },
+    // Wasm sig (4 args, napi.rs:1846):
+    // (napi_env, handle, export_name, export_value).
     unofficial_napi_module_wrap_set_export(
-      _env: number, _napiEnv: number, _handle: number, _name: number, _value: number,
+      _envHandle: number, _handle: number, _exportName: number, _exportValue: number,
     ): number { return 0; },
+    // Stub in Rust (napi.rs:5249) takes 4 raw i32 args (a, b, c, d) and
+    // returns 1.  We mirror: return 1 = napi_invalid_arg.
     unofficial_napi_module_wrap_import_module_dynamically(
-      _env: number, envHandle: number, _specifier: number, _refModule: number, _attributes: number, resultOut: number,
+      _a: number, _b: number, _c: number, _d: number,
     ): number {
-      const env = envs.get(envHandle);
-      if (env && resultOut > 0) {
-        const h = context.ensureHandle(Promise.resolve({}));
-        dv(memory).setUint32(resultOut, h.id, true);
-      }
-      return 0;
+      return 1;
     },
+    // Wasm sig (2 args): (napi_env, callback).
     unofficial_napi_module_wrap_set_import_module_dynamically_callback(
-      _env: number, _napiEnv: number, _callback: number,
+      _envHandle: number, _callback: number,
     ): number { return 0; },
+    // Wasm sig (2 args): (napi_env, callback).
     unofficial_napi_module_wrap_set_initialize_import_meta_object_callback(
-      _env: number, _napiEnv: number, _callback: number,
+      _envHandle: number, _callback: number,
     ): number { return 0; },
 
     // --- end of #!~debt batch ---

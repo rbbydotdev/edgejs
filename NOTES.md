@@ -5,6 +5,147 @@ out the browser target. Newest entries first.
 
 ---
 
+## 2026-05-20 — `unofficial_napi_*` phantom-arg audit (FIXED)
+
+Systematic audit of all 80 `unofficial_napi_*` impls in
+[browser-target/src/napi-host/unofficial.ts](browser-target/src/napi-host/unofficial.ts)
+against the ground-truth wasm signatures in
+[napi/src/guest/napi.rs](napi/src/guest/napi.rs).
+
+The wasm-visible signature for each `guest_unofficial_napi_xxx` is the Rust
+function signature **minus** the `FunctionEnvMut<NapiEnv>` first parameter
+(that's a wasmer host construct, not a wasm arg).
+
+### Results
+
+| Function | Wasm args | Our args (before) | Status (before) | Action |
+|---|---|---|---|---|
+| `set_flags_from_string` | 2 | 2 | OK | none |
+| `create_env` | 3 | 3 | OK | none |
+| `create_env_with_options` | 4 | 4 | OK | none |
+| `release_env` | 1 | 1 | OK | none |
+| `release_env_with_loop` | 2 | 2 | OK | none |
+| `low_memory_notification` | 1 | 1 | OK | none |
+| `process_microtasks` | 1 | 2 | phantom env | FIXED |
+| `request_gc_for_testing` | 1 | 2 | phantom env | FIXED |
+| `set_prepare_stack_trace_callback` | 2 | 2 | OK | none |
+| `get_promise_details` | 5 | 5 | OK (just fixed) | u8 fix for has_result_ptr |
+| `get_proxy_details` | 4 | 5 | phantom env + bogus is_proxy_out | FIXED |
+| `preview_entries` | 4 | 5 | phantom env + arg-order swap | FIXED |
+| `get_call_sites` | 3 | 4 | phantom env | FIXED |
+| `get_caller_location` | 2 | 3 | phantom env | FIXED |
+| `arraybuffer_view_has_buffer` | 3 | 4 | phantom env + u8 width | FIXED |
+| `get_constructor_name` | 3 | 4 | phantom env | FIXED |
+| `create_private_symbol` | 4 | 4 | OK | none |
+| `get_continuation_preserved_embedder_data` | 2 | 3 | phantom env | FIXED |
+| `set_continuation_preserved_embedder_data` | 2 | 3 | phantom env | FIXED |
+| `notify_datetime_configuration_change` | 1 | 2 | phantom env | FIXED |
+| `set_enqueue_foreground_task_callback` | 3 | 3 | OK | none |
+| `set_fatal_error_callbacks` | 3 | 3 | OK | none |
+| `terminate_execution` | 1 | 2 | phantom env | FIXED |
+| `cancel_terminate_execution` | 1 | 2 | phantom env | FIXED |
+| `request_interrupt` | 3 | 4 | phantom env | FIXED |
+| `structured_clone` | 3 | 5 | wrong sig (was wired to 4-arg with-transfer body) | FIXED |
+| `structured_clone_with_transfer` | 4 | 5 | phantom env | FIXED |
+| `serialize_value` | 3 | 4 | phantom env | FIXED |
+| `deserialize_value` | 3 | 4 | phantom env | FIXED |
+| `release_serialized_value` | 1 (void) | 2 (returned 0) | phantom env + non-void return | FIXED |
+| `set_promise_hooks` | 5 | 5 | OK | none |
+| `get_own_non_index_properties` | 4 | 5 | phantom env | FIXED |
+| `get_process_memory_info` | 5 | 7 | phantom env + bogus rss arg + u64 instead of f64 | FIXED |
+| `get_hash_seed` | 2 | 3 | phantom env | FIXED |
+| `get_error_source_positions` | 3 (one struct ptr) | 6 (four scalar ptrs) | phantom env + wrong struct layout | FIXED |
+| `preserve_error_source_message` | 2 | 3 | phantom env | FIXED |
+| `mark_promise_as_handled` | 2 | 3 | phantom env | FIXED |
+| `get_heap_statistics` | 2 | 3 | phantom env + 13 vs 14 fields | FIXED |
+| `get_heap_space_count` | 2 | 3 | phantom env | FIXED |
+| `get_heap_space_statistics` | 3 | 4 | phantom env + wrong struct size (was 32, is 80) | FIXED |
+| `get_heap_code_statistics` | 2 | 3 | phantom env | FIXED |
+| `set_stack_limit` | 2 | 3 | phantom env | FIXED |
+| `set_near_heap_limit_callback` | 3 | 4 | phantom env | FIXED |
+| `remove_near_heap_limit_callback` | 2 | 3 | phantom env | FIXED |
+| `free_buffer` | 1 (void) | 2 (returned 0) | phantom env + non-void return | FIXED |
+| `start_cpu_profile` | 3 | 4 | phantom env + wrong args (was title/options) | FIXED |
+| `stop_cpu_profile` | 5 | 4 | phantom env + missing args | FIXED |
+| `start_heap_profile` | 2 | 3 | phantom env + bogus options arg | FIXED |
+| `stop_heap_profile` | 4 | 3 | phantom env + missing args | FIXED |
+| `take_heap_snapshot` | 4 | 3 | phantom env + missing args | FIXED |
+| `create_serdes_binding` | 2 | 3 | phantom env | FIXED |
+| `contextify_make_context` | 9 | 7 | phantom env + missing args | FIXED |
+| `contextify_dispose_context` | 2 | (missing) | impl was absent, fallback worked | ADDED |
+| `contextify_run_script` | 12 | 12 | OK (just fixed) | none |
+| `contextify_compile_function` | 12 | 12 | OK | none |
+| `contextify_compile_function_for_cjs_loader` | 6 | 6 | OK | none |
+| `contextify_contains_module_syntax` | 6 | 7 | phantom env + missing cjs_var_in_scope | FIXED |
+| `contextify_create_cached_data` | 7 | 7 | phantom env + missing host_defined_option_id | FIXED |
+| `module_wrap_create_source_text` | 9 | 10 | phantom env + missing context_or_undefined + extra host_defined_option_id | FIXED |
+| `module_wrap_create_synthetic` | 7 | 7 | phantom env + missing context_or_undefined | FIXED |
+| `module_wrap_create_required_module_facade` | 3 | 4 | phantom env | FIXED |
+| `module_wrap_create_cached_data` | 3 | 4 | phantom env | FIXED |
+| `module_wrap_destroy` | 2 | 3 | phantom env | FIXED |
+| `module_wrap_get_module_requests` | 3 | 4 | phantom env | FIXED |
+| `module_wrap_link` | 4 | 5 | phantom env | FIXED |
+| `module_wrap_instantiate` | 2 | 3 | phantom env | FIXED |
+| `module_wrap_evaluate` | 5 | 4 | phantom env + missing timeout (i64) + break_on_sigint | FIXED |
+| `module_wrap_evaluate_sync` | 5 | 4 | phantom env + missing filename + parent_filename | FIXED |
+| `module_wrap_get_namespace` | 3 | 4 | phantom env | FIXED |
+| `module_wrap_get_status` | 3 | 4 | phantom env | FIXED |
+| `module_wrap_get_error` | 3 | 4 | phantom env | FIXED |
+| `module_wrap_has_top_level_await` | 3 | 4 | phantom env + u8 width | FIXED |
+| `module_wrap_has_async_graph` | 3 | 4 | phantom env + u8 width | FIXED |
+| `module_wrap_check_unsettled_top_level_await` | 4 | 4 | OK (default-value just fixed) | added missing `warnings` arg + u8 width |
+| `module_wrap_set_export` | 4 | 5 | phantom env | FIXED |
+| `module_wrap_set_module_source_object` | 3 | 4 | phantom env | FIXED |
+| `module_wrap_get_module_source_object` | 3 | 4 | phantom env | FIXED |
+| `module_wrap_set_import_module_dynamically_callback` | 2 | 3 | phantom env | FIXED |
+| `module_wrap_set_initialize_import_meta_object_callback` | 2 | 3 | phantom env | FIXED |
+| `module_wrap_import_module_dynamically` (stub) | 4 | 6 | phantom env + extra args; should return 1 | FIXED + return 1 |
+| `get_current_stack_trace` (stub) | 3 | 4 | phantom env; should return 1 | FIXED + return 1 |
+
+### Summary
+
+- Total impls audited: 79 (matching the registered wasm imports in
+  `napi/src/guest/napi.rs:5051-5145`).
+- Fully aligned before audit: 13.
+- Misaligned (phantom env or other arity drift): 65.
+- Missing impl, falling through to the namespace fallback (which returned 0):
+  1 (`contextify_dispose_context`; added).
+- Type-width fixes folded in: 9 instances of "boolean" out-pointers were
+  writing 4 bytes via `setInt32` where Rust uses `write_guest_u8` (1 byte) —
+  fixed to `setUint8`.  These are: `get_promise_details.has_result_ptr`,
+  `arraybuffer_view_has_buffer.result_ptr`, `preview_entries.is_key_value_ptr`,
+  `module_wrap_has_top_level_await.result_ptr`,
+  `module_wrap_has_async_graph.result_ptr`,
+  `module_wrap_check_unsettled_top_level_await.settled_ptr`,
+  `contextify_contains_module_syntax.result_ptr`,
+  `stop_cpu_profile.found_ptr`, `start_heap_profile.started_ptr`,
+  `stop_heap_profile.found_ptr`.
+- `get_process_memory_info` was writing zero-filled u64s into what wasm reads
+  as f64 — same bit-pattern as +0.0, so no observable difference, but the
+  declared type was wrong.  Fixed to `setFloat64`.
+- `get_heap_statistics` struct in Rust has 14 fields, not 13 (impl had one
+  field short, which would leave the last field uninitialized in caller
+  memory).  Fixed.
+
+### Verification
+
+- `cd browser-target && npx tsc --noEmit` is clean (no errors).
+- Browser run `edge -e "console.log('hello from edgejs in browser')"`
+  passes: stdout shows the message, `_start ran ... (returned)` with no
+  exit/error.  See verification log near the milestone entry below.
+
+### Not addressed
+
+- The five impls completely missing from `unofficial.ts` (and thus relying on
+  the per-namespace fallback returning 0) are NOT added by this audit, since
+  they're not wrong, just minimal: `set_embedder_hooks`, `enqueue_microtask`,
+  `set_promise_reject_callback`, `set_source_maps_enabled`,
+  `set_get_source_map_error_source_callback`, `get_error_source_line_for_stderr`,
+  `get_error_thrown_at`, `take_preserved_error_formatting`.  Promote when a
+  workload needs them.
+
+---
+
 ## 2026-05-20 — MILESTONE: edge.js runs user JS in browser
 
 ```
