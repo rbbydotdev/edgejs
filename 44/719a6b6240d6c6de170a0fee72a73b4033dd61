@@ -1,0 +1,244 @@
+browser-target/scripts/diff-traces.mjs
+  s_6dbc06526d4b2f::t_a92e782323cf7d 1-16,18-22,28-109
+  s_6dbc06526d4b2f::t_5d0bc25f298393 17,23-27
+browser-target/scripts/gen-stubs.mjs
+  s_6dbc06526d4b2f::t_56ebe755843961 1-3,12-20,25-26,28-30,32-33,36-38,48,50,69-71,73,75,77-78,80-85,89,91-92,94-101
+  s_6dbc06526d4b2f::t_13760410f652f8 4-11,21-24,27,31,34-35,49,51-68,72,74,76,79,86-88,90,93
+  s_6dbc06526d4b2f::t_9506c40702d780 39-47
+browser-target/src/host/fs/types.ts
+  s_6dbc06526d4b2f::t_965125cb6c7326 1-148
+browser-target/all-imports.txt
+  s_6dbc06526d4b2f::t_df7ce84593c96d 1-277
+browser-target/public/node/deps
+  ai_agent 1
+browser-target/src/trace.ts
+  s_6dbc06526d4b2f::t_8c96adc924edb9 13-14
+  s_6dbc06526d4b2f::t_595bcff1a88a73 36-43,51
+  s_6dbc06526d4b2f::t_59a70c0ee2ac0a 110-153,155-160
+  s_6dbc06526d4b2f::t_159762e78ff46d 154
+  s_6dbc06526d4b2f::t_fa4f156630693b 28-31,34,45
+  s_6dbc06526d4b2f::t_6071e14d3e5301 1-12,15-27,32-33,35,44,46-50,52-109
+browser-target/napi-sigs.tsv
+  s_6dbc06526d4b2f::t_280c108960ce1c 1-186
+browser-target/src/worker.ts
+  s_6dbc06526d4b2f::t_35542332a89e4f 114-115,118,122
+  s_6dbc06526d4b2f::t_0a6a8c7afd90af 264-265
+  s_6dbc06526d4b2f::t_c7125ca54d9214 116,120,126-137
+  s_6dbc06526d4b2f::t_fc6eb71db537fa 26-31,33-40,48,50-51,56,58-59,61-63,65-70,77,109,193-194,199-202,261,280-281,287,289-292,294-295,326
+  s_6dbc06526d4b2f::t_d516ddfd7b9df6 211-221
+  s_6dbc06526d4b2f::t_3c8e5628217736 152-155
+  s_6dbc06526d4b2f::t_5e5a6902cad1b1 300
+  s_6dbc06526d4b2f::t_004864ada87440 13
+  s_6dbc06526d4b2f::t_c24c067fd47934 89-94,103
+  s_6dbc06526d4b2f::t_91a446a60daba5 12
+  s_6dbc06526d4b2f::t_1c56b2efa8422c 299
+  s_6dbc06526d4b2f::t_af86102712aca9 149-151,156-157,164-166
+  s_6dbc06526d4b2f::t_0b4973c10a0ea1 229-230,250-251
+  s_6dbc06526d4b2f::t_155697ee504eac 41
+  s_6dbc06526d4b2f::t_c348832065fc6b 316,322
+  s_6dbc06526d4b2f::t_ce2485d6505286 254
+  s_6dbc06526d4b2f::t_e25e24e9d7ae08 112-113,117,119,121,123-125,138-139,145-146
+  s_6dbc06526d4b2f::t_565dbce049ee1c 302-315,317-321,323-325,327,332-333
+  s_6dbc06526d4b2f::t_5b44c798836a51 341-343
+  s_6dbc06526d4b2f::t_58e283731b4d64 8
+  s_6dbc06526d4b2f::t_e1bc1dde742ce3 73-74,80-84,104,107-108,167,196-197,203,205-206,210,222-227,252-253,255,257,260,262
+  s_6dbc06526d4b2f::t_12dbba1ccc5414 10
+  s_6dbc06526d4b2f::t_7315734d9a8d7f 296-298,301,334-337,344-345
+  s_6dbc06526d4b2f::t_bc09aeb9d0856f 52,57,172,174,198,204
+  s_6dbc06526d4b2f::t_34a9f0e394785a 17-21
+  s_6dbc06526d4b2f::t_c2d6470f50e90b 99-102
+  s_6dbc06526d4b2f::t_2b5895f71aaae3 338-340
+  s_6dbc06526d4b2f::t_f269e6186d1363 159-163
+  s_6dbc06526d4b2f::t_5650c1168ac8e6 42-47
+  s_6dbc06526d4b2f::t_444280562a3eb5 11
+  s_6dbc06526d4b2f::t_384cd11ac42211 268-279,282-286
+  s_6dbc06526d4b2f::t_35e1e65a2e2217 1-4,9,32,49,53-55,60,64,71-72,85-87,95,105-106,140-144,147-148,158,169-171,178,182-190,207-209,228,231-232,256,258-259,263,288
+  s_6dbc06526d4b2f::t_a630be39c3d70a 328-331
+  s_6dbc06526d4b2f::t_fcb116053bea1b 234-249
+  s_6dbc06526d4b2f::t_c8d7216429deee 5-7,14-16,22-25,75-76,78-79,88,96-98,110-111,168,173,175-177,179-181,191-192,195,233,266-267,293,346
+browser-target/imports.txt
+  s_6dbc06526d4b2f::t_bcf20f8d3b19cb 1-278
+browser-target/src/mem-snapshot.ts
+  s_6dbc06526d4b2f::t_4a1607b8726b15 1-2,4,11-40,55,59-61,63-95,97-103
+  s_6dbc06526d4b2f::t_e37b678f86eca2 41-54,56-58,62,96
+  s_6dbc06526d4b2f::t_a7542f988f4445 3,5-10
+browser-target/package-lock.json
+  ai_agent 1-1057
+browser-target/src/napi-host/index.ts
+  s_6dbc06526d4b2f::t_1b7175b9711776 1-74
+browser-target/index.html
+  s_6dbc06526d4b2f::t_685fd3d5484447 1-38,42-46
+  s_6dbc06526d4b2f::t_3cd874545469b9 39-41
+browser-target/public/hello.wat
+  s_6dbc06526d4b2f::t_b0dd73161f668d 1-29
+browser-target/.gitignore
+  s_6dbc06526d4b2f::t_b21e03d31f422e 1-4
+  s_6dbc06526d4b2f::t_dd57c10dc7ed61 5-7
+browser-target/package.json
+  s_6dbc06526d4b2f::t_d0a52780be66da 12-14
+  s_6dbc06526d4b2f::t_b67719baba176b 1-11,15-21
+browser-target/src/imports-types.ts
+  s_6dbc06526d4b2f::t_564ebe7d1d074b 1-2,5-12
+  s_6dbc06526d4b2f::t_00921f461c2ebf 3-4,13-20
+browser-target/imports-env.txt
+  s_6dbc06526d4b2f::t_f645a9089f5da2 1-7
+browser-target/src/diagnostics/sab-view-aliasing.ts
+  s_6dbc06526d4b2f::t_7bb9d599be2d46 1-330
+browser-target/public/node-lib
+  ai_agent 1
+patches/napi/0002-cargo-lock.patch
+  s_6dbc06526d4b2f::t_1d1b7b0d1e3fca 1-127
+browser-target/tsconfig.json
+  s_6dbc06526d4b2f::t_a7096987fe297f 1-18
+browser-target/imports-napi.txt
+  s_6dbc06526d4b2f::t_f645a9089f5da2 1-186
+browser-target/public/edgejs.wasm
+  ai_agent 1
+browser-target/imports-wasix.txt
+  s_6dbc06526d4b2f::t_f645a9089f5da2 1-46
+browser-target/src/napi-host/instance-proxy.ts
+  s_6dbc06526d4b2f::t_473fd802245287 1-25,32,46-71
+  s_6dbc06526d4b2f::t_d17b91d002b9e5 38-45
+  s_6dbc06526d4b2f::t_a7f55b493df627 26-31,33-37
+patches/napi/0001-edgejs-local-mods.patch
+  s_6dbc06526d4b2f::t_1d1b7b0d1e3fca 1-495
+browser-target/imports-other.txt
+  s_6dbc06526d4b2f::t_f645a9089f5da2 1
+browser-target/src/diagnostics/byteLength-watcher.ts
+  s_6dbc06526d4b2f::t_bc84ef954e6fe2 1-97
+browser-target/imports-wasi.txt
+  s_6dbc06526d4b2f::t_f645a9089f5da2 1-37
+browser-target/src/wasi-shim.ts
+  s_6dbc06526d4b2f::t_60043d8b9fae6a 286,294-295,319,351,356-358,361-364,366,373-374
+  s_6dbc06526d4b2f::t_c0936a19efc845 10-21
+  s_6dbc06526d4b2f::t_a970395b71d1a4 333-344
+  s_6dbc06526d4b2f::t_34b9c5626bae0f 658,660-661,663
+  s_6dbc06526d4b2f::t_751cd9f3e175a4 124-128
+  s_6dbc06526d4b2f::t_175c3785e9363b 520-524
+  s_6dbc06526d4b2f::t_77bf2970a1e463 567-573
+  s_6dbc06526d4b2f::t_00cb5292dc3295 30-38,42
+  s_6dbc06526d4b2f::t_4f68c6ffd2ca73 80-85,87
+  s_6dbc06526d4b2f::t_e0257da8a711d0 623-642
+  s_6dbc06526d4b2f::t_2ff8171999fc8d 584-589
+  s_6dbc06526d4b2f::t_612db2724e10c3 152
+  s_6dbc06526d4b2f::t_0ee9947d05c926 617-622
+  s_6dbc06526d4b2f::t_297d354b6756c8 145-147,155-157,160,162,167-172,175
+  s_6dbc06526d4b2f::t_12c56198d23677 525-527
+  s_6dbc06526d4b2f::t_d6a2806bce75f0 643-657,659,662,664-665
+  s_6dbc06526d4b2f::t_714eb6031aacba 281,290
+  s_6dbc06526d4b2f::t_512a8d4cb6a9ef 132-136
+  s_6dbc06526d4b2f::t_a4dded213c4ae2 137-143
+  s_6dbc06526d4b2f::t_438b809c2f50e1 144
+  s_6dbc06526d4b2f::t_73a1507830495c 148-151,153-154
+  s_6dbc06526d4b2f::t_a62dd51f8690da 275-276,278-280,282-285,288-289,291-293
+  s_6dbc06526d4b2f::t_e2db9b67086ca6 29,45-54,60
+  s_6dbc06526d4b2f::t_00d3725c3fde68 176-233
+  s_6dbc06526d4b2f::t_f7d804cfcef352 382,384,400-402
+  s_6dbc06526d4b2f::t_f82ae30eb714a3 57-59,66-67
+  s_6dbc06526d4b2f::t_ed94f42083bb3f 438,450,463,476
+  s_6dbc06526d4b2f::t_717521c1acedf2 296-298,300-307
+  s_6dbc06526d4b2f::t_a11874e2510180 1-9,22-28,61-65,68-79,86,88,96-123,129-131,234-263,272-274,429-437,439-449,451-462,464-475,477-494,496-500,513-519,528-538,549-550,565-566,574-579,590-594,680-693,695
+  s_6dbc06526d4b2f::t_9147bfbbbe3a2d 264,271,277,287
+  s_6dbc06526d4b2f::t_47fa71070507a6 158-159,161,163-166,173-174
+  s_6dbc06526d4b2f::t_489eb01ca49982 265-270
+  s_6dbc06526d4b2f::t_3afb7795e3d9bc 312,320-332,345-350,352,359-360,365,368,371
+  s_6dbc06526d4b2f::t_966264b7de7f98 375-381,383,385-399
+  s_6dbc06526d4b2f::t_e6e426d0f8c322 353-355,367,369-370,372
+  s_6dbc06526d4b2f::t_dbc5d00a811e0b 39-41,43-44
+  s_6dbc06526d4b2f::t_e54833b87c3512 495
+  s_6dbc06526d4b2f::t_d94ed4a4eda538 501-512
+  s_6dbc06526d4b2f::t_0f8e439a2f180c 552-557
+  s_6dbc06526d4b2f::t_67d5196b068090 607-608,612-613
+  s_6dbc06526d4b2f::t_dca46c072a66ca 694
+  s_6dbc06526d4b2f::t_9afcbf3f4f6330 55-56
+  s_6dbc06526d4b2f::t_5f3de270a99385 299,308-311,313-318
+  s_6dbc06526d4b2f::t_f7384700902c29 409-428
+  s_6dbc06526d4b2f::t_db4d04451717f4 544-548
+  s_6dbc06526d4b2f::t_00f8701db0c1b7 89-95
+  s_6dbc06526d4b2f::t_56336dd0b63ac4 539-543
+  s_6dbc06526d4b2f::t_71f169473616cb 558-561
+  s_6dbc06526d4b2f::t_b1e0b1dfff4a9a 551,562-564
+  s_6dbc06526d4b2f::t_cbc5b12772b053 580-583
+  s_6dbc06526d4b2f::t_202ebb9dd74a68 403-408
+  s_6dbc06526d4b2f::t_2f24c309f8b475 595,597-601,678-679
+  s_6dbc06526d4b2f::t_8c114dd850d89b 596,602-604,666-677
+  s_6dbc06526d4b2f::t_d6fc6353122cdc 605-606,609-611,614-616
+browser-target/src/napi-host/unofficial.ts
+  s_6dbc06526d4b2f::t_3a9c349e2ab308 114,116,119,121-123
+  s_6dbc06526d4b2f::t_9c9289b0f600c8 783
+  s_6dbc06526d4b2f::t_a4271b7122f9aa 474
+  s_6dbc06526d4b2f::t_87890393c002d0 202-204,213-214,223-225,230-232,245-247,259-262
+  s_6dbc06526d4b2f::t_8f39027dd0fd37 1-13,21-38,45-77,79-80,84-96,782,784
+  s_6dbc06526d4b2f::t_8c5f8c0007033e 492
+  s_6dbc06526d4b2f::t_6621ed1395c1e1 132-164,174-175,180-195
+  s_6dbc06526d4b2f::t_b6a1d223dfdc10 165-173,176-179
+  s_6dbc06526d4b2f::t_075dba43592c46 509
+  s_6dbc06526d4b2f::t_a3f0d305a922ad 581
+  s_6dbc06526d4b2f::t_176b4ceb4c9eef 39-44
+  s_6dbc06526d4b2f::t_6c5c3e79ded6af 81-83
+  s_6dbc06526d4b2f::t_1947e8b9ce5a6a 196-201,205-212,215-222,226-229,233-244,248-258,263-275
+  s_6dbc06526d4b2f::t_e7bbbb215b314f 14-20
+  s_6dbc06526d4b2f::t_31844a66538ccb 78
+  s_6dbc06526d4b2f::t_0351e75f8561b8 124
+  s_6dbc06526d4b2f::t_c1e7be639e3b2c 562-580,582
+  s_6dbc06526d4b2f::t_f9808df5c0d491 97-113,115,117-118,120,125-131
+browser-target/vite.config.ts
+  s_6dbc06526d4b2f::t_fef3ba86009a3b 1-20
+browser-target/src/main.ts
+  s_6dbc06526d4b2f::t_a36761a5f1edd9 38,40,45-46,55,59-61,65-67
+  s_6dbc06526d4b2f::t_9f276d73f5eef3 47-48
+  s_6dbc06526d4b2f::t_3bc22f1980d518 3,5-7,13-20,22-25
+  s_6dbc06526d4b2f::t_812ae87f378a5d 1-2,4,8-12,21,26-37,39,44,49-54,68,79
+  s_6dbc06526d4b2f::t_58e72eec593137 111
+  s_6dbc06526d4b2f::t_31051561226c0f 69-75,78,80-81,85
+  s_6dbc06526d4b2f::t_55edfcdadeeec9 86-110
+  s_6dbc06526d4b2f::t_eb168285ff8fad 76,82-84
+  s_6dbc06526d4b2f::t_0bdf3c7b370ffe 41-43
+  s_6dbc06526d4b2f::t_81f003945e961d 56-58,62-64
+  s_6dbc06526d4b2f::t_571aed5ad8e3ec 77
+browser-target/public/sw.js
+  s_6dbc06526d4b2f::t_b26048d696947b 25
+  s_6dbc06526d4b2f::t_c5668f85aa3e7f 83-85
+  s_6dbc06526d4b2f::t_2aa9408c2ce639 1-24,26-82,86-90
+browser-target/src/host/fs/adapters/bundled.ts
+  s_6dbc06526d4b2f::t_902c555b9803fd 1-261
+browser-target/src/imports-generated.ts
+  s_6dbc06526d4b2f::t_d0400e2f918c02 1-334
+scripts/setup-napi-patches.sh
+  s_6dbc06526d4b2f::t_961d7beca9304c 1-39
+NOTES.md
+  s_6dbc06526d4b2f::t_aac321b6275660 962-1003
+  s_6dbc06526d4b2f::t_37261a6ed72760 819-836
+  s_6dbc06526d4b2f::t_451538e481059f 693-745
+  s_6dbc06526d4b2f::t_04df7a26000fe3 746-751,776-818,837-842,960-961
+  s_6dbc06526d4b2f::t_0c3c4d6e94e742 642-692
+  s_6dbc06526d4b2f::t_6ee3207b29c0c4 752-775
+  s_6dbc06526d4b2f::t_3f53d8132839dd 179-328
+  s_6dbc06526d4b2f::t_60a5bae277b0f0 517-597
+  s_6dbc06526d4b2f::t_8209c9a566e2ab 421-454
+  s_6dbc06526d4b2f::t_8b32b0af1f13e7 482-516
+  s_6dbc06526d4b2f::t_aed379b74ba868 843-849,863-959
+  s_6dbc06526d4b2f::t_bc7be9142f3ce9 634-639
+  s_6dbc06526d4b2f::t_3d2046686eb612 329-420
+  s_6dbc06526d4b2f::t_5ab807ea60fdf0 850-862
+  s_6dbc06526d4b2f::t_7e041165ecf2a1 598-633,640-641
+  s_6dbc06526d4b2f::t_ce8bcf385886c1 1-7,1004-1132
+  s_6dbc06526d4b2f::t_c4e3f1cfb59cd8 57-178
+  s_6dbc06526d4b2f::t_9addaa6edcfd16 8-56
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.11",
+  "base_commit_sha": "44719a6b6240d6c6de170a0fee72a73b4033dd61",
+  "prompts": {},
+  "sessions": {
+    "s_6dbc06526d4b2f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "bd2337df-57ab-4537-b6f8-2eb7dc1f8e59",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
