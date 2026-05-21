@@ -1,0 +1,26 @@
+NOTES.md
+  s_6dbc06526d4b2f::t_e7e9291b840e61 165,167-171,173,175-182,184
+  s_6dbc06526d4b2f::t_08301d46b69667 217-218
+  s_6dbc06526d4b2f::t_6c260689deb7c6 54-55
+browser-target/src/overrides/https-as-http.ts
+  s_6dbc06526d4b2f::t_7359082089f312 1-73
+browser-target/src/worker.ts
+  s_6dbc06526d4b2f::t_5b15c0f170a336 88-95
+  s_6dbc06526d4b2f::t_9c2152eb35b3e6 10
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.11",
+  "base_commit_sha": "5e09a3466643a06aeff1f958c9e978c4a06c6470",
+  "prompts": {},
+  "sessions": {
+    "s_6dbc06526d4b2f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "bd2337df-57ab-4537-b6f8-2eb7dc1f8e59",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
