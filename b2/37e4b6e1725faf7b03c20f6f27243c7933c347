@@ -1,0 +1,43 @@
+browser-target/src/policies/inbound-https-via-sw.ts
+  s_6dbc06526d4b2f::t_db12c2b10bf41c 1-18
+browser-target/src/policies/outbound-throw.ts
+  s_6dbc06526d4b2f::t_5dec387303d295 1-45
+browser-target/src/policies/index.ts
+  s_6dbc06526d4b2f::t_465f311d72a433 1-99
+browser-target/scripts/node-harness.mjs
+  s_6dbc06526d4b2f::t_61038609bdd37d 59-85
+  s_6dbc06526d4b2f::t_b6aed69eb6cf3d 176-178
+tests/js/policy-outbound-throw.harness-args
+  s_6dbc06526d4b2f::t_16163d02c80f19 1
+NOTES.md
+  s_6dbc06526d4b2f::t_85bdd594d46f1f 222-227
+  s_6dbc06526d4b2f::t_313ce4dd6f8159 64-72
+  s_6dbc06526d4b2f::t_e282e600a3ad76 170,172-176,178-185,187-188
+  s_6dbc06526d4b2f::t_4eab2797db7fc9 54-56
+tests/js/policy-outbound-throw.js
+  s_6dbc06526d4b2f::t_75720250375457 1-31
+browser-target/src/policies/buffer-pool-disable.ts
+  s_6dbc06526d4b2f::t_e1c5afc790725e 1-27
+tests/js/policy-outbound-throw.stdout
+  s_6dbc06526d4b2f::t_9a06d294d15d6f 1
+browser-target/src/worker.ts
+  s_6dbc06526d4b2f::t_045214c7831cb8 122-127
+  s_6dbc06526d4b2f::t_ae30049cf7da4f 10
+  s_6dbc06526d4b2f::t_2feb0a5c12cf8d 89-96
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.11",
+  "base_commit_sha": "b237e4b6e1725faf7b03c20f6f27243c7933c347",
+  "prompts": {},
+  "sessions": {
+    "s_6dbc06526d4b2f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "bd2337df-57ab-4537-b6f8-2eb7dc1f8e59",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
