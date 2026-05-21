@@ -1,0 +1,21 @@
+browser-target/src/policies/index.ts
+  s_6dbc06526d4b2f::t_c5306197fa98fa 81-112,115-116,119,130-142
+browser-target/scripts/node-harness.mjs
+  s_6dbc06526d4b2f::t_6aaaeaa79ea7f3 62-66,68-74
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.11",
+  "base_commit_sha": "0f103b74fad893c7fc0b7f672d30302fafec5b4d",
+  "prompts": {},
+  "sessions": {
+    "s_6dbc06526d4b2f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "bd2337df-57ab-4537-b6f8-2eb7dc1f8e59",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
