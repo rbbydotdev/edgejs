@@ -1,0 +1,36 @@
+browser-target/package.json
+  s_6dbc06526d4b2f::t_58eea4c04120a0 19
+browser-target/package-lock.json
+  ai_agent 18,340-356,374-390,408-424,1093-1543
+browser-target/src/napi-host/index.ts
+  s_6dbc06526d4b2f::t_72e021ff815c66 228-234,252-261
+  s_6dbc06526d4b2f::t_7ed5b0f04a0af0 188
+  s_6dbc06526d4b2f::t_b0a542e6caa0b9 115-116,118-146,148-169,171-187,189,191,193-197,199-200
+  s_6dbc06526d4b2f::t_fcf1ceaa06452d 198
+browser-target/scripts/node-harness.mjs
+  s_6dbc06526d4b2f::t_105b4f0aa167b7 150-151
+  s_6dbc06526d4b2f::t_532512a24fbbcf 16,22-28,30-31
+  s_6dbc06526d4b2f::t_7118b1545c77f7 1-9,12-15,17-19,32-44,46-131,133-135,137,139-149,152-175,177,179,181,183,185-188,190,192-194
+  s_6dbc06526d4b2f::t_d033637f3d236c 184
+  s_6dbc06526d4b2f::t_e9bdc482486c2b 10-11,45,136,138,176,178,180,182,189,195
+  s_6dbc06526d4b2f::t_d8ee85f84cf155 20-21,29
+  s_6dbc06526d4b2f::t_4a754b01cbec96 132,191
+NOTES.md
+  s_6dbc06526d4b2f::t_606e051852a618 8-40
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.11",
+  "base_commit_sha": "2b385dddda2f010695635dcf6501016865c84ee6",
+  "prompts": {},
+  "sessions": {
+    "s_6dbc06526d4b2f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "bd2337df-57ab-4537-b6f8-2eb7dc1f8e59",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
