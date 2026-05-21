@@ -1,0 +1,19 @@
+RABBIT_HOLE.md
+  s_6dbc06526d4b2f::t_a2b0bcb7f89d85 1-624
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.11",
+  "base_commit_sha": "5e64ef2051e71f79c961d526d22a13567e635273",
+  "prompts": {},
+  "sessions": {
+    "s_6dbc06526d4b2f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "bd2337df-57ab-4537-b6f8-2eb7dc1f8e59",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
