@@ -1,0 +1,24 @@
+browser-target/scripts/node-harness.mjs
+  s_6dbc06526d4b2f::t_cbb4be60075ec2 71-72
+  s_6dbc06526d4b2f::t_412f34212094c8 160-183
+browser-target/src/host/fs/adapters/overrides.ts
+  s_6dbc06526d4b2f::t_02a8e05d7315a8 1-131
+NOTES.md
+  s_6dbc06526d4b2f::t_ebb5d865f509a5 8-74
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.11",
+  "base_commit_sha": "e3ad115313d57362c1a75e48b555ea803c939a86",
+  "prompts": {},
+  "sessions": {
+    "s_6dbc06526d4b2f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "bd2337df-57ab-4537-b6f8-2eb7dc1f8e59",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
