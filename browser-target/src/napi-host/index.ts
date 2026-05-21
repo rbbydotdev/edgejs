@@ -147,6 +147,25 @@ function patchEmnapiToUseWasmBackedBuffers(
   const napiNs = napiModule.imports.napi as Record<string, Function>;
   const origCreateBuffer = napiNs.napi_create_buffer;
   const origCreateBufferCopy = napiNs.napi_create_buffer_copy;
+  const origCreateArrayBuffer = napiNs.napi_create_arraybuffer;
+  const origCreateExternalArrayBuffer = napiNs.napi_create_external_arraybuffer;
+  const origGetArrayBufferInfo = napiNs.napi_get_arraybuffer_info;
+  const origGetTypedArrayInfo = napiNs.napi_get_typedarray_info;
+  const origGetBufferInfo = napiNs.napi_get_buffer_info;
+
+  // emnapi exposes its memory-sync primitive via napiModule.emnapi.syncMemory.
+  // Call signature: (js_to_wasm: boolean, view: TypedArray|ArrayBuffer, offset, len) → value.
+  // js_to_wasm=false copies wasm → JS, which is the direction we need for
+  // edge.js's wasm-source-of-truth Buffer model.
+  const emnapiNs = (napiModule as unknown as { emnapi: { syncMemory?: (js_to_wasm: boolean, view: unknown, offset: number, len: number) => unknown } }).emnapi;
+  function syncWasmToJs(handleId: number): void {
+    if (!emnapiNs?.syncMemory) return;
+    const value = context.handleStore.get(handleId)?.value;
+    if (!value || typeof (value as { byteLength?: number }).byteLength !== "number") return;
+    try {
+      emnapiNs.syncMemory(false, value, 0, (value as { byteLength: number }).byteLength);
+    } catch { /* sync errors are non-fatal */ }
+  }
 
   function allocWasmBuffer(byteLength: number): { ptr: number; view: Uint8Array } | null {
     const malloc = getMalloc();
@@ -173,6 +192,60 @@ function patchEmnapiToUseWasmBackedBuffers(
       if (result > 0) dv.setUint32(result, handle.id, true);
       void env;
       return 0; // napi_ok
+    };
+  }
+
+
+  // Override napi_create_arraybuffer to allocate wasm memory and route
+  // through emnapi's EXTERNAL arraybuffer path.  External arraybuffers get
+  // cached with `runtimeAllocated: 0`, which means emnapi will NOT do its
+  // JS→wasm sync inside getArrayBufferPointer — preserving any wasm-side
+  // writes edge.js's C++ makes after the buffer is created.
+  //
+  // Without this fix, emnapi clobbers edge's wasm writes with JS-side zeros
+  // every time napi_get_*_info is called (which happens for every C++
+  // Buffer accessor like hexSlice, utf8Slice, etc.).
+  if (typeof origCreateArrayBuffer === "function" && typeof origCreateExternalArrayBuffer === "function") {
+    napiNs.napi_create_arraybuffer = (env: number, byte_length: number, data_out: number, result: number) => {
+      const malloc = getMalloc();
+      if (!malloc) return origCreateArrayBuffer(env, byte_length, data_out, result);
+      const ptr = malloc(byte_length);
+      if (!ptr) return origCreateArrayBuffer(env, byte_length, data_out, result);
+      // Route through napi_create_external_arraybuffer.  emnapi:
+      //   1. creates a fresh JS ArrayBuffer of byte_length
+      //   2. copies wasm[ptr..ptr+byte_length] into it (snapshot — zeros for fresh malloc)
+      //   3. caches with {address: ptr, runtimeAllocated: 0}
+      //   4. writes handle to *result
+      const status = origCreateExternalArrayBuffer(env, ptr, byte_length, 0, 0, result);
+      if (status === 0 && data_out > 0) {
+        new DataView(memory.buffer).setUint32(data_out, ptr, true);
+      }
+      return status;
+    };
+  }
+
+  // Override get_*_info to sync wasm → JS before delegating.  When edge's
+  // C++ Buffer methods (hexSlice etc.) call napi_get_buffer_info, they want
+  // the wasm address back.  emnapi's default getViewPointer/getArrayBufferPointer
+  // does JS → wasm.  With external arraybuffers we skip that sync, but we
+  // also need JS-side reads (user's `buf[i]`) to see edge's wasm writes —
+  // so we sync wasm → JS at every read boundary.
+  if (typeof origGetArrayBufferInfo === "function") {
+    napiNs.napi_get_arraybuffer_info = (env: number, ab: number, data: number, byte_length: number) => {
+      syncWasmToJs(ab);
+      return origGetArrayBufferInfo(env, ab, data, byte_length);
+    };
+  }
+  if (typeof origGetTypedArrayInfo === "function") {
+    napiNs.napi_get_typedarray_info = (env: number, ta: number, type: number, length: number, data: number, ab: number, off: number) => {
+      syncWasmToJs(ta);
+      return origGetTypedArrayInfo(env, ta, type, length, data, ab, off);
+    };
+  }
+  if (typeof origGetBufferInfo === "function") {
+    napiNs.napi_get_buffer_info = (env: number, buf: number, data: number, length: number) => {
+      syncWasmToJs(buf);
+      return origGetBufferInfo(env, buf, data, length);
     };
   }
 

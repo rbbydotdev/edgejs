@@ -5,6 +5,126 @@ out the browser target. Newest entries first.
 
 ---
 
+## 2026-05-21 — Crypto.randomBytes works via emnapi external-arraybuffer path
+
+After researching emnapi's API surface, found `emnapi_sync_memory(env, js_to_wasm, view, offset, len)`
+exposed via `napiModule.emnapi.syncMemory(boolean, value, offset, len)`.  Combined
+with `napi_create_external_arraybuffer` (which sets `runtimeAllocated: 0` in
+the cache and avoids emnapi's JS→wasm sync), we can give edge.js a Buffer
+storage strategy that doesn't clobber wasm-side writes.
+
+Applied four overrides in [browser-target/src/napi-host/index.ts](browser-target/src/napi-host/index.ts):
+
+1. `napi_create_arraybuffer` → routes to `napi_create_external_arraybuffer`
+   internally with a wasm `malloc`'d pointer.  Edge's pool ArrayBuffers are
+   now wasm-source-of-truth — emnapi never clobbers them with JS→wasm sync.
+2. `napi_create_buffer` / `napi_create_buffer_copy` → wasm-backed Buffer
+   via `Buffer.from(wasmMemory.buffer, ptr, len)`.  `view.buffer ===
+   wasmMemory.buffer`, so `getViewPointer` returns `view.byteOffset` directly.
+3. `napi_get_arraybuffer_info`, `napi_get_typedarray_info`,
+   `napi_get_buffer_info` → call `emnapi.syncMemory(false, value, 0, len)`
+   to wasm→JS sync BEFORE delegating, so JS-side reads see wasm-side writes.
+
+### What works
+
+```
+$ harness -e "console.log(require('crypto').randomBytes(8).toString('hex'))"
+add1f3f2d6149022    ← real random bytes
+```
+
+OpenSSL's entropy now reaches the user's Buffer.  This is the first
+real Path-A crypto correctness win.
+
+### What's still broken
+
+```
+$ harness -e "console.log(require('crypto').createHash('sha256').update('hello').digest('hex'))"
+0a636f6e7374207b…   ← garbage (Node source bytes from heap)
+
+$ harness -e "console.log(require('crypto').randomUUID())"
+00000000-0000-4000-8000-000000000000   ← all-zero random bits
+```
+
+Diagnosis: digest and randomUUID go through edge.js's `Buffer.allocUnsafe`
+**pool path** where the JS-side ArrayBuffer is written via
+`pool.subarray(N).set(napiBuf)` — a pure JS write that doesn't propagate
+to the wasm mirror.  Our wasm→JS sync hook clobbers those JS-side writes
+with stale wasm bytes (the mirror was never written by edge's C++).
+
+The truly correct fix requires either:
+- Modifying edge.js's `lib/buffer.js` to skip the pool-copy when source is
+  wasm-backed (but that's edge's code, not ours)
+- Bidirectional sync with write-tracking in emnapi
+- A wasm allocator that gives edge JS-backed buffers whose `.set()` ALSO
+  writes wasm
+
+For now, randomBytes is a real fix.  Digest correctness needs a focused
+chunk that goes deeper — likely patching emnapi via patch-package.
+
+HTTP regression check: still works (verified browser fetch returns
+"hi from edge\n").
+
+---
+
+## 2026-05-21 — Buffer-model fix: architectural wall hit, options identified
+
+Tried four override approaches to make edge's wasm-source-of-truth Buffer
+pool play with emnapi's JS-with-mirror model.  All hit a fundamental JS
+limit: `napi_create_arraybuffer` must return a value that satisfies
+`value instanceof ArrayBuffer`, and JS doesn't let an ArrayBuffer be a
+"slice" of another — only views can.
+
+What's currently working:
+- `patchEmnapiToUseWasmBackedBuffers` — overrides `napi_create_buffer` and
+  `napi_create_buffer_copy` to wasm-allocate via the exported malloc.
+  Buffers from these two paths ARE correct byte-for-byte in BOTH JS and
+  wasm reads (verified with the Node harness — `Buffer.from(wasmMemory.buffer, ptr, len)`
+  returns a view with `view.buffer === wasmMemory.buffer`, so emnapi's
+  `getViewPointer` returns `view.byteOffset` and no sync ever runs).
+
+What's not working:
+- Edge's `Buffer.allocUnsafe` pool uses `napi_create_arraybuffer` →
+  `napi_create_typedarray` chain.  The pool ArrayBuffer is JS-side, mirror
+  is wasm-side, edge writes to wasm, JS-side stays stale (or worse, gets
+  clobbered by emnapi's JS→wasm sync).  This is the path crypto digest
+  and randomBytes both go through, hence the wrong output.
+- Tried overriding `napi_create_arraybuffer` to return a Uint8Array view
+  stamped as the handle — emnapi's `isArrayBuffer()` check fails
+  (`value instanceof ArrayBuffer` is false for Uint8Array), so the
+  bootstrap chain ahead (`napi_create_typedarray`) returns
+  `napi_generic_failure` and edge aborts.  Reverted.
+
+Routes available to actually fix:
+
+1. **Patch @emnapi/core**.  Modify `getArrayBufferPointer` to do wasm→JS
+   sync (or bidirectional with write-tracking) instead of JS→wasm.  Use
+   `patch-package` or vendor a fork.  Modifies a 3rd-party lib — user
+   approved this earlier as long as it stays behind a single adapter.
+2. **Replace emnapi's Buffer/ArrayBuffer constructors entirely**.  Hook
+   into `emnapiCtx.feature.Buffer` (settable after createContext) AND
+   override the four arraybuffer napi entries (`napi_create_arraybuffer`,
+   `napi_get_arraybuffer_info`, `napi_create_typedarray`,
+   `napi_get_typedarray_info`).  Coordinated, but ~500 LOC.
+3. **Write our own minimal napi runtime** that's wasm-backed end-to-end.
+   The most architecturally clean answer.  Significant scope (1000+ LOC).
+
+For now: crypto.digest hash bytes are CORRECT at byte indexing
+(`d[0], d[1], ...` work), but `.toString('hex')` reads via the broken
+pool path.  Any code that does its own hex/utf8 conversion via JS
+indexing works; edge's bundled `Buffer.toString` / `Buffer.slice` etc.
+do not.
+
+Also confirmed: randomBytes goes through `napi_create_arraybuffer +
+napi_create_typedarray` (NOT `napi_create_buffer`), so our existing
+override doesn't catch it.  Both bugs share the same root cause.
+
+Tracked for focused chunk.  Recommended path: Route 1 (patch emnapi
+via patch-package, modify just `getArrayBufferPointer`'s sync direction).
+~50 LOC patch + adapter wrapper.  We have the Node harness now so we
+can verify each change in ~3s.
+
+---
+
 ## 2026-05-21 — Node-side harness for fast napi/wasi iteration
 
 `browser-target/scripts/node-harness.mjs` runs `edgejs.wasm` in Node directly,
