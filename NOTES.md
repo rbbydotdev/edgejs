@@ -5,6 +5,73 @@ out the browser target. Newest entries first.
 
 ---
 
+## 2026-05-21 — ModuleOverrides FileSystem adapter (foundation, with caveat)
+
+Implemented the consumer-pluggable "swap any Node built-in" architecture
+discussed earlier (see [feedback-full-node-compat-first.md](../.claude/projects/-Users-robertpolana-etc-projects-edgejs/memory/feedback-full-node-compat-first.md)
+context).
+
+### New file
+
+[browser-target/src/host/fs/adapters/overrides.ts](browser-target/src/host/fs/adapters/overrides.ts)
+— a FileSystem adapter that serves only the paths in a `ModuleOverrides`
+map.  Layers above any real FS via `layered()`.  Per-call cost: a Map
+lookup per `open`.
+
+API:
+```ts
+type ModuleOverride = string | null | undefined;
+type ModuleOverrides = { [pathOrSpecifier: string]: ModuleOverride };
+
+const overridesFs = createOverridesFs({
+  "crypto": "<CJS source>",   // swap with custom impl
+  "inspector": null,          // empty stub (module.exports = {})
+  "fs": undefined,            // fall through to default
+});
+// Wire as the top layer:
+const fs = layered(overridesFs, bundledFs);
+```
+
+Bare specifiers map deterministically to `/node-lib/<name>.js`; absolute
+paths are passed through as-is.  Both forms work as keys.
+
+### Harness wiring
+
+[browser-target/scripts/node-harness.mjs](browser-target/scripts/node-harness.mjs)
+accepts `--override <specifier>:<value>`:
+- `--override foo:null` → empty stub
+- `--override foo:./poly.js` → source loaded from local file
+- `--override foo:"module.exports=42"` → inline source
+
+### CAVEAT — limited reach in current edge.js build
+
+Empirically: `require('inspector')` and most other node-lib modules
+**do NOT pass through WASI path_open** in the current edge.js build.
+Edge loads those from a compiled-in builtin catalog instead (see
+[wasix/WASIX_TODO.md](wasix/WASIX_TODO.md): the catalog is referenced
+but the FS mount is the documented long-term path).
+
+Concretely: `--override inspector:null` doesn't prevent edge's bundled
+`node:inspector` from loading and throwing `ERR_INSPECTOR_NOT_AVAILABLE`.
+
+The overrides adapter DOES work for paths edge actually fetches via
+`path_open2` — which we've observed for `/node/deps/undici/src/package.json`
+and similar deps-tree files.  These are the "lazy" reads from disk vs
+the "compiled in" builtin core.
+
+### Followup: true module overrides
+
+To override compiled-in builtins, we'd need to intercept at the napi
+binding layer — likely the `unofficial_napi_module_wrap_*` family or
+edge's `internalBinding` resolver.  Tracked as separate chunk.
+
+The current ModuleOverrides remains the right architectural shape for
+when edge's catalog → FS migration happens, AND for deps-tree files
+today.  Foundation laid for Path A+ (consumer-injected Web Crypto
+polyfill, etc.) once the catalog path is plumbed through.
+
+---
+
 ## 2026-05-21 — Crypto FULL surface working (digest + randomBytes + randomUUID)
 
 ```

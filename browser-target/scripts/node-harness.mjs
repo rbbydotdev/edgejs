@@ -68,6 +68,8 @@ const edgeArgs = ["edgejs", "-e", POOL_DISABLE + userScript];
 const { createWasiShim, ExitSignal } = await import(`file://${browserTarget}/src/wasi-shim.ts`);
 const { createNapiHost } = await import(`file://${browserTarget}/src/napi-host/index.ts`);
 const { Trace } = await import(`file://${browserTarget}/src/trace.ts`);
+const { createOverridesFs } = await import(`file://${browserTarget}/src/host/fs/adapters/overrides.ts`);
+const { layered } = await import(`file://${browserTarget}/src/host/fs/adapters/layered.ts`);
 
 // Node-side FileSystem adapter.  Same interface as the bundled adapter, but
 // reads from the local filesystem — paths that start with /node-lib/** map
@@ -155,7 +157,30 @@ log(`[harness] ${(wasmBytes.byteLength / 1_000_000).toFixed(1)} MB`);
 // Mirror browser worker.ts: shared memory + napi host + wasi shim composition.
 const memory = new WebAssembly.Memory({ initial: 337, maximum: 65536, shared: true });
 const napi = createNapiHost({ memory });
-const fs = createNodeFs();
+
+// ModuleOverrides demo: --override <bare-specifier>:<src-file|"null">
+// can be repeated.  Example:
+//   --override inspector:null
+//   --override crypto:./my-crypto-polyfill.js
+// Layered ABOVE the Node-fs adapter; overridden paths short-circuit
+// before the bundled file would be served.
+const overridesMap = {};
+for (let i = 0; i < args.length; i++) {
+  if (args[i] !== "--override") continue;
+  const spec = args[i + 1];
+  if (!spec) continue;
+  const colon = spec.indexOf(":");
+  if (colon < 0) continue;
+  const key = spec.slice(0, colon);
+  const value = spec.slice(colon + 1);
+  if (value === "null") overridesMap[key] = null;
+  else if (existsSync(value)) overridesMap[key] = readFileSync(value, "utf8");
+  else overridesMap[key] = value;  // treat as inline source
+}
+const haveOverrides = Object.keys(overridesMap).length > 0;
+const nodeFs = createNodeFs();
+const fs = haveOverrides ? layered(createOverridesFs(overridesMap), nodeFs) : nodeFs;
+if (haveOverrides) log(`[harness] module overrides: ${Object.keys(overridesMap).join(", ")}`);
 const shim = createWasiShim({
   memory,
   args: edgeArgs,
