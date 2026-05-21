@@ -31,6 +31,21 @@ export interface UnofficialHostContext {
   memory: WebAssembly.Memory;
   /** The Env we created during `unofficial_napi_create_env`; lookup table by env handle. */
   envs: Map<number, Env>;
+  /**
+   * Module-source overrides — keyed by edge's builtin filename format
+   * (`node:crypto`, `node:inspector`) OR bare specifier (`crypto`).  When
+   * edge's `BuiltinsCompileFunctionCallback` calls our
+   * `unofficial_napi_contextify_compile_function` with one of these
+   * filenames, we substitute the override source for edge's bundled
+   * version from its C++ builtin catalog.
+   *
+   * Values: source string OR null (empty stub `module.exports = {}`).
+   * Empty map / undefined = no overrides; fall through to edge's source.
+   */
+  builtinOverrides?: Map<string, string | null>;
+  /** Optional log sink — used for debug breadcrumbs that can't go through
+   * console.* (edge mutates console internals during bootstrap). */
+  postLog?: (line: string, level: "out" | "warn" | "err" | "debug") => void;
 }
 
 function dv(memory: WebAssembly.Memory): DataView {
@@ -161,9 +176,35 @@ export function createUnofficialNapi(ctx: UnofficialHostContext): Record<string,
       _hostDefinedOptionId: number,
       resultPtr: number,
     ): number {
-      const code = context.handleStore.get(codeHandle)?.value as string | undefined;
+      let code = context.handleStore.get(codeHandle)?.value as string | undefined;
       const filename = context.handleStore.get(filenameHandle)?.value as string | undefined;
       if (typeof code !== "string") return 1;
+
+      // Module-source override hook.  Edge's `BuiltinsCompileFunctionCallback`
+      // (src/edge_module_loader.cc:964) reads built-in source from a C++
+      // catalog baked into the wasm, then calls THIS function with
+      // `filename = "node:<id>"`.  Intercept here to substitute the source
+      // with a user-provided override before compilation.  Empty stubs
+      // (null) → `module.exports = {}`.
+      //
+      // CAVEAT: this only fires for the modules edge actually compiles
+      // through `unofficial_napi_contextify_compile_function`.  Empirically
+      // (2026-05-21) that's the ~11 bootstrap files (per_context/*,
+      // bootstrap/*, main/eval_string, [eval]-wrapper) — lazy-required
+      // builtins like `inspector`, `url`, `crypto` load through a
+      // different path we haven't yet identified, so overrides keyed on
+      // those bare names don't take effect.  Tracked as the
+      // `override-bootstrap-only` debt in NOTES.md.
+      if (ctx.builtinOverrides && typeof filename === "string") {
+        const bare = filename.startsWith("node:") ? filename.slice(5) : filename;
+        let override: string | null | undefined;
+        if (ctx.builtinOverrides.has(filename)) override = ctx.builtinOverrides.get(filename);
+        else if (ctx.builtinOverrides.has(bare)) override = ctx.builtinOverrides.get(bare);
+        if (override !== undefined) {
+          ctx.postLog?.(`[override] matched ${filename}`, "warn");
+          code = override === null ? "module.exports = {};" : override;
+        }
+      }
 
       // params: optional array of strings (the wrapper-function arg names).
       let paramNames: string[] = [];

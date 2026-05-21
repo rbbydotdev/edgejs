@@ -26,6 +26,23 @@ export interface NapiHostOptions {
   memory: WebAssembly.Memory;
   /** Optional filename for diagnostics; surfaces in stack traces from the env. */
   filename?: string;
+  /**
+   * Override the source for edge.js built-in modules (`crypto`, `inspector`,
+   * `fs`, etc.) before they're compiled.  Keys can be `node:<id>` (the
+   * full filename edge uses) or bare specifier (`<id>`).  Values: source
+   * string OR null (empty stub `module.exports = {}`) OR undefined (no
+   * override, use edge's bundled source).
+   *
+   * This intercepts edge's `BuiltinsCompileFunctionCallback` →
+   * `unofficial_napi_contextify_compile_function` path — the same hook
+   * edge uses for ALL built-ins, including compiled-in ones that don't
+   * pass through WASI.
+   */
+  builtinOverrides?: Record<string, string | null | undefined>;
+  /** Optional debug sink for host-side breadcrumbs (compile filenames,
+   * override matches).  Routed to the same channel as the worker's
+   * postLog so output is visible in both Node-harness and browser. */
+  postLog?: (line: string, level: "out" | "warn" | "err" | "debug") => void;
 }
 
 export interface NapiHost {
@@ -378,7 +395,15 @@ export function createNapiHost(opts: NapiHostOptions): NapiHost {
 
   // Layer our unofficial_napi_* impls into the napi namespace.  This is the
   // ONE place edge-specific behavior is added on top of emnapi.
-  const unofficial = createUnofficialNapi({ context, memory: opts.memory, envs });
+  // Normalize builtinOverrides into a Map for fast lookup; drop undefined entries.
+  const builtinOverridesMap = new Map<string, string | null>();
+  if (opts.builtinOverrides) {
+    for (const [key, value] of Object.entries(opts.builtinOverrides)) {
+      if (value === undefined) continue;
+      builtinOverridesMap.set(key, value);
+    }
+  }
+  const unofficial = createUnofficialNapi({ context, memory: opts.memory, envs, builtinOverrides: builtinOverridesMap, postLog: opts.postLog });
   for (const [name, fn] of Object.entries(unofficial)) {
     (napiModule.imports.napi as Record<string, Function>)[name] = fn;
   }

@@ -68,8 +68,6 @@ const edgeArgs = ["edgejs", "-e", POOL_DISABLE + userScript];
 const { createWasiShim, ExitSignal } = await import(`file://${browserTarget}/src/wasi-shim.ts`);
 const { createNapiHost } = await import(`file://${browserTarget}/src/napi-host/index.ts`);
 const { Trace } = await import(`file://${browserTarget}/src/trace.ts`);
-const { createOverridesFs } = await import(`file://${browserTarget}/src/host/fs/adapters/overrides.ts`);
-const { layered } = await import(`file://${browserTarget}/src/host/fs/adapters/layered.ts`);
 
 // Node-side FileSystem adapter.  Same interface as the bundled adapter, but
 // reads from the local filesystem — paths that start with /node-lib/** map
@@ -156,15 +154,11 @@ log(`[harness] ${(wasmBytes.byteLength / 1_000_000).toFixed(1)} MB`);
 
 // Mirror browser worker.ts: shared memory + napi host + wasi shim composition.
 const memory = new WebAssembly.Memory({ initial: 337, maximum: 65536, shared: true });
-const napi = createNapiHost({ memory });
-
-// ModuleOverrides demo: --override <bare-specifier>:<src-file|"null">
-// can be repeated.  Example:
-//   --override inspector:null
-//   --override crypto:./my-crypto-polyfill.js
-// Layered ABOVE the Node-fs adapter; overridden paths short-circuit
-// before the bundled file would be served.
-const overridesMap = {};
+// Parse --override flags BEFORE creating the napi host so we can pass them
+// as builtinOverrides — that hook catches compiled-in builtins via
+// `BuiltinsCompileFunctionCallback` in edge's C++.  The FS-layer override
+// only catches modules edge loads via WASI; this catches everything.
+const overrideEntries = {};
 for (let i = 0; i < args.length; i++) {
   if (args[i] !== "--override") continue;
   const spec = args[i + 1];
@@ -173,14 +167,26 @@ for (let i = 0; i < args.length; i++) {
   if (colon < 0) continue;
   const key = spec.slice(0, colon);
   const value = spec.slice(colon + 1);
-  if (value === "null") overridesMap[key] = null;
-  else if (existsSync(value)) overridesMap[key] = readFileSync(value, "utf8");
-  else overridesMap[key] = value;  // treat as inline source
+  if (value === "null") overrideEntries[key] = null;
+  else if (existsSync(value)) overrideEntries[key] = readFileSync(value, "utf8");
+  else overrideEntries[key] = value;
 }
-const haveOverrides = Object.keys(overridesMap).length > 0;
-const nodeFs = createNodeFs();
-const fs = haveOverrides ? layered(createOverridesFs(overridesMap), nodeFs) : nodeFs;
-if (haveOverrides) log(`[harness] module overrides: ${Object.keys(overridesMap).join(", ")}`);
+const haveOverrides = Object.keys(overrideEntries).length > 0;
+const napi = createNapiHost({
+  memory,
+  builtinOverrides: overrideEntries,
+  postLog: (line, level) => {
+    if (level === "out") writeSync(1, line + "\n");
+    else writeSync(2, line + "\n");
+  },
+});
+if (haveOverrides) log(`[harness] builtin overrides: ${Object.keys(overrideEntries).join(", ")}`);
+
+// --override flags are already parsed above into overrideEntries and passed
+// to createNapiHost (which intercepts edge's BuiltinsCompileFunctionCallback
+// → unofficial_napi_contextify_compile_function path).  The FS-layer
+// overrides combinator is left for /node/deps/** swaps (rarely needed).
+const fs = createNodeFs();
 const shim = createWasiShim({
   memory,
   args: edgeArgs,
