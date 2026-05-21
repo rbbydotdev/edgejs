@@ -27,8 +27,12 @@ import { performance as nodePerformance } from "node:perf_hooks";
 // Use direct fd writes (writeSync to fd 1/2) for output so we don't hit
 // the lazy-loaded console module after edge runs.
 const nowMs = nodePerformance.now.bind(nodePerformance);
-const log = (msg) => writeSync(1, msg + "\n");
-const errlog = (msg) => writeSync(2, msg + "\n");
+// --quiet suppresses `[harness] ...` diagnostic lines so test-runner can
+// compare clean user output.  User script's own stdout/stderr (routed via
+// wasi-shim → postLog with level "out"/"warn"/"err") still flows through.
+const QUIET = process.argv.includes("--quiet");
+const log = (msg) => { if (!QUIET) writeSync(1, msg + "\n"); };
+const errlog = (msg) => { if (!QUIET) writeSync(2, msg + "\n"); };
 
 // Match the browser globals-shim — emnapi captures globalThis.Buffer at
 // module load.  Node has Buffer globally already, but assign for parity.
@@ -177,6 +181,7 @@ const napi = createNapiHost({
   builtinOverrides: overrideEntries,
   postLog: (line, level) => {
     if (level === "out") writeSync(1, line + "\n");
+    else if (level === "debug") { if (!QUIET) writeSync(2, line + "\n"); }
     else writeSync(2, line + "\n");
   },
 });
@@ -228,14 +233,23 @@ napi.bindInstance(instance, mod);
 log(`[harness] running _start — args=${JSON.stringify(edgeArgs)}`);
 
 const t0 = nowMs();
+let exitCode = 0;
 try {
   instance.exports._start();
 } catch (e) {
   if (e instanceof ExitSignal) {
     log(`[harness] _start exit=${e.code}`);
+    exitCode = typeof e.code === "number" ? e.code : 0;
   } else {
     errlog(`[harness] _start threw: ${e.stack ?? e}`);
-    process.exit(3);
+    exitCode = 3;
   }
 }
 log(`[harness] ${(nowMs() - t0).toFixed(0)}ms, ${callCount} host calls`);
+// Force exit before Node's finalization phase — emnapi finalizers trip the
+// `dynCall before table ready` placeholders we left in unofficial.ts (the
+// `dyncall-before-table-ready` debt in NOTES).  Those throws happen during
+// RefTracker.finalizeAll on process tear-down, after the user script has
+// already completed successfully.  Skipping finalizers is safe here because
+// we're about to exit the process anyway.
+process.exit(exitCode);

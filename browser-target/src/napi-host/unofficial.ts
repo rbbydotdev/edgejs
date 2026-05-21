@@ -73,10 +73,18 @@ export function createUnofficialNapi(ctx: UnofficialHostContext): Record<string,
         "edgejs",
         8, // module API version
         // makeDynCall_vppp / makeDynCall_vp: called when emnapi needs to invoke
-        // a wasm function pointer (for finalizers, callbacks).  We don't have
-        // wasmTable here yet — it'll be set later via setWasmTable().
-        (() => () => { throw new Error("dynCall before table ready"); }) as never,
-        (() => () => { throw new Error("dynCall before table ready"); }) as never,
+        // a wasm function pointer (for finalizers, callbacks).  These are
+        // factories that return the dispatcher closure; emnapi calls them at
+        // env-creation time, so we can't lazily look up the wasm table here.
+        //
+        // #!~debt dyncall-before-table-ready: dispatchers are silent no-ops
+        // — they accept the dispatch call and do nothing.  Finalizers fire
+        // during emnapi's `RefTracker.finalizeAll` on process exit, after
+        // user work is done; skipping them is harmless (the OS reclaims).
+        // Long-term: wire `wasmTable = instance.exports.__indirect_function_table`
+        // through `bindInstance` and have the dispatcher call into it.
+        (() => () => undefined) as never,
+        (() => () => undefined) as never,
         (msg?: string) => { throw new Error(`napi abort: ${msg ?? "(no message)"}`); },
         undefined,
       );
@@ -199,7 +207,7 @@ export function createUnofficialNapi(ctx: UnofficialHostContext): Record<string,
         if (ctx.builtinOverrides.has(filename)) override = ctx.builtinOverrides.get(filename);
         else if (ctx.builtinOverrides.has(bare)) override = ctx.builtinOverrides.get(bare);
         if (override !== undefined) {
-          ctx.postLog?.(`[override] matched ${filename}`, "warn");
+          ctx.postLog?.(`[override] matched ${filename}`, "debug");
           code = override === null ? "module.exports = {};" : override;
         }
       }

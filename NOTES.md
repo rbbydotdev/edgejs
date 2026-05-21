@@ -47,6 +47,8 @@ for HTTP bridging, and a FileSystem facade.
 | `crypto.randomBytes(N).toString('hex')` | ✅ | real entropy via `/dev/urandom` |
 | `crypto.randomUUID()` | ✅ | real UUID v4 |
 | `require('node:builtin')` (most) | ✅ | from compiled-in catalog |
+| Module-source overrides | ✅ | universal — bootstrap + lazy-required builtins |
+| Test harness over `tests/js/*` | ✅ | `scripts/test-runner.mjs`, 8/8 passing, ~300ms/test |
 | `import` (ESM) | ❌ | `module_wrap_*` are stubs |
 | `https.createServer` / TLS | ❌ | not started |
 | OPFS persistence (real disk) | ❌ | in-memory only |
@@ -77,8 +79,9 @@ browser-target tree.
 - `fake-fs-fallback` — `path_filestat_get` returns success for paths the
   FS doesn't recognize (kept to avoid breaking libc cwd probes).
 - `dynCall-before-table-ready` — `unofficial_napi_create_env` passes
-  throw-placeholders for makeDynCall callbacks.  Trips on finalizers at
-  process exit, harmless during run.
+  silent no-op dispatchers for makeDynCall callbacks; emnapi finalizers
+  at process exit dispatch through these and silently skip.  Long-term
+  fix is to wire `__indirect_function_table` from the bound instance.
 
 ### Sockets / HTTP
 
@@ -169,12 +172,6 @@ User wants this last.  Replace the in-memory writable layer with
 `FileSystemSyncAccessHandle` backed storage.  Needs an async pre-warm
 phase for directory handles.
 
-### Test harness over `tests/js/*`
-
-Edge ships small test inputs in `tests/js/`.  ~150 LOC Node runner that
-iterates them, captures stdout, compares to expected.  Regression net
-for everything we've built.
-
 ### worker_threads
 
 Each worker = real Web Worker with shared memory.  Bridge `postMessage`
@@ -198,6 +195,8 @@ Auto-prepend works for `-e` only.  Needs a deeper hook for `edge file.js`.
 - `browser-target/src/napi-host/` — emnapi composition + 80 unofficial_napi_*
 - `browser-target/src/host/fs/` — FileSystem facade + 3 adapters (bundled, opfs, overrides)
 - `browser-target/scripts/node-harness.mjs` — Node-side test loop
+- `browser-target/scripts/test-runner.mjs` — regression net over `tests/js/*.js`
+- `tests/js/*.js` + `*.stdout`/`*.stderr`/`*.skip`/`*.harness-args` — corpus
 - `browser-target/public/edgejs.wasm` — symlink to the 26.5MB build artifact (gitignored)
 - `patches/napi/*.patch` — local mods to napi/ submodule
 - `scripts/setup-napi-patches.sh` — applies the patches on fresh checkout

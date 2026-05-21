@@ -440,7 +440,7 @@ export function createNapiHost(opts: NapiHostOptions): NapiHost {
           if (override !== undefined && overrideRegex.test(scriptValue)) {
             const newBody = override === null ? "module.exports = {};" : override;
             const replaced = scriptValue.replace(overrideRegex, `$1${newBody}$2`);
-            opts.postLog?.(`[override] matched ${filename} (via run_script)`, "warn");
+            opts.postLog?.(`[override] matched ${filename} (via run_script)`, "debug");
             const newHandle = context.ensureHandle(replaced);
             return origRunScript(envHandle, newHandle.id, resultPtr);
           }
