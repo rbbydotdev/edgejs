@@ -5,6 +5,96 @@ out the browser target. Newest entries first.
 
 ---
 
+## 2026-05-21 — Crypto FULL surface working (digest + randomBytes + randomUUID)
+
+```
+$ harness -e "Buffer.poolSize=0; const c=require('crypto');
+              console.log(c.createHash('sha256').update('hello').digest('hex'));
+              console.log(c.randomBytes(8).toString('hex'));
+              console.log(c.randomUUID())"
+
+2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824  ✓ real sha256
+8249180e44877c20                                                    ✓ real random
+0654d7dc-943b-440f-85e1-148f97adafd7                                ✓ real UUID v4
+```
+
+All three crypto APIs now return correct values via edge.js's bundled
+OpenSSL.  Real Node compat for the crypto surface.
+
+### What made randomUUID work
+
+`crypto.randomUUID()` uses edge's `secureBuffer(2048)` from
+`internalBinding('crypto')`.  Reading [src/internal_binding/binding_crypto.cc:8190](src/internal_binding/binding_crypto.cc):
+
+```cpp
+napi_value CryptoSecureBuffer(napi_env env, napi_callback_info info) {
+  napi_create_arraybuffer(env, size, &data, &ab);
+  std::memset(data, 0, size);                       // wasm-side zero
+  napi_create_typedarray(env, napi_uint8_array, size, ab, 0, &out);
+  return out;
+}
+```
+
+The view returned to JS was over a JS-side ArrayBuffer (emnapi's
+default), but edge's `randomFillSync` writes wasm-side via the pointer
+returned in `data`.  JS-side reads (`uuidData[i]` in `serializeUUID`)
+saw the JS snapshot — zeros.  No napi call between the write and read
+to trigger our previous wasm→JS sync hook.
+
+The architecturally correct fix: coordinated overrides for the four
+napi entries that touch ArrayBuffers, replacing emnapi's
+JS-with-mirror model with a wasm-source-of-truth model:
+
+- `napi_create_arraybuffer` → returns a `Uint8Array` view over
+  `wasmMemory.buffer` at the wasm `_malloc`'d offset.  Tracked in a
+  `wasmBackedABs: Map<handleId, {ptr, length}>` for downstream recognition.
+- `napi_create_typedarray` → if the AB arg is in our map, creates
+  `new T(wasmMemory.buffer, ptr + byteOffset, length)` directly,
+  bypassing emnapi's `isArrayBuffer()` check.  Result is wasm-backed,
+  emnapi's `getOrUpdateMemoryView` auto-registers it in
+  `wasmMemoryViewTable` on first access.
+- `napi_get_arraybuffer_info` → returns ptr+length from our map for
+  wasm-backed ABs.
+- `napi_is_arraybuffer` → returns true for our wasm-backed handles.
+
+Code: [browser-target/src/napi-host/index.ts](browser-target/src/napi-host/index.ts)
+`patchEmnapiToUseWasmBackedBuffers`.
+
+The Uint8Array view we use as the "ArrayBuffer" handle isn't a real
+ArrayBuffer instance.  emnapi internals that bypass our overrides
+might fail — none observed yet, but tracked as risk.
+
+### Buffer.poolSize = 0 still needed for sha256
+
+The pool path (`Buffer.allocUnsafe` slicing from a pre-allocated 8KB
+shared pool) is NOT yet fixed.  Without `Buffer.poolSize = 0`, edge's
+pool allocation goes through `createUnsafeBuffer(8192)` once, then
+slices `new FastBuffer(allocPool, poolOffset, size)` for each subsequent
+allocation.  `allocPool = allocBuffer.buffer = wasmMemory.buffer`
+(because our override makes the underlying ArrayBuffer be the whole
+SAB), so `poolOffset` becomes an offset INTO the entire wasm memory,
+not into the 8KB pool region.
+
+Result: pool slices land at completely wrong wasm addresses, reading
+heap garbage.
+
+`Buffer.poolSize = 0` forces every `Buffer.allocUnsafe(N)` to take the
+un-pooled path (`createUnsafeBuffer(N)`) — a fresh per-call allocation,
+which our overrides handle correctly.
+
+Real fix for the pool: override edge's `allocate()` to use a separate
+napi-created arraybuffer per slice, OR detect the pool-allocBuffer
+allocation and route it differently.  Tracked.
+
+### Workaround for users
+
+For test harnesses and direct `-e` invocations, prepend
+`Buffer.poolSize=0;` to the user code.  For production usage, this would
+need to be set by edge's bootstrap or via a napi hook before user code
+runs.
+
+---
+
 ## 2026-05-21 — Crypto digest works: poolSize=0 bypasses edge's Buffer pool
 
 `require('crypto').createHash('sha256').update('hello').digest('hex')` now

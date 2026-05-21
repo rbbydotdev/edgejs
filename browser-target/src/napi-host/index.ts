@@ -148,10 +148,19 @@ function patchEmnapiToUseWasmBackedBuffers(
   const origCreateBuffer = napiNs.napi_create_buffer;
   const origCreateBufferCopy = napiNs.napi_create_buffer_copy;
   const origCreateArrayBuffer = napiNs.napi_create_arraybuffer;
-  const origCreateExternalArrayBuffer = napiNs.napi_create_external_arraybuffer;
+  const origCreateTypedArray = napiNs.napi_create_typedarray;
   const origGetArrayBufferInfo = napiNs.napi_get_arraybuffer_info;
   const origGetTypedArrayInfo = napiNs.napi_get_typedarray_info;
   const origGetBufferInfo = napiNs.napi_get_buffer_info;
+  const origIsArrayBuffer = napiNs.napi_is_arraybuffer;
+
+  // Tracks our wasm-backed "ArrayBuffer" handles.  These are Uint8Array
+  // views (NOT real ArrayBuffer instances), but we present them to wasm
+  // callers via napi as if they were arraybuffers.  The downstream
+  // napi calls (`napi_create_typedarray`, `napi_get_arraybuffer_info`,
+  // `napi_is_arraybuffer`) check this map and bypass emnapi's
+  // `value instanceof ArrayBuffer` check for our handles.
+  const wasmBackedABs = new Map<number, { ptr: number; length: number }>();
 
   // emnapi exposes its memory-sync primitive via napiModule.emnapi.syncMemory.
   // Call signature: (js_to_wasm: boolean, view: TypedArray|ArrayBuffer, offset, len) → value.
@@ -196,33 +205,71 @@ function patchEmnapiToUseWasmBackedBuffers(
   }
 
 
-  // Override napi_create_arraybuffer to allocate wasm memory and route
-  // through emnapi's EXTERNAL arraybuffer path.  External arraybuffers get
-  // cached with `runtimeAllocated: 0`, which means emnapi will NOT do its
-  // JS→wasm sync inside getArrayBufferPointer — preserving any wasm-side
-  // writes edge.js's C++ makes after the buffer is created.
+  // Override napi_create_arraybuffer to return a wasm-backed view as the
+  // "ArrayBuffer" handle.  Coordinated with napi_create_typedarray,
+  // napi_get_arraybuffer_info, and napi_is_arraybuffer below — those
+  // check `wasmBackedABs.has(handleId)` and route around emnapi's
+  // `value instanceof ArrayBuffer` checks for our handles.
   //
-  // Without this fix, emnapi clobbers edge's wasm writes with JS-side zeros
-  // every time napi_get_*_info is called (which happens for every C++
-  // Buffer accessor like hexSlice, utf8Slice, etc.).
-  if (typeof origCreateArrayBuffer === "function" && typeof origCreateExternalArrayBuffer === "function") {
+  // Result: typed arrays created over our "ArrayBuffer" are
+  // `new T(wasmMemory.buffer, ptr + byteOffset, length)` — wasm-source-of-truth.
+  // JS-side reads (`view[i]`) and edge's C++ reads (via wasm pointer) see the
+  // same bytes immediately, no mirror, no sync.
+  if (typeof origCreateArrayBuffer === "function") {
     napiNs.napi_create_arraybuffer = (env: number, byte_length: number, data_out: number, result: number) => {
       const malloc = getMalloc();
       if (!malloc) return origCreateArrayBuffer(env, byte_length, data_out, result);
       const ptr = malloc(byte_length);
       if (!ptr) return origCreateArrayBuffer(env, byte_length, data_out, result);
-      // Route through napi_create_external_arraybuffer.  emnapi:
-      //   1. creates a fresh JS ArrayBuffer of byte_length
-      //   2. copies wasm[ptr..ptr+byte_length] into it (snapshot — zeros for fresh malloc)
-      //   3. caches with {address: ptr, runtimeAllocated: 0}
-      //   4. writes handle to *result
-      const status = origCreateExternalArrayBuffer(env, ptr, byte_length, 0, 0, result);
-      if (status === 0 && data_out > 0) {
-        new DataView(memory.buffer).setUint32(data_out, ptr, true);
-      }
-      return status;
+      // Our "ArrayBuffer" handle is actually a Uint8Array view over wasm memory.
+      // emnapi's type checks would fail, but our overrides below recognize it.
+      const view = new Uint8Array(memory.buffer, ptr, byte_length);
+      const handle = context.addToCurrentScope(view);
+      wasmBackedABs.set(handle.id, { ptr, length: byte_length });
+      const dv = new DataView(memory.buffer);
+      if (data_out > 0) dv.setUint32(data_out, ptr, true);
+      if (result > 0) dv.setUint32(result, handle.id, true);
+      void env;
+      return 0;
     };
   }
+
+  // napi_create_typedarray on our wasm-backed AB → create the typed array
+  // directly over wasm memory at (ptr + byteOffset), bypassing emnapi's
+  // `isArrayBuffer()` check.  For non-wasm-backed ABs, delegate.
+  if (typeof origCreateTypedArray === "function") {
+    napiNs.napi_create_typedarray = (
+      env: number, type: number, length: number, ab_handle: number, byte_offset: number, result: number,
+    ) => {
+      const wab = wasmBackedABs.get(ab_handle);
+      if (!wab) return origCreateTypedArray(env, type, length, ab_handle, byte_offset, result);
+      const ctors: Array<{ Ctor: new (b: ArrayBufferLike, o: number, l: number) => ArrayBufferView; size: number }> = [
+        { Ctor: Int8Array, size: 1 },              // 0
+        { Ctor: Uint8Array, size: 1 },             // 1
+        { Ctor: Uint8ClampedArray, size: 1 },      // 2
+        { Ctor: Int16Array, size: 2 },             // 3
+        { Ctor: Uint16Array, size: 2 },            // 4
+        { Ctor: Int32Array, size: 4 },             // 5
+        { Ctor: Uint32Array, size: 4 },            // 6
+        { Ctor: Float32Array, size: 4 },           // 7
+        { Ctor: Float64Array, size: 8 },           // 8
+        { Ctor: BigInt64Array as never, size: 8 }, // 9
+        { Ctor: BigUint64Array as never, size: 8 },// 10
+      ];
+      const ctorInfo = ctors[type];
+      if (!ctorInfo) return origCreateTypedArray(env, type, length, ab_handle, byte_offset, result);
+      const realOffset = wab.ptr + byte_offset;
+      const view = new ctorInfo.Ctor(memory.buffer, realOffset, length);
+      const handle = context.addToCurrentScope(view);
+      if (result > 0) new DataView(memory.buffer).setUint32(result, handle.id, true);
+      void env;
+      return 0;
+    };
+  }
+
+  // napi_get_arraybuffer_info on our wasm-backed AB → return ptr + length
+  // from our map.  emnapi's original would fail isArrayBuffer.
+  // For non-wasm-backed ABs, sync wasm→JS first then delegate.
 
   // Override get_*_info to sync wasm → JS before delegating.  When edge's
   // C++ Buffer methods (hexSlice etc.) call napi_get_buffer_info, they want
@@ -232,8 +279,26 @@ function patchEmnapiToUseWasmBackedBuffers(
   // so we sync wasm → JS at every read boundary.
   if (typeof origGetArrayBufferInfo === "function") {
     napiNs.napi_get_arraybuffer_info = (env: number, ab: number, data: number, byte_length: number) => {
+      const wab = wasmBackedABs.get(ab);
+      if (wab) {
+        const dv = new DataView(memory.buffer);
+        if (data > 0) dv.setUint32(data, wab.ptr, true);
+        if (byte_length > 0) dv.setUint32(byte_length, wab.length, true);
+        void env;
+        return 0;
+      }
       syncWasmToJs(ab);
       return origGetArrayBufferInfo(env, ab, data, byte_length);
+    };
+  }
+  if (typeof origIsArrayBuffer === "function") {
+    napiNs.napi_is_arraybuffer = (env: number, value: number, result: number) => {
+      if (wasmBackedABs.has(value)) {
+        new DataView(memory.buffer).setInt32(result, 1, true);
+        void env;
+        return 0;
+      }
+      return origIsArrayBuffer(env, value, result);
     };
   }
   if (typeof origGetTypedArrayInfo === "function") {
