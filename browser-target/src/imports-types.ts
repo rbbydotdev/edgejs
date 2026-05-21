@@ -5,6 +5,7 @@
 
 export type HostOverrides = {
   napi?: Record<string, Function>;
+  napi_extension_wasmer_v0?: Record<string, Function>;
   wasi_snapshot_preview1?: Record<string, Function>;
   wasix_32v1?: Record<string, Function>;
   env?: Record<string, Function>;

@@ -1,4 +1,5 @@
 env._Z20OSSL_set_max_threadsP15ossl_lib_ctx_sty
+env.memory
 env.uv_cpu_info
 env.uv_free_interface_addresses
 env.uv_get_free_memory

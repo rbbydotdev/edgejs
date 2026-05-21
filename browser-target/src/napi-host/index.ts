@@ -21,6 +21,7 @@ import { createContext, type Context, type Env } from "@emnapi/runtime";
 import { createNapiModule, type NapiModule } from "@emnapi/core";
 import { createInstanceProxy } from "./instance-proxy";
 import { createUnofficialNapi } from "./unofficial";
+import { buildMicrotaskOpsImports, createMicrotaskOpsState, type MicrotaskOpsState } from "./microtask-ops";
 import type { ModuleOverride } from "../policies";
 export type { ModuleOverride };
 
@@ -465,6 +466,7 @@ function installTaskQueueEnqueueShim(
   napiModule: NapiModule,
   memory: WebAssembly.Memory,
   context: Context,
+  microtaskOpsState: MicrotaskOpsState,
   postLog?: (line: string, level: "out" | "warn" | "err" | "debug") => void,
 ): void {
   const napiNs = napiModule.imports.napi as Record<string, Function>;
@@ -474,36 +476,20 @@ function installTaskQueueEnqueueShim(
     return;
   }
 
-  // Capture the host-native queueMicrotask AT NAPI-HOST SETUP — long
-  // before any edge code runs.  At this point `globalThis.queueMicrotask`
-  // is guaranteed to be the host's (worker/Node) implementation, NOT
-  // lib's wrapper (which doesn't exist yet because edge hasn't booted).
-  const hostQueueMicrotask = (globalThis as { queueMicrotask?: (fn: () => void) => void }).queueMicrotask;
-  if (typeof hostQueueMicrotask !== "function") {
-    postLog?.("[task-queue] host queueMicrotask not available — shim disabled", "warn");
-    return;
-  }
-
-  // Promise rejection routing.  Edge's lib (`internal/process/promises.js`)
-  // calls `setPromiseRejectCallback(handler)` once at boot to register a
-  // handler.  We capture that handler in this closure variable; the
-  // host-event listeners below forward unhandled-rejection events to it.
+  // Host promise-rejection event listeners forward to the shared
+  // microtaskOpsState's promiseRejectCallback (which lib registers via
+  // setPromiseRejectCallback — captured below or, post-rebuild, via the
+  // unofficial_napi_set_promise_reject_callback wasm import).
   //
-  // Lib's handler signature: `(type, promise, reason)` where type is one of:
+  // Lib's handler signature: `(type, promise, reason)` where type is:
   //   0 kPromiseRejectWithNoHandler
   //   1 kPromiseHandlerAddedAfterReject
   //   2 kPromiseRejectAfterResolved
   //   3 kPromiseResolveAfterResolved
-  // (See edge_task_queue.cc:166-174 for the enum constants.)
-  //
-  // We can map host events to types 0 and 1; types 2 and 3 fire only on
-  // double-resolve/reject within V8's promise machinery and have no host
-  // analogue.  Mostly diagnostic in real Node anyway — we accept the gap.
-  let promiseRejectCallback: ((type: number, promise: unknown, reason: unknown) => void) | null = null;
-
   function dispatchPromiseEvent(type: number, promise: unknown, reason: unknown): void {
-    if (!promiseRejectCallback) return;
-    try { promiseRejectCallback(type, promise, reason); }
+    const cb = microtaskOpsState.promiseRejectCallback;
+    if (!cb) return;
+    try { cb(type, promise, reason); }
     catch (e) { postLog?.(`[promise-reject] lib handler threw: ${(e as Error)?.message}`, "warn"); }
   }
 
@@ -568,29 +554,21 @@ function installTaskQueueEnqueueShim(
     let name = "";
     try { name = readUtf8FromWasm(utf8name, length); } catch { /* fall through to default */ }
 
-    if (name === "enqueueMicrotask") {
-      // Bypass edge's recursing C++ binding entirely.  See policy header for
-      // the recursion story.  cb (the wasm `TaskQueueEnqueueMicrotask` ptr)
-      // is intentionally dropped.
-      void env; void cb; void data;
-      postLog?.(`[task-queue] hijacked enqueueMicrotask → host-native queueMicrotask`, "debug");
-      return registerShim(function enqueueMicrotask(callback: unknown) {
-        if (typeof callback === "function") hostQueueMicrotask(callback as () => void);
-        // Non-function callbacks dropped silently.  Lib's wrapper validates
-        // before calling us, so this branch shouldn't fire in practice.
-      }, result);
-    }
-
     if (name === "setPromiseRejectCallback") {
-      // Edge's C++ binding stores the callback in state but never invokes
-      // it (V8-registered callback path is disabled under emnapi).  Our
-      // shim captures the callback into the closure variable above and
-      // lets the host-event listeners drive it.
+      // Edge's C++ binding stores the callback in state but only forwards
+      // to `unofficial_napi_set_promise_reject_callback` under
+      // `#if defined(EDGE_BUNDLED_NAPI_V8)` — disabled in imports mode.
+      // Capture the callback into the shared microtaskOpsState so the
+      // host unhandledrejection listeners (below) can fire it.
+      //
+      // Post-rebuild with the #if gate removed: this intercept becomes
+      // redundant because the C++ binding will call our wasm import,
+      // which writes to the same state.
       void env; void cb; void data;
       postLog?.(`[task-queue] hijacked setPromiseRejectCallback → host unhandledRejection events`, "debug");
       return registerShim(function setPromiseRejectCallback(callback: unknown) {
         if (typeof callback === "function") {
-          promiseRejectCallback = callback as (type: number, promise: unknown, reason: unknown) => void;
+          microtaskOpsState.promiseRejectCallback = callback as (type: number, promise: unknown, reason: unknown) => void;
         }
       }, result);
     }
@@ -632,9 +610,30 @@ export function createNapiHost(opts: NapiHostOptions): NapiHost {
   let wasmMallocImpl: ((n: number) => number) | null = null;
   patchEmnapiToUseWasmBackedBuffers(napiModule, opts.memory, context, () => wasmMallocImpl);
 
-  // Replace edge's `enqueueMicrotask` C++ binding with a host-native shim
-  // at the moment it's created.  See the function comment for the why.
-  installTaskQueueEnqueueShim(napiModule, opts.memory, context, opts.postLog);
+  // Real implementations of the four `unofficial_napi_*` microtask /
+  // promise-hook ops that edge.js's C++ calls via the
+  // `napi_extension_wasmer_v0` wasm import module.  Layered into the
+  // standard napi imports here; the harness/worker splits them out into
+  // the right import namespace at instantiation time.
+  const microtaskOpsState: MicrotaskOpsState = createMicrotaskOpsState();
+  const microtaskOps = buildMicrotaskOpsImports(context, microtaskOpsState);
+  for (const [name, fn] of Object.entries(microtaskOps)) {
+    (napiModule.imports.napi as Record<string, Function>)[name] = fn;
+  }
+
+  // L3 napi_create_function intercept for `setPromiseRejectCallback`.
+  //
+  // Edge's `TaskQueueSetPromiseRejectCallback` C++ binding stores the JS
+  // callback in C++ state, but only forwards it to
+  // `unofficial_napi_set_promise_reject_callback` under
+  // `#if defined(EDGE_BUNDLED_NAPI_V8)` — under our imports-mode build,
+  // the C++ side stores it but never invokes our wasm import.  So we
+  // capture the callback at create-function time and route host
+  // `unhandledrejection` events to it.  When edge_task_queue.cc gets
+  // the #if gate removed and is rebuilt, this intercept can be dropped
+  // and the call will flow through `unofficial_napi_set_promise_reject_callback`
+  // (in microtaskOps above) naturally.
+  installTaskQueueEnqueueShim(napiModule, opts.memory, context, microtaskOpsState, opts.postLog);
 
   // Layer our unofficial_napi_* impls into the napi namespace.  This is the
   // ONE place edge-specific behavior is added on top of emnapi.

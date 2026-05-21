@@ -212,9 +212,23 @@ const shim = createWasiShim({
   postExit: () => {},
 });
 
+// Edge's rebuilt wasm now imports the `unofficial_napi_*` symbols under
+// the `napi_extension_wasmer_v0` module (per their `__import_module__`
+// attribute), not under `napi` like the older build did.  Our napi-host
+// still registers ALL napi_* impls in `napi.imports.napi`, so split them
+// across the two namespaces here.
+const napiAll = napi.imports.napi;
+const napiStandard = {};
+const napiExtension = {};
+for (const k of Object.keys(napiAll)) {
+  if (k.startsWith("unofficial_napi_")) napiExtension[k] = napiAll[k];
+  else napiStandard[k] = napiAll[k];
+}
+
 const trace = new Trace();
 const overrides = {
-  napi: napi.imports.napi,
+  napi: napiStandard,
+  napi_extension_wasmer_v0: napiExtension,
   env: napi.imports.env,
   wasi_snapshot_preview1: shim.wasi_snapshot_preview1,
   wasix_32v1: shim.wasix_32v1,

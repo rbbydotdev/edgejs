@@ -19,6 +19,7 @@ const root = resolve(here, "..");
 
 const namespaces = [
   { ns: "napi", file: "imports-napi.txt", defaultRet: "0" },
+  { ns: "napi_extension_wasmer_v0", file: "imports-napi-ext.txt", defaultRet: "0" },
   { ns: "wasi_snapshot_preview1", file: "imports-wasi.txt", defaultRet: "52" },
   { ns: "wasix_32v1", file: "imports-wasix.txt", defaultRet: "52" },
   { ns: "env", file: "imports-env.txt", defaultRet: "0" },

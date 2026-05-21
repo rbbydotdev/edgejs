@@ -116,9 +116,17 @@ static napi_value TaskQueueSetPromiseRejectCallback(napi_env env, napi_callback_
   napi_value argv[1] = {nullptr};
   if (napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr) != napi_ok || argc < 1) return nullptr;
 
-#if defined(EDGE_BUNDLED_NAPI_V8)
+  // Always forward to unofficial_napi_set_promise_reject_callback.
+  // Under bundled-V8 this hits the V8 isolate's per-isolate reject
+  // callback.  Under EDGE_NAPI_PROVIDER=imports the call lands in the
+  // host's wasm-import impl (browser-target/src/napi-host/microtask-ops.ts),
+  // which captures the callback into shared host state so host-level
+  // unhandledrejection events can fire lib's handler.
+  //
+  // Was previously gated on `#if defined(EDGE_BUNDLED_NAPI_V8)`.  Removed
+  // for the imports-mode path; harmless under bundled-V8 (just an extra
+  // forward to the V8 impl which already happens internally).
   (void)unofficial_napi_set_promise_reject_callback(env, argv[0]);
-#endif
 
   auto& st = GetTaskQueueState(env);
   DeleteRefIfAny(env, &st.promise_reject_callback_ref);

@@ -200,6 +200,13 @@ one file with a `name`, `description`, and any of `builtinOverrides`
   polyfill of `http.request`. For deployments where outbound is needed.
 - `bufferWriteSync` — alternative to `bufferWasmAliased` using post-write
   syncs. Diagnostic / fallback. Don't use both at once.
+- `cryptoHostRandom` — first offload policy.  Routes
+  `crypto.randomBytes`, `randomFillSync`, `randomFill`, `randomUUID`
+  to the host's native WebCrypto (snapshotted onto
+  `globalThis.__edgeHostNativeCrypto` in `host/globals-shim.ts` before
+  edge's bootstrap overwrites `globalThis.crypto`).  Smaller surface,
+  faster startup, identical Node semantics.  Demonstrates the
+  swappable-offload pattern.
 
 ## Offload roadmap
 
