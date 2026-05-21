@@ -5,6 +5,91 @@ out the browser target. Newest entries first.
 
 ---
 
+## 2026-05-21 — Crypto digest correctness — deep root cause identified, fix incomplete
+
+Diagnosed why `createHash('sha256').update('hello').digest('hex')` returns
+heap-garbage bytes despite the underlying Buffer having the correct sha256
+digest at every JS-indexed offset.
+
+### What works
+
+- `require('crypto')` loads (#!~ from napi_define_class fix in earlier entry)
+- `createHash(...).update(...).digest()` returns a Buffer with the **correct
+  digest bytes** when read via `Array.from(d)` or `d[i]` (Uint8Array indexing)
+- `/dev/urandom` delivers true randomness (verified: first 8 bytes vary per run)
+
+### What's still broken
+
+- `digest.toString('hex')` reads from a different location than `d[i]`
+  — produces heap garbage that decodes to JavaScript source code fragments
+- `randomBytes(N)` returns a Buffer whose bytes are all zero, despite urandom
+  delivering entropy
+
+### Root cause (digest)
+
+The digest Buffer has `byteOffset: 8` within an 8192-byte underlying
+ArrayBuffer.  Edge's `Buffer.prototype.toString` calls `hexSlice(this, ...)`,
+which is a C++ binding imported from `internalBinding('buffer')`.  The C++
+walks the buffer via napi_get_buffer_info → napi_get_typedarray_info →
+emnapi's `getViewPointer(view, true)` → `getArrayBufferPointer(view.buffer, true)`.
+
+emnapi maintains a **wasm-memory mirror** of every JS ArrayBuffer.  The mirror
+is allocated lazily via `_malloc` and ONE-WAY-synced JS→wasm only at specific
+points (with shouldCopy=true).  For our digest path:
+
+1. emnapi's `napi_create_buffer_copy` allocates a JS ArrayBuffer (32 bytes,
+   zero), calls `Buffer.from(arrayBuffer)`, then `buffer.set(srcBytes)` writes
+   the digest INTO the JS ArrayBuffer.  ← JS now correct.
+2. emnapi's `emnapiCreateArrayBuffer` simultaneously mallocs wasm memory and
+   copies the (still-empty) ArrayBuffer to it.  ← wasm mirror still zero.
+3. Edge's lib wraps the napi Buffer into its own Buffer pool: copies bytes
+   into pool's JS ArrayBuffer at offset 8.  Returns view(pool, 8, 32).
+4. C++ hexSlice calls `napi_get_buffer_info` on that view.
+5. emnapi's getViewPointer is supposed to re-sync JS→wasm at this point
+   (`shouldCopy=true`).
+6. But the address returned is `mirror_addr + view.byteOffset = P + 8` —
+   reading past the malloc'd 32-byte region into adjacent uninitialized heap.
+
+Each run shows a different garbage byte pattern from the pool's adjacent
+heap — confirmed: bytes decode to JS source code from various Node lib
+files that emnapi previously allocated in the same wasm region.
+
+We patched `napi_create_buffer_copy` to copy `src → mirror` after emnapi's
+call (see `patchEmnapiBufferMirror` in
+[browser-target/src/napi-host/index.ts](browser-target/src/napi-host/index.ts)).
+This didn't resolve it because edge's pool path goes through a separate
+ArrayBuffer (via `napi_create_arraybuffer`), not the one we patched.
+
+### What would actually fix it
+
+Three options, in increasing scope:
+
+1. **Override Buffer.prototype.toString** to a JS-side impl that uses
+   Uint8Array indexing.  Bypasses the C++ binding for this one path.
+   ~30 LOC.  Doesn't fix every C++ Buffer reader (utf8Slice, base64Slice,
+   etc. all have the same issue).
+2. **Make emnapi's wasm-memory-mirror live-synced**: hook ArrayBuffer
+   writes via Proxy or replace `Buffer.prototype.set` to also write to
+   the wasm mirror.  Or hook getOrUpdateMemoryView to ALWAYS sync.
+   ~100 LOC; touches emnapi internals.
+3. **Replace emnapi's ArrayBuffer allocation with wasm-memory-backed
+   buffers** — every JS ArrayBuffer is a slice of wasm linear memory.
+   No mirror needed because there's no separate JS store.  Requires a
+   `Buffer.allocUnsafe`-equivalent allocator in our shim that knows how
+   to carve wasm memory.  Significant work.
+
+### Status
+
+`require('crypto')` loads, hash bytes are correct in JS, but anything
+that uses C++ buffer accessors (`toString`, `slice`, `compare`) reads
+stale wasm-mirror bytes.  Affects more than just crypto — anywhere a
+Buffer is created via emnapi and read via C++ Buffer methods.
+
+This is a structural issue in the emnapi ↔ edge interaction, not a
+crypto-specific bug.  Tracked for follow-up.
+
+---
+
 ## 2026-05-21 — Crypto: napi_define_class + Buffer polyfill unblocks load
 
 `require('crypto')` now loads cleanly.  Three calls produce structurally-valid

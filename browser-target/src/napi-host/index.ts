@@ -101,6 +101,50 @@ function patchEmnapiDefineForEmptyValue(
   }
 }
 
+// Sync the wasm-side mirror after emnapi creates a Buffer.
+//
+// emnapi's `napi_create_buffer_copy(env, length, data, result_data, result)`:
+//   1. Allocates a fresh JS ArrayBuffer of `length` bytes (all zero).
+//   2. Calls `getArrayBufferPointer(arrayBuffer, true)` which `_malloc`s
+//      `length` bytes in WASM linear memory and copies the (empty) ArrayBuffer
+//      bytes into wasm[P..P+length].  Writes the wasm address P to `*result_data`.
+//   3. Wraps the JS ArrayBuffer in a polyfill Buffer.
+//   4. `buffer.set(wasmMemory[data..data+length])` copies the SOURCE bytes
+//      into the JS Buffer — but NOT into wasm[P..P+length] (the mirror).
+//
+// Edge's Buffer methods (`hexSlice`, `utf8Slice`, etc. via `internalBinding('buffer')`)
+// are C++ in the wasm.  They read from the wasm mirror address P, not from
+// the JS ArrayBuffer.  Since emnapi never syncs the mirror back, edge's
+// `buffer.toString('hex')` reads stale/empty bytes from wasm[P], producing
+// JS-source-looking heap garbage instead of the digest.
+//
+// Fix: after emnapi's call returns, copy wasm[data..data+length] →
+// wasm[P..P+length] so the mirror matches the source.  Same fix needed for
+// `napi_create_buffer` (which takes a data out-ptr, edge writes to it after
+// the call) — for that one we just ensure the JS ArrayBuffer and the wasm
+// mirror are synced via the SAME backing store, which the existing
+// getArrayBufferPointer path already does for create_buffer.  So only
+// create_buffer_copy needs this patch.
+function patchEmnapiBufferMirror(napiModule: NapiModule, memory: WebAssembly.Memory): void {
+  const napiNs = napiModule.imports.napi as Record<string, Function>;
+  const origCopy = napiNs.napi_create_buffer_copy;
+  if (typeof origCopy !== "function") return;
+  napiNs.napi_create_buffer_copy = (
+    env: number, length: number, data: number, result_data: number, result: number,
+  ) => {
+    const ret = origCopy(env, length, data, result_data, result);
+    if (ret === 0 && result_data > 0 && data > 0 && length > 0) {
+      const dv = new DataView(memory.buffer);
+      const mirrorPtr = dv.getUint32(result_data, true);
+      if (mirrorPtr > 0) {
+        const u8 = new Uint8Array(memory.buffer);
+        u8.copyWithin(mirrorPtr, data, data + length);
+      }
+    }
+    return ret;
+  };
+}
+
 export function createNapiHost(opts: NapiHostOptions): NapiHost {
   const context = createContext();
   const envs = new Map<number, Env>();
@@ -125,6 +169,8 @@ export function createNapiHost(opts: NapiHostOptions): NapiHost {
   //
   // See NOTES.md 2026-05-21 "emnapi napi_define_class fix" for the trace.
   patchEmnapiDefineForEmptyValue(napiModule, opts.memory);
+
+  patchEmnapiBufferMirror(napiModule, opts.memory);
 
   // Layer our unofficial_napi_* impls into the napi namespace.  This is the
   // ONE place edge-specific behavior is added on top of emnapi.
