@@ -1,0 +1,37 @@
+tests/js/response-body-consume.stdout
+  s_6dbc06526d4b2f::t_0f873b3561c658 1
+tests/js/response-body-consume.js
+  s_6dbc06526d4b2f::t_9ccd2dc4f49cbb 1-37
+browser-target/src/policies/buffer-wasm-aliased.ts
+  s_6dbc06526d4b2f::t_f3ada7f78bcc68 162-163
+  s_6dbc06526d4b2f::t_2c5e285b570af9 178-179
+  s_6dbc06526d4b2f::t_2854e78f6b13e2 151
+  s_6dbc06526d4b2f::t_bad69347e20c08 194-195
+  s_6dbc06526d4b2f::t_2b2951060444c7 225-226
+  s_6dbc06526d4b2f::t_44bdb1e6ec71ee 263,266
+browser-target/src/policies/index.ts
+  s_6dbc06526d4b2f::t_bd6ed396e05f36 181
+  s_6dbc06526d4b2f::t_a710dc3468c3a0 163
+  s_6dbc06526d4b2f::t_39aea5ff224534 119,127
+  s_6dbc06526d4b2f::t_2f566f22fec08d 197
+NOTES.md
+  s_6dbc06526d4b2f::t_84596191dc52a2 92-130
+browser-target/src/policies/task-queue-enqueue-fix.ts
+  s_6dbc06526d4b2f::t_537aa3a42c4839 1-93
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.11",
+  "base_commit_sha": "42fe56199ff3b4000ef43121ae374b99ce13d6c4",
+  "prompts": {},
+  "sessions": {
+    "s_6dbc06526d4b2f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "bd2337df-57ab-4537-b6f8-2eb7dc1f8e59",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
