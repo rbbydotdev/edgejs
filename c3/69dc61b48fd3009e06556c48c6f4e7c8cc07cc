@@ -1,0 +1,43 @@
+tests/js/policy-outbound-fetch-tunnel.skip
+  s_6dbc06526d4b2f::t_44f6d3831fa8b9 1-13
+tests/js/policy-outbound-fetch-tunnel.harness-args
+  s_6dbc06526d4b2f::t_7853abc22511ec 1
+tests/js/policy-outbound-fetch-tunnel.stdout
+  s_6dbc06526d4b2f::t_dcc99260b73a07 1
+browser-target/src/policies/index.ts
+  s_6dbc06526d4b2f::t_a0f1f52fd4b595 144
+  s_6dbc06526d4b2f::t_880f6345d078c8 76,81
+tests/js/policy-outbound-fetch-tunnel.js
+  s_6dbc06526d4b2f::t_1786f2f1915b35 1-5,18-21,24,28,37-58,60-65
+  s_6dbc06526d4b2f::t_6d7820c6a6b5bd 6-10,26-27,29-36
+  s_6dbc06526d4b2f::t_25017b881304d3 11-17,22-23,25,59
+NOTES.md
+  s_6dbc06526d4b2f::t_9f007ede146aa5 202-221
+  s_6dbc06526d4b2f::t_97f36c867f3ff5 92-121
+browser-target/src/policies/outbound-fetch-tunnel.ts
+  s_6dbc06526d4b2f::t_db0104ddb9cd84 76,79,91-92,165-174
+  s_6dbc06526d4b2f::t_c507b35d7a0acb 41-43,47-49,53-54,61
+  s_6dbc06526d4b2f::t_a6fab4bc34c049 114-115
+  s_6dbc06526d4b2f::t_e2ca00c9660eb3 198
+  s_6dbc06526d4b2f::t_4fc7aff558eff6 66-75,99-100,103,107-109,111-113,116-118
+  s_6dbc06526d4b2f::t_67db3db9d957d3 44-46,50-52,55-60
+  s_6dbc06526d4b2f::t_0c3e0476c4ad47 94-98,101-102,104-106
+  s_6dbc06526d4b2f::t_1323a09672079d 62
+  s_6dbc06526d4b2f::t_a6d1440ee39317 1-40,63-65,77-78,80-90,93,110,119-164,175-197,199-207
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.11",
+  "base_commit_sha": "c369dc61b48fd3009e06556c48c6f4e7c8cc07cc",
+  "prompts": {},
+  "sessions": {
+    "s_6dbc06526d4b2f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "bd2337df-57ab-4537-b6f8-2eb7dc1f8e59",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
