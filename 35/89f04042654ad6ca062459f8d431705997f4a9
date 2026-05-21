@@ -1,0 +1,32 @@
+ARCHITECTURE.md
+  s_3c284a8c3d32d2::t_75bcf11076e036 78-279
+browser-target/src/napi-host/index.ts
+  s_3c284a8c3d32d2::t_0b2a9f5975f501 431,450-454,458,460,464-471,476-484,531-535,540,542-547,549,551-552,554-558,567-570,582-583,599-601
+  s_3c284a8c3d32d2::t_5f9c3ec050c1e0 505
+  s_3c284a8c3d32d2::t_4b43821a8dbb9b 536-539,541,548,553
+  s_3c284a8c3d32d2::t_bbcaa73390a206 635-638
+  s_3c284a8c3d32d2::t_83f4cf8dc96db8 428-430,432-449,455-457,459,461-463,485-504,506-530,550,559-566,571-581,584-598
+  s_3c284a8c3d32d2::t_75386c5cc95a99 472-475
+browser-target/src/policies/task-queue-enqueue-fix.ts
+  s_3c284a8c3d32d2::t_d21541043ed798 5-17,34,38-41,56-65,67-70
+ARCHIVE.md
+  s_3c284a8c3d32d2::t_e0dcb3796f2121 2088-2764
+NOTES.md
+  s_3c284a8c3d32d2::t_1232f82b64b615 3,5-6,8-9,20-23,25-27,29-33,35,38,40,43-46,52-54,58,60-61,64,69,71-74,77-93,101,121-151,155-171,173,175-211,217,219,221,224-225,228-229
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.11",
+  "base_commit_sha": "3589f04042654ad6ca062459f8d431705997f4a9",
+  "prompts": {},
+  "sessions": {
+    "s_3c284a8c3d32d2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "aba00247-eb0d-4299-a1aa-1451ccea7316",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
