@@ -148,6 +148,7 @@ const POST_PATCH = `
 //                     code only reads the result.
 const PRIMORDIALS_PRE_PATCH = `
 ;(function patchArrayBufferForSAB() {
+  globalThis.__sabDbg = { bl: 0, blSab: 0, sl: 0, slSab: 0, det: 0, detSab: 0, xf: 0, xfSab: 0, ttfl: 0, ttflSab: 0 };
   if (typeof SharedArrayBuffer !== 'function') return;
   var ABp = ArrayBuffer.prototype;
   var SABp = SharedArrayBuffer.prototype;
@@ -158,7 +159,8 @@ const PRIMORDIALS_PRE_PATCH = `
   if (abBLDesc && sabBLDesc && typeof abBLDesc.get === 'function' && typeof sabBLDesc.get === 'function' && !abBLDesc.get.__sab_patched__) {
     var origBL = abBLDesc.get, sabBL = sabBLDesc.get;
     function byteLengthPolymorphic() {
-      if (this instanceof SharedArrayBuffer) return sabBL.call(this);
+      globalThis.__sabDbg.bl++;
+      if (this instanceof SharedArrayBuffer) { globalThis.__sabDbg.blSab++; return sabBL.call(this); }
       return origBL.call(this);
     }
     byteLengthPolymorphic.__sab_patched__ = true;
@@ -173,7 +175,8 @@ const PRIMORDIALS_PRE_PATCH = `
   if (abDetDesc && typeof abDetDesc.get === 'function' && !abDetDesc.get.__sab_patched__) {
     var origDet = abDetDesc.get;
     function detachedPolymorphic() {
-      if (this instanceof SharedArrayBuffer) return false;
+      globalThis.__sabDbg.det++;
+      if (this instanceof SharedArrayBuffer) { globalThis.__sabDbg.detSab++; return false; }
       return origDet.call(this);
     }
     detachedPolymorphic.__sab_patched__ = true;
@@ -188,7 +191,8 @@ const PRIMORDIALS_PRE_PATCH = `
     var origSlice = ABp.slice;
     var sabSlice = SABp.slice;
     function slicePolymorphic(start, end) {
-      if (this instanceof SharedArrayBuffer) return sabSlice.call(this, start, end);
+      globalThis.__sabDbg.sl++;
+      if (this instanceof SharedArrayBuffer) { globalThis.__sabDbg.slSab++; return sabSlice.call(this, start, end); }
       return origSlice.call(this, start, end);
     }
     slicePolymorphic.__sab_patched__ = true;
@@ -218,7 +222,8 @@ const PRIMORDIALS_PRE_PATCH = `
   if (typeof ABp.transfer === 'function' && !ABp.transfer.__sab_patched__) {
     var origTransfer = ABp.transfer;
     function transferPolymorphic(newLength) {
-      if (this instanceof SharedArrayBuffer) return this;
+      globalThis.__sabDbg.xf++;
+      if (this instanceof SharedArrayBuffer) { globalThis.__sabDbg.xfSab++; return this; }
       return origTransfer.call(this, newLength);
     }
     transferPolymorphic.__sab_patched__ = true;
@@ -255,22 +260,9 @@ const PRIMORDIALS_PRE_PATCH = `
 
 export const bufferWasmAliased: Policy = {
   name: "buffer-wasm-aliased",
-  description: "Make Buffer storage wasm-memory backed so JS reads and C++ writes share the same bytes (no sync needed).",
+  description: "Make Buffer storage wasm-memory backed so JS reads and C++ writes share the same bytes; also patches ArrayBuffer.prototype.{byteLength,slice,transfer,detached} to be polymorphic on SAB receivers (downstream consequence — every Buffer.buffer is now the wasm SAB).",
   builtinOverrides: {
     "internal/buffer": { post: POST_PATCH },
+    "internal/per_context/primordials": { pre: PRIMORDIALS_PRE_PATCH },
   },
 };
-
-// Reserved for future activation when the cascading-SAB consequences in
-// streams/fetch are fully understood.  Today, enabling
-// PRIMORDIALS_PRE_PATCH alone unblocks the `byteLength`-receiver check
-// (used in `internal/webstreams/readablestream.js`, `internal/crypto/*`)
-// but downstream the `transfer`/`slice`/`detached` flow recurses (the
-// stream pull loop never settles when transfer returns anything but a
-// thrown TypeError).  Reproducer: `new Response('hi').text()`.  Symptoms:
-// `Maximum call stack size exceeded` after exactly one
-// `napi_create_external_arraybuffer` + one transfer call.  Root cause
-// not pinned; suspect interaction between the lib's queue-fulfillment
-// logic and the wasm event loop.  Tracked as
-// #!~debt buffer-wasm-aliased-sab-stream-recursion (see NOTES.md).
-void PRIMORDIALS_PRE_PATCH;

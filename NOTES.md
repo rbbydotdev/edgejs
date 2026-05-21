@@ -89,32 +89,45 @@ browser-target tree.
   silent no-op dispatchers for makeDynCall callbacks; emnapi finalizers
   at process exit dispatch through these and silently skip.  Long-term
   fix is to wire `__indirect_function_table` from the bound instance.
-- `sab-ab-body-read` — edge's fetch impl + Response.body / .text() /
-  .arrayBuffer() throw `Method get ArrayBuffer.prototype.byteLength
-  called on incompatible receiver #<SharedArrayBuffer>` when the body
-  bytes are wasm-memory-backed (which they are, post our napi
-  overrides).  Hides any outbound fetch use of edge's bundled fetch.
-  Mocked-fetch tunnel test sidesteps it (the test uses a hand-crafted
-  Response-shape).
-  RESEARCH 2026-05-21:
-  - Root cause confirmed in `internal/webstreams/readablestream.js:1175`:
-    `ArrayBufferPrototypeGetByteLength(chunkBuffer)` is the strict V8
-    builtin — fails when chunkBuffer is a SAB.  Same pattern at lines
-    699, 966.  Crypto modules use it too (random.js:516, util.js:590).
-  - Patch attempted via `{ pre }` override on
-    `internal/per_context/primordials.js`: replace
-    `ArrayBuffer.prototype.byteLength` getter with a polymorphic version
-    that dispatches to `SharedArrayBuffer.prototype.byteLength` when the
-    receiver is a SAB.  Works in isolation; primordials snapshot picks
-    up the polymorphic version via `uncurryThis`.
-  - But cascading: lib also uses `transfer`/`slice`/`detached` on the
-    same buffers.  `transfer` is the hard one — `transfer.call(sab)`
-    can't actually detach a SAB (shared by design).  Either
-    return-self or copy-to-fresh-AB cause an infinite loop in the
-    stream pull machinery (stack: `napi_call_function → wasm[16020] →
-    callback → queueMicrotask → napi_call_function …`).  Exact failure
-    mode is `Maximum call stack size exceeded` after exactly one
-    transfer call — root cause not pinned.
+- ~~`sab-ab-body-read`~~ **RESOLVED 2026-05-21** — was: edge's fetch
+  impl + Response.body / .text() / .arrayBuffer() threw
+  `Method get ArrayBuffer.prototype.byteLength called on incompatible
+  receiver #<SharedArrayBuffer>`.  Two layered causes; both fixed.
+  Resolution:
+  - **Layer 1**: `internalBinding('task_queue').enqueueMicrotask` infinite-recurses.
+    Edge's `TaskQueueEnqueueMicrotask` (`src/edge_task_queue.cc:42`) tries
+    `unofficial_napi_enqueue_microtask` first; the V8 impl
+    (`napi/v8/src/unofficial_napi.cc:2198`) requires `env->isolate`, which
+    is null under emnapi → returns `napi_invalid_arg`.  C++ then falls
+    back to calling `globalThis.queueMicrotask` via napi — which resolves
+    to **lib's wrapper** (`task_queues.js:158`) that calls
+    `enqueueMicrotask` (this binding) again.  Infinite synchronous recursion.
+    Fixed by **`task-queue-enqueue-fix` policy** (in minimalPolicies):
+    `{ pre }` patch on `internal/process/task_queues.js` rebinds
+    `internalBinding('task_queue').enqueueMicrotask` to call the **host's
+    native** `queueMicrotask` directly — bypassing edge's broken fallback.
+  - **Layer 2** (only visible after Layer 1 fix): edge's vendored
+    `internal/webstreams/readablestream.js` and `internal/crypto/*` use
+    strict V8 primordials `ArrayBufferPrototypeGet{ByteLength,Detached}`,
+    `Slice`, `Transfer` on buffers that — post our wasm-aliasing — are
+    SharedArrayBuffer instances.  Fixed by **`buffer-wasm-aliased`
+    policy's `PRIMORDIALS_PRE_PATCH`**: `{ pre }` patch on
+    `internal/per_context/primordials.js` replaces those AB prototype
+    methods with polymorphic versions that dispatch to SAB equivalents
+    when the receiver is a SAB (transfer returns the SAB itself, since
+    SAB can't be detached).  Primordials snapshot via `uncurryThis(get)`
+    captures our polymorphic versions.
+  - Regression: `tests/js/response-body-consume.js`.
+
+- `task-queue-fallback-recursion` — historical: discovered while fixing
+  `sab-ab-body-read`.  Edge's C++ `TaskQueueEnqueueMicrotask` calls
+  `globalThis.queueMicrotask` as a fallback when its preferred path
+  fails — but globalThis.queueMicrotask resolves to lib's wrapper that
+  uses this very binding.  Synchronous infinite recursion.  Surfaced as
+  `Maximum call stack size exceeded` on any code path heavy in
+  microtasks (streams, fetch bodies, promise chains).  Fixed by
+  `task-queue-enqueue-fix` policy.  Most existing tests didn't hit it
+  because they didn't exercise queueMicrotask aggressively.
   - The primordials patch source lives in `buffer-wasm-aliased.ts` as
     `PRIMORDIALS_PRE_PATCH` but is NOT applied (commented out via `void`)
     because the partial fix is worse than the original throw (silent
