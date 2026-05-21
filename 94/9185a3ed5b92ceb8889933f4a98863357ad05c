@@ -1,0 +1,32 @@
+tests/js/tls-secure-context.js
+  s_6dbc06526d4b2f::t_297d0b282e7e31 1-61
+tests/js/https-server-listen.stdout
+  s_6dbc06526d4b2f::t_14f9c76dbac52f 1
+tests/js/https-server-listen.js
+  s_6dbc06526d4b2f::t_220a7618e9a8df 1-66
+tests/js/tls-info.js
+  s_6dbc06526d4b2f::t_83f0b812bfd10a 1-6
+tests/js/tls-info.stdout
+  s_6dbc06526d4b2f::t_1da6d9040c8e26 1
+NOTES.md
+  s_6dbc06526d4b2f::t_610e0d9d6be9ee 53-54
+  s_6dbc06526d4b2f::t_9156e2a5ff3b68 164-187
+tests/js/tls-secure-context.stdout
+  s_6dbc06526d4b2f::t_4b328cd622b754 1
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.11",
+  "base_commit_sha": "949185a3ed5b92ceb8889933f4a98863357ad05c",
+  "prompts": {},
+  "sessions": {
+    "s_6dbc06526d4b2f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "bd2337df-57ab-4537-b6f8-2eb7dc1f8e59",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
