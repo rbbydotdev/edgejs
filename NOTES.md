@@ -5,6 +5,39 @@ out the browser target. Newest entries first.
 
 ---
 
+## 2026-05-21 — Node-side harness for fast napi/wasi iteration
+
+`browser-target/scripts/node-harness.mjs` runs `edgejs.wasm` in Node directly,
+using the same wasi-shim + napi-host code paths the browser uses.  Only the
+FS adapter differs (a tiny `createNodeFs()` in the harness uses
+`fs.readFileSync` instead of the browser's sync XHR).  Iteration loop is
+~3s vs the browser's ~15s.
+
+Usage:
+```
+cd browser-target
+node --experimental-wasm-exnref --import ./node_modules/tsx/dist/loader.mjs \
+  scripts/node-harness.mjs -e "console.log('hi')"
+```
+
+Gotchas:
+- Node 22 requires `--experimental-wasm-exnref` (edge.js uses the exception
+  handling proposal).
+- Edge mutates Node's `globalThis.performance`, `console`, etc. during
+  bootstrap — same pattern as in the browser, except in Node it leaks into
+  the host's globalThis and breaks Node's lazy-loaded internals.  Workaround:
+  the harness writes output via `fs.writeSync(1, …)` directly (bypasses the
+  lazy `console` module) and captures `performance.now` from `node:perf_hooks`
+  at top of file before edge runs.
+- Cleanup throws `dynCall before table ready` from
+  `unofficial_napi_create_env`'s throw-placeholders.  Doesn't affect the
+  primary output; finalizer wiring is separate followup.
+
+Used during the crypto-digest-correctness investigation to iterate ~5x
+faster than the browser loop.
+
+---
+
 ## 2026-05-21 — Crypto digest correctness — deep root cause identified, fix incomplete
 
 Diagnosed why `createHash('sha256').update('hello').digest('hex')` returns

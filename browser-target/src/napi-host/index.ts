@@ -112,37 +112,92 @@ function patchEmnapiDefineForEmptyValue(
 //   4. `buffer.set(wasmMemory[data..data+length])` copies the SOURCE bytes
 //      into the JS Buffer — but NOT into wasm[P..P+length] (the mirror).
 //
-// Edge's Buffer methods (`hexSlice`, `utf8Slice`, etc. via `internalBinding('buffer')`)
-// are C++ in the wasm.  They read from the wasm mirror address P, not from
-// the JS ArrayBuffer.  Since emnapi never syncs the mirror back, edge's
-// `buffer.toString('hex')` reads stale/empty bytes from wasm[P], producing
-// JS-source-looking heap garbage instead of the digest.
+// Override emnapi's Buffer constructors to allocate from WASM linear memory
+// directly, eliminating the JS-ArrayBuffer-with-wasm-mirror split.
 //
-// Fix: after emnapi's call returns, copy wasm[data..data+length] →
-// wasm[P..P+length] so the mirror matches the source.  Same fix needed for
-// `napi_create_buffer` (which takes a data out-ptr, edge writes to it after
-// the call) — for that one we just ensure the JS ArrayBuffer and the wasm
-// mirror are synced via the SAME backing store, which the existing
-// getArrayBufferPointer path already does for create_buffer.  So only
-// create_buffer_copy needs this patch.
-function patchEmnapiBufferMirror(napiModule: NapiModule, memory: WebAssembly.Memory): void {
+// Why this matters: emnapi's default `napi_create_buffer_copy` creates a fresh
+// JS ArrayBuffer in JS land and a wasm-memory mirror separately.  The two are
+// synced JS→wasm only at certain napi boundaries (with shouldCopy=true).  Edge's
+// C++ Buffer accessors (`hexSlice`, `utf8Slice`, `compare`, etc. via
+// `internalBinding('buffer')`) read from the wasm mirror.  When edge wraps the
+// buffer in a view with non-zero byteOffset (its Buffer pool pattern),
+// emnapi returns `mirror_addr + view.byteOffset` — which reads past the
+// malloc'd mirror region into uninitialized heap.  Hence the famous
+// "createHash().digest('hex') returns JavaScript source bytes" bug.
+//
+// Fix: allocate the Buffer's storage IN WASM MEMORY via the wasm's exported
+// `malloc`, then create the Buffer as `Buffer.from(wasmMemory.buffer, ptr, len)`.
+// The resulting Buffer's `.buffer === wasmMemory.buffer` and `.byteOffset === ptr`.
+// emnapi's `getViewPointer` short-circuits to `return { address: view.byteOffset }`
+// — no mirror, no sync, JS and wasm share storage byte-for-byte.
+//
+// This is the architecturally correct fix for the emnapi ↔ edge Buffer
+// model mismatch.  See NOTES.md 2026-05-21 "Crypto digest correctness" for
+// the full diagnosis.
+//
+// REQUIRES: the wasm instance must have bound by the time these overrides are
+// called (so the exported malloc is available).  See `bindInstance` below —
+// it installs the malloc getter after init.
+function patchEmnapiToUseWasmBackedBuffers(
+  napiModule: NapiModule,
+  memory: WebAssembly.Memory,
+  context: Context,
+  getMalloc: () => ((n: number) => number) | null,
+): void {
   const napiNs = napiModule.imports.napi as Record<string, Function>;
-  const origCopy = napiNs.napi_create_buffer_copy;
-  if (typeof origCopy !== "function") return;
-  napiNs.napi_create_buffer_copy = (
-    env: number, length: number, data: number, result_data: number, result: number,
-  ) => {
-    const ret = origCopy(env, length, data, result_data, result);
-    if (ret === 0 && result_data > 0 && data > 0 && length > 0) {
+  const origCreateBuffer = napiNs.napi_create_buffer;
+  const origCreateBufferCopy = napiNs.napi_create_buffer_copy;
+
+  function allocWasmBuffer(byteLength: number): { ptr: number; view: Uint8Array } | null {
+    const malloc = getMalloc();
+    if (!malloc) return null;
+    const ptr = malloc(byteLength);
+    if (!ptr) return null;
+    // BufferPolyfill.from(SAB, offset, len) returns a Uint8Array view with
+    // Buffer.prototype — view.buffer === memory.buffer (the SAB).
+    const BufferCtor = (globalThis as { Buffer: { from(b: ArrayBufferLike, o: number, l: number): Uint8Array } }).Buffer;
+    const view = BufferCtor.from(memory.buffer, ptr, byteLength);
+    return { ptr, view };
+  }
+
+  if (typeof origCreateBuffer === "function") {
+    // napi_create_buffer(env, length, data_out, result) — caller writes data
+    // INTO `*data_out` (the wasm address).  We allocate wasm memory, create a
+    // wasm-backed Buffer view over that region, register the handle.
+    napiNs.napi_create_buffer = (env: number, length: number, data_out: number, result: number) => {
+      const allocd = allocWasmBuffer(length);
+      if (!allocd) return origCreateBuffer(env, length, data_out, result);  // malloc not ready
       const dv = new DataView(memory.buffer);
-      const mirrorPtr = dv.getUint32(result_data, true);
-      if (mirrorPtr > 0) {
+      if (data_out > 0) dv.setUint32(data_out, allocd.ptr, true);
+      const handle = context.addToCurrentScope(allocd.view);
+      if (result > 0) dv.setUint32(result, handle.id, true);
+      void env;
+      return 0; // napi_ok
+    };
+  }
+
+  if (typeof origCreateBufferCopy === "function") {
+    // napi_create_buffer_copy(env, length, src_data, result_data, result) —
+    // copy bytes from wasm[src_data..src_data+length] into a new buffer.  We
+    // allocate wasm memory and copy wasm→wasm; the resulting Buffer is a view
+    // of wasmMemory.buffer at the new address.
+    napiNs.napi_create_buffer_copy = (
+      env: number, length: number, src_data: number, result_data: number, result: number,
+    ) => {
+      const allocd = allocWasmBuffer(length);
+      if (!allocd) return origCreateBufferCopy(env, length, src_data, result_data, result);
+      if (length > 0 && src_data > 0) {
         const u8 = new Uint8Array(memory.buffer);
-        u8.copyWithin(mirrorPtr, data, data + length);
+        u8.copyWithin(allocd.ptr, src_data, src_data + length);
       }
-    }
-    return ret;
-  };
+      const dv = new DataView(memory.buffer);
+      if (result_data > 0) dv.setUint32(result_data, allocd.ptr, true);
+      const handle = context.addToCurrentScope(allocd.view);
+      if (result > 0) dv.setUint32(result, handle.id, true);
+      void env;
+      return 0;
+    };
+  }
 }
 
 export function createNapiHost(opts: NapiHostOptions): NapiHost {
@@ -170,7 +225,13 @@ export function createNapiHost(opts: NapiHostOptions): NapiHost {
   // See NOTES.md 2026-05-21 "emnapi napi_define_class fix" for the trace.
   patchEmnapiDefineForEmptyValue(napiModule, opts.memory);
 
-  patchEmnapiBufferMirror(napiModule, opts.memory);
+  // Captured at bindInstance time so napi_create_buffer* overrides can
+  // _malloc from wasm memory.  Null until the instance binds — until then
+  // the overrides fall through to emnapi's original (which uses JS
+  // ArrayBuffers; the only callers before bind are emnapi's own init
+  // helpers which don't expose buffers to edge).
+  let wasmMallocImpl: ((n: number) => number) | null = null;
+  patchEmnapiToUseWasmBackedBuffers(napiModule, opts.memory, context, () => wasmMallocImpl);
 
   // Layer our unofficial_napi_* impls into the napi namespace.  This is the
   // ONE place edge-specific behavior is added on top of emnapi.
@@ -188,6 +249,16 @@ export function createNapiHost(opts: NapiHostOptions): NapiHost {
     context,
     envs,
     bindInstance(realInstance, wasmModule) {
+      // Capture the wasm's exported malloc so the Buffer-allocation
+      // overrides above can carve regions out of wasm linear memory.
+      const exp = realInstance.exports as Record<string, unknown>;
+      const malloc =
+        (typeof exp.unofficial_napi_guest_malloc === "function" && exp.unofficial_napi_guest_malloc) ||
+        (typeof exp.malloc === "function" && exp.malloc) ||
+        null;
+      if (typeof malloc === "function") {
+        wasmMallocImpl = malloc as (n: number) => number;
+      }
       const proxied = createInstanceProxy(realInstance);
       napiModule.init({
         instance: proxied,
