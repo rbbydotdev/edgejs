@@ -109,11 +109,6 @@ browser-target tree.
 - `namespace-default-fallbacks` — `imports-generated.ts` falls through to
   per-namespace defaults (napi=0, wasi=52).  "Implemented" means "callable
   with right arity," not "semantically correct."
-- `override-bootstrap-only` — the napi-layer module-source override hook
-  in `unofficial_napi_contextify_compile_function` catches only the ~11
-  bootstrap files edge actually compiles through that entry, not
-  lazy-loaded builtins like `inspector` / `url` / `crypto`.  See
-  followup section above.
 - `unverified-one-time-anomaly` in `mem-snapshot.ts` — diagnostic artifact
 - Multiple `#!~debt` in `unofficial.ts` — most no-op stubs writing sensible
   defaults to out-params, ported from `napi/v8/src/*.cc`.  Promote when a
@@ -123,43 +118,37 @@ browser-target tree.
 
 ## Active followups (in priority order)
 
-### Universal module overrides via napi binding hook — PARTIAL (2026-05-21)
+### Universal module overrides via napi binding hook — DONE (2026-05-21)
 
-**Wiring is in place** but **only catches bootstrap-time modules**.
+Two hooks, covering both load paths edge uses:
 
-Hook lives in `unofficial_napi_contextify_compile_function`
-(`browser-target/src/napi-host/unofficial.ts`).  Threading:
-`NapiHostOptions.builtinOverrides` → `UnofficialHostContext.builtinOverrides`
-→ filename-keyed substitution before `new Function(code, ...)`.  Node
-harness exposes it via `--override <id>:<value>` (value can be a path,
-literal source, or the string `null` for an empty stub).
+1. **Bootstrap modules** → intercepted in
+   `unofficial_napi_contextify_compile_function`
+   (`browser-target/src/napi-host/unofficial.ts`).  Catches the ~11
+   modules edge compiles through this entry: `per_context/*`,
+   `bootstrap/realm`, `bootstrap/node`, `web/exposed-*`, `switches/*`,
+   `main/eval_string`, and the `[eval]-wrapper` for user scripts.
 
-**Verified working** — `--override internal/bootstrap/web/exposed-window-or-worker:null`
-prints `[override] matched ...` and the wasm proceeds with the stub
-source.
+2. **Lazy-required builtins** (`inspector`, `url`, `crypto`, `events`,
+   etc.) → intercepted in a wrapper around emnapi's `napi_run_script`
+   (`browser-target/src/napi-host/index.ts`).  Edge loads these via
+   `EvaluateJsModule` (`src/edge_module_loader.cc:4495`), which wraps
+   the source as
+   `(function(exports, require, module, process, internalBinding, primordials) {\n<source>\n})\n//# sourceURL=node:<id>`
+   and runs it via `napi_run_script`.  Our hook parses the sourceURL,
+   looks up the id in the override map, and rewrites the inner body
+   before passing the script to emnapi.
 
-**Does NOT catch lazy-loaded builtins** like `inspector`, `url`, `crypto`.
-Empirically (see NOTES debug 2026-05-21) only ~11 modules pass through
-`unofficial_napi_contextify_compile_function` during a full `_start`
-run: the per_context/* files, bootstrap/realm, bootstrap/node, the
-web/exposed-* shims, the switches/* files, `main/eval_string`, and the
-`[eval]-wrapper` for the user script.  Despite `realm.js:395` calling
-`compileFunction(id)` → `BuiltinsCompileFunctionCallback` →
-`unofficial_napi_contextify_compile_function`, no compile is recorded
-for `inspector` when user code does `require('inspector')`, even
-though the trace shows `eval (node:inspector:26:9)` proving its
-source ran.  Source file sizes on disk match wasm catalog sizes
-exactly, so the wasm isn't running a different version.  Some other
-code path is loading these — candidates: `napi_run_script`
-(unimplemented in our host but called from `EvaluateJsModule` in
-`src/edge_module_loader.cc:4495`), a pre-snapshot, or a fast-path
-that skips through emnapi.
+Surface: `NapiHostOptions.builtinOverrides: Record<string, string | null
+| undefined>`.  Node harness exposes `--override <id>:<value>` where
+value is a literal path (file contents loaded), a string `null` (empty
+stub `module.exports = {}`), or anything else (used as source).
 
-#!~debt override-bootstrap-only: the hook works only for the modules
-edge compiles via `unofficial_napi_contextify_compile_function`, not
-all builtins.  Remediation: identify the second compile path (likely
-`napi_run_script` since that's currently a stub) and add an
-intercept there too.
+**Verified end-to-end**:
+- `--override inspector:null` → `require('inspector')` returns `{}`
+  (no `ERR_INSPECTOR_NOT_AVAILABLE` throw).
+- `--override "inspector:module.exports = { custom: true, ping: () => 'pong' };"`
+  → custom exports surface through the user-visible require.
 
 ### ESM support (`module_wrap_*`)
 

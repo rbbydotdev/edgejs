@@ -180,21 +180,19 @@ export function createUnofficialNapi(ctx: UnofficialHostContext): Record<string,
       const filename = context.handleStore.get(filenameHandle)?.value as string | undefined;
       if (typeof code !== "string") return 1;
 
-      // Module-source override hook.  Edge's `BuiltinsCompileFunctionCallback`
-      // (src/edge_module_loader.cc:964) reads built-in source from a C++
-      // catalog baked into the wasm, then calls THIS function with
-      // `filename = "node:<id>"`.  Intercept here to substitute the source
-      // with a user-provided override before compilation.  Empty stubs
-      // (null) → `module.exports = {}`.
+      // Module-source override hook (1 of 2).  Edge's
+      // `BuiltinsCompileFunctionCallback` (src/edge_module_loader.cc:964)
+      // reads built-in source from a C++ catalog baked into the wasm,
+      // then calls THIS function with `filename = "node:<id>"`.  Intercept
+      // here to substitute the source with a user-provided override before
+      // compilation.  Empty stubs (null) → `module.exports = {}`.
       //
-      // CAVEAT: this only fires for the modules edge actually compiles
-      // through `unofficial_napi_contextify_compile_function`.  Empirically
-      // (2026-05-21) that's the ~11 bootstrap files (per_context/*,
-      // bootstrap/*, main/eval_string, [eval]-wrapper) — lazy-required
-      // builtins like `inspector`, `url`, `crypto` load through a
-      // different path we haven't yet identified, so overrides keyed on
-      // those bare names don't take effect.  Tracked as the
-      // `override-bootstrap-only` debt in NOTES.md.
+      // This path catches the ~11 modules compiled at bootstrap
+      // (per_context/*, bootstrap/*, main/eval_string, [eval]-wrapper).
+      // Lazy-required builtins (`inspector`, `url`, `crypto`, ...) go
+      // through edge's `EvaluateJsModule` → `napi_run_script` path
+      // instead — that hook lives in `napi-host/index.ts` and uses the
+      // same `builtinOverrides` map.
       if (ctx.builtinOverrides && typeof filename === "string") {
         const bare = filename.startsWith("node:") ? filename.slice(5) : filename;
         let override: string | null | undefined;

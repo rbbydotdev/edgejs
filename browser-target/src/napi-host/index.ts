@@ -408,6 +408,48 @@ export function createNapiHost(opts: NapiHostOptions): NapiHost {
     (napiModule.imports.napi as Record<string, Function>)[name] = fn;
   }
 
+  // Lazy-loaded builtins (inspector, url, crypto, ...) reach the JS engine
+  // via `napi_run_script` rather than `unofficial_napi_contextify_compile_function`
+  // — see edge_module_loader.cc:EvaluateJsModule.  The script string is the
+  // wrapped form `(function(internalBinding, primordials) {return function
+  // (exports, require, module, __filename, __dirname) {\n<source>\n//#
+  // sourceURL=node:<id>\n};})`.  To intercept, parse the sourceURL, look up
+  // <id> in builtinOverrides, and rewrite the inner source before handing
+  // off to emnapi's real napi_run_script.
+  if (builtinOverridesMap.size > 0) {
+    const napiNs = napiModule.imports.napi as Record<string, Function>;
+    const origRunScript = napiNs.napi_run_script;
+    // Wrapper shape (empirical, edge_module_loader.cc:EvaluateJsModule writes
+    // a different form than the comment there suggests — single function,
+    // not nested):
+    //   (function(exports, require, module, process, internalBinding, primordials) {\n
+    //   <source>\n
+    //   })\n
+    //   //# sourceURL=node:<id>\n
+    const overrideRegex = /^(\(function\([^)]*\) \{\n)[\s\S]*(\n\}\)\n\/\/# sourceURL=)/;
+    napiNs.napi_run_script = (envHandle: number, scriptHandle: number, resultPtr: number): number => {
+      const scriptValue = context.handleStore.get(scriptHandle)?.value;
+      if (typeof scriptValue === "string" && scriptValue.includes("//# sourceURL=node:")) {
+        const m = scriptValue.match(/\/\/# sourceURL=(node:[^\n]+)/);
+        if (m) {
+          const filename = m[1];
+          const bare = filename.startsWith("node:") ? filename.slice(5) : filename;
+          let override: string | null | undefined;
+          if (builtinOverridesMap.has(filename)) override = builtinOverridesMap.get(filename);
+          else if (builtinOverridesMap.has(bare)) override = builtinOverridesMap.get(bare);
+          if (override !== undefined && overrideRegex.test(scriptValue)) {
+            const newBody = override === null ? "module.exports = {};" : override;
+            const replaced = scriptValue.replace(overrideRegex, `$1${newBody}$2`);
+            opts.postLog?.(`[override] matched ${filename} (via run_script)`, "warn");
+            const newHandle = context.ensureHandle(replaced);
+            return origRunScript(envHandle, newHandle.id, resultPtr);
+          }
+        }
+      }
+      return origRunScript(envHandle, scriptHandle, resultPtr);
+    };
+  }
+
   // Ensure env.memory is the shared memory the wasm imports.  emnapi looks at
   // `imports.env.memory` during instantiate if provided.
   (napiModule.imports.env as Record<string, unknown>).memory = opts.memory;
