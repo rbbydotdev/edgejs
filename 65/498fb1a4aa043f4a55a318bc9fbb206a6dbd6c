@@ -1,0 +1,74 @@
+tests/js/buffer-from-string.js
+  s_6dbc06526d4b2f::t_52555a138b07f4 1-3,7,11,15-24,26-30,45-46,49
+  s_6dbc06526d4b2f::t_bf887ce53de653 4-6,8-10,12-14
+  s_6dbc06526d4b2f::t_c9afb66624adde 25,31-44,47-48
+browser-target/src/napi-host/index.ts
+  s_6dbc06526d4b2f::t_3a0453cc50f25a 34-42,45-46,48
+  s_6dbc06526d4b2f::t_a38f1f6782d8a7 175,181
+  s_6dbc06526d4b2f::t_fd40e181d4ba4a 494-497,505,509,511-517,525-526
+  s_6dbc06526d4b2f::t_c88f6102841351 510,521-524
+  s_6dbc06526d4b2f::t_a8d6b093013230 518-520
+  s_6dbc06526d4b2f::t_87c0babf044b60 24-25
+  s_6dbc06526d4b2f::t_940a3a447b2b2d 393-398
+  s_6dbc06526d4b2f::t_30645d55e0e830 268-317
+  s_6dbc06526d4b2f::t_419b0837561cdc 464
+tests/js/buffer-from-string.stdout
+  s_6dbc06526d4b2f::t_7acb1aa9c5f0a0 1
+tests/js/policy-outbound-fetch-tunnel.harness-args
+  s_6dbc06526d4b2f::t_5c5dbf8a15de60 1
+browser-target/src/policies/buffer-write-sync.ts
+  s_6dbc06526d4b2f::t_533b220891edeb 41,51-52
+  s_6dbc06526d4b2f::t_71f856ead199b6 1-2,12-40,42-50,53-133
+  s_6dbc06526d4b2f::t_b49542fb4685d8 3-11
+browser-target/src/policies/index.ts
+  s_6dbc06526d4b2f::t_8503065f3d79ce 177
+  s_6dbc06526d4b2f::t_c7ad7e83e25f29 40,47-55,57-59
+  s_6dbc06526d4b2f::t_c8831c88e64846 191
+  s_6dbc06526d4b2f::t_a06ffb959bf93e 60
+  s_6dbc06526d4b2f::t_be2b3702356e8f 192
+  s_6dbc06526d4b2f::t_d3ca06f0baecf1 39,41-46,56,61,67-69,75
+  s_6dbc06526d4b2f::t_8e34bb1afdb3a2 82,93,99-101
+  s_6dbc06526d4b2f::t_ee5a2795a59c41 117,124
+  s_6dbc06526d4b2f::t_d7e5f02c974b1c 160
+  s_6dbc06526d4b2f::t_bb28ff003b0be0 89-92,94-98,109-113
+  s_6dbc06526d4b2f::t_0e2fd561588dcc 118,125
+NOTES.md
+  s_6dbc06526d4b2f::t_6d7d2bb989917e 265,268
+  s_6dbc06526d4b2f::t_8427f0cf2431d3 144
+  s_6dbc06526d4b2f::t_b29f3fc215b944 97-126
+  s_6dbc06526d4b2f::t_440bb71c74add1 143,145-175
+  s_6dbc06526d4b2f::t_67536de69c296f 266-267
+browser-target/src/napi-host/unofficial.ts
+  s_6dbc06526d4b2f::t_9e5bfcf92043ac 44-45,48
+  s_6dbc06526d4b2f::t_940f17c5f8fec7 36-37
+  s_6dbc06526d4b2f::t_ba6a449d53f9ca 21
+  s_6dbc06526d4b2f::t_f3e9e2550dac7e 209,214-218,226
+  s_6dbc06526d4b2f::t_84aa289ec43007 219-225
+browser-target/src/policies/buffer-wasm-aliased.ts
+  s_6dbc06526d4b2f::t_8eb54546ab072d 200-212,240-247
+  s_6dbc06526d4b2f::t_ce6f2efb1670e0 1-79,95-97,256-257,259-262
+  s_6dbc06526d4b2f::t_09b101cd3fbd20 258,263-276
+  s_6dbc06526d4b2f::t_8ecb99a58d5854 132-148,150,152-198,235-239,248-252
+  s_6dbc06526d4b2f::t_9a43326110ad76 98-131,149,151,253-255
+  s_6dbc06526d4b2f::t_529431c3143551 80-94
+  s_6dbc06526d4b2f::t_96e4362b29e57a 199
+  s_6dbc06526d4b2f::t_6e78abaa0ad03b 213-234
+RABBIT_HOLE.md
+  s_6dbc06526d4b2f::t_9fe1e02e02973c 3-45
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.11",
+  "base_commit_sha": "65498fb1a4aa043f4a55a318bc9fbb206a6dbd6c",
+  "prompts": {},
+  "sessions": {
+    "s_6dbc06526d4b2f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "bd2337df-57ab-4537-b6f8-2eb7dc1f8e59",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
