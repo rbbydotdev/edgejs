@@ -5,6 +5,73 @@ out the browser target. Newest entries first.
 
 ---
 
+## 2026-05-21 — Crypto: napi_define_class + Buffer polyfill unblocks load
+
+`require('crypto')` now loads cleanly.  Three calls produce structurally-valid
+output (createHash → 64 hex chars, randomBytes → hex string, randomUUID →
+correct v4 format).  Values themselves are still wrong — separate follow-up.
+
+### Two fixes landed
+
+1. **`napi_define_class` empty-descriptor crash.**  emnapi's
+   `emnapiDefineProperty` (at `@emnapi/core/dist/emnapi-core.esm-bundler.js:4040`)
+   reads `handleStore.get(value).value` in its else-branch without checking
+   that `value !== 0`.  Edge's crypto bindings (and likely others) call
+   `napi_define_class` with property descriptors where all of
+   {method, getter, setter, value} are zero — standard N-API for
+   "property with no initial value".  emnapi crashes dereferencing handle 0.
+
+   Fix in [browser-target/src/napi-host/index.ts](browser-target/src/napi-host/index.ts):
+   `patchEmnapiDefineForEmptyValue()` wraps emnapi's `napi_define_class`
+   and `napi_define_properties` (same bug class), walks the descriptor
+   array, and rewrites `value: 0` to `value: 1` (= `GlobalHandle.UNDEFINED`).
+   emnapi then resolves it to `undefined` — the intended N-API semantics
+   for a value-less descriptor.
+
+2. **Buffer polyfill on `globalThis`.**  emnapi's
+   `@emnapi/runtime/dist/emnapi.esm-bundler.js:156` captures
+   `_Buffer = typeof Buffer === 'function' ? Buffer : require('buffer').Buffer`
+   at *module evaluation* time.  In a worker, neither resolves, so
+   `napi_create_buffer_copy` throws `NotSupportBufferError`.
+
+   Fix: vendored npm `buffer` package (MIT, the canonical Node Buffer
+   polyfill).  New file
+   [browser-target/src/host/globals-shim.ts](browser-target/src/host/globals-shim.ts)
+   imports `Buffer`, assigns to `globalThis.Buffer`.  Imported BEFORE
+   `@emnapi/*` in `napi-host/index.ts` so the capture sees our shim.
+
+   Per facade rule, this is the only file in the codebase that imports
+   from the `buffer` package.
+
+### Still broken (follow-up)
+
+- `createHash('sha256').update('hello').digest('hex')` returns 64 hex
+  chars of JavaScript source bytes (heap garbage), not the real digest.
+  Suspect: `napi_create_buffer_copy` reading wrong wasm address, OR edge's
+  C++ digest output buffer isn't where we expect.
+- `crypto.randomBytes(16)` returns all-zero bytes.  `nativeGetRandomValues`
+  is now cached at module load (added defensively per the
+  globalThis-mutation pattern) but didn't change the output.  OpenSSL's
+  CSPRNG may not be seeding from `/dev/urandom`, or the seed path takes
+  some other syscall.
+- `crypto.randomUUID()` returns `00000000-0000-4000-8000-000000000000`
+  — UUID v4 structure correct but all-zero random bits.  Same root cause
+  as randomBytes.
+- `Uncaught Error: dynCall before table ready` surfaces async after
+  `_start` returns when the crypto probe runs.  Our
+  `unofficial_napi_create_env` passes throw-placeholders for dynCall
+  callbacks; something queues a deferred callback after instance binding.
+  Not blocking load.
+
+### Memory added
+
+[feedback-full-node-compat-first](../.claude/projects/-Users-robertpolana-etc-projects-edgejs/memory/feedback-full-node-compat-first.md)
+— prefer fixing the real napi/wasi layer over polyfilling at the JS
+layer.  Web Crypto can't reach 100% Node compat (MD5, DES, X.509, sync
+APIs are gaps).
+
+---
+
 ## 2026-05-21 — Chunk B: writable FileSystem layer (fs.writeFileSync works)
 
 Stood up the writable layer of the FS facade.  Userland workloads that

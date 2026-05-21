@@ -143,6 +143,14 @@ function bytes(memory: WebAssembly.Memory): Uint8Array {
   return new Uint8Array(memory.buffer);
 }
 
+// Capture native Web Crypto's getRandomValues at module load.  Same
+// globalThis-mutation pattern as TextEncoder — edge replaces
+// `globalThis.crypto` mid-bootstrap with its own object, and that one
+// doesn't have a working getRandomValues from our perspective.  Without
+// caching, our /dev/urandom shim writes zeros, which OpenSSL seeds with,
+// which makes randomBytes / randomUUID return all-zero output.
+const nativeGetRandomValues = crypto.getRandomValues.bind(crypto);
+
 // Capture native text-codec instances at module load.  Edge's bootstrap
 // replaces globalThis.TextEncoder/Decoder with its own polyfill (which
 // goes through V8 string ops we don't host), so any `new TextEncoder()`
@@ -254,7 +262,7 @@ export function createWasiShim(ctx: ShimContext): {
         while (off < buf.length) {
           const chunk = Math.min(tmpChunk.length, buf.length - off);
           const slice = chunk === tmpChunk.length ? tmpChunk : tmpChunk.subarray(0, chunk);
-          crypto.getRandomValues(slice);
+          nativeGetRandomValues(slice);
           buf.set(slice, off);
           off += chunk;
         }
@@ -938,7 +946,7 @@ export function createWasiShim(ctx: ShimContext): {
       while (off < bufLen) {
         const chunk = Math.min(tmp.length, bufLen - off);
         const slice = chunk === tmp.length ? tmp : tmp.subarray(0, chunk);
-        crypto.getRandomValues(slice);
+        nativeGetRandomValues(slice);
         dst.set(slice, off);
         off += chunk;
       }
