@@ -5,6 +5,45 @@ out the browser target. Newest entries first.
 
 ---
 
+## 2026-05-21 — Capability probe + chunk H (timers) free-win
+
+Switched worker args temporarily to small probes after chunk C landed:
+
+- **Timers — work for free.**  `setTimeout(cb, 100)` and `setTimeout(cb, 250)`
+  fire correctly in order, `process.exit(0)` returns cleanly.
+  ```
+  [stdout] before
+  [stdout] after 100ms
+  [stdout] after 250ms
+  _start ran 386 ms (returned)
+  ```
+  Chunk H is done with zero work — `poll_oneoff` (built for sockets in
+  chunk C) with `Atomics.wait` timeout handling is exactly what libuv's
+  timer scheduler needs.  No separate timer implementation required.
+
+- **`fs.writeFileSync` fails** with `ENOENT: no such file or directory,
+  open '/tmp/test.txt'` — as expected.  The `bundled` adapter is
+  read-only and `/tmp` isn't a served prefix.  Unblocks: chunk B (OPFS).
+
+- **`require('crypto')` fails** at module load.  Stack:
+  ```
+  TypeError: Cannot read properties of undefined (reading 'value')
+    at emnapiDefineProperty (.../@emnapi_core.js:4906:50)
+    at napi_define_class (.../@emnapi_core.js:5148:11)
+    at createNativeKeyObjectClass (eval at emnapiCreateFunction ...)
+    at node:internal/crypto/keys:107:5
+  ```
+  Bug is inside emnapi's `napi_define_class` — reads `.value` on an
+  undefined property descriptor.  Property descriptor format mismatch
+  between what edge passes and what emnapi expects.  Not in our shim;
+  needs either an emnapi adapter or a `napi_define_class` override.
+  Tracked as new follow-up.
+
+Worker args restored to the chunk-C HTTP demo (`http.createServer`
+running, ready for fetch).
+
+---
+
 ## 2026-05-20 — MILESTONE: edge.js serves HTTP in browser (chunk C)
 
 ```js
