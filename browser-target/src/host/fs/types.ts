@@ -133,6 +133,14 @@ export interface FileSystem {
    */
   pread(handle: FsHandle, dst: Uint8Array, offset: number): FsResult<number>;
 
+  /**
+   * Write `src.length` bytes from `src` into `handle` at its current
+   * cursor position.  Returns the number of bytes actually written;
+   * adapters that can't write return ROFS.  Writes to a directory
+   * handle return ISDIR.
+   */
+  write(handle: FsHandle, src: Uint8Array): FsResult<number>;
+
   /** stat by handle. */
   fstat(handle: FsHandle): FsResult<FileStat>;
 

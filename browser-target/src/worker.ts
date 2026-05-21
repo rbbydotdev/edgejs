@@ -8,6 +8,8 @@ import { createWasiShim, ExitSignal, type BridgeRequest } from "./wasi-shim";
 import { Trace, toUnifiedJsonl } from "./trace";
 import { createNapiHost } from "./napi-host";
 import { createBundledFs } from "./host/fs/adapters/bundled";
+import { createOpfsFs } from "./host/fs/adapters/opfs";
+import { layered } from "./host/fs/adapters/layered";
 import { DEFAULT_MEM_OPTIONS, instrumentNamespace, pendingMem } from "./mem-snapshot";
 import { runSabViewAliasingDiagnostic, formatReport as formatSabReport } from "./diagnostics/sab-view-aliasing";
 import { createByteLengthWatcher, formatEvents as formatBlEvents } from "./diagnostics/byteLength-watcher";
@@ -86,11 +88,19 @@ async function runEdgeWithEmnapi() {
   const napi = createNapiHost({ memory });
   post("log", { text: `napi-host: ${Object.keys(napi.imports.napi).length} napi entries seeded`, level: "info" });
 
-  // FileSystem facade — bundled adapter serves /node-lib/** and /node/deps/**
-  // out of the page origin via sync XHR.  Any other path returns NOENT.
+  // FileSystem facade — layered combinator: reads check bundled first
+  // (covers /node-lib/** + /node/deps/**), fall through to opfs for any
+  // other path.  Writes go straight to opfs (bundled returns ROFS, layered
+  // skips it).  The opfs adapter is currently in-memory only (see
+  // #!~debt opfs-not-yet-persistent inside opfs.ts); persistence to real
+  // OPFS is deferred to chunk B-2.
   const bundledFs = createBundledFs({
     log: (line) => post("log", { text: line, level: "info" }),
   });
+  const opfsFs = await createOpfsFs({
+    log: (line) => post("log", { text: line, level: "info" }),
+  });
+  const fs = layered(bundledFs, opfsFs);
 
   // Wasi shim — provides wasi_snapshot_preview1, wasix_32v1, wasi.thread-spawn
   // and a SocketBus we wire to the HTTP bridge port below.
@@ -106,7 +116,7 @@ async function runEdgeWithEmnapi() {
     // default and edge boots fine.  Adding env vars made wasi-libc trigger
     // a different init path that breaks uv_cwd downstream.
     env: {},
-    fs: bundledFs,
+    fs,
     postLog: (text, level) => {
       if (level === "out") post("log", { text: `[stdout] ${text}`, level: "out" });
       else if (level === "warn") post("log", { text: `[stderr] ${text}`, level: "warn" });

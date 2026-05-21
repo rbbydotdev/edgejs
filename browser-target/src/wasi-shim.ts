@@ -29,6 +29,20 @@ const ERRNO_BADF = 8;
 const ERRNO_AGAIN = 6;
 const ERRNO_NOSYS = 52;
 
+// WASI oflags bit constants — what path_open / path_open2 pass us via the
+// oflags arg.  We honor CREAT and TRUNC; DIRECTORY/EXCL are passed as
+// hints (DIRECTORY rebinds to OpenOptions.directory; EXCL is ignored —
+// adapters can layer their own create-exclusive semantics later).
+const OFLAGS_CREAT = 0x1;
+const OFLAGS_DIRECTORY = 0x2;
+const OFLAGS_TRUNC = 0x8;
+
+// WASI fd-rights bit constants we test on `rightsBase` to decide whether
+// the caller asked for write access.  preview1 represents O_RDWR / O_WRONLY
+// at open() time via rights bits, not via a separate flag.  These two are
+// the only ones we care about for routing to a writable adapter.
+const RIGHTS_FD_WRITE = 0x40n;
+
 // Cache native globals at module load.  Edge mutates globalThis during
 // bootstrap (TextEncoder, performance, possibly more); resolving these
 // through the global object in hot paths is a tested-and-shipped bug
@@ -192,7 +206,16 @@ export function createWasiShim(ctx: ShimContext): {
     }
     const vfd = vfds.get(fd);
     if (vfd) {
-      // Route to the vfd's writer if it has one; else accept and discard.
+      // FS-backed fds: route to the FileSystem facade so writes land on the
+      // backing adapter (opfs / in-memory / whatever the layered combinator
+      // sent us to at open() time).
+      if (vfd.fsHandle !== undefined) {
+        const res = ctx.fs.write(vfd.fsHandle, data);
+        if (!res.ok) return -1;
+        return res.value;
+      }
+      // Pure-virtual fds (e.g. fd_pipe): route to the vfd's writer if it
+      // has one; else accept and discard.
       return vfd.write ? vfd.write(data) : data.length;
     }
     return -1;
@@ -265,8 +288,13 @@ export function createWasiShim(ctx: ShimContext): {
     return ERRNO_SUCCESS;
   }
 
-  function openViaFs(normalized: string, openedFdPtr: number, syscall: string): number {
-    const res = ctx.fs.open(normalized);
+  function openViaFs(
+    normalized: string,
+    openedFdPtr: number,
+    syscall: string,
+    options: import("./host/fs/types").OpenOptions = {},
+  ): number {
+    const res = ctx.fs.open(normalized, options);
     if (!res.ok) {
       // Quiet the noisy "ENOENT for paths the FS doesn't serve" log to keep
       // bootstrap log readable; the trace still records every call+errno.
@@ -282,8 +310,21 @@ export function createWasiShim(ctx: ShimContext): {
       fsHandle: res.value,
     });
     view(ctx.memory).setUint32(openedFdPtr, newFd, true);
-    ctx.postLog(`[wasi] ${syscall} ${normalized} → fd ${newFd} (fs)`, "info");
+    const mode = options.write ? "rw" : "ro";
+    ctx.postLog(`[wasi] ${syscall} ${normalized} → fd ${newFd} (fs/${mode})`, "info");
     return ERRNO_SUCCESS;
+  }
+
+  function oflagsToOpenOptions(
+    oflags: number,
+    rightsBase: bigint,
+  ): import("./host/fs/types").OpenOptions {
+    return {
+      directory: (oflags & OFLAGS_DIRECTORY) !== 0,
+      write: (rightsBase & RIGHTS_FD_WRITE) !== 0n,
+      create: (oflags & OFLAGS_CREAT) !== 0,
+      truncate: (oflags & OFLAGS_TRUNC) !== 0,
+    };
   }
 
   function writeFileStat(dv: DataView, statPtr: number, stat: FileStat): void {
@@ -746,8 +787,8 @@ export function createWasiShim(ctx: ShimContext): {
       _dirflags: number,
       pathPtr: number,
       pathLen: number,
-      _oflags: number,
-      _rightsBase: bigint,
+      oflags: number,
+      rightsBase: bigint,
       _rightsInheriting: bigint,
       _fdflags: number,
       openedFdPtr: number,
@@ -757,7 +798,8 @@ export function createWasiShim(ctx: ShimContext): {
       if (isVirtualUrandom(normalized)) {
         return openVirtualUrandom(path, openedFdPtr, "path_open");
       }
-      return openViaFs(normalized, openedFdPtr, "path_open");
+      return openViaFs(normalized, openedFdPtr, "path_open",
+        oflagsToOpenOptions(oflags, rightsBase));
     },
 
     // path_filestat_get — stat a path.  Routes through the FS facade for
@@ -1223,8 +1265,8 @@ export function createWasiShim(ctx: ShimContext): {
       _dirflags: number,
       pathPtr: number,
       pathLen: number,
-      _oflags: number,
-      _rightsBase: bigint,
+      oflags: number,
+      rightsBase: bigint,
       _rightsInheriting: bigint,
       _fdflags: number,
       _fdflagsExt: number,
@@ -1235,7 +1277,8 @@ export function createWasiShim(ctx: ShimContext): {
       if (isVirtualUrandom(normalized)) {
         return openVirtualUrandom(path, openedFdPtr, "path_open2");
       }
-      return openViaFs(normalized, openedFdPtr, "path_open2");
+      return openViaFs(normalized, openedFdPtr, "path_open2",
+        oflagsToOpenOptions(oflags, rightsBase));
     },
 
     // Signal handler install / delivery.  In a browser worker there's no

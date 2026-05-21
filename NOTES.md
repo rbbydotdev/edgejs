@@ -5,6 +5,117 @@ out the browser target. Newest entries first.
 
 ---
 
+## 2026-05-21 — Chunk B: writable FileSystem layer (fs.writeFileSync works)
+
+Stood up the writable layer of the FS facade.  Userland workloads that
+read/write files in `/tmp`, `/home/edge`, etc. now round-trip cleanly.
+
+Worker args were temporarily switched to:
+
+```js
+const fs = require('fs');
+fs.writeFileSync('/tmp/test.txt', 'hi from edge');
+console.log('read:', fs.readFileSync('/tmp/test.txt', 'utf8'));
+```
+
+Output:
+
+```
+[wasi] path_open2 /tmp/test.txt → fd 108 (fs/rw)
+[wasi] path_open2 /tmp/test.txt → fd 109 (fs/ro)
+[stdout] read: hi from edge
+_start ran 155 ms (returned)
+```
+
+Worker args were restored to the chunk-C HTTP demo afterward; the demo
+still prints `[stdout] listening` (verified end-to-end).
+
+### Architecture decision: Option A (in-memory map) for v1
+
+Picked Option A from the brief.  Real OPFS persistence (Option B, async
+pre-warm of mount-point dir handles; Option C, SAB+Atomics bridge to a
+sister worker holding handles) is deferred to chunk B-2.  The shim
+contract is synchronous and obtaining a `FileSystemSyncAccessHandle`
+requires an async `getFileHandle({create:true})` first, so either
+approach needs a non-trivial sync/async boundary that wasn't worth
+fighting before proving the layered-architecture works end-to-end.
+
+The factory is still async (`createOpfsFs`) so chunk B-2 can swap the
+storage body for a real OPFS pre-walk without touching `worker.ts` or
+`wasi-shim.ts`.  Naming the file `opfs.ts` keeps the call site honest
+about the intended destination.
+
+### Files added / changed
+
+| Path | Lines | Role |
+|---|---|---|
+| `browser-target/src/host/fs/adapters/opfs.ts` | 305 (new) | In-memory writable adapter; async factory; #!~debt opfs-not-yet-persistent |
+| `browser-target/src/host/fs/adapters/layered.ts` | 168 (new) | Ordered fan-out for reads, first-writable for writes; packs `(adapterIndex, innerHandle)` into one FsHandle |
+| `browser-target/src/host/fs/adapters/bundled.ts` | +5 | Added `write()` -> ROFS for the FileSystem interface |
+| `browser-target/src/host/fs/types.ts` | +8 | Added `write(handle, src)` to the interface |
+| `browser-target/src/wasi-shim.ts` | ~+25 | Added oflags/rights -> OpenOptions translation in `path_open` + `path_open2`; routed `writeBytesToFd` through `ctx.fs.write` for fs-backed fds |
+| `browser-target/src/worker.ts` | ~+10 | Constructed `opfsFs` (async), composed `layered(bundledFs, opfsFs)`, replaced `fs: bundledFs` with `fs` |
+
+### Layered combinator semantics (load-bearing)
+
+- Reads try each adapter in order; first non-NOENT wins.  Bundled
+  claims `/node-lib/**` + `/node/deps/**`; opfs claims everything else.
+- Writes go to the first adapter that DOESN'T return ROFS.  Bundled
+  returns ROFS for any write, so writes route straight to opfs.
+- Handles are packed `(adapterIndex << 24) | innerHandle`.  Each
+  read/write/close/etc. dispatches back to the same adapter.  Keeps
+  adapter fd namespaces independent.
+
+### #!~debt added
+
+- `opfs-not-yet-persistent` (opfs.ts file header) — backed by a flat
+  in-memory `Map<path, Uint8Array>`.  Tab reload loses state.  Real
+  OPFS via `FileSystemSyncAccessHandle` lands in chunk B-2.
+- `opfs-flat-store` (opfs.ts, implicit in file header) — directories
+  aren't modeled; readdir() enumerates direct children by scanning all
+  keys with the dir prefix.  Works for the cases that exercise it,
+  could be O(n) on big trees.  Real OPFS naturally inherits the
+  directory tree structure.
+
+### WASI flag translation (new code path)
+
+`path_open` / `path_open2` now translate the WASI oflags / rightsBase
+into our `OpenOptions`:
+
+- `OFLAGS_CREAT` (0x1) -> `create: true`
+- `OFLAGS_TRUNC` (0x8) -> `truncate: true`
+- `OFLAGS_DIRECTORY` (0x2) -> `directory: true`
+- `RIGHTS_FD_WRITE` (0x40) bit set in rightsBase -> `write: true`
+
+Native Node `fs.writeFileSync` calls land with `oflags = 0x9`
+(CREAT|TRUNC) and `rightsBase` having the FD_WRITE bit, which gets
+translated correctly and routes to opfs through layered's
+first-writable rule.
+
+### Unexpected things the next chunk should know
+
+1. The `[wasi] path_open2 /tmp/test.txt -> fd 108 (fs/rw)` log emits
+   TWICE during a writeFileSync+readFileSync sequence — once for the
+   write open (fd 108) and once for the read open (fd 109).  Edge
+   closes between them.  Means edge.js is doing its own open/close
+   per syscall, not reusing an open handle — fine, no caching needed
+   on our side.
+2. Existing `bundled` adapter doesn't claim `/tmp/**` paths (returns
+   NOENT for anything outside its two prefixes), which is exactly
+   what `layered` needs to fall through to opfs.  No changes there.
+3. The `_fdflags` arg from `path_open*` is still ignored — edge isn't
+   passing FD_APPEND in any observed call, but if it ever does, the
+   in-memory adapter would silently overwrite from cursor 0 instead.
+   Worth wiring through if a workload hits this.  Easy fix when the
+   need surfaces.
+4. `fd_seek` returns `0` and never updates the cursor — meaning
+   `fs.readFileSync` after a `fs.writeFileSync` works only because
+   edge re-opens the file (fresh handle, cursor at 0).  Random-access
+   `fs.read` / `fs.write` on the same fd would misbehave.  Real seek
+   support is a follow-up; today's userland workloads pass.
+
+---
+
 ## 2026-05-21 — Capability probe + chunk H (timers) free-win
 
 Switched worker args temporarily to small probes after chunk C landed:

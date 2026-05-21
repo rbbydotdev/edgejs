@@ -240,6 +240,11 @@ export function createBundledFs(opts: BundledOptions = {}): FileSystem {
       return ok(n);
     },
 
+    write(_handle: FsHandle, _src: Uint8Array): FsResult<number> {
+      // Read-only adapter — see file-header #!~debt no-write-support.
+      return err(FsErrno.ROFS);
+    },
+
     fstat(handle: FsHandle): FsResult<FileStat> {
       const f = handles.get(handle);
       if (!f) return err(FsErrno.BADF);
