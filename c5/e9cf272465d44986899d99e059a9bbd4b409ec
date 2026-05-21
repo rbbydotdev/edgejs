@@ -1,0 +1,22 @@
+browser-target/src/host/globals-shim.ts
+  s_6dbc06526d4b2f::t_cbbd8022513058 19-22,24,32
+  s_6dbc06526d4b2f::t_d40613fe644011 25-31,33-37
+NOTES.md
+  s_6dbc06526d4b2f::t_036ae6154589b2 8-73
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.11",
+  "base_commit_sha": "c5e9cf272465d44986899d99e059a9bbd4b409ec",
+  "prompts": {},
+  "sessions": {
+    "s_6dbc06526d4b2f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "bd2337df-57ab-4537-b6f8-2eb7dc1f8e59",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
