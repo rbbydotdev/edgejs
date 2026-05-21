@@ -18,6 +18,7 @@
 // See NOTES.md 2026-05-20 "phantom-arg audit" entry.
 
 import type { Context, Env } from "@emnapi/runtime";
+import type { ModuleOverride } from "../policies";
 
 // Capture native text-codec instances at module load.  Edge mutates
 // globalThis.TextEncoder/Decoder mid-boot with a polyfill that goes
@@ -32,17 +33,19 @@ export interface UnofficialHostContext {
   /** The Env we created during `unofficial_napi_create_env`; lookup table by env handle. */
   envs: Map<number, Env>;
   /**
-   * Module-source overrides — keyed by edge's builtin filename format
+   * Module-source overrides — see ModuleOverride type in policies/index.ts.
+   * Keyed by edge's builtin filename format
    * (`node:crypto`, `node:inspector`) OR bare specifier (`crypto`).  When
    * edge's `BuiltinsCompileFunctionCallback` calls our
    * `unofficial_napi_contextify_compile_function` with one of these
    * filenames, we substitute the override source for edge's bundled
    * version from its C++ builtin catalog.
    *
-   * Values: source string OR null (empty stub `module.exports = {}`).
+   * Values: see `ModuleOverride` in policies/index.ts — string (replace),
+   * null (empty stub), `{ post: string }` (keep body, append patch).
    * Empty map / undefined = no overrides; fall through to edge's source.
    */
-  builtinOverrides?: Map<string, string | null>;
+  builtinOverrides?: Map<string, ModuleOverride>;
   /** Optional log sink — used for debug breadcrumbs that can't go through
    * console.* (edge mutates console internals during bootstrap). */
   postLog?: (line: string, level: "out" | "warn" | "err" | "debug") => void;
@@ -203,12 +206,24 @@ export function createUnofficialNapi(ctx: UnofficialHostContext): Record<string,
       // same `builtinOverrides` map.
       if (ctx.builtinOverrides && typeof filename === "string") {
         const bare = filename.startsWith("node:") ? filename.slice(5) : filename;
-        let override: string | null | undefined;
+        let override: ModuleOverride | undefined;
         if (ctx.builtinOverrides.has(filename)) override = ctx.builtinOverrides.get(filename);
         else if (ctx.builtinOverrides.has(bare)) override = ctx.builtinOverrides.get(bare);
         if (override !== undefined) {
           ctx.postLog?.(`[override] matched ${filename}`, "debug");
-          code = override === null ? "module.exports = {};" : override;
+          if (override === null) {
+            code = "module.exports = {};";
+          } else if (typeof override === "string") {
+            code = override;
+          } else {
+            // { pre?, post? } — splice patches around edge's bundled body.
+            // The new Function constructor below wraps the whole thing in a
+            // single function body, so both patches see the same locals +
+            // wrapper args (`internalBinding`, `primordials`, `module`, ...).
+            const pre = override.pre ? override.pre + "\n" : "";
+            const post = override.post ? "\n" + override.post : "";
+            if (pre || post) code = pre + code + post;
+          }
         }
       }
 

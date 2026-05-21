@@ -36,33 +36,69 @@
 // Future surfaces (when needs surface): `napiOverrides`, `wasiHandlers`,
 // `fsAdapters`, etc.  Add fields to `Policy` + the compose function.
 
+/**
+ * A built-in module override.  Four shapes:
+ *
+ * - `string` → replace the module body entirely with this source.
+ * - `null` → stub with `module.exports = {}`.
+ * - `{ post: string }` → keep edge's bundled body, APPEND `post` after it
+ *   (inside the same function wrapper).  The post code sees all the
+ *   module's locals + `module.exports` and can patch them surgically.
+ * - `{ pre: string }` → PREPEND `pre` before edge's bundled body.  Use
+ *   when the module's body freezes/snapshots state and the patch must
+ *   run before that (e.g. `per_context/primordials.js` snapshots
+ *   `ArrayBuffer.prototype.byteLength` then freezes — patching it after
+ *   the freeze can't reach it; patching before reaches the snapshot).
+ * - `{ pre, post }` → both, in that order.
+ *
+ * `pre` and `post` are the right shapes when you want to fix one piece of
+ * a module without re-pasting hundreds of lines of vendored code.
+ */
+export type ModuleOverride =
+  | string
+  | null
+  | { pre?: string; post?: string };
+
 export interface Policy {
   /** Short identifier — used in logs and `--policies` CLI. */
   name: string;
   /** Human-readable, one-line summary of what this policy does. */
   description: string;
-  /** Replacements for compiled-in module sources, keyed by `node:<id>` or `<id>`. */
-  builtinOverrides?: Record<string, string | null>;
+  /** Replacements / surgical patches for compiled-in module sources,
+   *  keyed by `node:<id>` or `<id>`. */
+  builtinOverrides?: Record<string, ModuleOverride>;
   /** JS source concatenated in front of every user `-e` script. */
   userScriptPrelude?: string;
 }
 
 export interface ComposedPolicies {
-  builtinOverrides: Record<string, string | null>;
+  builtinOverrides: Record<string, ModuleOverride>;
   userScriptPrelude: string;
   /** The policy names, in application order — useful for diagnostics. */
   applied: string[];
 }
 
 export function composePolicies(policies: Policy[]): ComposedPolicies {
-  const builtinOverrides: Record<string, string | null> = {};
+  const builtinOverrides: Record<string, ModuleOverride> = {};
   const preludeParts: string[] = [];
   const applied: string[] = [];
   for (const p of policies) {
     applied.push(p.name);
     if (p.builtinOverrides) {
       for (const [k, v] of Object.entries(p.builtinOverrides)) {
-        builtinOverrides[k] = v;
+        // Last-wins on conflict, EXCEPT when both shapes are pre/post
+        // patches — then we concatenate so two policies can each contribute
+        // a patch to the same module without stomping each other.  `pre`s
+        // and `post`s compose in declaration order.
+        const prev = builtinOverrides[k];
+        if (isPatchOverride(prev) && isPatchOverride(v)) {
+          builtinOverrides[k] = {
+            pre: (prev.pre ?? "") + (v.pre ? "\n" + v.pre : ""),
+            post: (prev.post ?? "") + (v.post ? "\n" + v.post : ""),
+          };
+        } else {
+          builtinOverrides[k] = v;
+        }
       }
     }
     if (p.userScriptPrelude) preludeParts.push(p.userScriptPrelude);
@@ -70,12 +106,23 @@ export function composePolicies(policies: Policy[]): ComposedPolicies {
   return { builtinOverrides, userScriptPrelude: preludeParts.join(""), applied };
 }
 
+function isPatchOverride(v: ModuleOverride | undefined): v is { pre?: string; post?: string } {
+  return (
+    typeof v === "object" && v !== null &&
+    (typeof (v as { post?: unknown }).post === "string" || typeof (v as { pre?: unknown }).pre === "string")
+  );
+}
+
 export { bufferPoolDisable } from "./buffer-pool-disable";
+export { bufferWriteSync } from "./buffer-write-sync";
+export { bufferWasmAliased } from "./buffer-wasm-aliased";
 export { inboundHttpsViaSW } from "./inbound-https-via-sw";
 export { outboundThrow } from "./outbound-throw";
 export { outboundFetchTunnel } from "./outbound-fetch-tunnel";
 
 import { bufferPoolDisable } from "./buffer-pool-disable";
+import { bufferWriteSync } from "./buffer-write-sync";
+import { bufferWasmAliased } from "./buffer-wasm-aliased";
 import { inboundHttpsViaSW } from "./inbound-https-via-sw";
 import { outboundThrow } from "./outbound-throw";
 import { outboundFetchTunnel } from "./outbound-fetch-tunnel";
@@ -110,6 +157,7 @@ import { outboundFetchTunnel } from "./outbound-fetch-tunnel";
  */
 export const minimalPolicies: Policy[] = [
   bufferPoolDisable,
+  bufferWasmAliased,
 ];
 
 /**
@@ -126,6 +174,7 @@ export const minimalPolicies: Policy[] = [
  */
 export const defaultBrowserPolicies: Policy[] = [
   bufferPoolDisable,
+  bufferWasmAliased,
   inboundHttpsViaSW,
   outboundThrow,
 ];
@@ -139,6 +188,8 @@ export const defaultBrowserPolicies: Policy[] = [
  */
 export const policyRegistry: Record<string, Policy> = {
   [bufferPoolDisable.name]: bufferPoolDisable,
+  [bufferWriteSync.name]: bufferWriteSync,
+  [bufferWasmAliased.name]: bufferWasmAliased,
   [inboundHttpsViaSW.name]: inboundHttpsViaSW,
   [outboundThrow.name]: outboundThrow,
   [outboundFetchTunnel.name]: outboundFetchTunnel,

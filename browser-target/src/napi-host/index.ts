@@ -21,6 +21,8 @@ import { createContext, type Context, type Env } from "@emnapi/runtime";
 import { createNapiModule, type NapiModule } from "@emnapi/core";
 import { createInstanceProxy } from "./instance-proxy";
 import { createUnofficialNapi } from "./unofficial";
+import type { ModuleOverride } from "../policies";
+export type { ModuleOverride };
 
 export interface NapiHostOptions {
   memory: WebAssembly.Memory;
@@ -29,16 +31,21 @@ export interface NapiHostOptions {
   /**
    * Override the source for edge.js built-in modules (`crypto`, `inspector`,
    * `fs`, etc.) before they're compiled.  Keys can be `node:<id>` (the
-   * full filename edge uses) or bare specifier (`<id>`).  Values: source
-   * string OR null (empty stub `module.exports = {}`) OR undefined (no
-   * override, use edge's bundled source).
+   * full filename edge uses) or bare specifier (`<id>`).
+   *
+   * Value shapes:
+   * - `string` → replace module body entirely with this source.
+   * - `null` → empty stub (`module.exports = {}`).
+   * - `{ post: string }` → keep edge's bundled body, append `post` source
+   *   AFTER it (inside the same function wrapper).  Use this for surgical
+   *   patches that need access to module locals + module.exports.
+   * - `undefined` → no override; use edge's bundled source.
    *
    * This intercepts edge's `BuiltinsCompileFunctionCallback` →
-   * `unofficial_napi_contextify_compile_function` path — the same hook
-   * edge uses for ALL built-ins, including compiled-in ones that don't
-   * pass through WASI.
+   * `unofficial_napi_contextify_compile_function` path (bootstrap modules)
+   * AND the `napi_run_script` path (lazy-required builtins).
    */
-  builtinOverrides?: Record<string, string | null | undefined>;
+  builtinOverrides?: Record<string, ModuleOverride | undefined>;
   /** Optional debug sink for host-side breadcrumbs (compile filenames,
    * override matches).  Routed to the same channel as the worker's
    * postLog so output is visible in both Node-harness and browser. */
@@ -165,11 +172,13 @@ function patchEmnapiToUseWasmBackedBuffers(
   const origCreateBuffer = napiNs.napi_create_buffer;
   const origCreateBufferCopy = napiNs.napi_create_buffer_copy;
   const origCreateArrayBuffer = napiNs.napi_create_arraybuffer;
+  const origCreateExternalArrayBuffer = napiNs.napi_create_external_arraybuffer;
   const origCreateTypedArray = napiNs.napi_create_typedarray;
   const origGetArrayBufferInfo = napiNs.napi_get_arraybuffer_info;
   const origGetTypedArrayInfo = napiNs.napi_get_typedarray_info;
   const origGetBufferInfo = napiNs.napi_get_buffer_info;
   const origIsArrayBuffer = napiNs.napi_is_arraybuffer;
+  const origAddFinalizer = napiNs.napi_add_finalizer;
 
   // Tracks our wasm-backed "ArrayBuffer" handles.  These are Uint8Array
   // views (NOT real ArrayBuffer instances), but we present them to wasm
@@ -256,6 +265,56 @@ function patchEmnapiToUseWasmBackedBuffers(
     };
   }
 
+  // Override napi_create_external_arraybuffer.  Edge calls this from
+  // `BindingCreateUnsafeArrayBuffer` (src/edge_buffer.cc:1132) and from
+  // stream / udp wrap paths — every time, `external_data` is a wasm-side
+  // pointer the caller has already malloc'd, and `byte_length` is the
+  // region size.  Default emnapi creates a JS-heap `new ArrayBuffer(N)` and
+  // remembers the mapping in `emnapiExternalMemory.table`, which forces
+  // every read to sync wasm↔JS through napi entry points and leaves JS-side
+  // indexed access STALE after C++ writes (see NOTES.md #!~debt
+  // `buffer-write-jsab-stale`).
+  //
+  // Fix: register the handle's value as a Uint8Array view OVER wasm memory
+  // at (external_data, byte_length).  JS and wasm now share the SAME bytes
+  // — `view[i]` and the C++ pointer read/write the same memory cells.  No
+  // sync, no mirror, no divergence.
+  //
+  // CONSUMER COMPATIBILITY: lib's `createUnsafeBuffer` does
+  // `new FastBuffer(createUnsafeArrayBuffer(size))`.  Default behavior:
+  // `new Uint8Array(arrayBuffer)` views; `new Uint8Array(typedArray)` COPIES.
+  // With our override returning a Uint8Array view, lib would copy — defeating
+  // the fix.  The `buffer-wasm-aliased` policy supplies a `{ post }` patch
+  // for `internal/buffer` that rewrites `createUnsafeBuffer` to detect a
+  // typed-array result and construct the FastBuffer via the 3-arg
+  // `(buffer, byteOffset, byteLength)` form to keep it a view.  Apply this
+  // policy together with this napi override or the wins are lost.
+  if (typeof origCreateExternalArrayBuffer === "function") {
+    napiNs.napi_create_external_arraybuffer = (
+      env: number, external_data: number, byte_length: number,
+      finalize_cb: number, finalize_hint: number, result: number,
+    ) => {
+      // 0-byte external AB: emnapi has special MessageChannel posting logic;
+      // delegate so we don't break that subtle path.
+      if (byte_length === 0 || external_data === 0) {
+        return origCreateExternalArrayBuffer(env, external_data, byte_length, finalize_cb, finalize_hint, result);
+      }
+      const view = new Uint8Array(memory.buffer, external_data, byte_length);
+      const handle = context.addToCurrentScope(view);
+      wasmBackedABs.set(handle.id, { ptr: external_data, length: byte_length });
+      const dv = new DataView(memory.buffer);
+      if (result > 0) dv.setUint32(result, handle.id, true);
+      // Mirror emnapi's finalizer convention: caller passes (finalize_data =
+      // external_data) and the C++ finalizer frees that pointer when JS GCs
+      // the wrapper.  napi_add_finalizer registers via the existing
+      // emnapi finalizer machinery — no special handling needed.
+      if (finalize_cb && typeof origAddFinalizer === "function") {
+        origAddFinalizer(env, handle.id, external_data, finalize_cb, finalize_hint, 0);
+      }
+      return 0; // napi_ok
+    };
+  }
+
   // napi_create_typedarray on our wasm-backed AB → create the typed array
   // directly over wasm memory at (ptr + byteOffset), bypassing emnapi's
   // `isArrayBuffer()` check.  For non-wasm-backed ABs, delegate.
@@ -331,6 +390,12 @@ function patchEmnapiToUseWasmBackedBuffers(
   }
   if (typeof origGetBufferInfo === "function") {
     napiNs.napi_get_buffer_info = (env: number, buf: number, data: number, length: number) => {
+      // syncWasmToJs fires BEFORE the C++ binding's memcpy, so a write
+      // binding's call here captures pre-write bytes only.  Subsequent
+      // napi-going reads (`toString`, `compare`, …) re-trigger this and
+      // pull post-write bytes.  In wasm-aliased mode (default) JS and
+      // wasm share storage so this is a no-op; in legacy emnapi-external
+      // mode (no buffer-wasm-aliased policy) it provides the only sync.
       syncWasmToJs(buf);
       return origGetBufferInfo(env, buf, data, length);
     };
@@ -396,7 +461,7 @@ export function createNapiHost(opts: NapiHostOptions): NapiHost {
   // Layer our unofficial_napi_* impls into the napi namespace.  This is the
   // ONE place edge-specific behavior is added on top of emnapi.
   // Normalize builtinOverrides into a Map for fast lookup; drop undefined entries.
-  const builtinOverridesMap = new Map<string, string | null>();
+  const builtinOverridesMap = new Map<string, ModuleOverride>();
   if (opts.builtinOverrides) {
     for (const [key, value] of Object.entries(opts.builtinOverrides)) {
       if (value === undefined) continue;
@@ -426,7 +491,10 @@ export function createNapiHost(opts: NapiHostOptions): NapiHost {
     //   <source>\n
     //   })\n
     //   //# sourceURL=node:<id>\n
-    const overrideRegex = /^(\(function\([^)]*\) \{\n)[\s\S]*(\n\}\)\n\/\/# sourceURL=)/;
+    //
+    // Body is captured as group 2 so the `{ post }` shape can keep it and
+    // splice the patch source AFTER it (inside the same function wrapper).
+    const overrideRegex = /^(\(function\([^)]*\) \{\n)([\s\S]*)(\n\}\)\n\/\/# sourceURL=)/;
     napiNs.napi_run_script = (envHandle: number, scriptHandle: number, resultPtr: number): number => {
       const scriptValue = context.handleStore.get(scriptHandle)?.value;
       if (typeof scriptValue === "string" && scriptValue.includes("//# sourceURL=node:")) {
@@ -434,12 +502,28 @@ export function createNapiHost(opts: NapiHostOptions): NapiHost {
         if (m) {
           const filename = m[1];
           const bare = filename.startsWith("node:") ? filename.slice(5) : filename;
-          let override: string | null | undefined;
+          let override: ModuleOverride | undefined;
           if (builtinOverridesMap.has(filename)) override = builtinOverridesMap.get(filename);
           else if (builtinOverridesMap.has(bare)) override = builtinOverridesMap.get(bare);
           if (override !== undefined && overrideRegex.test(scriptValue)) {
-            const newBody = override === null ? "module.exports = {};" : override;
-            const replaced = scriptValue.replace(overrideRegex, `$1${newBody}$2`);
+            // $1 = wrapper head, $2 = original body, $3 = wrapper tail
+            let replacement: string | null = null;
+            if (override === null) {
+              replacement = "$1module.exports = {};$3";
+            } else if (typeof override === "string") {
+              // Escape `$` to keep the value's literal `$`-sequences from
+              // being interpreted as backreferences in the replacement.
+              replacement = "$1" + override.replace(/\$/g, "$$$$") + "$3";
+            } else {
+              // { pre?, post? } — keep original body, splice patches around it.
+              const pre = override.pre ? "\n" + override.pre.replace(/\$/g, "$$$$") + "\n" : "";
+              const post = override.post ? "\n" + override.post.replace(/\$/g, "$$$$") + "\n" : "";
+              if (pre || post) replacement = "$1" + pre + "$2" + post + "$3";
+            }
+            if (replacement === null) {
+              return origRunScript(envHandle, scriptHandle, resultPtr);
+            }
+            const replaced = scriptValue.replace(overrideRegex, replacement);
             opts.postLog?.(`[override] matched ${filename} (via run_script)`, "debug");
             const newHandle = context.ensureHandle(replaced);
             return origRunScript(envHandle, newHandle.id, resultPtr);

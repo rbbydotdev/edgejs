@@ -1,5 +1,48 @@
 # Rabbit-Hole Snapshot — 2026-05-21
 
+> **UPDATE — evening of 2026-05-21**
+>
+> Bug #4 `buffer-from-string-zeroed` resolved STRUCTURALLY via new
+> `buffer-wasm-aliased` policy (now in `minimalPolicies`).  Mechanism:
+> (a) napi-host overrides `napi_create_external_arraybuffer` to register
+> the handle as a `Uint8Array` view over `wasmMemory.buffer` itself
+> (not a JS-heap `ArrayBuffer` with sync-table); (b) new
+> `builtinOverrides` value shape `{ post: string }` lets us splice a
+> small patch AFTER edge's bundled `internal/buffer.js` body, rewriting
+> `createUnsafeBuffer` to use the 3-arg `FastBuffer(buffer, offset, len)`
+> ctor (view, no copy).  Result: `buf.buffer === wasmMemory.buffer`,
+> `buf.byteOffset === wasm_ptr`.  JS-side `buf[i]` and C++ writes touch
+> the same byte.  Side effect: test suite is **~3× faster** because
+> emnapi's redundant syncMemory copies are now bypassed.
+>
+> Bug #4 was the primary blocker for the `outbound-fetch-tunnel` test.
+> That test now **PASSES** — was skipped, un-skipped.  Test suite: **14
+> pass / 0 fail / 1 skip** (was 12/0/2).
+>
+> The older `buffer-write-sync` policy (wrap-Buffer.prototype.write,
+> sync-via-no-op-napi-call) is retained in the registry as an
+> alternative / diagnostic but NOT in defaults.
+>
+> Remaining debts from the original 4:
+> - **#1 `sab-ab-body-read`** — still real for production use of edge's
+>   bundled fetch / Response.  Mocked fetch in our tunnel test
+>   sidesteps it.
+> - **#2 `lazy-load-from-microtask`** — workaround in the
+>   `outbound-fetch-tunnel` policy's prelude still active.  Root cause
+>   not investigated.
+> - **#3 `microtasks-starved-by-pending-timer`** — test-code-side
+>   workaround (no setTimeout watchdogs) still in place.  Root cause
+>   not investigated.
+>
+> New debts surfaced this session:
+> - `buffer-wasm-aliased-policy-required` — buffer storage being the
+>   SAB is now load-bearing; any code that assumed
+>   `buf.buffer instanceof ArrayBuffer` will break.
+>
+> See [NOTES.md](./NOTES.md) for full debt entries.
+
+----
+
 You stopped here to come back later.  This file is the full context you need
 to resume — what's outstanding, what we learned, what we tried, where things
 sit, what the priorities are.  It's deliberately long.  Skim the Table of

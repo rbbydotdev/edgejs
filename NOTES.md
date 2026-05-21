@@ -94,7 +94,36 @@ browser-target tree.
   called on incompatible receiver #<SharedArrayBuffer>` when the body
   bytes are wasm-memory-backed (which they are, post our napi
   overrides).  Hides any outbound fetch use of edge's bundled fetch.
-  Surfaces in tests/js/policy-outbound-fetch-tunnel.js skip reason.
+  Mocked-fetch tunnel test sidesteps it (the test uses a hand-crafted
+  Response-shape).
+  RESEARCH 2026-05-21:
+  - Root cause confirmed in `internal/webstreams/readablestream.js:1175`:
+    `ArrayBufferPrototypeGetByteLength(chunkBuffer)` is the strict V8
+    builtin — fails when chunkBuffer is a SAB.  Same pattern at lines
+    699, 966.  Crypto modules use it too (random.js:516, util.js:590).
+  - Patch attempted via `{ pre }` override on
+    `internal/per_context/primordials.js`: replace
+    `ArrayBuffer.prototype.byteLength` getter with a polymorphic version
+    that dispatches to `SharedArrayBuffer.prototype.byteLength` when the
+    receiver is a SAB.  Works in isolation; primordials snapshot picks
+    up the polymorphic version via `uncurryThis`.
+  - But cascading: lib also uses `transfer`/`slice`/`detached` on the
+    same buffers.  `transfer` is the hard one — `transfer.call(sab)`
+    can't actually detach a SAB (shared by design).  Either
+    return-self or copy-to-fresh-AB cause an infinite loop in the
+    stream pull machinery (stack: `napi_call_function → wasm[16020] →
+    callback → queueMicrotask → napi_call_function …`).  Exact failure
+    mode is `Maximum call stack size exceeded` after exactly one
+    transfer call — root cause not pinned.
+  - The primordials patch source lives in `buffer-wasm-aliased.ts` as
+    `PRIMORDIALS_PRE_PATCH` but is NOT applied (commented out via `void`)
+    because the partial fix is worse than the original throw (silent
+    max-stack vs. catchable TypeError).
+  - Path forward: either (a) replace edge's bundled fetch/Response with
+    a custom shim that doesn't go through the SAB-incompatible
+    primordial path, or (b) deep-dive the stream pull machinery to
+    understand why our `transfer` patches cause recursion.  Logged as
+    `#!~debt buffer-wasm-aliased-sab-stream-recursion`.
 - `lazy-load-from-microtask` — `BuiltinModule.compileForInternalLoader`
   invoked from a microtask continuation (post-await) returns
   non-function for lazy builtins (`internal/util/colors`,
@@ -111,14 +140,39 @@ browser-target tree.
   for now; relies on the test-runner's 30s subprocess timeout for
   genuine hangs.  Root cause unknown — likely in our poll_oneoff
   implementation choosing to wait on timers before draining JS tasks.
-- `buffer-from-string-zeroed` — `Buffer.from('hello', 'utf8')` produces
-  a buffer of correct length but all-zero bytes when invoked in a
-  realm where edge's wasm-backed Buffer pool is active.  Encoding
-  never actually writes into the buffer.  Affects `req.write(string)`
-  in the fetch-tunnel — request body arrives at fetch as `\0\0\0...`.
-  Possible cause: our napi_create_buffer override allocates wasm
-  memory but a downstream encoder writes into a different (stale?)
-  view.  Needs root-causing.
+- ~~`buffer-write-jsab-stale`~~ **RESOLVED 2026-05-21** — was: emnapi's
+  `napi_create_external_arraybuffer` (used by edge's
+  `createUnsafeArrayBuffer`) created a JS-heap AB with a sync-table
+  mapping to a wasm pointer; C++ write bindings touched wasm only,
+  JS-side stayed stale until a subsequent napi-going op triggered
+  resync.  Indexed access (`buf[i]`) after a write returned stale
+  bytes.  Fix: `buffer-wasm-aliased` policy (in minimalPolicies)
+  combining (a) napi-host override of
+  `napi_create_external_arraybuffer` that registers the handle as a
+  `Uint8Array` view over `wasmMemory.buffer` directly, and (b) a
+  surgical `{ post }` patch on `internal/buffer.js` that rewrites
+  `createUnsafeBuffer` to construct `FastBuffer` via the
+  `(buffer, byteOffset, byteLength)` form (avoiding the
+  `new Uint8Array(TA)` copy).  Side-effects: every Buffer's
+  `.buffer === wasmMemory.buffer` and `.byteOffset === wasm_ptr`;
+  JS-side `buf[i]` and C++ pointer touch the same byte; test suite
+  is ~3× faster overall because emnapi's redundant syncMemory copies
+  are bypassed.  Side-fix in same policy: `markAsUntransferable` now
+  swallows non-extensible-target errors (SAB can't take a Symbol prop;
+  it's already effectively untransferable).  Regression test:
+  tests/js/buffer-from-string.js.
+  Older `buffer-write-sync` policy retained in the registry as an
+  alternative (wraps Buffer write entry points to trigger syncs) —
+  useful for isolating future regressions to the napi-host layer vs
+  somewhere else.  Not in defaults anymore.
+- `buffer-wasm-aliased-policy-required` — the *structural* properties
+  the new model relies on (Buffer.buffer is the SAB; byteOffset is
+  the wasm ptr; .length is per-buffer) are now load-bearing.  Any
+  user code that assumes `buf.buffer instanceof ArrayBuffer`
+  (vs SharedArrayBuffer), assumes `buf.buffer.byteLength === buf.length`,
+  or attempts to define non-Symbol properties on `buf.buffer` will
+  break.  Default browser/harness deployments are safe; only handcrafted
+  intros into the ArrayBuffer of a Buffer would notice the change.
 
 ### Sockets / HTTP
 
@@ -208,9 +262,10 @@ exist as Policy slots in the framework:
    ClientRequest+IncomingMessage over `globalThis.fetch` and includes
    the lazy-bootstrap-priming workaround for the
    `lazy-load-from-microtask` debt.  Test in
-   `tests/js/policy-outbound-fetch-tunnel.js` is skipped — blocked on
-   the `buffer-from-string-zeroed` debt (string→Buffer encoding doesn't
-   land) and the `sab-ab-body-read` debt (any use of edge's bundled
+   `tests/js/policy-outbound-fetch-tunnel.js` is skipped — `buffer-write-jsab-stale`
+   was the primary blocker (string→Buffer encoding didn't land in JS
+   side); now resolved structurally via the `buffer-wasm-aliased` policy in
+   minimalPolicies.  Remaining blocker is `sab-ab-body-read` (any use of edge's bundled
    fetch in production browser deployment would hit it).  Either bug
    unblocks the test.
 2. **`outbound-via-relay`** — TODO.  Would implement `sock_connect` to
