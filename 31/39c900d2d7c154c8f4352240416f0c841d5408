@@ -1,0 +1,24 @@
+NOTES.md
+  s_6dbc06526d4b2f::t_60d82c6439967f 8-92
+browser-target/src/napi-host/index.ts
+  s_6dbc06526d4b2f::t_5a7e3947621595 136-142
+  s_6dbc06526d4b2f::t_9d51cab21ecd47 104-128,130-135,143-144
+  s_6dbc06526d4b2f::t_feebb7b1902243 129,145-147
+  s_6dbc06526d4b2f::t_67b155c57b82dd 173
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.11",
+  "base_commit_sha": "3139c900d2d7c154c8f4352240416f0c841d5408",
+  "prompts": {},
+  "sessions": {
+    "s_6dbc06526d4b2f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "bd2337df-57ab-4537-b6f8-2eb7dc1f8e59",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
