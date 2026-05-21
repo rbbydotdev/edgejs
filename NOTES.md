@@ -50,7 +50,8 @@ for HTTP bridging, and a FileSystem facade.
 | Module-source overrides | ✅ | universal — bootstrap + lazy-required builtins |
 | Test harness over `tests/js/*` | ✅ | `scripts/test-runner.mjs`, 8/8 passing, ~300ms/test |
 | `import` (ESM) | ❌ | `module_wrap_*` are stubs |
-| `https.createServer` / TLS | ❌ | not started |
+| `tls.createSecureContext` / `https.createServer` + listen | ✅ | OpenSSL bundled; cert/key parsed; `listen()` callback fires |
+| HTTPS request/response roundtrip | ❌ | needs `sock_connect` (for client) or SW HTTPS bridge (for server) |
 | OPFS persistence (real disk) | ❌ | in-memory only |
 | `worker_threads` | ❌ | not started |
 | `child_process` | ❌ | needs subprocess model |
@@ -160,11 +161,30 @@ Real Node code using `import` syntax fails at link/evaluate.  Probably
 need Asyncify to bridge browser's async `import()` to sync wasm.
 600-1500 LOC chunk.
 
-### HTTPS / TLS
+### HTTPS / TLS roundtrip
 
-`https.createServer`, `tls.connect`, certificate parsing.  Edge bundles
-OpenSSL — we just need to ensure the network paths work.  Some napi
-plumbing likely needed.
+The TLS *primitives* work already: `tls.createSecureContext` parses
+real PEM cert+key, `https.createServer({key, cert}, ...)` constructs,
+`server.listen()` fires its callback.  Verified by
+`tests/js/tls-secure-context.js` and `tests/js/https-server-listen.js`.
+
+What's still missing for an actual request/response:
+
+- **Outbound TLS client** (`tls.connect`, `https.request`) needs
+  `sock_connect` implemented (currently `no-outbound` debt → ENOSYS).
+  Once that's wired, the in-wasm TLS state machine should handshake
+  fine since OpenSSL is baked in.
+- **Inbound HTTPS server through the SW bridge** is harder: the
+  Service Worker terminates fetch() requests for us as already-parsed
+  HTTP, so wasm never sees TLS bytes from the network.  Real path is
+  either (a) treat HTTPS the same as HTTP at the SW level and ignore
+  cert/encryption (the SW IS the TLS endpoint to the user-agent), or
+  (b) build a Workers Sockets-style raw TCP relay.
+
+Practical recommendation: (a) — wasm-side TLS is unreachable from a
+browser anyway since the only way bytes arrive is through
+`fetch()`-derived events.  Pre-parsed HTTP through the SW is what
+StackBlitz does too.
 
 ### Real OPFS persistence
 
