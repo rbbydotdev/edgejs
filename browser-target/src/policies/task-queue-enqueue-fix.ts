@@ -2,6 +2,19 @@ import type { Policy } from "./index";
 
 // Fixes the wasm-host's broken `enqueueMicrotask` binding.
 //
+// PRIMARY FIX LIVES AT THE NAPI-HOST LAYER.  See
+// `installTaskQueueEnqueueShim` in `src/napi-host/index.ts` — that
+// intercepts the C++ binding at create-time (`napi_create_function`)
+// and replaces it with a host-native shim, BEFORE any JS lib sees it.
+// That's the authoritative fix.
+//
+// THIS POLICY IS A REDUNDANT SAFETY NET at the lib level.  It catches
+// the binding via a `{ pre }` patch on `internal/process/task_queues.js`
+// — useful if the napi-host create-function intercept ever misses (e.g.
+// edge changes the C++ binding-publish mechanism to something we don't
+// hook).  Two layers of defense for a recursion bug that's silent until
+// it's fatal.
+//
 // THE BUG
 //
 // Edge's C++ `TaskQueueEnqueueMicrotask` (`src/edge_task_queue.cc:42`) is:
@@ -18,39 +31,14 @@ import type { Policy } from "./index";
 // The fallback then calls `globalThis.queueMicrotask` — which resolves
 // to **lib's wrapper** at `internal/process/task_queues.js:158`, whose
 // only job is to call `enqueueMicrotask(boundFn)` (this very binding).
-//
-// Infinite synchronous recursion.  Visible as
-// `Maximum call stack size exceeded` on any code path that exercises
-// `queueMicrotask` — e.g. `new Response('hi').text()`,
-// `Promise.resolve().then(fn)` inside certain await chains, etc.
-//
-// Most tests pass because the workloads they exercise don't hit
-// `queueMicrotask` heavily — but anything async that goes through
-// streams, fetch bodies, or webstreams trips it.
-//
-// THE FIX
-//
-// Replace `internalBinding('task_queue').enqueueMicrotask` with a JS
-// implementation that calls the **host's native** queueMicrotask (the
-// browser worker's `globalThis.queueMicrotask`, NOT lib's wrapper).
-// The bound function passed in is already an AsyncResource-wrapped
-// runMicrotask thunk; the host scheduler fires it normally and the
-// existing AsyncResource bookkeeping in lib still runs.
-//
-// HOW IT REACHES THE LIB
-//
-// Bootstrap order: `internal/process/task_queues.js` is loaded early.
-// It captures `enqueueMicrotask` from `internalBinding('task_queue')`
-// via a top-level destructure.  Our `{ pre }` patch runs INSIDE that
-// module's function wrapper BEFORE the body — so when the body's
-// destructure reads `internalBinding('task_queue').enqueueMicrotask`,
-// it picks up our replacement.
+// Infinite synchronous recursion.
 
 const PRE_PATCH = `
 ;(function fixTaskQueueEnqueueMicrotask() {
-  // Capture the host-native queueMicrotask reference at load time.
-  // primordials.Reflect would be cleaner but isn't ready in module-init
-  // contexts; use the live binding.
+  // Capture the host-native queueMicrotask reference at load time.  At
+  // this point in bootstrap, lib's queueMicrotask wrapper hasn't been
+  // installed onto globalThis yet — so \`globalThis.queueMicrotask\` is
+  // the host native (what we want).
   var hostQueueMicrotask;
   try {
     var g = (typeof globalThis !== 'undefined' && globalThis) ||
@@ -61,25 +49,25 @@ const PRE_PATCH = `
   } catch (_e) { hostQueueMicrotask = undefined; void _e; }
   if (typeof hostQueueMicrotask !== 'function') return;
 
-  // CRITICAL: at this point in bootstrap, lib's queueMicrotask wrapper
-  // (task_queues.js:158) HAS NOT yet been installed onto globalThis.
-  // Edge installs it later via setupTaskQueue().  So
-  // \`globalThis.queueMicrotask\` here is the **host native** — what we
-  // want.  After bootstrap, it'll be replaced by lib's wrapper, and
-  // that wrapper calls our overridden enqueueMicrotask (below) which
-  // calls the captured host native.  No recursion possible.
   var binding;
   try { binding = internalBinding('task_queue'); } catch (_e) { return; }
   if (!binding) return;
 
-  var origEnqueue = binding.enqueueMicrotask;
+  // The napi-host-level shim may have already replaced this with a
+  // host-native impl.  Detecting that is hard (no marker) and harmless
+  // to overwrite — both impls do the same thing, so install ours
+  // unconditionally.
+  //
+  // CRITICAL: do NOT keep a reference to the original \`binding.enqueueMicrotask\`
+  // for any fallback path.  The original is the recursion source — if we
+  // ever call it (e.g. on a "defensive" non-function input), we
+  // reintroduce the very bug we're fixing.  Always go through
+  // host-native or drop the call.
   binding.enqueueMicrotask = function enqueueMicrotask(callback) {
-    if (typeof callback !== 'function') {
-      // Defensive: defer to the original (probably throws on non-fn).
-      if (typeof origEnqueue === 'function') return origEnqueue(callback);
-      return;
-    }
-    hostQueueMicrotask(callback);
+    if (typeof callback === 'function') hostQueueMicrotask(callback);
+    // Non-function arg: drop silently.  Lib's queueMicrotask wrapper
+    // validates the type before calling us, so this branch only fires
+    // for buggy callers — we'd rather drop than crash the runtime.
   };
 })();
 `;

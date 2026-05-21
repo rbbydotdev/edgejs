@@ -1,35 +1,12 @@
 # Edge.js Browser Target — NOTES
 
-Running log of the browser port: what works, what's known-broken, and
-what's deliberately deferred.  See [ARCHIVE.md](./ARCHIVE.md) for the
-full historical trail of how each piece got built and the bugs hit
-along the way (~2000 lines, newest-first).
+Active debts, current capability, and short-term followups. Newest at top.
 
-This file: scannable in 90 seconds.  Newest entries at top.
+For the layered architecture, design rules, and per-feature offload
+catalog, see [ARCHITECTURE.md](./ARCHITECTURE.md).
 
----
-
-## Project orientation
-
-**Goal**: run unmodified edge.js (a Node-compatible runtime) inside a
-browser via WebAssembly.  StackBlitz-grade Node compat in the browser.
-
-**Architecture**: `edgejs.wasm` (built with `EDGE_NAPI_PROVIDER=imports`)
-expects the host to provide three things:
-
-- **WASI syscalls** — `browser-target/src/wasi-shim.ts`
-- **Standard N-API** — `@emnapi/core` + our overrides
-- **napi/v8 adapter (unofficial_napi_*)** — `browser-target/src/napi-host/`
-
-Plus a SharedArrayBuffer-backed `WebAssembly.Memory`, a Service Worker
-for HTTP bridging, and a FileSystem facade.
-
-**Iteration loop**:
-- **Node harness** (`browser-target/scripts/node-harness.mjs`): ~3s,
-  same code paths as the browser, just `fs.readFileSync` instead of
-  sync XHR.  Required for fast crypto/napi work.
-- **Browser** (`vite dev` on `:5180`): ~15s, full end-to-end including
-  Service Worker bridge.
+For historical bug-resolution stories and the full investigation trail,
+see [ARCHIVE.md](./ARCHIVE.md).
 
 ---
 
@@ -40,152 +17,80 @@ for HTTP bridging, and a FileSystem facade.
 | Boot, console.log to stdout | ✅ | `_start` runs ~130-200ms |
 | `process.exit(N)` | ✅ | clean teardown |
 | `setTimeout` / `setInterval` | ✅ | via `poll_oneoff` Atomics.wait |
-| `http.createServer` + fetch roundtrip | ✅ | Service Worker bridge, page relay |
+| `Buffer.from(string)` + indexed access | ✅ | structurally wasm-aliased |
+| `queueMicrotask` / Promise.then | ✅ | routed to host's native queue |
+| `Response.text()` / `.arrayBuffer()` | ✅ | webstreams + crypto primordials patched |
+| `http.createServer` + fetch roundtrip | ✅ | Service Worker bridge |
 | `fs.readFileSync` on `/node-lib/**` + `/node/deps/**` | ✅ | bundled adapter via sync XHR |
-| `fs.writeFileSync` to userland paths | ✅ | in-memory only (no persistence yet) |
-| `crypto.createHash().update().digest('hex')` | ✅ | sha256 verified correct |
-| `crypto.randomBytes(N).toString('hex')` | ✅ | real entropy via `/dev/urandom` |
-| `crypto.randomUUID()` | ✅ | real UUID v4 |
+| `fs.writeFileSync` to userland paths | ✅ | in-memory only |
+| `crypto.createHash().update().digest('hex')` | ✅ | sha256 verified |
+| `crypto.randomBytes(N)` / `randomUUID()` | ✅ | real entropy |
 | `require('node:builtin')` (most) | ✅ | from compiled-in catalog |
-| Module-source overrides | ✅ | universal — bootstrap + lazy-required builtins |
-| Test harness over `tests/js/*` | ✅ | `scripts/test-runner.mjs`, 8/8 passing, ~300ms/test |
+| Module-source overrides | ✅ | universal (bootstrap + lazy) + `{ pre, post }` shapes |
+| TLS primitives + `https.createServer.listen()` | ✅ | OpenSSL bundled |
+| HTTPS server through SW bridge | ✅ | `inbound-https-via-sw` policy |
+| Outbound `http.request` (mock fetch) | ✅ | `outbound-fetch-tunnel` policy |
+| Outbound `http.request` (Node-honest default) | ✅ → throws | `outbound-throw` policy |
 | `import` (ESM) | ❌ | `module_wrap_*` are stubs |
-| `tls.createSecureContext` / `https.createServer` + listen | ✅ | OpenSSL bundled; cert/key parsed; `listen()` callback fires |
-| HTTPS server through SW bridge | ✅ | `inbound-https-via-sw` policy (default in browser); SW is the TLS endpoint, wasm sees pre-parsed HTTP |
-| Outbound `http.request` / `https.request` | ❌ → throws cleanly | `outbound-throw` policy is the Node-honest default; opt-in shortcuts are pending policy additions |
-| **Policies framework** (deployment DI) | ✅ | `browser-target/src/policies/*.ts`; array of strategies, last-wins composition |
-| OPFS persistence (real disk) | ❌ | in-memory only |
+| OPFS persistence | ❌ | in-memory only |
 | `worker_threads` | ❌ | not started |
 | `child_process` | ❌ | needs subprocess model |
-| Concurrent HTTP | ⚠️  | single-flight per-SW |
+| Concurrent HTTP | ⚠️ | single-flight per-SW |
 
-**Boot cost**: ~130-200ms `_start` time + ~50ms wasm compile (after first run cached).
+**Boot cost**: ~130-200ms `_start` + ~50ms wasm compile (cached after first run).
 
 **Auto-prepend**: every user `-e` script gets the active policies'
-`userScriptPrelude` concatenated in front of it.  At minimum that's
-`try{Buffer.poolSize=0}catch{};` (from `buffer-pool-disable`) which is
-required for crypto correctness — edge's Buffer pool slicing doesn't
-compose with our wasm-backed ArrayBuffer model.  Browser worker adds
-the `outbound-throw` prelude (patches `http.request`/`https.request`
-to throw `ERR_BROWSER_NO_OUTBOUND`).  See `policies/index.ts` for the
-full bundle and ARCHIVE.md "Crypto FULL surface working" for the
-Buffer.poolSize backstory.
+`userScriptPrelude` concatenated in front. Minimum is
+`try{Buffer.poolSize=0}catch{};` (from `buffer-pool-disable`). See
+`browser-target/src/policies/index.ts` for the full bundle. Architecture
+of policy stack is in [ARCHITECTURE.md](./ARCHITECTURE.md#active-policies).
 
 ---
 
 ## Active tech-debt catalog
 
-Inline `#!~debt` markers point here.  Each is a deliberate shortcut with a
-specific remediation path.  Counts as of writing: **52 markers** across the
-browser-target tree.
+Inline `#!~debt` markers point here. Resolved entries live in
+[ARCHIVE.md](./ARCHIVE.md). Counts as of writing: **52 markers** across
+the browser-target tree.
 
 ### Boot-blocking / correctness
 
-- `crude-circuit-breaker` — `CALL_LIMIT = 20000` in worker.ts.  Real fix:
+- `crude-circuit-breaker` — `CALL_LIMIT = 20000` in worker.ts. Real fix:
   watchdog timer on progress, not call count.
-- `fake-fs-fallback` — `path_filestat_get` returns success for paths the
-  FS doesn't recognize (kept to avoid breaking libc cwd probes).
+- `fake-fs-fallback` — `path_filestat_get` returns success for paths
+  the FS doesn't recognize (kept to avoid breaking libc cwd probes).
 - `dynCall-before-table-ready` — `unofficial_napi_create_env` passes
   silent no-op dispatchers for makeDynCall callbacks; emnapi finalizers
-  at process exit dispatch through these and silently skip.  Long-term
+  at process exit dispatch through these and silently skip. Long-term
   fix is to wire `__indirect_function_table` from the bound instance.
-- ~~`sab-ab-body-read`~~ **RESOLVED 2026-05-21** — was: edge's fetch
-  impl + Response.body / .text() / .arrayBuffer() threw
-  `Method get ArrayBuffer.prototype.byteLength called on incompatible
-  receiver #<SharedArrayBuffer>`.  Two layered causes; both fixed.
-  Resolution:
-  - **Layer 1**: `internalBinding('task_queue').enqueueMicrotask` infinite-recurses.
-    Edge's `TaskQueueEnqueueMicrotask` (`src/edge_task_queue.cc:42`) tries
-    `unofficial_napi_enqueue_microtask` first; the V8 impl
-    (`napi/v8/src/unofficial_napi.cc:2198`) requires `env->isolate`, which
-    is null under emnapi → returns `napi_invalid_arg`.  C++ then falls
-    back to calling `globalThis.queueMicrotask` via napi — which resolves
-    to **lib's wrapper** (`task_queues.js:158`) that calls
-    `enqueueMicrotask` (this binding) again.  Infinite synchronous recursion.
-    Fixed by **`task-queue-enqueue-fix` policy** (in minimalPolicies):
-    `{ pre }` patch on `internal/process/task_queues.js` rebinds
-    `internalBinding('task_queue').enqueueMicrotask` to call the **host's
-    native** `queueMicrotask` directly — bypassing edge's broken fallback.
-  - **Layer 2** (only visible after Layer 1 fix): edge's vendored
-    `internal/webstreams/readablestream.js` and `internal/crypto/*` use
-    strict V8 primordials `ArrayBufferPrototypeGet{ByteLength,Detached}`,
-    `Slice`, `Transfer` on buffers that — post our wasm-aliasing — are
-    SharedArrayBuffer instances.  Fixed by **`buffer-wasm-aliased`
-    policy's `PRIMORDIALS_PRE_PATCH`**: `{ pre }` patch on
-    `internal/per_context/primordials.js` replaces those AB prototype
-    methods with polymorphic versions that dispatch to SAB equivalents
-    when the receiver is a SAB (transfer returns the SAB itself, since
-    SAB can't be detached).  Primordials snapshot via `uncurryThis(get)`
-    captures our polymorphic versions.
-  - Regression: `tests/js/response-body-consume.js`.
-
-- `task-queue-fallback-recursion` — historical: discovered while fixing
-  `sab-ab-body-read`.  Edge's C++ `TaskQueueEnqueueMicrotask` calls
-  `globalThis.queueMicrotask` as a fallback when its preferred path
-  fails — but globalThis.queueMicrotask resolves to lib's wrapper that
-  uses this very binding.  Synchronous infinite recursion.  Surfaced as
-  `Maximum call stack size exceeded` on any code path heavy in
-  microtasks (streams, fetch bodies, promise chains).  Fixed by
-  `task-queue-enqueue-fix` policy.  Most existing tests didn't hit it
-  because they didn't exercise queueMicrotask aggressively.
-  - The primordials patch source lives in `buffer-wasm-aliased.ts` as
-    `PRIMORDIALS_PRE_PATCH` but is NOT applied (commented out via `void`)
-    because the partial fix is worse than the original throw (silent
-    max-stack vs. catchable TypeError).
-  - Path forward: either (a) replace edge's bundled fetch/Response with
-    a custom shim that doesn't go through the SAB-incompatible
-    primordial path, or (b) deep-dive the stream pull machinery to
-    understand why our `transfer` patches cause recursion.  Logged as
-    `#!~debt buffer-wasm-aliased-sab-stream-recursion`.
 - `lazy-load-from-microtask` — `BuiltinModule.compileForInternalLoader`
   invoked from a microtask continuation (post-await) returns
   non-function for lazy builtins (`internal/util/colors`,
-  `internal/util/inspect`, `tty`, etc).  Visible as `TypeError: fn is
+  `internal/util/inspect`, `tty`, etc). Visible as `TypeError: fn is
   not a function` from realm.js:401 when `console.log` is first used
-  inside a callback.  Workaround in outbound-fetch-tunnel: prelude
-  primes the lazy paths by silently calling `console.log('','')`
-  with swapped-out write functions.  Root cause unknown — likely
-  related to napi state lifetime across microtask boundaries.
+  inside a callback. Workaround: prelude pre-primes lazy paths by
+  calling `console.log('','')` with swapped-out write functions. Root
+  cause likely in napi state lifetime across microtask boundaries —
+  may be resolved when we adopt a proper coordinated microtask queue.
 - `microtasks-starved-by-pending-timer` — when a `setTimeout(..., N)`
   is pending, edge's wasm event loop blocks ALL microtasks until the
-  timer fires.  Async/await + setTimeout in the same test = test
-  always sees the timer first.  Test code avoids setTimeout watchdogs
-  for now; relies on the test-runner's 30s subprocess timeout for
-  genuine hangs.  Root cause unknown — likely in our poll_oneoff
-  implementation choosing to wait on timers before draining JS tasks.
-- ~~`buffer-write-jsab-stale`~~ **RESOLVED 2026-05-21** — was: emnapi's
-  `napi_create_external_arraybuffer` (used by edge's
-  `createUnsafeArrayBuffer`) created a JS-heap AB with a sync-table
-  mapping to a wasm pointer; C++ write bindings touched wasm only,
-  JS-side stayed stale until a subsequent napi-going op triggered
-  resync.  Indexed access (`buf[i]`) after a write returned stale
-  bytes.  Fix: `buffer-wasm-aliased` policy (in minimalPolicies)
-  combining (a) napi-host override of
-  `napi_create_external_arraybuffer` that registers the handle as a
-  `Uint8Array` view over `wasmMemory.buffer` directly, and (b) a
-  surgical `{ post }` patch on `internal/buffer.js` that rewrites
-  `createUnsafeBuffer` to construct `FastBuffer` via the
-  `(buffer, byteOffset, byteLength)` form (avoiding the
-  `new Uint8Array(TA)` copy).  Side-effects: every Buffer's
-  `.buffer === wasmMemory.buffer` and `.byteOffset === wasm_ptr`;
-  JS-side `buf[i]` and C++ pointer touch the same byte; test suite
-  is ~3× faster overall because emnapi's redundant syncMemory copies
-  are bypassed.  Side-fix in same policy: `markAsUntransferable` now
-  swallows non-extensible-target errors (SAB can't take a Symbol prop;
-  it's already effectively untransferable).  Regression test:
-  tests/js/buffer-from-string.js.
-  Older `buffer-write-sync` policy retained in the registry as an
-  alternative (wraps Buffer write entry points to trigger syncs) —
-  useful for isolating future regressions to the napi-host layer vs
-  somewhere else.  Not in defaults anymore.
-- `buffer-wasm-aliased-policy-required` — the *structural* properties
-  the new model relies on (Buffer.buffer is the SAB; byteOffset is
-  the wasm ptr; .length is per-buffer) are now load-bearing.  Any
-  user code that assumes `buf.buffer instanceof ArrayBuffer`
-  (vs SharedArrayBuffer), assumes `buf.buffer.byteLength === buf.length`,
-  or attempts to define non-Symbol properties on `buf.buffer` will
-  break.  Default browser/harness deployments are safe; only handcrafted
-  intros into the ArrayBuffer of a Buffer would notice the change.
+  timer fires. Test code avoids setTimeout watchdogs; relies on the
+  test-runner's 30s subprocess timeout for genuine hangs. Root cause
+  likely in `poll_oneoff` waiting on timers before draining JS tasks.
+- `task-queue-fallback-recursion` — edge's C++ `TaskQueueEnqueueMicrotask`
+  fallback calls `globalThis.queueMicrotask` (= lib's wrapper that
+  calls this very binding). Mitigated by:
+  - L3: `installTaskQueueEnqueueShim` (napi-host intercept).
+  - L4: `task-queue-enqueue-fix` policy (redundant safety net).
+  - **Proper fix**: rebuild edge.js with `__attribute__((used))` on
+    the DCE'd `unofficial_napi_enqueue_microtask` declaration so it
+    becomes a real wasm import we can implement. Pending.
+- `buffer-wasm-aliased-policy-required` — the structural properties
+  the new buffer model relies on (`Buffer.buffer` IS the SAB;
+  byteOffset is the wasm ptr; `.length` is per-buffer) are now
+  load-bearing. User code that assumes `buf.buffer instanceof
+  ArrayBuffer` (vs SharedArrayBuffer), or tries to define non-Symbol
+  properties on `buf.buffer`, will break. Default deployments are safe.
 
 ### Sockets / HTTP
 
@@ -193,7 +98,7 @@ browser-target tree.
 - `single-flight` — one inflight HTTP request per Service Worker
 - `no-keep-alive` — `Connection: close` forced in request synthesizer
 - `no-chunked-encoding` — auto-flush requires `Content-Length`
-- `no-outbound` — `sock_connect` returns ENOSYS (no http client → external)
+- `no-outbound` — `sock_connect` returns ENOSYS
 - `no-socketpair` — `child_process` etc. won't work
 - `no-sendfile` — `sock_send_file` returns ENOSYS
 - `sw-sab-relay` — workaround for Chrome SAB/postMessage→SW incompat
@@ -213,121 +118,112 @@ browser-target tree.
 
 ### napi / Buffer
 
-- `namespace-default-fallbacks` — `imports-generated.ts` falls through to
-  per-namespace defaults (napi=0, wasi=52).  "Implemented" means "callable
-  with right arity," not "semantically correct."
-- `unverified-one-time-anomaly` in `mem-snapshot.ts` — diagnostic artifact
-- Multiple `#!~debt` in `unofficial.ts` — most no-op stubs writing sensible
-  defaults to out-params, ported from `napi/v8/src/*.cc`.  Promote when a
-  workload lights them up.
+- `namespace-default-fallbacks` — `imports-generated.ts` falls through
+  to per-namespace defaults (napi=0, wasi=52). "Implemented" means
+  "callable with right arity," not "semantically correct."
+- `buffer-write-sync-residual` — fallback policy retained as diagnostic;
+  not in defaults. Doesn't cover paths where C++ writes bypass the
+  public Buffer JS API.
+- Multiple `#!~debt` in `unofficial.ts` — most no-op stubs writing
+  sensible defaults to out-params. Promote when a workload lights them up.
+
+### Production gaps (post-microtask-shim)
+
+These are real semantic differences vs Node that the current shim
+doesn't fully address. Each waits on either a wasm rebuild + real
+napi imports for `unofficial_napi_*` microtask ops, or a deeper L3
+intercept layer:
+
+- **`WebAssembly.compile()` deadlock** — V8 needs `PumpMessageLoop` +
+  microtask checkpoint to resolve the promise. No foreground task
+  pump in our setup.
+- **`process.on('unhandledRejection')` partially wired** — L3 intercept
+  captures the lib handler and forwards host events, but lib defers
+  emission via tickCallback which our runtime doesn't drive in the
+  same window. Verifiable as: rejection IS captured by L3 but doesn't
+  surface to user listeners before process exit.
+- **WeakRef / FinalizationRegistry leaks** — `ClearKeptObjects` never
+  runs (would be a side-effect of proper microtask checkpoint).
+- **`process.nextTick` ordering inversion** — nextTicks go through
+  edge's tickInfo/tickCallback; microtasks through host. Nested-await
+  code may observe different interleaving than real Node.
+- **`worker_threads.MessageChannel` would deadlock** — microtask-
+  coordinated wakeups across workers need a single coordinated queue.
 
 ---
 
-## Active followups (in priority order)
+## Active followups (priority order)
 
-### Universal module overrides via napi binding hook — DONE (2026-05-21)
+### 1. Rebuild edge.js with proper microtask napi imports
 
-Two hooks, covering both load paths edge uses:
+Patch `napi/include/unofficial_napi.h` to add `__attribute__((used))`
+on `unofficial_napi_enqueue_microtask`, `unofficial_napi_process_microtasks`,
+`unofficial_napi_set_promise_reject_callback`, `unofficial_napi_set_promise_hooks`.
 
-1. **Bootstrap modules** → intercepted in
-   `unofficial_napi_contextify_compile_function`
-   (`browser-target/src/napi-host/unofficial.ts`).  Catches the ~11
-   modules edge compiles through this entry: `per_context/*`,
-   `bootstrap/realm`, `bootstrap/node`, `web/exposed-*`, `switches/*`,
-   `main/eval_string`, and the `[eval]-wrapper` for user scripts.
+Rebuild via `make build-wasix` (wasixcc + setup-wasix-deps + CMake).
+Verify the symbols appear in the wasm imports list.
 
-2. **Lazy-required builtins** (`inspector`, `url`, `crypto`, `events`,
-   etc.) → intercepted in a wrapper around emnapi's `napi_run_script`
-   (`browser-target/src/napi-host/index.ts`).  Edge loads these via
-   `EvaluateJsModule` (`src/edge_module_loader.cc:4495`), which wraps
-   the source as
-   `(function(exports, require, module, process, internalBinding, primordials) {\n<source>\n})\n//# sourceURL=node:<id>`
-   and runs it via `napi_run_script`.  Our hook parses the sourceURL,
-   looks up the id in the override map, and rewrites the inner body
-   before passing the script to emnapi.
+Implement them host-side with a real coordinated queue. Drop the L3
+shims (`installTaskQueueEnqueueShim`) and the L4 `task-queue-enqueue-fix`
+policy. The L1 imports become the authoritative path.
 
-Surface: `NapiHostOptions.builtinOverrides: Record<string, string | null
-| undefined>`.  Node harness exposes `--override <id>:<value>` where
-value is a literal path (file contents loaded), a string `null` (empty
-stub `module.exports = {}`), or anything else (used as source).
+Closes: `task-queue-fallback-recursion`, likely closes
+`lazy-load-from-microtask` and `microtasks-starved-by-pending-timer`.
 
-**Verified end-to-end**:
-- `--override inspector:null` → `require('inspector')` returns `{}`
-  (no `ERR_INSPECTOR_NOT_AVAILABLE` throw).
-- `--override "inspector:module.exports = { custom: true, ping: () => 'pong' };"`
-  → custom exports surface through the user-visible require.
+### 2. Offload policies (Phase C in the architecture plan)
 
-### ESM support (`module_wrap_*`)
+Independent of #1. Each is a swappable plug-in:
 
-The 18 `module_wrap_*` impls are stubs that return placeholder handles.
-Real Node code using `import` syntax fails at link/evaluate.  Probably
-need Asyncify to bridge browser's async `import()` to sync wasm.
-600-1500 LOC chunk.
+- `crypto-via-subtle` — `crypto.createHash` / `Hmac` / `pbkdf2` /
+  `randomBytes` route to SubtleCrypto. ~80% smaller crypto surface.
+- `compression-via-compressionstream` — gzip/deflate → browser's
+  CompressionStream / DecompressionStream.
+- `streams-via-web-streams` — Node Readable/Writable adapter to/from
+  Web Streams for interop.
+- `wasm-compile-via-host` — route edge's `WebAssembly.compile` to host's.
 
-### Outbound HTTP/HTTPS
+### 3. ESM support (`module_wrap_*`)
 
-Default browser policy stack is Node-honest: outbound `http.request` /
-`https.request` throw `ERR_BROWSER_NO_OUTBOUND`.  Two shortcut policies
-exist as Policy slots in the framework:
+18 `module_wrap_*` impls are stubs. Real Node `import` syntax fails at
+link/evaluate. Probably needs Asyncify to bridge browser's async
+`import()` to sync wasm. 600-1500 LOC.
 
-1. **`outbound-fetch-tunnel`** — **SHIPPED but test-blocked**.  Code in
-   `policies/outbound-fetch-tunnel.ts`; correctly re-implements
-   ClientRequest+IncomingMessage over `globalThis.fetch` and includes
-   the lazy-bootstrap-priming workaround for the
-   `lazy-load-from-microtask` debt.  Test in
-   `tests/js/policy-outbound-fetch-tunnel.js` is skipped — `buffer-write-jsab-stale`
-   was the primary blocker (string→Buffer encoding didn't land in JS
-   side); now resolved structurally via the `buffer-wasm-aliased` policy in
-   minimalPolicies.  Remaining blocker is `sab-ab-body-read` (any use of edge's bundled
-   fetch in production browser deployment would hit it).  Either bug
-   unblocks the test.
-2. **`outbound-via-relay`** — TODO.  Would implement `sock_connect` to
-   route HTTP bytes through a user-hosted relay.  Real TCP semantics
-   inside the wasm; HTTPS still impossible (TLS bytes can't survive
-   the relay round-trip via fetch).  Adds infrastructure surface.
+### 4. Adopt emnapi v-table mode
 
-Both plug in as additional `Policy` exports — no framework changes
-needed.
+Vendor emnapi locally. Upgrade to a release that includes PRs #195/#196
+(real `napi_env__` C struct with vtable pointers). Move L3 intercepts
+into vtable entries. Future-proof against the napi-env-struct evolution.
 
-### Real OPFS persistence
+### 5. OPFS persistence
 
-User wants this last.  Replace the in-memory writable layer with
-`FileSystemSyncAccessHandle` backed storage.  Needs an async pre-warm
-phase for directory handles.
+User has said save for last. Replace in-memory writable layer with
+`FileSystemSyncAccessHandle` backed storage. Async pre-warm phase
+for directory handles.
 
-### worker_threads
+### 6. `worker_threads`
 
-Each worker = real Web Worker with shared memory.  Bridge `postMessage`
-to our SAB transport.
+Each worker = real Web Worker with shared memory. Bridge `postMessage`
+to our SAB transport. Blocked on #1 (microtask queue must coordinate).
 
-### Memory hygiene
+### 7. Memory hygiene
 
-Buffers we `_malloc` are never `_free`'d.  Long-running apps OOM.  Need
+Buffers we `_malloc` are never `_free`'d. Long-running apps OOM. Need
 FinalizationRegistry or explicit lifetime tracking.
-
-### `Buffer.poolSize=0` for file scripts
-
-Auto-prepend works for `-e` only.  Needs a deeper hook for `edge file.js`.
 
 ---
 
 ## Tools / inventory
 
-- `browser-target/` — the host shim, Vite dev server, harness
-- `browser-target/src/wasi-shim.ts` — WASI + WASIX syscalls (1400+ LOC)
+- `browser-target/src/wasi-shim.ts` — WASI + WASIX syscalls (~1400 LOC)
 - `browser-target/src/napi-host/` — emnapi composition + 80 unofficial_napi_*
-- `browser-target/src/host/fs/` — FileSystem facade + 3 adapters (bundled, opfs, overrides)
+- `browser-target/src/host/fs/` — FileSystem facade + 3 adapters
 - `browser-target/scripts/node-harness.mjs` — Node-side test loop
-- `browser-target/scripts/test-runner.mjs` — regression net over `tests/js/*.js`
+- `browser-target/scripts/test-runner.mjs` — regression net (`tests/js/*.js`)
 - `tests/js/*.js` + `*.stdout`/`*.stderr`/`*.skip`/`*.harness-args` — corpus
 - `browser-target/src/overrides/https-as-http.ts` — server-side https→http
-  source string used by the `inbound-https-via-sw` policy
-- `browser-target/src/policies/*.ts` — deployment-time strategy DI:
-  - `index.ts` — `Policy` type, `composePolicies()`, `defaultBrowserPolicies`
-  - `buffer-pool-disable.ts` — the Buffer.poolSize=0 prelude
-  - `inbound-https-via-sw.ts` — wraps the https-as-http override
-  - `outbound-throw.ts` — Node-honest default for client http/https
-- `browser-target/public/edgejs.wasm` — symlink to the 26.5MB build artifact (gitignored)
+- `browser-target/src/policies/*.ts` — deployment-time strategies
+- `browser-target/public/edgejs.wasm` — 26.5MB build artifact (gitignored)
 - `patches/napi/*.patch` — local mods to napi/ submodule
 - `scripts/setup-napi-patches.sh` — applies the patches on fresh checkout
-- `ARCHIVE.md` — full historical NOTES (newest-first, ~2000 lines)
+- [ARCHITECTURE.md](./ARCHITECTURE.md) — layered model + offload catalog
+- [ARCHIVE.md](./ARCHIVE.md) — full history, resolved bugs, prior debt

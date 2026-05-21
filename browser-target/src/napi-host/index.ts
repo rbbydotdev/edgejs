@@ -425,6 +425,180 @@ function patchEmnapiToUseWasmBackedBuffers(
   }
 }
 
+// Intercept napi_create_function calls during edge's `task_queue` binding
+// setup (`src/edge_task_queue.cc:124-137`), replacing the C++-backed
+// JS functions with host-native shims that actually work under emnapi.
+//
+// Two binding methods need replacing:
+//
+// 1. `enqueueMicrotask` — edge's C++ binding falls back to calling
+//    `globalThis.queueMicrotask` when its V8 path fails (env->isolate is
+//    null under emnapi).  That globalThis call resolves to lib's wrapper
+//    which calls `enqueueMicrotask` (this binding) → infinite recursion.
+//    Replace with a function that calls host-native queueMicrotask directly.
+//
+// 2. `setPromiseRejectCallback` — edge's C++ binding stores the callback in
+//    state and (in bundled-V8 mode) registers it with the V8 isolate's
+//    promise reject callback.  Under emnapi the V8 path is compiled out
+//    (`#if defined(EDGE_BUNDLED_NAPI_V8)`), so the callback is stored in
+//    state but NEVER FIRED — no unhandled rejection detection, no Node-
+//    semantic process.exit on unhandled rejections.  Replace with a
+//    function that captures the callback and routes host-level rejection
+//    events to it (`process.on('unhandledRejection', ...)` on Node,
+//    `addEventListener('unhandledrejection', ...)` in browser workers).
+//
+// WHY HERE AND NOT THE LIB-LEVEL POLICY ALONE
+//
+// The `task-queue-enqueue-fix` policy installs a `{ pre }` patch on
+// `internal/process/task_queues.js` that mutates the binding's
+// `enqueueMicrotask` property AT MODULE LOAD.  That works, but it's keyed
+// on the module ID.  This napi-host hook catches the function AT CREATE
+// TIME — the earliest possible point — for everyone.  The lib-level
+// policy remains in place as a redundant safety net.
+//
+// CHECK ONLY ONE SITE PER NAME
+//
+// `grep -rn '"enqueueMicrotask"\|"setPromiseRejectCallback"' src/*.cc`
+// confirms both are only defined in `src/edge_task_queue.cc` — no risk
+// of collision with another binding sharing the name.
+function installTaskQueueEnqueueShim(
+  napiModule: NapiModule,
+  memory: WebAssembly.Memory,
+  context: Context,
+  postLog?: (line: string, level: "out" | "warn" | "err" | "debug") => void,
+): void {
+  const napiNs = napiModule.imports.napi as Record<string, Function>;
+  const origCreateFunction = napiNs.napi_create_function;
+  if (typeof origCreateFunction !== "function") {
+    postLog?.(`[task-queue] napi_create_function not available at install time (got ${typeof origCreateFunction}) — shim NOT installed`, "warn");
+    return;
+  }
+
+  // Capture the host-native queueMicrotask AT NAPI-HOST SETUP — long
+  // before any edge code runs.  At this point `globalThis.queueMicrotask`
+  // is guaranteed to be the host's (worker/Node) implementation, NOT
+  // lib's wrapper (which doesn't exist yet because edge hasn't booted).
+  const hostQueueMicrotask = (globalThis as { queueMicrotask?: (fn: () => void) => void }).queueMicrotask;
+  if (typeof hostQueueMicrotask !== "function") {
+    postLog?.("[task-queue] host queueMicrotask not available — shim disabled", "warn");
+    return;
+  }
+
+  // Promise rejection routing.  Edge's lib (`internal/process/promises.js`)
+  // calls `setPromiseRejectCallback(handler)` once at boot to register a
+  // handler.  We capture that handler in this closure variable; the
+  // host-event listeners below forward unhandled-rejection events to it.
+  //
+  // Lib's handler signature: `(type, promise, reason)` where type is one of:
+  //   0 kPromiseRejectWithNoHandler
+  //   1 kPromiseHandlerAddedAfterReject
+  //   2 kPromiseRejectAfterResolved
+  //   3 kPromiseResolveAfterResolved
+  // (See edge_task_queue.cc:166-174 for the enum constants.)
+  //
+  // We can map host events to types 0 and 1; types 2 and 3 fire only on
+  // double-resolve/reject within V8's promise machinery and have no host
+  // analogue.  Mostly diagnostic in real Node anyway — we accept the gap.
+  let promiseRejectCallback: ((type: number, promise: unknown, reason: unknown) => void) | null = null;
+
+  function dispatchPromiseEvent(type: number, promise: unknown, reason: unknown): void {
+    if (!promiseRejectCallback) return;
+    try { promiseRejectCallback(type, promise, reason); }
+    catch (e) { postLog?.(`[promise-reject] lib handler threw: ${(e as Error)?.message}`, "warn"); }
+  }
+
+  // Host-event wiring.  Install once at napi-host setup; both Node and
+  // browser-worker shapes are supported (we hook whichever exists).
+  const proc = (globalThis as { process?: { on?: (event: string, fn: (...a: unknown[]) => void) => void } }).process;
+  if (proc && typeof proc.on === "function") {
+    proc.on("unhandledRejection", (reason: unknown, promise: unknown) => {
+      dispatchPromiseEvent(0, promise, reason);
+    });
+    proc.on("rejectionHandled", (promise: unknown) => {
+      dispatchPromiseEvent(1, promise, undefined);
+    });
+  }
+  const gAddEvent = (globalThis as { addEventListener?: (event: string, fn: (...a: unknown[]) => void) => void }).addEventListener;
+  if (typeof gAddEvent === "function") {
+    gAddEvent("unhandledrejection", (event: unknown) => {
+      const ev = event as { promise?: unknown; reason?: unknown };
+      dispatchPromiseEvent(0, ev.promise, ev.reason);
+    });
+    gAddEvent("rejectionhandled", (event: unknown) => {
+      const ev = event as { promise?: unknown };
+      dispatchPromiseEvent(1, ev.promise, undefined);
+    });
+  }
+
+  const utf8Decoder = new TextDecoder("utf-8");
+  function readUtf8FromWasm(ptr: number, length: number): string {
+    if (ptr === 0) return "";
+    // NAPI_AUTO_LENGTH is `(size_t)-1`.  In wasm32 it's 0xFFFFFFFF unsigned,
+    // which JS may see as -1 (signed) or 4294967295 (unsigned) depending on
+    // how the value crossed the napi boundary.  Cover both.
+    const uLen = length >>> 0; // force unsigned 32-bit interpretation
+    let actualLen: number;
+    if (length < 0 || uLen === 0xFFFFFFFF) {
+      // null-terminated; scan with a sane upper bound.
+      const u8 = new Uint8Array(memory.buffer);
+      const max = Math.min(u8.length - ptr, 256);
+      let end = 0;
+      while (end < max && u8[ptr + end] !== 0) end++;
+      actualLen = end;
+    } else if (uLen > 256) {
+      // Sanity cap — function names larger than 256 bytes are almost
+      // certainly not the ones we want to intercept.  Skip the read.
+      return "";
+    } else {
+      actualLen = uLen;
+    }
+    if (actualLen === 0) return "";
+    return utf8Decoder.decode(new Uint8Array(memory.buffer, ptr, actualLen));
+  }
+
+  // Build a shim JS function and register it as a napi handle.  Helper
+  // so the per-name branches stay readable.
+  function registerShim(shim: (...args: unknown[]) => unknown, result: number): number {
+    const handle = context.addToCurrentScope(shim);
+    if (result > 0) new DataView(memory.buffer).setUint32(result, handle.id, true);
+    return 0; // napi_ok
+  }
+
+  napiNs.napi_create_function = (env: number, utf8name: number, length: number, cb: number, data: number, result: number) => {
+    let name = "";
+    try { name = readUtf8FromWasm(utf8name, length); } catch { /* fall through to default */ }
+
+    if (name === "enqueueMicrotask") {
+      // Bypass edge's recursing C++ binding entirely.  See policy header for
+      // the recursion story.  cb (the wasm `TaskQueueEnqueueMicrotask` ptr)
+      // is intentionally dropped.
+      void env; void cb; void data;
+      postLog?.(`[task-queue] hijacked enqueueMicrotask → host-native queueMicrotask`, "debug");
+      return registerShim(function enqueueMicrotask(callback: unknown) {
+        if (typeof callback === "function") hostQueueMicrotask(callback as () => void);
+        // Non-function callbacks dropped silently.  Lib's wrapper validates
+        // before calling us, so this branch shouldn't fire in practice.
+      }, result);
+    }
+
+    if (name === "setPromiseRejectCallback") {
+      // Edge's C++ binding stores the callback in state but never invokes
+      // it (V8-registered callback path is disabled under emnapi).  Our
+      // shim captures the callback into the closure variable above and
+      // lets the host-event listeners drive it.
+      void env; void cb; void data;
+      postLog?.(`[task-queue] hijacked setPromiseRejectCallback → host unhandledRejection events`, "debug");
+      return registerShim(function setPromiseRejectCallback(callback: unknown) {
+        if (typeof callback === "function") {
+          promiseRejectCallback = callback as (type: number, promise: unknown, reason: unknown) => void;
+        }
+      }, result);
+    }
+
+    return origCreateFunction(env, utf8name, length, cb, data, result);
+  };
+}
+
 export function createNapiHost(opts: NapiHostOptions): NapiHost {
   const context = createContext();
   const envs = new Map<number, Env>();
@@ -457,6 +631,10 @@ export function createNapiHost(opts: NapiHostOptions): NapiHost {
   // helpers which don't expose buffers to edge).
   let wasmMallocImpl: ((n: number) => number) | null = null;
   patchEmnapiToUseWasmBackedBuffers(napiModule, opts.memory, context, () => wasmMallocImpl);
+
+  // Replace edge's `enqueueMicrotask` C++ binding with a host-native shim
+  // at the moment it's created.  See the function comment for the why.
+  installTaskQueueEnqueueShim(napiModule, opts.memory, context, opts.postLog);
 
   // Layer our unofficial_napi_* impls into the napi namespace.  This is the
   // ONE place edge-specific behavior is added on top of emnapi.
