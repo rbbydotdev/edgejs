@@ -16,6 +16,22 @@
 
 import { Buffer as BufferPolyfill } from "buffer";
 
-if (typeof (globalThis as { Buffer?: unknown }).Buffer !== "function") {
-  (globalThis as { Buffer: unknown }).Buffer = BufferPolyfill;
+const g = globalThis as Record<string, unknown>;
+
+if (typeof g.Buffer !== "function") {
+  g.Buffer = BufferPolyfill;
 }
+
+// Tried intercepting globalThis.Buffer via a property descriptor to force
+// Buffer.poolSize = 0 (which makes every Buffer.allocUnsafe un-pooled, so
+// our wasm-backed napi_create_buffer/_arraybuffer overrides catch each
+// allocation independently).  Edge.js's `addBuiltinLibsToObject` installs
+// a lazy getter that does `delete object[name]; object[name] = val;` —
+// the delete+assign races out our descriptor, so the intercept never sees
+// the real Buffer class.
+//
+// Workaround that DOES work: prepend `Buffer.poolSize = 0;` to user code
+// (the harness does this when crypto correctness matters).  Full
+// architectural fix needs to set poolSize=0 inside edge's bootstrap, OR
+// override Buffer.allocate() to ignore poolSize.  Documented in NOTES.md
+// 2026-05-21 "Crypto digest works".

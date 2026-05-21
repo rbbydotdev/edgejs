@@ -5,6 +5,72 @@ out the browser target. Newest entries first.
 
 ---
 
+## 2026-05-21 — Crypto digest works: poolSize=0 bypasses edge's Buffer pool
+
+`require('crypto').createHash('sha256').update('hello').digest('hex')` now
+returns the correct sha256 hash:
+`2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824`.
+
+Combined with the earlier wasm-backed Buffer overrides, this completes
+the basic crypto surface (digest + randomBytes work correctly).
+
+### How
+
+Read edge.js's [lib/buffer.js:460](lib/buffer.js) — `allocate(size)`:
+```js
+function allocate(size) {
+  if (size < (Buffer.poolSize >>> 1)) {
+    // ... use pre-allocated 8KB pool, return slice ...
+  }
+  return createUnsafeBuffer(size);  // un-pooled path
+}
+```
+
+Setting `Buffer.poolSize = 0` at the start of user code forces every
+`Buffer.allocUnsafe(N)` call to hit the un-pooled path (`createUnsafeBuffer`),
+which goes through `napi_create_buffer` and `napi_create_arraybuffer` —
+both caught by our wasm-backed Buffer overrides.  Result: every Buffer is
+its own wasm-memory-backed Uint8Array view.  No pool, no JS-side
+`pool.set()` copy, no clobbering between JS and wasm sides.
+
+Tried setting `Buffer.poolSize = 0` via a globalThis property descriptor
+intercept in [browser-target/src/host/globals-shim.ts](browser-target/src/host/globals-shim.ts),
+but edge.js's `addBuiltinLibsToObject` installs a lazy getter on
+`globalThis.Buffer` via `ObjectDefineProperty(object, name, { get: () => {
+delete object[name]; object[name] = val; return val; }})` — the `delete`
+then `assign` pattern bypasses any pre-existing setter, so our intercept
+races out.  Removed.
+
+Current workaround: **prepend `Buffer.poolSize = 0;` to user code** in
+test harnesses.  This is a per-call workaround, not a runtime-wide fix.
+A real fix would need to set poolSize=0 inside edge's bootstrap, OR
+override edge's `allocate()` to ignore poolSize, OR replace
+`Buffer.poolSize` with a getter that always returns 0.
+
+### What still doesn't work
+
+- `crypto.randomUUID()` returns `00000000-0000-4000-8000-000000000000`
+  (UUID v4 structure, all-zero random bits) even with `Buffer.poolSize = 0`.
+  Diagnosis: edge's `randomUUID` uses `secureBuffer(16 * 128)` from
+  `internalBinding('crypto')`, which is a C++ binding that allocates from
+  OpenSSL's secure memory region.  It probably calls
+  `napi_create_external_buffer` (or external_arraybuffer) directly with
+  the OpenSSL allocation address — a path our overrides don't intercept.
+  Followup: override `napi_create_external_buffer` similarly.
+
+### Verified via the Node harness
+
+```
+$ harness -e "Buffer.poolSize=0; const c=require('crypto');
+              console.log(c.createHash('sha256').update('hello').digest('hex'));
+              console.log(c.randomBytes(16).toString('hex'))"
+
+2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824
+3b073dfdee1824528546bc5a5b11ca16
+```
+
+---
+
 ## 2026-05-21 — Crypto.randomBytes works via emnapi external-arraybuffer path
 
 After researching emnapi's API surface, found `emnapi_sync_memory(env, js_to_wasm, view, offset, len)`
