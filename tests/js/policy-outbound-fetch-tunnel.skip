@@ -1,0 +1,13 @@
+blocked on four underlying edge.js+wasm bugs (see NOTES.md "outbound-fetch-tunnel test blockers"):
+  1. SAB/AB compat: Response.body / response.text() throw on SharedArrayBuffer.
+  2. lazy-load-from-microtask: compileFunction returns non-function for lazy
+     builtins (util/colors, tty, ...) called from microtask continuations.
+     Worked around in the prelude via silent stdout-write pre-init.
+  3. microtasks-starved-by-pending-timer: setTimeout blocks all microtasks
+     until the timer fires, so any test watchdog defeats the response path.
+  4. Buffer.from(string,'utf8') in our wasm-backed pool produces a buffer
+     whose .length is right but bytes are all zero (string encoding never
+     lands).  Affects req.write(string).
+
+The policy CODE in src/policies/outbound-fetch-tunnel.ts is correctly
+designed; unblocking the test requires fixing the lower-layer bugs.

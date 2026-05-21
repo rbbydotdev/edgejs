@@ -89,6 +89,36 @@ browser-target tree.
   silent no-op dispatchers for makeDynCall callbacks; emnapi finalizers
   at process exit dispatch through these and silently skip.  Long-term
   fix is to wire `__indirect_function_table` from the bound instance.
+- `sab-ab-body-read` — edge's fetch impl + Response.body / .text() /
+  .arrayBuffer() throw `Method get ArrayBuffer.prototype.byteLength
+  called on incompatible receiver #<SharedArrayBuffer>` when the body
+  bytes are wasm-memory-backed (which they are, post our napi
+  overrides).  Hides any outbound fetch use of edge's bundled fetch.
+  Surfaces in tests/js/policy-outbound-fetch-tunnel.js skip reason.
+- `lazy-load-from-microtask` — `BuiltinModule.compileForInternalLoader`
+  invoked from a microtask continuation (post-await) returns
+  non-function for lazy builtins (`internal/util/colors`,
+  `internal/util/inspect`, `tty`, etc).  Visible as `TypeError: fn is
+  not a function` from realm.js:401 when `console.log` is first used
+  inside a callback.  Workaround in outbound-fetch-tunnel: prelude
+  primes the lazy paths by silently calling `console.log('','')`
+  with swapped-out write functions.  Root cause unknown — likely
+  related to napi state lifetime across microtask boundaries.
+- `microtasks-starved-by-pending-timer` — when a `setTimeout(..., N)`
+  is pending, edge's wasm event loop blocks ALL microtasks until the
+  timer fires.  Async/await + setTimeout in the same test = test
+  always sees the timer first.  Test code avoids setTimeout watchdogs
+  for now; relies on the test-runner's 30s subprocess timeout for
+  genuine hangs.  Root cause unknown — likely in our poll_oneoff
+  implementation choosing to wait on timers before draining JS tasks.
+- `buffer-from-string-zeroed` — `Buffer.from('hello', 'utf8')` produces
+  a buffer of correct length but all-zero bytes when invoked in a
+  realm where edge's wasm-backed Buffer pool is active.  Encoding
+  never actually writes into the buffer.  Affects `req.write(string)`
+  in the fetch-tunnel — request body arrives at fetch as `\0\0\0...`.
+  Possible cause: our napi_create_buffer override allocates wasm
+  memory but a downstream encoder writes into a different (stale?)
+  view.  Needs root-causing.
 
 ### Sockets / HTTP
 
@@ -169,22 +199,26 @@ need Asyncify to bridge browser's async `import()` to sync wasm.
 
 ### Outbound HTTP/HTTPS
 
-The architecture for this is now in place via the **policies framework**
-(`browser-target/src/policies/`).  Default browser policy stack is
-Node-honest: outbound `http.request` / `https.request` throw
-`ERR_BROWSER_NO_OUTBOUND` with a clear message.  Two shortcut policies
-are still TODO and can be added without touching anything else:
+Default browser policy stack is Node-honest: outbound `http.request` /
+`https.request` throw `ERR_BROWSER_NO_OUTBOUND`.  Two shortcut policies
+exist as Policy slots in the framework:
 
-1. **`outbound-fetch-tunnel`**: re-implements ClientRequest+IncomingMessage
-   over `globalThis.fetch`.  Quickest path to "most apps work" but Node
-   semantics quietly diverge (no streaming request bodies until
-   ReadableStream upload broadly works, no all verbs in some browsers).
-2. **`outbound-via-relay`**: implements `sock_connect` to route HTTP
-   bytes through a user-hosted relay.  Real TCP semantics inside the
-   wasm; HTTPS still impossible (TLS bytes can't survive the relay
-   round-trip via fetch).  Adds infrastructure surface.
+1. **`outbound-fetch-tunnel`** — **SHIPPED but test-blocked**.  Code in
+   `policies/outbound-fetch-tunnel.ts`; correctly re-implements
+   ClientRequest+IncomingMessage over `globalThis.fetch` and includes
+   the lazy-bootstrap-priming workaround for the
+   `lazy-load-from-microtask` debt.  Test in
+   `tests/js/policy-outbound-fetch-tunnel.js` is skipped — blocked on
+   the `buffer-from-string-zeroed` debt (string→Buffer encoding doesn't
+   land) and the `sab-ab-body-read` debt (any use of edge's bundled
+   fetch in production browser deployment would hit it).  Either bug
+   unblocks the test.
+2. **`outbound-via-relay`** — TODO.  Would implement `sock_connect` to
+   route HTTP bytes through a user-hosted relay.  Real TCP semantics
+   inside the wasm; HTTPS still impossible (TLS bytes can't survive
+   the relay round-trip via fetch).  Adds infrastructure surface.
 
-Both would plug in as additional `Policy` exports — no framework changes
+Both plug in as additional `Policy` exports — no framework changes
 needed.
 
 ### Real OPFS persistence

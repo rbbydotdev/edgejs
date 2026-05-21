@@ -73,10 +73,12 @@ export function composePolicies(policies: Policy[]): ComposedPolicies {
 export { bufferPoolDisable } from "./buffer-pool-disable";
 export { inboundHttpsViaSW } from "./inbound-https-via-sw";
 export { outboundThrow } from "./outbound-throw";
+export { outboundFetchTunnel } from "./outbound-fetch-tunnel";
 
 import { bufferPoolDisable } from "./buffer-pool-disable";
 import { inboundHttpsViaSW } from "./inbound-https-via-sw";
 import { outboundThrow } from "./outbound-throw";
+import { outboundFetchTunnel } from "./outbound-fetch-tunnel";
 
 // =============================================================================
 // SANE DEFAULTS
@@ -139,4 +141,5 @@ export const policyRegistry: Record<string, Policy> = {
   [bufferPoolDisable.name]: bufferPoolDisable,
   [inboundHttpsViaSW.name]: inboundHttpsViaSW,
   [outboundThrow.name]: outboundThrow,
+  [outboundFetchTunnel.name]: outboundFetchTunnel,
 };
