@@ -78,15 +78,45 @@ import { bufferPoolDisable } from "./buffer-pool-disable";
 import { inboundHttpsViaSW } from "./inbound-https-via-sw";
 import { outboundThrow } from "./outbound-throw";
 
+// =============================================================================
+// SANE DEFAULTS
+// =============================================================================
+//
+// Two named bundles — pick the one that matches your deployment shape, or
+// compose your own array.  The two are intentionally separate (rather than
+// one bundle with flags) so each is grep-able and a deployment can fork via
+// `.filter(...)` / `.concat(...)` without reaching into a flags object.
+//
+// `minimalPolicies` — what you need for edge.js to behave correctly AT ALL,
+//   regardless of host environment.  Currently just `bufferPoolDisable`
+//   because edge's Buffer pool slicing diverges from our wasm-backed
+//   ArrayBuffer model and breaks crypto if pooling isn't disabled.  This
+//   is the node-harness default — it gives the rawest testable plumbing.
+//
+// `defaultBrowserPolicies` — minimal + the policies that reflect browser
+//   constraints (no real TCP, SW terminates TLS).  This is the worker.ts
+//   default — what end-user browser deployments get out of the box.
+//
+// Both expand as new constraints surface.  E.g. when OPFS persistence
+// lands, the browser default will also include `opfsPersistence`; the
+// minimal bundle stays alone.
+
+/**
+ * The smallest set of policies required for edge.js to behave correctly,
+ * irrespective of host environment.  If you're going to apply ANY
+ * policies, start here.
+ */
+export const minimalPolicies: Policy[] = [
+  bufferPoolDisable,
+];
+
 /**
  * Recommended baseline for browser deployments.  Each entry is a separate
- * policy so callers can drop one (`defaultBrowserPolicies.filter(...)`) or
- * append more (e.g. an opt-in fetch-tunnel) without forking.
+ * policy so callers can drop one (`defaultBrowserPolicies.filter(...)`)
+ * or append more (e.g. an opt-in fetch-tunnel) without forking.
  *
  * Why each is here:
- * - bufferPoolDisable: not really optional in practice — edge's Buffer pool
- *   slicing diverges from our wasm-backed ArrayBuffer model and breaks
- *   crypto.  Modeled as a policy for symmetry but expected to stay applied.
+ * - bufferPoolDisable: see `minimalPolicies` — required for crypto.
  * - inboundHttpsViaSW: the SW IS the TLS endpoint to the browser, so wasm
  *   never sees encrypted bytes.  https.createServer delegates to http.
  * - outboundThrow: Node-honest default.  http.request/https.request throw
@@ -97,3 +127,16 @@ export const defaultBrowserPolicies: Policy[] = [
   inboundHttpsViaSW,
   outboundThrow,
 ];
+
+/**
+ * Name-keyed registry of every Policy this module exports.  Used by the
+ * Node harness's `--policies a,b,c` flag and any tooling that needs to
+ * resolve a policy by string name.  KEEP IN SYNC with the named exports
+ * above when you add a Policy — the export itself doesn't auto-register
+ * because TS module-shape introspection isn't ergonomic at runtime.
+ */
+export const policyRegistry: Record<string, Policy> = {
+  [bufferPoolDisable.name]: bufferPoolDisable,
+  [inboundHttpsViaSW.name]: inboundHttpsViaSW,
+  [outboundThrow.name]: outboundThrow,
+};

@@ -59,25 +59,19 @@ const { Trace } = await import(`file://${browserTarget}/src/trace.ts`);
 const policiesMod = await import(`file://${browserTarget}/src/policies/index.ts`);
 
 // Policy selection: --policies a,b,c picks the explicit list, replacing the
-// harness default.  Harness defaults to `[buffer-pool-disable]` only — that's
-// the minimum needed for crypto correctness.  The browser worker uses a
-// richer default (`defaultBrowserPolicies`) that also bakes in
-// inbound-https-via-sw + outbound-throw; the harness keeps those OFF so the
-// raw TLS plumbing remains testable in isolation.
+// harness default.  Harness defaults to `minimalPolicies` (just
+// buffer-pool-disable) so the rawest testable plumbing is exposed; the
+// browser worker uses the richer `defaultBrowserPolicies` (see
+// policies/index.ts for the rationale split).  Pass `--policies ''` for an
+// empty set if you want NO prelude at all (you'll likely break crypto).
 const policiesIdx = args.indexOf("--policies");
-const policyNames = (policiesIdx >= 0 && policiesIdx + 1 < args.length)
-  ? args[policiesIdx + 1].split(",").map((s) => s.trim()).filter(Boolean)
-  : ["buffer-pool-disable"];
-const policiesByName = {
-  "buffer-pool-disable": policiesMod.bufferPoolDisable,
-  "inbound-https-via-sw": policiesMod.inboundHttpsViaSW,
-  "outbound-throw": policiesMod.outboundThrow,
-};
-const selectedPolicies = policyNames.map((n) => {
-  const p = policiesByName[n];
-  if (!p) { errlog(`[harness] unknown policy: ${n}`); process.exit(2); }
-  return p;
-});
+const selectedPolicies = policiesIdx >= 0 && policiesIdx + 1 < args.length
+  ? args[policiesIdx + 1].split(",").map((s) => s.trim()).filter(Boolean).map((n) => {
+      const p = policiesMod.policyRegistry[n];
+      if (!p) { errlog(`[harness] unknown policy: ${n}`); process.exit(2); }
+      return p;
+    })
+  : policiesMod.minimalPolicies;
 const { builtinOverrides: policyOverrides, userScriptPrelude, applied: appliedPolicyNames } =
   policiesMod.composePolicies(selectedPolicies);
 if (appliedPolicyNames.length > 0) log(`[harness] policies: ${appliedPolicyNames.join(", ")}`);
