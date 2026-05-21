@@ -7,6 +7,7 @@ import { buildImports } from "./imports-generated";
 import { createWasiShim, ExitSignal, type BridgeRequest } from "./wasi-shim";
 import { Trace, toUnifiedJsonl } from "./trace";
 import { createNapiHost } from "./napi-host";
+import { HTTPS_AS_HTTP_SOURCE } from "./overrides/https-as-http";
 import { createBundledFs } from "./host/fs/adapters/bundled";
 import { createOpfsFs } from "./host/fs/adapters/opfs";
 import { layered } from "./host/fs/adapters/layered";
@@ -84,8 +85,14 @@ async function runEdgeWithEmnapi() {
     level: "info",
   });
 
-  // emnapi host — provides standard napi_* + env helpers + our unofficial_napi_*
-  const napi = createNapiHost({ memory });
+  // emnapi host — provides standard napi_* + env helpers + our unofficial_napi_*.
+  // Bake in the https→http override by default: the Service Worker is the
+  // TLS endpoint to the user-agent, so the wasm receives pre-parsed HTTP
+  // through the SW bridge.  See overrides/https-as-http.ts for details.
+  const napi = createNapiHost({
+    memory,
+    builtinOverrides: { https: HTTPS_AS_HTTP_SOURCE },
+  });
   post("log", { text: `napi-host: ${Object.keys(napi.imports.napi).length} napi entries seeded`, level: "info" });
 
   // FileSystem facade — layered combinator: reads check bundled first

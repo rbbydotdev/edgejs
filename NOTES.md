@@ -51,7 +51,8 @@ for HTTP bridging, and a FileSystem facade.
 | Test harness over `tests/js/*` | ✅ | `scripts/test-runner.mjs`, 8/8 passing, ~300ms/test |
 | `import` (ESM) | ❌ | `module_wrap_*` are stubs |
 | `tls.createSecureContext` / `https.createServer` + listen | ✅ | OpenSSL bundled; cert/key parsed; `listen()` callback fires |
-| HTTPS request/response roundtrip | ❌ | needs `sock_connect` (for client) or SW HTTPS bridge (for server) |
+| HTTPS server through SW bridge | ✅ | browser worker bakes in https→http override (overrides/https-as-http.ts) — SW is the TLS endpoint, wasm sees pre-parsed HTTP |
+| Outbound `https.request` | ❌ | override throws `ERR_BROWSER_NO_OUTBOUND_TLS`; needs fetch()-tunnel polyfill or sock_connect |
 | OPFS persistence (real disk) | ❌ | in-memory only |
 | `worker_threads` | ❌ | not started |
 | `child_process` | ❌ | needs subprocess model |
@@ -161,30 +162,26 @@ Real Node code using `import` syntax fails at link/evaluate.  Probably
 need Asyncify to bridge browser's async `import()` to sync wasm.
 600-1500 LOC chunk.
 
-### HTTPS / TLS roundtrip
+### Outbound HTTPS
 
-The TLS *primitives* work already: `tls.createSecureContext` parses
-real PEM cert+key, `https.createServer({key, cert}, ...)` constructs,
-`server.listen()` fires its callback.  Verified by
-`tests/js/tls-secure-context.js` and `tests/js/https-server-listen.js`.
+Inbound HTTPS through the SW bridge is **done** — `worker.ts` bakes
+in the `https-as-http` override (overrides/https-as-http.ts) so the
+SW serves both HTTP and HTTPS through the same path.  The wasm
+receives pre-parsed HTTP regardless of scheme; cert/key options on
+`https.createServer` are silently stripped.
 
-What's still missing for an actual request/response:
+Outbound is still open.  Two ways to address it:
 
-- **Outbound TLS client** (`tls.connect`, `https.request`) needs
-  `sock_connect` implemented (currently `no-outbound` debt → ENOSYS).
-  Once that's wired, the in-wasm TLS state machine should handshake
-  fine since OpenSSL is baked in.
-- **Inbound HTTPS server through the SW bridge** is harder: the
-  Service Worker terminates fetch() requests for us as already-parsed
-  HTTP, so wasm never sees TLS bytes from the network.  Real path is
-  either (a) treat HTTPS the same as HTTP at the SW level and ignore
-  cert/encryption (the SW IS the TLS endpoint to the user-agent), or
-  (b) build a Workers Sockets-style raw TCP relay.
+1. **fetch()-tunnel override**: ship a second override for `http`/
+   `https` clients (`request`, `get`) that routes through the global
+   `fetch()` API.  Polyfill at the JS layer.  Limits: no streaming
+   request bodies (until ReadableStream upload broadly works), no
+   custom verbs in some browsers.  Fast path to "most apps work".
+2. **sock_connect proxy**: implement `sock_connect` to route through
+   a server-side relay we host.  Keeps the wasm's net stack honest
+   (real TCP semantics) but adds infrastructure surface.
 
-Practical recommendation: (a) — wasm-side TLS is unreachable from a
-browser anyway since the only way bytes arrive is through
-`fetch()`-derived events.  Pre-parsed HTTP through the SW is what
-StackBlitz does too.
+User preference TBD.
 
 ### Real OPFS persistence
 
@@ -217,6 +214,8 @@ Auto-prepend works for `-e` only.  Needs a deeper hook for `edge file.js`.
 - `browser-target/scripts/node-harness.mjs` — Node-side test loop
 - `browser-target/scripts/test-runner.mjs` — regression net over `tests/js/*.js`
 - `tests/js/*.js` + `*.stdout`/`*.stderr`/`*.skip`/`*.harness-args` — corpus
+- `browser-target/src/overrides/https-as-http.ts` — server-side https→http
+  shim baked into the browser worker (SW is the TLS endpoint)
 - `browser-target/public/edgejs.wasm` — symlink to the 26.5MB build artifact (gitignored)
 - `patches/napi/*.patch` — local mods to napi/ submodule
 - `scripts/setup-napi-patches.sh` — applies the patches on fresh checkout
