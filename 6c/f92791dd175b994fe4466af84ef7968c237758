@@ -1,0 +1,40 @@
+browser-target/imports-napi-ext.txt
+  s_3c284a8c3d32d2::t_28c3bb0c01b123 1-83
+browser-target/scripts/node-harness.mjs
+  s_3c284a8c3d32d2::t_a4a974c06258a2 215-227,230-231
+browser-target/src/imports-types.ts
+  s_3c284a8c3d32d2::t_3374f66c261908 8
+src/edge_task_queue.cc
+  s_3c284a8c3d32d2::t_d1fb7549629714 119-128
+browser-target/scripts/gen-stubs.mjs
+  s_3c284a8c3d32d2::t_e056af491ae4e7 22
+browser-target/src/imports-generated.ts
+  s_3c284a8c3d32d2::t_b47135ba2baca2 35,145-231,323,327
+browser-target/src/napi-host/index.ts
+  s_3c284a8c3d32d2::t_5779d078f92a9d 24
+  s_3c284a8c3d32d2::t_a2e1e32640c812 613-636
+  s_3c284a8c3d32d2::t_5b9aa7e3d0d7c8 469,479-482,484,490-492
+  s_3c284a8c3d32d2::t_89d6e4ed45c4f6 558-566,571
+browser-target/src/napi-host/microtask-ops.ts
+  s_3c284a8c3d32d2::t_d8c11cbcfe6440 1-159
+ARCHITECTURE.md
+  s_3c284a8c3d32d2::t_e498c874878fad 203-209
+browser-target/imports-env.txt
+  s_3c284a8c3d32d2::t_28c3bb0c01b123 2
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.11",
+  "base_commit_sha": "6cf92791dd175b994fe4466af84ef7968c237758",
+  "prompts": {},
+  "sessions": {
+    "s_3c284a8c3d32d2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "aba00247-eb0d-4299-a1aa-1451ccea7316",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
