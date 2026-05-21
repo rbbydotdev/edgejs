@@ -42,11 +42,26 @@ const projectRoot = resolve(browserTarget, "..");
 
 // CLI: forward `-e <script>` to edge's worker args.  Default: simple hello.
 const args = process.argv.slice(2);
-let edgeArgs = ["edgejs", "-e", "log('hello from edgejs in node-harness')"];
 const eIdx = args.indexOf("-e");
-if (eIdx >= 0 && eIdx + 1 < args.length) {
-  edgeArgs = ["edgejs", "-e", args[eIdx + 1]];
-}
+const userScript = (eIdx >= 0 && eIdx + 1 < args.length)
+  ? args[eIdx + 1]
+  : "console.log('hello from edgejs in node-harness')";
+
+// Auto-prepend `Buffer.poolSize = 0` so the user-visible Buffer class
+// inside edge's eval context skips the pool-slice path.  Edge's pool
+// allocBuffer is a wasm-backed view (via our overrides), so its
+// `.buffer === wasmMemory.buffer`, and `new FastBuffer(allocPool, poolOffset, size)`
+// computes wasm-memory-absolute offsets instead of pool-relative —
+// pool slices land at wrong addresses.  Disabling the pool sidesteps
+// the impedance.  See NOTES.md 2026-05-21 "Crypto FULL surface working".
+//
+// We tried hooking globalThis.Buffer.poolSize via napi_call_function
+// instead — confirmed that the Buffer class our host sees is a different
+// object from the Buffer class inside edge's eval context (probably a
+// realm/context boundary).  Setting it from host JS doesn't affect user.
+// The most reliable fix is to set it inside the user code itself.
+const POOL_DISABLE = "try{Buffer.poolSize=0}catch{};";
+const edgeArgs = ["edgejs", "-e", POOL_DISABLE + userScript];
 
 // Lazy-import the shim modules through tsx so .ts files work directly.
 // (`node --import tsx` registers the loader.)

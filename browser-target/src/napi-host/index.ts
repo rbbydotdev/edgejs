@@ -181,10 +181,15 @@ function patchEmnapiToUseWasmBackedBuffers(
     if (!malloc) return null;
     const ptr = malloc(byteLength);
     if (!ptr) return null;
-    // BufferPolyfill.from(SAB, offset, len) returns a Uint8Array view with
-    // Buffer.prototype — view.buffer === memory.buffer (the SAB).
-    const BufferCtor = (globalThis as { Buffer: { from(b: ArrayBufferLike, o: number, l: number): Uint8Array } }).Buffer;
-    const view = BufferCtor.from(memory.buffer, ptr, byteLength);
+    // Construct the wasm-backed view directly via Uint8Array — NOT via
+    // globalThis.Buffer.from, which is edge.js's Buffer class once
+    // bootstrap has loaded it.  Edge's Buffer.from may have semantics
+    // that don't match our needs (e.g. it might COPY when given an
+    // ArrayBuffer + offset + length, depending on its implementation
+    // path).  Using the raw Uint8Array constructor guarantees a view,
+    // not a copy.  emnapi's `getViewPointer` will accept any
+    // Uint8Array — what matters is view.buffer === wasmMemory.buffer.
+    const view = new Uint8Array(memory.buffer, ptr, byteLength);
     return { ptr, view };
   }
 

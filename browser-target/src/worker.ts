@@ -111,7 +111,10 @@ async function runEdgeWithEmnapi() {
     // routing — the SW intercepts /_edge/* and pushes any request onto
     // whatever listener edge has open (single-listener policy, see
     // wasi-shim.ts).
-    args: ["edgejs", "-e", "require('http').createServer((req,res)=>{res.end('hi from edge\\n')}).listen(3000,()=>console.log('listening'))"],
+    // Prepend `Buffer.poolSize=0` to disable edge's pool-slicing path —
+    // see NOTES.md 2026-05-21 "Crypto FULL surface working" for why.
+    // Without this, crypto.createHash().digest() etc. return wrong bytes.
+    args: ["edgejs", "-e", "try{Buffer.poolSize=0}catch{};require('http').createServer((req,res)=>{res.end('hi from edge\\n')}).listen(3000,()=>console.log('listening'))"],
     // Match native napi_wasmer baseline — wasmer-wasix passes no env by
     // default and edge boots fine.  Adding env vars made wasi-libc trigger
     // a different init path that breaks uv_cwd downstream.
