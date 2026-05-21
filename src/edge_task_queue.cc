@@ -4,6 +4,32 @@
 #include "internal_binding/helpers.h"
 #include "unofficial_napi.h"
 
+// Force-keep references to the unofficial_napi_* microtask + promise-reject
+// operations declared in unofficial_napi.h with __import_module__ attribute.
+//
+// Without these, wasm-ld's dead-code-elimination drops the calls below (the
+// linker sees no static definition under EDGE_NAPI_PROVIDER=imports and the
+// call result is used in a comparison whose branches don't have other
+// observable effects on the caller).  The DCE eliminates the wasm import
+// declarations entirely, so the C++ binding's fallback path always fires
+// — and that fallback (calling globalThis.queueMicrotask) recurses into
+// itself via lib's wrapper, hanging the runtime.
+//
+// Creating __attribute__((used)) function-pointer variables that reference
+// these symbols keeps them alive past DCE.  wasm-ld then emits them as
+// real wasm imports in the `napi_extension_wasmer_v0` namespace, where
+// our host can implement them properly.
+//
+// See ARCHITECTURE.md L1 → microtask integration roadmap.
+__attribute__((used)) static auto _keep_enqueue_microtask =
+    &unofficial_napi_enqueue_microtask;
+__attribute__((used)) static auto _keep_process_microtasks =
+    &unofficial_napi_process_microtasks;
+__attribute__((used)) static auto _keep_set_promise_reject_callback =
+    &unofficial_napi_set_promise_reject_callback;
+__attribute__((used)) static auto _keep_set_promise_hooks =
+    &unofficial_napi_set_promise_hooks;
+
 namespace {
 
 void DeleteRefIfAny(napi_env env, napi_ref* ref_slot);

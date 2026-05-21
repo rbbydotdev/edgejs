@@ -22,6 +22,33 @@ if (typeof g.Buffer !== "function") {
   g.Buffer = BufferPolyfill;
 }
 
+// Snapshot the host's native WebCrypto (Node's or browser-worker's) before
+// edge.js bootstraps and replaces `globalThis.crypto` with its own lib
+// module.  Stored on a property edge doesn't touch so policies can reach
+// it later via `globalThis.__edgeHostNativeCrypto`.
+//
+// Why needed: edge's `addBuiltinLibsToObject` installs `globalThis.crypto`
+// pointing at edge's `lib/crypto.js` exports.  Any policy that wants to
+// route to the *real* host WebCrypto (e.g. `crypto-host-random` offloading
+// `randomBytes` to `crypto.getRandomValues`) needs the original reference.
+//
+// Snapshotted as `{ getRandomValues, randomUUID, subtle }` — not the
+// `Crypto` object itself, because edge's lib uses property assignment
+// patterns that don't survive whole-object replacement on some hosts.
+const hostCrypto = (globalThis as { crypto?: { getRandomValues?: (a: ArrayBufferView) => ArrayBufferView; randomUUID?: () => string; subtle?: unknown } }).crypto;
+if (hostCrypto && !g.__edgeHostNativeCrypto) {
+  Object.defineProperty(g, "__edgeHostNativeCrypto", {
+    value: {
+      getRandomValues: hostCrypto.getRandomValues ? hostCrypto.getRandomValues.bind(hostCrypto) : undefined,
+      randomUUID: hostCrypto.randomUUID ? hostCrypto.randomUUID.bind(hostCrypto) : undefined,
+      subtle: hostCrypto.subtle ?? undefined,
+    },
+    writable: false,
+    configurable: false,
+    enumerable: false,
+  });
+}
+
 // Tried intercepting globalThis.Buffer via a property descriptor to force
 // Buffer.poolSize = 0 (which makes every Buffer.allocUnsafe un-pooled, so
 // our wasm-backed napi_create_buffer/_arraybuffer overrides catch each
