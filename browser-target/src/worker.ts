@@ -7,7 +7,7 @@ import { buildImports } from "./imports-generated";
 import { createWasiShim, ExitSignal, type BridgeRequest } from "./wasi-shim";
 import { Trace, toUnifiedJsonl } from "./trace";
 import { createNapiHost } from "./napi-host";
-import { HTTPS_AS_HTTP_SOURCE } from "./overrides/https-as-http";
+import { composePolicies, defaultBrowserPolicies } from "./policies";
 import { createBundledFs } from "./host/fs/adapters/bundled";
 import { createOpfsFs } from "./host/fs/adapters/opfs";
 import { layered } from "./host/fs/adapters/layered";
@@ -86,13 +86,14 @@ async function runEdgeWithEmnapi() {
   });
 
   // emnapi host — provides standard napi_* + env helpers + our unofficial_napi_*.
-  // Bake in the https→http override by default: the Service Worker is the
-  // TLS endpoint to the user-agent, so the wasm receives pre-parsed HTTP
-  // through the SW bridge.  See overrides/https-as-http.ts for details.
-  const napi = createNapiHost({
-    memory,
-    builtinOverrides: { https: HTTPS_AS_HTTP_SOURCE },
-  });
+  // Policies are the deployment-time strategy bundle: see policies/index.ts
+  // for the framework and `defaultBrowserPolicies` for the rationale of each
+  // member.  Worker-only deployments can fork this list — e.g. append an
+  // outbound-fetch-tunnel policy to enable client-side http.request.
+  const { builtinOverrides, userScriptPrelude, applied: appliedPolicies } =
+    composePolicies(defaultBrowserPolicies);
+  const napi = createNapiHost({ memory, builtinOverrides });
+  post("log", { text: `policies applied: ${appliedPolicies.join(", ")}`, level: "info" });
   post("log", { text: `napi-host: ${Object.keys(napi.imports.napi).length} napi entries seeded`, level: "info" });
 
   // FileSystem facade — layered combinator: reads check bundled first
@@ -118,10 +119,12 @@ async function runEdgeWithEmnapi() {
     // routing — the SW intercepts /_edge/* and pushes any request onto
     // whatever listener edge has open (single-listener policy, see
     // wasi-shim.ts).
-    // Prepend `Buffer.poolSize=0` to disable edge's pool-slicing path —
-    // see NOTES.md 2026-05-21 "Crypto FULL surface working" for why.
-    // Without this, crypto.createHash().digest() etc. return wrong bytes.
-    args: ["edgejs", "-e", "try{Buffer.poolSize=0}catch{};require('http').createServer((req,res)=>{res.end('hi from edge\\n')}).listen(3000,()=>console.log('listening'))"],
+    //
+    // `userScriptPrelude` is prepended by the active policy set — at
+    // minimum it contains the Buffer.poolSize=0 hack (see
+    // policies/buffer-pool-disable.ts) plus any other monkey-patches the
+    // active policies install.
+    args: ["edgejs", "-e", userScriptPrelude + "require('http').createServer((req,res)=>{res.end('hi from edge\\n')}).listen(3000,()=>console.log('listening'))"],
     // Match native napi_wasmer baseline — wasmer-wasix passes no env by
     // default and edge boots fine.  Adding env vars made wasi-libc trigger
     // a different init path that breaks uv_cwd downstream.

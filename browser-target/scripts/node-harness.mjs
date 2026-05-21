@@ -51,27 +51,38 @@ const userScript = (eIdx >= 0 && eIdx + 1 < args.length)
   ? args[eIdx + 1]
   : "console.log('hello from edgejs in node-harness')";
 
-// Auto-prepend `Buffer.poolSize = 0` so the user-visible Buffer class
-// inside edge's eval context skips the pool-slice path.  Edge's pool
-// allocBuffer is a wasm-backed view (via our overrides), so its
-// `.buffer === wasmMemory.buffer`, and `new FastBuffer(allocPool, poolOffset, size)`
-// computes wasm-memory-absolute offsets instead of pool-relative —
-// pool slices land at wrong addresses.  Disabling the pool sidesteps
-// the impedance.  See NOTES.md 2026-05-21 "Crypto FULL surface working".
-//
-// We tried hooking globalThis.Buffer.poolSize via napi_call_function
-// instead — confirmed that the Buffer class our host sees is a different
-// object from the Buffer class inside edge's eval context (probably a
-// realm/context boundary).  Setting it from host JS doesn't affect user.
-// The most reliable fix is to set it inside the user code itself.
-const POOL_DISABLE = "try{Buffer.poolSize=0}catch{};";
-const edgeArgs = ["edgejs", "-e", POOL_DISABLE + userScript];
-
 // Lazy-import the shim modules through tsx so .ts files work directly.
 // (`node --import tsx` registers the loader.)
 const { createWasiShim, ExitSignal } = await import(`file://${browserTarget}/src/wasi-shim.ts`);
 const { createNapiHost } = await import(`file://${browserTarget}/src/napi-host/index.ts`);
 const { Trace } = await import(`file://${browserTarget}/src/trace.ts`);
+const policiesMod = await import(`file://${browserTarget}/src/policies/index.ts`);
+
+// Policy selection: --policies a,b,c picks the explicit list, replacing the
+// harness default.  Harness defaults to `[buffer-pool-disable]` only — that's
+// the minimum needed for crypto correctness.  The browser worker uses a
+// richer default (`defaultBrowserPolicies`) that also bakes in
+// inbound-https-via-sw + outbound-throw; the harness keeps those OFF so the
+// raw TLS plumbing remains testable in isolation.
+const policiesIdx = args.indexOf("--policies");
+const policyNames = (policiesIdx >= 0 && policiesIdx + 1 < args.length)
+  ? args[policiesIdx + 1].split(",").map((s) => s.trim()).filter(Boolean)
+  : ["buffer-pool-disable"];
+const policiesByName = {
+  "buffer-pool-disable": policiesMod.bufferPoolDisable,
+  "inbound-https-via-sw": policiesMod.inboundHttpsViaSW,
+  "outbound-throw": policiesMod.outboundThrow,
+};
+const selectedPolicies = policyNames.map((n) => {
+  const p = policiesByName[n];
+  if (!p) { errlog(`[harness] unknown policy: ${n}`); process.exit(2); }
+  return p;
+});
+const { builtinOverrides: policyOverrides, userScriptPrelude, applied: appliedPolicyNames } =
+  policiesMod.composePolicies(selectedPolicies);
+if (appliedPolicyNames.length > 0) log(`[harness] policies: ${appliedPolicyNames.join(", ")}`);
+
+const edgeArgs = ["edgejs", "-e", userScriptPrelude + userScript];
 
 // Node-side FileSystem adapter.  Same interface as the bundled adapter, but
 // reads from the local filesystem — paths that start with /node-lib/** map
@@ -162,7 +173,9 @@ const memory = new WebAssembly.Memory({ initial: 337, maximum: 65536, shared: tr
 // as builtinOverrides — that hook catches compiled-in builtins via
 // `BuiltinsCompileFunctionCallback` in edge's C++.  The FS-layer override
 // only catches modules edge loads via WASI; this catches everything.
-const overrideEntries = {};
+// Seed with the active policies' overrides first; --override flags layer on
+// top (last-wins) so a user can override what a policy installed.
+const overrideEntries = { ...policyOverrides };
 for (let i = 0; i < args.length; i++) {
   if (args[i] !== "--override") continue;
   const spec = args[i + 1];

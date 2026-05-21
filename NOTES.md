@@ -51,8 +51,9 @@ for HTTP bridging, and a FileSystem facade.
 | Test harness over `tests/js/*` | ✅ | `scripts/test-runner.mjs`, 8/8 passing, ~300ms/test |
 | `import` (ESM) | ❌ | `module_wrap_*` are stubs |
 | `tls.createSecureContext` / `https.createServer` + listen | ✅ | OpenSSL bundled; cert/key parsed; `listen()` callback fires |
-| HTTPS server through SW bridge | ✅ | browser worker bakes in https→http override (overrides/https-as-http.ts) — SW is the TLS endpoint, wasm sees pre-parsed HTTP |
-| Outbound `https.request` | ❌ | override throws `ERR_BROWSER_NO_OUTBOUND_TLS`; needs fetch()-tunnel polyfill or sock_connect |
+| HTTPS server through SW bridge | ✅ | `inbound-https-via-sw` policy (default in browser); SW is the TLS endpoint, wasm sees pre-parsed HTTP |
+| Outbound `http.request` / `https.request` | ❌ → throws cleanly | `outbound-throw` policy is the Node-honest default; opt-in shortcuts are pending policy additions |
+| **Policies framework** (deployment DI) | ✅ | `browser-target/src/policies/*.ts`; array of strategies, last-wins composition |
 | OPFS persistence (real disk) | ❌ | in-memory only |
 | `worker_threads` | ❌ | not started |
 | `child_process` | ❌ | needs subprocess model |
@@ -60,11 +61,15 @@ for HTTP bridging, and a FileSystem facade.
 
 **Boot cost**: ~130-200ms `_start` time + ~50ms wasm compile (after first run cached).
 
-**Auto-prepend**: every user `-e` script gets `try{Buffer.poolSize=0}catch{};`
-prepended (worker.ts and node-harness.mjs).  Required for crypto correctness
-— edge's Buffer pool slicing doesn't compose with our wasm-backed
-ArrayBuffer model.  Invisible to users.  See ARCHIVE.md "Crypto FULL surface
-working" for details.
+**Auto-prepend**: every user `-e` script gets the active policies'
+`userScriptPrelude` concatenated in front of it.  At minimum that's
+`try{Buffer.poolSize=0}catch{};` (from `buffer-pool-disable`) which is
+required for crypto correctness — edge's Buffer pool slicing doesn't
+compose with our wasm-backed ArrayBuffer model.  Browser worker adds
+the `outbound-throw` prelude (patches `http.request`/`https.request`
+to throw `ERR_BROWSER_NO_OUTBOUND`).  See `policies/index.ts` for the
+full bundle and ARCHIVE.md "Crypto FULL surface working" for the
+Buffer.poolSize backstory.
 
 ---
 
@@ -162,26 +167,25 @@ Real Node code using `import` syntax fails at link/evaluate.  Probably
 need Asyncify to bridge browser's async `import()` to sync wasm.
 600-1500 LOC chunk.
 
-### Outbound HTTPS
+### Outbound HTTP/HTTPS
 
-Inbound HTTPS through the SW bridge is **done** — `worker.ts` bakes
-in the `https-as-http` override (overrides/https-as-http.ts) so the
-SW serves both HTTP and HTTPS through the same path.  The wasm
-receives pre-parsed HTTP regardless of scheme; cert/key options on
-`https.createServer` are silently stripped.
+The architecture for this is now in place via the **policies framework**
+(`browser-target/src/policies/`).  Default browser policy stack is
+Node-honest: outbound `http.request` / `https.request` throw
+`ERR_BROWSER_NO_OUTBOUND` with a clear message.  Two shortcut policies
+are still TODO and can be added without touching anything else:
 
-Outbound is still open.  Two ways to address it:
+1. **`outbound-fetch-tunnel`**: re-implements ClientRequest+IncomingMessage
+   over `globalThis.fetch`.  Quickest path to "most apps work" but Node
+   semantics quietly diverge (no streaming request bodies until
+   ReadableStream upload broadly works, no all verbs in some browsers).
+2. **`outbound-via-relay`**: implements `sock_connect` to route HTTP
+   bytes through a user-hosted relay.  Real TCP semantics inside the
+   wasm; HTTPS still impossible (TLS bytes can't survive the relay
+   round-trip via fetch).  Adds infrastructure surface.
 
-1. **fetch()-tunnel override**: ship a second override for `http`/
-   `https` clients (`request`, `get`) that routes through the global
-   `fetch()` API.  Polyfill at the JS layer.  Limits: no streaming
-   request bodies (until ReadableStream upload broadly works), no
-   custom verbs in some browsers.  Fast path to "most apps work".
-2. **sock_connect proxy**: implement `sock_connect` to route through
-   a server-side relay we host.  Keeps the wasm's net stack honest
-   (real TCP semantics) but adds infrastructure surface.
-
-User preference TBD.
+Both would plug in as additional `Policy` exports — no framework changes
+needed.
 
 ### Real OPFS persistence
 
@@ -215,7 +219,12 @@ Auto-prepend works for `-e` only.  Needs a deeper hook for `edge file.js`.
 - `browser-target/scripts/test-runner.mjs` — regression net over `tests/js/*.js`
 - `tests/js/*.js` + `*.stdout`/`*.stderr`/`*.skip`/`*.harness-args` — corpus
 - `browser-target/src/overrides/https-as-http.ts` — server-side https→http
-  shim baked into the browser worker (SW is the TLS endpoint)
+  source string used by the `inbound-https-via-sw` policy
+- `browser-target/src/policies/*.ts` — deployment-time strategy DI:
+  - `index.ts` — `Policy` type, `composePolicies()`, `defaultBrowserPolicies`
+  - `buffer-pool-disable.ts` — the Buffer.poolSize=0 prelude
+  - `inbound-https-via-sw.ts` — wraps the https-as-http override
+  - `outbound-throw.ts` — Node-honest default for client http/https
 - `browser-target/public/edgejs.wasm` — symlink to the 26.5MB build artifact (gitignored)
 - `patches/napi/*.patch` — local mods to napi/ submodule
 - `scripts/setup-napi-patches.sh` — applies the patches on fresh checkout
