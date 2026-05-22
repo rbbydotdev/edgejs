@@ -229,6 +229,14 @@ async function runEdgeWithEmnapi() {
           fs.promises.readFile('/node/deps/undici/src/package.json')
             .then(buf => res.end('fs.readFile ok len=' + buf.length + '\\n'))
             .catch(err => { res.statusCode = 500; res.end('fs.readFile err: ' + err.message + '\\n'); });
+        } else if (req.url === '/fs-sync') {
+          try {
+            const buf = fs.readFileSync('/node/deps/undici/src/package.json');
+            res.end('fs.readFileSync ok len=' + buf.length + '\\n');
+          } catch (err) {
+            res.statusCode = 500;
+            res.end('fs.readFileSync err: ' + err.message + '\\n');
+          }
         } else if (req.url === '/fs-open') {
           fs.open('/node/deps/undici/src/package.json', 'r', (err, fd) => {
             if (err) { res.statusCode = 500; res.end('fs.open err: ' + err.message + '\\n'); return; }
