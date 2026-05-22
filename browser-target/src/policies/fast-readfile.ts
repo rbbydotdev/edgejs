@@ -92,7 +92,18 @@ const POST_PATCH = `
 
 export const fastReadFile: Policy = {
   name: "fast-readfile",
-  description: "Short-circuit fs.promises.readFile through fs.readFileSync. ~4x speedup on cached files (~1000ms → ~280ms in browser-target measurement). Trades AbortSignal mid-read + a few async-hook diagnostic edges for the speed — see policy source for the full drift list.",
+  description:
+    "Replace fs.promises.readFile's internal open+fstat+read+close await chain " +
+    "with a sync fs.readFileSync wrapped in a Promise. Reduces the readFile " +
+    "CALL itself from ~1000ms to ~1ms internally (verified). " +
+    "WHEN THIS PAYS OFF: workloads where readFile is on the hot path " +
+    "(concurrent reads, many module loads, etc.). " +
+    "WHEN IT DOESN'T HELP: sequential HTTP request handlers where each " +
+    "request reads one small file — the post-response delay dominates, not " +
+    "readFile latency itself. " +
+    "Trades AbortSignal mid-read, async_hooks granularity, chunked-encoding " +
+    "boundaries, and Promise resolution timing for the speed — see policy " +
+    "source for the full drift list.",
   builtinOverrides: {
     "internal/fs/promises": { post: POST_PATCH },
   },
