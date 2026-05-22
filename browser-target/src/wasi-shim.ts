@@ -894,12 +894,20 @@ export function createWasiShim(ctx: ShimContext): {
     nsubs: number,
     neventsPtr: number,
   ): number | Promise<number> {
-    // JSPI re-entry guard: if called from JS-driven wasm entry (e.g.
-    // emnapi's setImmediate-fired async work), we can't suspend.
-    // Fall back to sync path which blocks the JS thread briefly.
-    const flagHolder = globalThis as { __edgeInPromisingFrame?: boolean };
-    if (flagHolder.__edgeInPromisingFrame === false) {
-      return pollOneoffSyncImpl(inPtr, outPtr, nsubs, neventsPtr);
+    // JSPI re-entry guard.  Node invariant: JS-dispatched N-API calls
+    // never wait inside the call itself — work is posted async and the
+    // call returns sync.  If our wasm tries to poll/suspend inside a
+    // JS-driven dispatch, that's a real layering bug to address at the
+    // call site (not a path to mask with sync fallback).  Throw with a
+    // clear message so it surfaces immediately.
+    const dh = globalThis as { __edgePromisingDepth?: number };
+    if ((dh.__edgePromisingDepth ?? 0) <= 0) {
+      throw new Error(
+        "JSPI re-entry: wasm called poll_oneoff from JS-driven dispatch " +
+        "(no enclosing WebAssembly.promising frame). This violates Node's " +
+        "invariant that N-API callbacks don't wait inside the call. " +
+        "Fix the offending call site rather than relying on a sync fallback.",
+      );
     }
     const dv = view(ctx.memory);
     const r = pollOneoffWalkSubs(dv, inPtr, outPtr, nsubs);
@@ -1379,17 +1387,21 @@ export function createWasiShim(ctx: ShimContext): {
   // return type: i32 → continue, Promise → suspend.
   //
   // JSPI rejects suspension when the call stack has JS frames between
-  // the wasm and the `WebAssembly.promising` entry.  emnapi's JS-driven
-  // dispatch (napi_create_function callbacks, setImmediate-fired async
-  // work) re-enters wasm without promising wrap.  Our wrappedTable in
-  // napi-host flips `__edgeInPromisingFrame` to false for those calls.
-  // When false, we return sync (blocking briefly) instead of Promise
-  // (avoiding SuspendError).
+  // the wasm and the `WebAssembly.promising` entry.  Our wrappedTable
+  // in napi-host resets the promising-depth counter to 0 for JS-driven
+  // dispatch; here we assert depth>0 (suspend allowed) or throw.
+  // Throwing matches Node's invariant: JS-dispatched N-API calls never
+  // wait inside the call.  If wasm tries to, the call site needs a fix
+  // — not a silent sync fallback that risks deadlock.
   function futexWaitAsyncImpl(futexPtr: number, expected: number, timeoutPtr: number, retPtr: number): number | Promise<number> {
-    const flagHolder = globalThis as { __edgeInPromisingFrame?: boolean };
-    if (flagHolder.__edgeInPromisingFrame === false) {
-      // JS-driven re-entry — must not suspend.  Fall back to sync.
-      return futexWaitSyncImpl(futexPtr, expected, timeoutPtr, retPtr);
+    const dh = globalThis as { __edgePromisingDepth?: number };
+    if ((dh.__edgePromisingDepth ?? 0) <= 0) {
+      throw new Error(
+        "JSPI re-entry: wasm called futex_wait from JS-driven dispatch " +
+        "(no enclosing WebAssembly.promising frame). This violates Node's " +
+        "invariant that N-API callbacks don't wait inside the call. " +
+        "Fix the offending call site rather than relying on a sync fallback.",
+      );
     }
     const i32View = new NativeInt32Array(ctx.memory.buffer, futexPtr & ~3, 1);
     const waitAsync = (NativeAtomics as unknown as {

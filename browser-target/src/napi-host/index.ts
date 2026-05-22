@@ -571,28 +571,26 @@ export function createNapiHost(opts: NapiHostOptions): NapiHost {
       }
       const proxied = createInstanceProxy(realInstance);
 
-      // JSPI re-entry tracking.  emnapi's setImmediate-driven async
-      // work + napi_create_function callbacks call wasm via
+      // JSPI re-entry depth tracking.  emnapi's setImmediate-driven
+      // async work + napi callbacks dispatch wasm via
       // `wasmTable.get(cb)(args)`.  Those are JS-to-wasm re-entries
-      // that are NOT promising-wrapped.  If the wasm in there tries
-      // to call a Suspending import, JSPI rejects with
-      // "trying to suspend JS frames" because there are JS frames
-      // between the wasm and the promising entry.
+      // that are NOT promising-wrapped.  Suspending an import inside
+      // such a call hits JSPI's "trying to suspend JS frames" error
+      // because there are JS frames between the wasm and the
+      // promising entry.
       //
-      // We wrap the table so JS dispatch flips a global flag.  Our
-      // Suspending impls (wasi-shim/yield-jspi via wasi-shim.ts)
-      // check the flag: when set (we're inside a JS-driven re-entry),
-      // they return sync values (blocking the JS thread for that
-      // duration) instead of Promises.  When unset (we're in the
-      // main promising-_start path), they return Promises and JSPI
-      // suspends normally.
+      // We wrap table-get so JS dispatch decrements the promising
+      // depth counter (worker.ts sets it >0 around await startFn).
+      // Our Suspending impls check the depth: depth>0 → suspend OK;
+      // depth==0 → throw (Node's invariant: JS-dispatched N-API
+      // calls never wait inside the call itself; if our wasm tries
+      // to, we have a real layering bug to fix, not a path to mask).
       //
       // wasm-internal call_indirect does NOT go through this Proxy's
       // get method — it uses the table's raw funcref entries.  Only
       // JS callers see the wrapping.
       const realTable = realInstance.exports.__indirect_function_table as WebAssembly.Table;
-      let _wrapCalls = 0;
-      (globalThis as Record<string, unknown>).__edgeTableWrapCount = () => _wrapCalls;
+      type DepthHolder = { __edgePromisingDepth?: number };
       const wrappedTable = new Proxy(realTable, {
         get(target, prop, receiver) {
           if (prop === "get") {
@@ -600,14 +598,17 @@ export function createNapiHost(opts: NapiHostOptions): NapiHost {
               const fn = target.get(idx);
               if (typeof fn !== "function") return fn;
               return function jsReentryWrap(this: unknown, ...args: unknown[]): unknown {
-                _wrapCalls++;
-                const flagHolder = globalThis as { __edgeInPromisingFrame?: boolean };
-                const prev = flagHolder.__edgeInPromisingFrame;
-                flagHolder.__edgeInPromisingFrame = false;
+                // A JS frame here breaks the JSPI suspension chain.
+                // Save outer depth and reset to 0 — inner Suspending
+                // imports will see depth==0 and throw rather than
+                // silently failing or deadlocking.
+                const dh = globalThis as DepthHolder;
+                const prev = dh.__edgePromisingDepth ?? 0;
+                dh.__edgePromisingDepth = 0;
                 try {
                   return (fn as Function).apply(this, args);
                 } finally {
-                  flagHolder.__edgeInPromisingFrame = prev;
+                  dh.__edgePromisingDepth = prev;
                 }
               };
             };

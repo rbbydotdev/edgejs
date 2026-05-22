@@ -401,20 +401,21 @@ async function runEdgeWithEmnapi() {
   let exitCode: number | null = null;
   let threwMsg: string | null = null;
   const tStart = nowMs();
-  // Set the JSPI-re-entry flag.  The promising-wrapped _start runs the
-  // wasm event loop; Suspending imports inside CAN suspend (flag !==
-  // false).  When emnapi (or anyone else) dispatches a wasm call from
-  // JS via wasmTable.get, the napi-host's wrappedTable flips this to
-  // false for that inner call so the Suspending impls fall back to
-  // sync (avoiding "trying to suspend JS frames").
-  (globalThis as { __edgeInPromisingFrame?: boolean }).__edgeInPromisingFrame = true;
+  // JSPI re-entry depth tracking.  promising-wrapped _start increments;
+  // napi-host's wrappedTable decrements during JS-driven wasm dispatch
+  // (so a Suspending import inside that dispatch sees depth==0 and
+  // throws — Node's invariant: JS-dispatched N-API calls never wait
+  // inside the call).
+  type DepthHolder = { __edgePromisingDepth?: number };
+  const dh = globalThis as DepthHolder;
+  dh.__edgePromisingDepth = (dh.__edgePromisingDepth ?? 0) + 1;
   try { await startFn(); }
   catch (e) {
     if (e instanceof ExitSignal) exitCode = e.code;
     else threwMsg = (e as Error).stack ?? String(e);
   }
   finally {
-    (globalThis as { __edgeInPromisingFrame?: boolean }).__edgeInPromisingFrame = undefined;
+    dh.__edgePromisingDepth = (dh.__edgePromisingDepth ?? 1) - 1;
   }
   const runMs = nowMs() - tStart;
 
