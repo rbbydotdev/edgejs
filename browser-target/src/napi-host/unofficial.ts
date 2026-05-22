@@ -17,7 +17,7 @@
 // verified against `napi/src/guest/napi.rs:fn guest_unofficial_napi_*` arity.
 // See NOTES.md 2026-05-20 "phantom-arg audit" entry.
 
-import type { Context, Env } from "@emnapi/runtime";
+import type { Context, Env } from "./emnapi";
 import type { ModuleOverride } from "../policies";
 
 // Capture native text-codec instances at module load.  Edge mutates

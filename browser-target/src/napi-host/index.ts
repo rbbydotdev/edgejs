@@ -17,8 +17,7 @@
 // napi_create_buffer_copy throws NotSupportBufferError forever.
 import "../host/globals-shim";
 
-import { createContext, type Context, type Env } from "@emnapi/runtime";
-import { createNapiModule, type NapiModule } from "@emnapi/core";
+import { createContext, createNapiModule, type Context, type Env, type NapiModule } from "./emnapi";
 import { createInstanceProxy } from "./instance-proxy";
 import { createUnofficialNapi } from "./unofficial";
 import { buildMicrotaskOpsImports, createMicrotaskOpsState, installHostPromiseRejectListeners, type MicrotaskOpsState } from "./microtask-ops";

@@ -25,7 +25,7 @@
 // Each takes wasm-side handle IDs (uint32 napi values) and returns a
 // uint32 napi_status (0 = napi_ok).
 
-import type { Context } from "@emnapi/runtime";
+import type { Context } from "./emnapi";
 
 const NAPI_OK = 0;
 const NAPI_INVALID_ARG = 1;
