@@ -454,23 +454,36 @@ async function runEdgeWithEmnapi() {
     wasix_32v1: wasixNs,
     wasi: { ...shim.wasi, ...wasiThreads.getImportObject().wasi } as Record<string, Function>,
   };
-  // Hard call cap — if edge gets stuck in an event-loop spin we want to see
-  // the recent calls instead of a frozen page.  Reasonable bootstraps run
-  // a few thousand calls; 20k is well beyond that.
-  // #!~debt crude circuit breaker: a fixed call count is the wrong shape.
-  // Real impl should be a watchdog timer (e.g. abort if >N seconds since
-  // any new symbol fired) or progress-based (abort if call mix becomes
-  // monotonous).  Count cap will misfire once we run real workloads.
-  const CALL_LIMIT = 100000;
-  let callCount = 0;
+  // Progress watchdog — abort wasm only if it's actually stuck.
+  //
+  // Old behavior was a flat CALL_LIMIT (100k wasi calls → abort) which
+  // misfired the moment real workloads ran a few concurrent requests
+  // (each easily emits 25k+ wasi calls).  New behavior: track
+  // consecutive same-symbol calls.  A tight wasm loop spinning on
+  // (say) clock_time_get manifests as 1000s of identical calls in a
+  // row — that's what we catch.  Healthy traffic alternates between
+  // many symbols (fd_read, poll_oneoff, clock_time_get, fd_write,
+  // path_open, etc.) so the streak resets constantly.
+  //
+  // 200k threshold gives ~ms-scale slack on a 200ns/import budget;
+  // misfires only on genuine spins.
+  const SPIN_STREAK_LIMIT = 200_000;
+  let lastSymKey = "";
+  let consecutive = 0;
   const wasmImports = buildImports(memory, overrides, (ns, sym, args, ret, stub) => {
     // If the mem-snapshot wrapper just ran on this call, it left snapshots
     // on the side channel.  Pick them up and attach to this canonical record.
     const mem = pendingMem.value;
     if (mem) pendingMem.value = null;
     trace.record(ns, sym, args, ret, stub, mem ?? undefined);
-    if (++callCount === CALL_LIMIT) {
-      throw new Error(`CALL_LIMIT (${CALL_LIMIT}) reached — likely spin loop`);
+    const key = ns + "." + sym;
+    if (key === lastSymKey) {
+      if (++consecutive >= SPIN_STREAK_LIMIT) {
+        throw new Error(`spin detected: ${SPIN_STREAK_LIMIT} consecutive ${key} calls — wasm is making no progress`);
+      }
+    } else {
+      consecutive = 0;
+      lastSymKey = key;
     }
   });
 
