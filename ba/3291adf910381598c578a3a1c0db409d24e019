@@ -1,0 +1,21 @@
+browser-target/src/wasi-shim/fs-snapshot-sab.ts
+  s_3c284a8c3d32d2::t_7f4fb9be4fc769 518-525
+browser-target/src/worker.ts
+  s_3c284a8c3d32d2::t_e3e1de90bf59b4 156-165,198-220
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "ba3291adf910381598c578a3a1c0db409d24e019",
+  "prompts": {},
+  "sessions": {
+    "s_3c284a8c3d32d2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "aba00247-eb0d-4299-a1aa-1451ccea7316",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
