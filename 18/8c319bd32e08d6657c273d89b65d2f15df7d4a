@@ -1,0 +1,25 @@
+browser-target/src/napi-host/emnapi.ts
+  s_3c284a8c3d32d2::t_033944225e3ee9 1-41
+browser-target/src/napi-host/index.ts
+  s_3c284a8c3d32d2::t_371b8d5ff26b05 20
+browser-target/src/napi-host/microtask-ops.ts
+  s_3c284a8c3d32d2::t_58cf2cbf78a956 28
+browser-target/src/napi-host/unofficial.ts
+  s_3c284a8c3d32d2::t_51c41264c51dba 20
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "188c319bd32e08d6657c273d89b65d2f15df7d4a",
+  "prompts": {},
+  "sessions": {
+    "s_3c284a8c3d32d2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "aba00247-eb0d-4299-a1aa-1451ccea7316",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
