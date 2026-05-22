@@ -39,3 +39,25 @@ export type { Context, Env } from "@emnapi/runtime";
 
 export { createNapiModule } from "@emnapi/core";
 export type { NapiModule } from "@emnapi/core";
+
+// wasi-threads — implements the wasi-threads spec's host side, so the wasm's
+// `wasi.thread-spawn` import is backed by a real Worker pool with per-thread
+// TLS state (via __wasm_init_tls + wasi_thread_start).  Without this, every
+// thread the wasm tries to spawn shares the same TLS region and __thread
+// variables (errno, OpenSSL per-thread error stack, libuv thread pool state)
+// collide across threads — visible as subtle race-like flakes.
+//
+// We use this in browser-target's worker.ts; the harness (Node) doesn't yet
+// because Node already has real worker_threads.
+export {
+  WASIThreads,
+  ThreadManager,
+  ThreadMessageHandler,
+} from "@emnapi/wasi-threads";
+export type {
+  WASIThreadsOptions,
+  ThreadManagerOptions,
+  ThreadMessageHandlerOptions,
+  WorkerLike,
+  WASIInstance,
+} from "@emnapi/wasi-threads";

@@ -7,6 +7,7 @@ import { buildImports } from "./imports-generated";
 import { createWasiShim, ExitSignal, type BridgeRequest } from "./wasi-shim";
 import { syncYieldStrategy } from "./wasi-shim/yield-sync";
 import type { YieldStrategy } from "./wasi-shim/yield-strategy";
+import { WASIThreads, type WASIInstance } from "./napi-host/emnapi";
 import { Trace, toUnifiedJsonl } from "./trace";
 import { createNapiHost } from "./napi-host";
 import { composePolicies, defaultBrowserPolicies } from "./policies";
@@ -239,15 +240,44 @@ async function runEdgeWithEmnapi() {
     else napiStandard[k] = napiAll[k];
   }
 
-  // Compose: emnapi's napi/env/emnapi + our wasi/wasix.  Anything not covered
-  // here falls through to the generated logging stubs.
+  // wasi-threads layer: real `wasi.thread-spawn` backed by a Worker pool.
+  // Without this, edge.js's libuv thread spawn / OpenSSL / any C-side
+  // pthread call shares TLS state (errno, __thread vars, OpenSSL per-thread
+  // error stacks) across what should be separate threads.  See
+  // architecture/worker-threads in NOTES.md.
+  //
+  // The shim returned by wasi-shim.ts has its own `thread-spawn` stub
+  // returning -1.  We replace it with the ThreadManager's impl after
+  // setup().  Pre-setup() calls (shouldn't happen during boot) keep the
+  // stub.
+  const wasiStub: WASIInstance = {
+    wasiImport: undefined,
+    initialize(_i: object) { void _i; },
+    start(_i: object): number { void _i; return 0; },
+    getImportObject(): { wasi: Record<string, Function> } { return { wasi: shim.wasi }; },
+  };
+  const wasiThreads = new WASIThreads({
+    wasi: wasiStub,
+    onCreateWorker: (_ctx) => {
+      void _ctx;
+      // Spawn the child-thread worker.  Vite imports it as a module worker.
+      return new Worker(new URL("./thread-worker.ts", import.meta.url), {
+        type: "module",
+        name: "edgejs-thread",
+      });
+    },
+  });
+
+  // Compose: emnapi's napi/env/emnapi + our wasi/wasix + wasi-threads.
+  // The wasi-threads getImportObject() returns {wasi: {'thread-spawn': fn}}
+  // which we merge OVER shim.wasi so the stub is replaced.
   const overrides = {
     napi: napiStandard,
     napi_extension_wasmer_v0: napiExtension,
     env: napi.imports.env as Record<string, Function>,
     wasi_snapshot_preview1: wasiNs,
     wasix_32v1: wasixNs,
-    wasi: shim.wasi,
+    wasi: { ...shim.wasi, ...wasiThreads.getImportObject().wasi } as Record<string, Function>,
   };
   // Hard call cap — if edge gets stuck in an event-loop spin we want to see
   // the recent calls instead of a frozen page.  Reasonable bootstraps run
@@ -291,6 +321,37 @@ async function runEdgeWithEmnapi() {
   } catch (e) {
     post("log", { text: `emnapi.bindInstance threw: ${(e as Error).message}`, level: "err" });
     // Continue anyway — see what _start does with whatever state we have.
+  }
+
+  // wasi-threads setup.  ThreadManager reads `instance.exports.malloc`
+  // and `.free` directly when allocating thread arg slots.  Edge.js's
+  // wasm exports them as `unofficial_napi_guest_malloc` /
+  // `unofficial_napi_guest_free` (per WASIX naming).  Hand wasi-threads
+  // a Proxy that aliases those to the names it expects.
+  const threadInstanceProxy = new Proxy(instance, {
+    get(target, key) {
+      if (key === "exports") {
+        const orig = target.exports as Record<string, unknown>;
+        return new Proxy(orig, {
+          get(t, k) {
+            if (k === "malloc") return t["unofficial_napi_guest_malloc"] ?? t["malloc"];
+            if (k === "free") return t["unofficial_napi_guest_free"] ?? t["free"] ?? (() => { /* leak */ });
+            return Reflect.get(t, k);
+          },
+          has(t, k) {
+            if (k === "malloc" || k === "free") return true;
+            return Reflect.has(t, k);
+          },
+        });
+      }
+      return Reflect.get(target, key);
+    },
+  });
+  try {
+    wasiThreads.setup(threadInstanceProxy, module, memory);
+    post("log", { text: "wasi-threads: ready to spawn (TLS-isolated child workers)", level: "info" });
+  } catch (e) {
+    post("log", { text: `wasi-threads.setup threw: ${(e as Error).message}`, level: "warn" });
   }
 
   const start = (instance.exports as { _start?: () => void })._start;
