@@ -1,0 +1,45 @@
+.nvmrc
+  s_3c284a8c3d32d2::t_bd0c76f7b7f69e 1
+browser-target/scripts/gen-stubs.mjs
+  s_3c284a8c3d32d2::t_6a6952f72f4f83 60-63,66-67
+  s_3c284a8c3d32d2::t_1fbc12715845d2 64-65
+browser-target/scripts/test-runner.mjs
+  s_3c284a8c3d32d2::t_21fadea517ce60 64-68,71
+browser-target/src/wasi-shim/yield-sync.ts
+  s_3c284a8c3d32d2::t_e1c70a40a7bb44 1-26
+browser-target/src/wasi-shim.ts
+  s_3c284a8c3d32d2::t_f944e8d90d3676 796-811,813-819
+  s_3c284a8c3d32d2::t_a3f27199e5ba1f 873
+  s_3c284a8c3d32d2::t_41edd7dba876c5 667-795,820-851,853-856,858-872,874-890
+  s_3c284a8c3d32d2::t_7193573e0d169e 99-104
+  s_3c284a8c3d32d2::t_dd7623126da978 178
+  s_3c284a8c3d32d2::t_9fb3b30831e437 1194-1202,1218-1222
+  s_3c284a8c3d32d2::t_0fff08023c67ce 852,857
+  s_3c284a8c3d32d2::t_d4a63d3d36b341 812
+  s_3c284a8c3d32d2::t_49d353108ae96b 1599-1607
+  s_3c284a8c3d32d2::t_ca6ea712061366 26-27
+browser-target/src/wasi-shim/yield-strategy.ts
+  s_3c284a8c3d32d2::t_4ac3a5609fefe5 1-71
+browser-target/src/wasi-shim/yield-jspi.ts
+  s_3c284a8c3d32d2::t_f889e0135e8722 1-76
+browser-target/scripts/node-harness.mjs
+  s_3c284a8c3d32d2::t_01de8fe2a3f38a 229,231
+  s_3c284a8c3d32d2::t_88a7684ffc396f 57-72
+  s_3c284a8c3d32d2::t_3a058ed310cae8 276-285,287
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "852d0c55624fbcaa5743a759a332017330cdb30b",
+  "prompts": {},
+  "sessions": {
+    "s_3c284a8c3d32d2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "aba00247-eb0d-4299-a1aa-1451ccea7316",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
