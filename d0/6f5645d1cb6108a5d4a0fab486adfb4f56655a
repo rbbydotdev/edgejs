@@ -1,0 +1,25 @@
+wasix/src/wasix_compat.cc
+  s_3c284a8c3d32d2::t_081cb827e2207f 28-38
+browser-target/src/napi-host/instance-proxy.ts
+  s_3c284a8c3d32d2::t_9d2d24da8f1ac0 26-34,42-44
+browser-target/src/wasi-shim.ts
+  s_3c284a8c3d32d2::t_33775d39908469 874-883,903,908-911,917-928
+wasix/src/wasix_compat.h
+  s_3c284a8c3d32d2::t_a3c0527eb5ac10 153-156,161
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "d06f5645d1cb6108a5d4a0fab486adfb4f56655a",
+  "prompts": {},
+  "sessions": {
+    "s_3c284a8c3d32d2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "aba00247-eb0d-4299-a1aa-1451ccea7316",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
