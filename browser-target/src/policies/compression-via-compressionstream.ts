@@ -41,36 +41,20 @@ import type { Policy } from "./index";
 // Uint8Array before writing into the stream, because some runtimes
 // refuse SAB-backed views in Stream APIs.
 //
-// #!~debt blocked-on-microtask-pump
+// JSPI ENABLES THIS POLICY
 //
-// THIS POLICY DOES NOT CURRENTLY WORK end-to-end.  Investigation
-// during implementation (see ARCHIVE.md "compression policy
-// discovery") uncovered that:
+// `CompressionStream` is async — `writer.write` / `writer.close` /
+// `reader.read` all return Promises.  On engines without JSPI (Node
+// v22, Safari, older Firefox) Promise continuations queued in host
+// async code can't resolve inside edge's `_start` loop, so this
+// policy's callback never fires there.  With JSPI active (Chrome 137+,
+// Node v24+ with flag) the wasi-shim's poll_oneoff suspends via
+// `Atomics.waitAsync`, which yields the microtask queue to the
+// engine — host Promise chains resolve, this policy's callback fires.
 //
-// 1. CompressionStream is async — writer.write/close, reader.read
-//    all return Promises that resolve via host's microtask queue.
-// 2. Node's V8 is `kExplicit` microtask policy: drain only fires
-//    on explicit `Isolate::PerformMicrotaskCheckpoint()` calls.
-// 3. Edge's main loop expects `unofficial_napi_process_microtasks`
-//    (our wasm import; `src/edge_runtime.cc:1870`) to perform that
-//    checkpoint.  We can't, because there is no JS API to drain V8's
-//    microtask queue from JS in Node.
-// 4. So Promises queued via host async APIs (CompressionStream, fetch,
-//    etc.) only resolve when control returns to Node's outer event
-//    loop — which doesn't happen until edge's `_start` returns.
-//
-// The `outbound-fetch-tunnel` policy gets away with this because
-// `await fetch()` eventually progresses via emnapi's internal
-// MessageChannel-based scheduling (visible as the ~7s delay before
-// fetch resolves in tests).  For a fire-and-callback API like
-// `zlib.gzip(buf, cb)` with no stream-shaped keep-alive, edge's loop
-// exits before the Promise chain has a chance.
-//
-// The policy is left in the registry as a SPEC / reference: when
-// NOTES.md followup #1 (microtask checkpoint pump) lands, this should
-// start working without any change to the patch itself.  At that
-// point, also add a `tests/js/policy-compression-via-compressionstream.js`
-// roundtrip test.
+// Deployment guidance: only enable when the target engine supports
+// `WebAssembly.Suspending`.  The harness picks the JSPI yield strategy
+// automatically when available (see `wasi-shim/yield-strategy.ts`).
 //
 // COMPOSITION
 //

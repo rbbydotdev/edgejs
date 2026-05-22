@@ -98,35 +98,25 @@ export function buildMicrotaskOpsImports(
      * per iteration (`src/edge_runtime.cc:1870`) expecting V8's
      * `Isolate::PerformMicrotaskCheckpoint()` semantics.
      *
-     * Implementation: invoke host Node's `process._tickCallback` which
-     * internally calls `internalBinding('task_queue').runMicrotasks` —
-     * the only JS-visible path to PerformMicrotaskCheckpoint.  The
-     * snapshot is captured by `host/globals-shim.ts` BEFORE edge
-     * replaces the `process` global.
+     * Implementation: invoke host Node's `process._tickCallback` (if
+     * available) which internally calls
+     * `internalBinding('task_queue').runMicrotasks` — the JS-visible
+     * path to PerformMicrotaskCheckpoint.  Snapshot captured by
+     * `host/globals-shim.ts` BEFORE edge replaces the `process` global.
      *
-     * #!~debt scope-depth-guard: V8's PerformMicrotaskCheckpoint
-     * early-returns when `GetMicrotasksScopeDepth() > 0`.  In the Node
-     * harness we end up at depth >= 1 throughout `_start` because Node's
-     * own `InternalCallbackScope` around our entry call opens one
-     * MicrotasksScope.  So this call DRAINS only the queue items
-     * pending at end-of-_start (when the outer scope closes), not
-     * intra-loop.  For full intra-loop drain we need either:
-     *  - edge.js's C++ to wrap napi_call_function calls in their own
-     *    `MicrotasksScope(kRunMicrotasks)` so each user-callback
-     *    return triggers a drain (wasm rebuild required), OR
-     *  - Asyncify-style yielding so edge's wasi syscalls return to
-     *    Node, scopes close, drain runs, then resume (rebuild + new
-     *    wasm machinery).
-     * See NOTES.md item #1 and ARCHIVE.md "microtask drain
-     * investigation 2026-05-22".
+     * On JSPI-enabled engines (Chrome 137+, Node v24+) the real
+     * microtask drain happens at the JSPI suspend boundary in the
+     * Suspending-wrapped poll_oneoff (see `wasi-shim.ts`) — the engine
+     * runs a microtask checkpoint each time wasm yields back to JS.
+     * This handler becomes a complementary catch-all for the rare wasm
+     * code path that calls `unofficial_napi_process_microtasks` without
+     * also yielding through a suspending import.
      *
-     * Calling _tickCallback is still correct intent and harmless when
-     * the scope guard fires — it's a no-op then.  Composes properly
-     * once a rebuild lands.
-     *
-     * Browser-worker: the snapshot is null and this falls back to
-     * noop — the browser equivalent (likely Asyncify-style yields)
-     * is the same item #1.
+     * Browser-worker without JSPI / Node v22 fallback: the snapshot is
+     * either null (Worker) or scope-guarded (depth > 0 inside
+     * InternalCallbackScope), so this is best-effort.  The two
+     * regression bugs (lazy-load-from-microtask,
+     * microtasks-starved-by-pending-timer) only close under JSPI.
      */
     unofficial_napi_process_microtasks(_env: number): number {
       const tickCb = (globalThis as { __edgeHostTickCallback?: (() => void) | null }).__edgeHostTickCallback;
