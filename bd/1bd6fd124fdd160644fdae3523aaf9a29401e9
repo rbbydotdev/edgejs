@@ -1,0 +1,37 @@
+browser-target/src/wasi-shim/yield-sync.ts
+  s_3c284a8c3d32d2::t_8ae67c1bbc38cb 11,18-22
+browser-target/src/wasi-shim/yield-strategy.ts
+  s_3c284a8c3d32d2::t_0deee15ed1b95c 48-55,70-78
+browser-target/src/wasi-shim.ts
+  s_3c284a8c3d32d2::t_ba54c30bc37726 1300-1348
+  s_3c284a8c3d32d2::t_587dde995acaca 1738-1741
+  s_3c284a8c3d32d2::t_44e5ce2c36435c 1517-1523
+  s_3c284a8c3d32d2::t_2a085bc1afed4d 1511,1514-1515,1524,1526,1531-1532,1535-1540
+  s_3c284a8c3d32d2::t_c13ed9332df7e2 1507-1510,1512-1513,1516,1525,1527-1530,1533-1534,1541-1544
+browser-target/src/wasi-shim/yield-jspi.ts
+  s_3c284a8c3d32d2::t_5712e83b2b83ff 63-71
+  s_3c284a8c3d32d2::t_e9ea12983097d0 35
+browser-target/src/thread-worker.ts
+  s_3c284a8c3d32d2::t_bdf507be84b8d1 108
+  s_3c284a8c3d32d2::t_554d6f3554622b 131,152-158
+  s_3c284a8c3d32d2::t_2172f8963c7819 106
+  s_3c284a8c3d32d2::t_0c08c9c54fb21f 114-121
+  s_3c284a8c3d32d2::t_2e97e03e72ac2e 43-44
+  s_3c284a8c3d32d2::t_354e3491dca3d8 125-128,130,132-151
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "bd1bd6fd124fdd160644fdae3523aaf9a29401e9",
+  "prompts": {},
+  "sessions": {
+    "s_3c284a8c3d32d2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "aba00247-eb0d-4299-a1aa-1451ccea7316",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
