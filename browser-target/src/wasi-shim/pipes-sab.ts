@@ -33,12 +33,23 @@
 // (path_open / urandom etc).  All pipe fds carry their own slot index in
 // the fd number, so any worker can decode the slot without a side table.
 
+// Global diagnostic header at the very start of the SAB.  Atomic u32
+// counters incremented on every write/read by any worker — gives a
+// single global view of pipe activity that's readable from any worker
+// (including pool workers, whose JS event loop is starved by sync
+// Atomics.wait and so can't drain a setInterval diagnostic).
+const GLOBAL_HDR_SIZE = 32;
+const G_OFF_W_COUNT = 0;
+const G_OFF_R_COUNT = 4;
+const G_OFF_W_BYTES = 8;
+const G_OFF_R_BYTES = 12;
+
 const NUM_SLOTS = 64;
 const SLOT_HDR_SIZE = 32;
 const BUFFER_SIZE = 4096;
 const HEADER_TOTAL = NUM_SLOTS * SLOT_HDR_SIZE;
 const BODY_TOTAL = NUM_SLOTS * BUFFER_SIZE;
-const SAB_TOTAL = HEADER_TOTAL + BODY_TOTAL;
+const SAB_TOTAL = GLOBAL_HDR_SIZE + HEADER_TOTAL + BODY_TOTAL;
 
 const OFF_ALIVE = 0;
 const OFF_CAPACITY = 4;
@@ -76,13 +87,26 @@ export interface PipePollHandle {
 
 export class PipeRegistry {
   private readonly sab: SharedArrayBuffer;
+  private readonly globalI32: Int32Array;
   private readonly hdrI32: Int32Array;
   private readonly bodyU8: Uint8Array;
 
   private constructor(sab: SharedArrayBuffer) {
     this.sab = sab;
-    this.hdrI32 = new Int32Array(sab, 0, HEADER_TOTAL >>> 2);
-    this.bodyU8 = new Uint8Array(sab, HEADER_TOTAL, BODY_TOTAL);
+    this.globalI32 = new Int32Array(sab, 0, GLOBAL_HDR_SIZE >>> 2);
+    this.hdrI32 = new Int32Array(sab, GLOBAL_HDR_SIZE, HEADER_TOTAL >>> 2);
+    this.bodyU8 = new Uint8Array(sab, GLOBAL_HDR_SIZE + HEADER_TOTAL, BODY_TOTAL);
+  }
+
+  /** Globally-visible counters (atomic across all workers).  Read this
+   *  from any worker to see total pipe activity. */
+  stats(): { wCount: number; wBytes: number; rCount: number; rBytes: number } {
+    return {
+      wCount: Atomics.load(this.globalI32, G_OFF_W_COUNT >>> 2),
+      rCount: Atomics.load(this.globalI32, G_OFF_R_COUNT >>> 2),
+      wBytes: Atomics.load(this.globalI32, G_OFF_W_BYTES >>> 2),
+      rBytes: Atomics.load(this.globalI32, G_OFF_R_BYTES >>> 2),
+    };
   }
 
   static create(): PipeRegistry {
@@ -117,7 +141,7 @@ export class PipeRegistry {
         Atomics.store(this.hdrI32, this.slotHdrI32Idx(slot, OFF_HEAD), 0);
         Atomics.store(this.hdrI32, this.slotHdrI32Idx(slot, OFF_TAIL), 0);
         Atomics.store(this.hdrI32, this.slotHdrI32Idx(slot, OFF_WAKE), 0);
-        Atomics.store(this.hdrI32, this.slotHdrI32Idx(slot, OFF_BUF_OFF), HEADER_TOTAL + slot * BUFFER_SIZE);
+        Atomics.store(this.hdrI32, this.slotHdrI32Idx(slot, OFF_BUF_OFF), GLOBAL_HDR_SIZE + HEADER_TOTAL + slot * BUFFER_SIZE);
         Atomics.store(this.hdrI32, this.slotHdrI32Idx(slot, OFF_REFCOUNT), 2);
         return {
           readFd: PIPE_FD_BASE + slot * 2,
@@ -171,12 +195,16 @@ export class PipeRegistry {
     const available = (tail - head) | 0;
     if (available <= 0) return 0;
     const toRead = Math.min(available, dst.length);
-    const bufStart = HEADER_TOTAL + slot * BUFFER_SIZE;
+    const bufStart = slot * BUFFER_SIZE;
     for (let i = 0; i < toRead; i++) {
       const physIdx = bufStart + ((head + i) % BUFFER_SIZE);
       dst[i] = this.bodyU8[physIdx]!;
     }
     Atomics.store(this.hdrI32, headIdx, head + toRead);
+    if (toRead > 0) {
+      Atomics.add(this.globalI32, G_OFF_R_COUNT >>> 2, 1);
+      Atomics.add(this.globalI32, G_OFF_R_BYTES >>> 2, toRead);
+    }
     return toRead;
   }
 
@@ -196,7 +224,7 @@ export class PipeRegistry {
     const free = BUFFER_SIZE - used - 1;
     if (free <= 0) return 0;
     const toWrite = Math.min(free, src.length);
-    const bufStart = HEADER_TOTAL + slot * BUFFER_SIZE;
+    const bufStart = slot * BUFFER_SIZE;
     for (let i = 0; i < toWrite; i++) {
       const physIdx = bufStart + ((tail + i) % BUFFER_SIZE);
       this.bodyU8[physIdx] = src[i]!;
@@ -208,6 +236,10 @@ export class PipeRegistry {
     // value change.
     Atomics.add(this.hdrI32, wakeIdx, 1);
     Atomics.notify(this.hdrI32, wakeIdx);
+    if (toWrite > 0) {
+      Atomics.add(this.globalI32, G_OFF_W_COUNT >>> 2, 1);
+      Atomics.add(this.globalI32, G_OFF_W_BYTES >>> 2, toWrite);
+    }
     return toWrite;
   }
 

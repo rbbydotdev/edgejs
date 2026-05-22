@@ -53,6 +53,7 @@ self.addEventListener("message", (e: MessageEvent) => {
   }
 });
 
+
 // Wrap the global onmessage handler with diagnostic logging so we can
 // trace the load/start protocol.
 const handler = new ThreadMessageHandler({

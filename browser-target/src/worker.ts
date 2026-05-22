@@ -144,6 +144,20 @@ async function runEdgeWithEmnapi() {
   // actually reaches main.  See `wasi-shim/pipes-sab.ts`.
   const pipeRegistry = PipeRegistry.create();
 
+  // Diagnostic: dump main-side pipe activity periodically while we're
+  // bringing this up.  Pool workers post their own stats via
+  // thread-log.  Quiet when there's no activity — we only care that the
+  // pipe primitive is exercised under the /_edge/* test paths.
+  let _lastPipeStats = "";
+  setInterval(() => {
+    const s = pipeRegistry.stats();
+    const tag = `w=${s.wCount}/${s.wBytes}B r=${s.rCount}/${s.rBytes}B`;
+    if (tag !== _lastPipeStats && (s.wCount > 0 || s.rCount > 0)) {
+      _lastPipeStats = tag;
+      post("log", { text: `[pipes-main] ${tag}`, level: "info" });
+    }
+  }, 1500);
+
   // Wasi shim — provides wasi_snapshot_preview1, wasix_32v1, wasi.thread-spawn
   // and a SocketBus we wire to the HTTP bridge port below.
   const shim = createWasiShim({
