@@ -150,11 +150,15 @@ static inline char* wasix_ptsname(int fd) {
 }
 #define ptsname wasix_ptsname
 
-// Exported guest allocator used by the WASIX N-API bridge.
+// Exported guest allocator used by the WASIX N-API bridge.  Paired
+// alloc/free so the host can return memory it asked the guest to allocate
+// (e.g. emnapi-side buffer scratch).  Both export as `unofficial_napi_*`
+// so wasm-ld keeps them past dead-code elimination.
 #ifdef __cplusplus
 extern "C" {
 #endif
 uint32_t unofficial_napi_guest_malloc(uint32_t size);
+void unofficial_napi_guest_free(uint32_t ptr);
 #ifdef __cplusplus
 }
 #endif

@@ -23,11 +23,15 @@ export function createInstanceProxy(
   realInstance: WebAssembly.Instance,
   stubs: Partial<Stubs> = {},
 ): WebAssembly.Instance {
-  // edgejs.wasm exports `unofficial_napi_guest_malloc` specifically so host
-  // JS can allocate guest-backed memory for ArrayBuffer / typed-array bridging
-  // (see WASIX_TODO.md).  Route emnapi's malloc through it.  Free is a no-op
-  // for now — the guest allocator currently leaks, which is fine during boot.
-  const guestMalloc = (realInstance.exports as Record<string, unknown>)["unofficial_napi_guest_malloc"];
+  // edgejs.wasm exports `unofficial_napi_guest_malloc` + (post-rebuild)
+  // `unofficial_napi_guest_free` so host JS can allocate guest-backed
+  // memory for ArrayBuffer / typed-array bridging (see WASIX_TODO.md
+  // and wasix/src/wasix_compat.cc).  Route emnapi's malloc/free through
+  // them.  When `guest_free` is missing (older wasm), fall back to a
+  // logged no-op — leaks but doesn't crash.
+  const exports = realInstance.exports as Record<string, unknown>;
+  const guestMalloc = exports["unofficial_napi_guest_malloc"];
+  const guestFree = exports["unofficial_napi_guest_free"];
 
   const defaultStubs: Stubs = {
     malloc: typeof guestMalloc === "function"
@@ -35,11 +39,9 @@ export function createInstanceProxy(
       : ((size) => {
           throw new Error(`malloc(${size}) called but wasm has no allocator`);
         }),
-    // #!~debt leak: unofficial_napi_guest_malloc allocates from the wasm
-    // heap but the wasm doesn't export a paired `guest_free`.  Every
-    // emnapi-side malloc leaks indefinitely.  Negligible during boot,
-    // unbounded for long-running sessions / large buffer churn.
-    free: () => { /* nothing to free against */ },
+    free: typeof guestFree === "function"
+      ? ((ptr) => { (guestFree as (p: number) => void)(ptr); })
+      : (() => { /* pre-rebuild wasm has no guest_free; emnapi-side allocs leak */ }),
     // #!~debt no-op: edge doesn't actually use the napi_register_wasm_v1
     // contract (it's not a napi-rs addon — it IS the runtime).  Returning 0
     // tells emnapi "no exports to register," which is harmless.

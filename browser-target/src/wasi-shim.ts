@@ -871,12 +871,16 @@ export function createWasiShim(ctx: ShimContext): {
 
   // Async-capable variant.  Returns a sync number when no waiting is
   // needed (events ready immediately) so JSPI doesn't suspend wasm
-  // unnecessarily.  Returns a Promise<number> when a timer-only wait is
-  // required; the JSPI engine suspends the wasm caller for the duration,
-  // letting host microtasks drain during the gap.  The socket-sub path
-  // still uses Atomics.wait synchronously (would need its own
-  // promise-based mechanism via wakePoll-as-Promise to fully yield;
-  // future work).
+  // unnecessarily.  Returns a Promise<number> when a wait is required;
+  // the JSPI engine suspends the wasm caller for the duration, letting
+  // host microtasks drain during the gap.
+  //
+  // BOTH timer-only AND socket waits use Atomics.waitAsync so the wasm
+  // yields under JSPI.  Timer-only uses the engine-driven timeout
+  // (no notify required — see pollOneoffAwaitTimer).  Socket waits use
+  // the ACCEPT slot's expected/actual mismatch as the wake signal:
+  // pushRequest() does Atomics.add+notify on that slot, which causes
+  // waitAsync's value-check to differ and the Promise to resolve.
   async function pollOneoffAsyncImpl(
     inPtr: number,
     outPtr: number,
@@ -896,22 +900,32 @@ export function createWasiShim(ctx: ShimContext): {
 
     if (minTimeoutNs >= 0 && !hasSocketSub) {
       // Timer-only wait: yield via Atomics.waitAsync with its built-in
-      // timeout (see pollOneoffAwaitTimer).  Engine-driven wakeup
-      // bypasses the JS macrotask queue that JSPI suspension freezes —
-      // microtasks drain during the suspend AND the timer fires.
+      // timeout (see pollOneoffAwaitTimer).
       const ms = Math.max(0, Math.min(60_000, Math.ceil(minTimeoutNs / 1_000_000)));
       return pollOneoffAwaitTimer(ms, dv, inPtr, outPtr, nWritten, nsubs, neventsPtr);
     }
 
-    // Socket sub path: fall back to sync Atomics.wait.  Doesn't help with
-    // microtask drain on socket-wakeup paths but matches existing
-    // behavior.  Promise-based socket waits are future work.
+    // Socket-aware wait.  Wake comes from pushRequest()'s
+    // Atomics.add+notify on the ACCEPT slot, which makes waitAsync's
+    // value-check differ from `seen` and resolves the Promise.  Timeout
+    // bounds the wait so a never-arriving request still releases.
     const idx = WAKE_ACCEPT_IDX;
     const seen = NativeAtomics.load(wake, idx);
     const ms = minTimeoutNs >= 0
       ? Math.max(0, Math.min(60_000, Math.ceil(minTimeoutNs / 1_000_000)))
       : 30_000;
-    NativeAtomics.wait(wake, idx, seen, ms);
+    const waitAsync = (NativeAtomics as unknown as {
+      waitAsync?: (i32: Int32Array, idx: number, val: number, timeout: number) =>
+        { async: boolean; value: Promise<string> | string };
+    }).waitAsync;
+    if (waitAsync) {
+      const result = waitAsync(wake, idx, seen, ms);
+      if (result.async) await result.value;
+    } else {
+      // Engines without waitAsync (none of our current targets) — sync
+      // fall back.  Blocks the JS thread but at least makes progress.
+      NativeAtomics.wait(wake, idx, seen, ms);
+    }
     if (wakePoll) wakePoll();
     nWritten = pollOneoffEmitPostWaitEvents(dv, inPtr, outPtr, nWritten, nsubs);
     dv.setUint32(neventsPtr, nWritten, true);
