@@ -1,0 +1,19 @@
+browser-target/src/policies/fast-readfile.ts
+  s_3c284a8c3d32d2::t_be97132c42a7f1 95-106
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "5ca09aa20f7313a5e4cd60d6e34baa8d84a15f51",
+  "prompts": {},
+  "sessions": {
+    "s_3c284a8c3d32d2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "aba00247-eb0d-4299-a1aa-1451ccea7316",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
