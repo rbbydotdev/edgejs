@@ -793,13 +793,20 @@ export function createWasiShim(ctx: ShimContext): {
     return nWritten;
   }
 
+  // Dedicated 4-byte SAB slot for engine-driven timer waits via
+  // Atomics.waitAsync.  We never call Atomics.notify on this slot
+  // (other than to no-op cancel) — the wakeup comes from waitAsync's
+  // built-in timeout, which the engine implements at the C++ layer
+  // outside the JS macrotask queue.  Critical: setTimeout-driven
+  // wakeups would deadlock here (the macrotask queue is blocked while
+  // wasm is JSPI-suspended).
+  const sleepSab = new SharedArrayBuffer(4);
+  const sleepI32 = new NativeInt32Array(sleepSab);
+
   // The async helper that actually awaits the timer.  Defining it as a
   // proper `async` function — empirically (vs returning `new Promise(...)`
   // from the caller) — is what JSPI's Suspending wrapper needs to
-  // recognize the yield.  Returning a Promise directly without async
-  // didn't trigger the suspend/resume cycle (Promise stays pending
-  // forever; setTimeout never fires).  Likely related to V8's
-  // microtask-scope handling of bare Promises vs async-function returns.
+  // recognize the yield.
   async function pollOneoffAwaitTimer(
     ms: number,
     dv: DataView,
@@ -809,26 +816,28 @@ export function createWasiShim(ctx: ShimContext): {
     nsubs: number,
     neventsPtr: number,
   ): Promise<number> {
-    // #!~debt jspi-macrotask-blocked: the JSPI suspend blocks the
-    // surrounding event-loop's macrotask queue until wasm resumes.
-    // Result: `setTimeout(resolve, ms)` here never fires while wasm
-    // is suspended — circular dependency.  Verified empirically in
-    // Chrome 148 (Worker context) and Node v24.16.  Tried
-    // Atomics.waitAsync with a setTimeout-driven notify — same hang
-    // (the setTimeout that triggers the notify never fires).
+    // Engine-driven timeout via Atomics.waitAsync(view, 0, expectedVal, ms).
+    // We pass expectedVal=0 and never write any other value to the slot,
+    // so the wait NEVER matches "value differs"; the wakeup is exclusively
+    // via the engine's internal timer subsystem at C++ layer — bypasses
+    // the JS macrotask queue that JSPI suspension freezes.
     //
-    // The microtask drain DOES work — bugs like #2
-    // (lazy-load-from-microtask) close under JSPI because the
-    // Promise.then queue drains during the suspend.  But timer-driven
-    // sleeps stay blocked.
-    //
-    // Workarounds to explore:
-    //   - postMessage-driven self-wake (port-based)
-    //   - requestAnimationFrame in a window context (not Worker)
-    //   - move the wasm setTimeout work to ANOTHER worker that's
-    //     not JSPI-suspended
-    //   - V8 / spec changes
-    await new Promise<void>((resolve) => setTimeout(resolve, ms));
+    // Spec: { async: bool, value: Promise<'ok'|'timed-out'> | 'not-equal' }
+    // If async=true we await the Promise.  If async=false (rare — only
+    // when the slot value already differs at call time, which we ensure
+    // doesn't happen by leaving slot=0), nothing to wait on.
+    const waitAsync = (NativeAtomics as unknown as {
+      waitAsync?: (i32: Int32Array, idx: number, val: number, timeout: number) =>
+        { async: boolean; value: Promise<string> | string };
+    }).waitAsync;
+    if (waitAsync) {
+      const result = waitAsync(sleepI32, 0, 0, ms);
+      if (result.async) await result.value;
+    } else {
+      // Fallback for engines without Atomics.waitAsync (none of our
+      // current targets) — relies on macrotask queue, deadlocks under JSPI.
+      await new Promise<void>((resolve) => setTimeout(resolve, ms));
+    }
     const dvAfter = view(ctx.memory);
     const finalN = pollOneoffEmitPostWaitEvents(dvAfter, inPtr, outPtr, nWrittenSoFar, nsubs);
     dvAfter.setUint32(neventsPtr, finalN, true);
