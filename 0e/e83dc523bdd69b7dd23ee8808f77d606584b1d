@@ -1,0 +1,30 @@
+browser-target/src/main.ts
+  s_3c284a8c3d32d2::t_ba9951a29f1b1e 36-80
+  s_3c284a8c3d32d2::t_7b4bdc39e2bdf5 107
+  s_3c284a8c3d32d2::t_e1fec3287dde0e 190
+  s_3c284a8c3d32d2::t_003156b990b1da 276-278
+browser-target/src/bridge-worker.ts
+  s_3c284a8c3d32d2::t_b5b469716998fb 1-117
+browser-target/src/worker.ts
+  s_3c284a8c3d32d2::t_3ad632d2fbc1ae 195-200
+  s_3c284a8c3d32d2::t_a89f7a07c4e5ea 130-135
+  s_3c284a8c3d32d2::t_2ed5b81fa33e0e 157-162,164-170,172
+  s_3c284a8c3d32d2::t_94396928b79d9f 17-19
+  s_3c284a8c3d32d2::t_52abd8c43bb93e 35-47
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "0ee83dc523bdd69b7dd23ee8808f77d606584b1d",
+  "prompts": {},
+  "sessions": {
+    "s_3c284a8c3d32d2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "aba00247-eb0d-4299-a1aa-1451ccea7316",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
