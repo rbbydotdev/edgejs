@@ -1,0 +1,39 @@
+browser-target/src/worker.ts
+  s_3c284a8c3d32d2::t_40126659687aeb 8
+  s_3c284a8c3d32d2::t_9b2068e1e4be59 324-328
+  s_3c284a8c3d32d2::t_f956e57d19933c 142-146,152
+browser-target/src/wasi-shim/pipes-sab.ts
+  s_3c284a8c3d32d2::t_7d7cfaa512a70c 1-235
+browser-target/src/thread-worker.ts
+  s_3c284a8c3d32d2::t_b0d1f45055fcfb 78
+  s_3c284a8c3d32d2::t_e791d0fb7db637 36,44-54
+browser-target/src/wasi-shim.ts
+  s_3c284a8c3d32d2::t_556b3796dfc472 32
+  s_3c284a8c3d32d2::t_d9058fc789d620 217-225
+  s_3c284a8c3d32d2::t_246fe31df85fde 107-113
+  s_3c284a8c3d32d2::t_788a13e9905057 709,713,744-761
+  s_3c284a8c3d32d2::t_5dd5558f7c5152 821-834
+  s_3c284a8c3d32d2::t_48867a8a86b048 973,975-986,995-1011,1013,1021
+  s_3c284a8c3d32d2::t_3c979bbbcd3922 28
+  s_3c284a8c3d32d2::t_ac297b3ff7a23b 791
+  s_3c284a8c3d32d2::t_94fb98145ddb94 1072-1075
+  s_3c284a8c3d32d2::t_73d871c5e3cee6 279-284
+  s_3c284a8c3d32d2::t_5ec80748ba51b6 1137-1159
+  s_3c284a8c3d32d2::t_c62f334b895e92 1588-1592,1594-1596,1598-1626,1628-1629
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "02d4ccd68ef21768d19548dd45aa5956b4f0f8b8",
+  "prompts": {},
+  "sessions": {
+    "s_3c284a8c3d32d2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "aba00247-eb0d-4299-a1aa-1451ccea7316",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
