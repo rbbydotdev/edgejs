@@ -142,7 +142,7 @@ async function runEdgeWithEmnapi() {
     // minimum it contains the Buffer.poolSize=0 hack (see
     // policies/buffer-pool-disable.ts) plus any other monkey-patches the
     // active policies install.
-    args: ["edgejs", "-e", userScriptPrelude + "require('http').createServer((req,res)=>{res.end('hi from edge\\n')}).listen(3000,()=>console.log('listening'))"],
+    args: ["edgejs", "-e", userScriptPrelude + (userScript ?? "require('http').createServer((req,res)=>{res.end('hi from edge\\n')}).listen(3000,()=>console.log('listening'))")],
     // Match native napi_wasmer baseline — wasmer-wasix passes no env by
     // default and edge boots fine.  Adding env vars made wasi-libc trigger
     // a different init path that breaks uv_cwd downstream.
@@ -407,6 +407,7 @@ async function boot() {
 let memSnapshotSymbols: Set<string> = new Set();
 let runDiagnosticsFirst = false;
 let watchByteLength = false;
+let userScript: string | null = null;
 
 // HTTP bridge: requests come in via a SharedArrayBuffer the SW writes
 // directly into.  This is the only way to get data through to the worker
@@ -496,6 +497,9 @@ self.onmessage = (e) => {
     }
     if (e.data.watchByteLength === true) {
       watchByteLength = true;
+    }
+    if (typeof e.data.userScript === "string" && e.data.userScript.length > 0) {
+      userScript = e.data.userScript;
     }
     boot();
   }

@@ -809,6 +809,25 @@ export function createWasiShim(ctx: ShimContext): {
     nsubs: number,
     neventsPtr: number,
   ): Promise<number> {
+    // #!~debt jspi-macrotask-blocked: the JSPI suspend blocks the
+    // surrounding event-loop's macrotask queue until wasm resumes.
+    // Result: `setTimeout(resolve, ms)` here never fires while wasm
+    // is suspended — circular dependency.  Verified empirically in
+    // Chrome 148 (Worker context) and Node v24.16.  Tried
+    // Atomics.waitAsync with a setTimeout-driven notify — same hang
+    // (the setTimeout that triggers the notify never fires).
+    //
+    // The microtask drain DOES work — bugs like #2
+    // (lazy-load-from-microtask) close under JSPI because the
+    // Promise.then queue drains during the suspend.  But timer-driven
+    // sleeps stay blocked.
+    //
+    // Workarounds to explore:
+    //   - postMessage-driven self-wake (port-based)
+    //   - requestAnimationFrame in a window context (not Worker)
+    //   - move the wasm setTimeout work to ANOTHER worker that's
+    //     not JSPI-suspended
+    //   - V8 / spec changes
     await new Promise<void>((resolve) => setTimeout(resolve, ms));
     const dvAfter = view(ctx.memory);
     const finalN = pollOneoffEmitPostWaitEvents(dvAfter, inPtr, outPtr, nWrittenSoFar, nsubs);
@@ -868,7 +887,21 @@ export function createWasiShim(ctx: ShimContext): {
 
     if (minTimeoutNs >= 0 && !hasSocketSub) {
       // Timer-only wait: yield via Promise so the engine suspends wasm
-      // and host microtasks drain naturally during the setTimeout window.
+      // and host microtasks drain naturally during the await window.
+      //
+      // #!~debt jspi-setTimeout-blocked: empirical finding (Chrome 148,
+      // Node v24.16) — `await setTimeout(resolve, ms)` inside a
+      // WebAssembly.Suspending impl does NOT resolve.  The wasm
+      // suspends, microtasks queued before the suspend drain, but the
+      // setTimeout's macrotask never fires.  Affects both DedicatedWorker
+      // (Chrome) and main-isolate (Node).  Means timer-based
+      // poll_oneoff still blocks the runtime.  Workaround: a
+      // Promise.resolve-chain helps with microtask-drain (bugs #2)
+      // but doesn't solve timer-driven sleeps (bug #3).  Underlying:
+      // JSPI suspends the wasm stack but blocks the surrounding
+      // event-loop macrotask queue until wasm resumes — circular.
+      // Next: investigate if Atomics.waitAsync, requestAnimationFrame,
+      // queueMicrotask-chained-yield, or a different shape resolves.
       const ms = Math.max(0, Math.min(60_000, Math.ceil(minTimeoutNs / 1_000_000)));
       return pollOneoffAwaitTimer(ms, dv, inPtr, outPtr, nWritten, nsubs, neventsPtr);
     }

@@ -136,6 +136,12 @@ const memParam = params.get("mem");
 const memSnapshotSymbols = memParam ? memParam.split(",").map((s) => s.trim()).filter(Boolean) : [];
 const diagnoseSabAliasing = params.get("diag") === "sab-aliasing";
 const watchByteLength = params.get("diag") === "bytelen";
+// `?script=<URL-encoded-edge-js-program>` — run a user script instead of
+// the default HTTP server demo.  Used by the in-browser test harness for
+// regression / JSPI validation.  Stdout/stderr flow through to the page log.
+// URLSearchParams.get() already decodes percent-escaping, so the script
+// is plain JS source by the time it gets here.
+const userScript = params.get("script");
 
 append("page bootstrap ok. crossOriginIsolated=" + crossOriginIsolated, "info");
 if (memSnapshotSymbols.length > 0) {
@@ -192,4 +198,4 @@ async function setupBridge() {
 }
 
 setupBridge();
-worker.postMessage({ kind: "start", memSnapshotSymbols, diagnoseSabAliasing, watchByteLength });
+worker.postMessage({ kind: "start", memSnapshotSymbols, diagnoseSabAliasing, watchByteLength, userScript });
