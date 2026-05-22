@@ -34,6 +34,7 @@ import { syncYieldStrategy } from "./wasi-shim/yield-sync";
 import { ThreadMessageHandler, WASIThreads, type WASIInstance } from "./napi-host/emnapi";
 import { createBundledFs } from "./host/fs/adapters/bundled";
 import { PipeRegistry } from "./wasi-shim/pipes-sab";
+import { FsSnapshotRegistry } from "./wasi-shim/fs-snapshot-sab";
 
 declare const self: DedicatedWorkerGlobalScope;
 
@@ -41,15 +42,18 @@ function postLog(text: string, level: "info" | "warn" | "err" = "info") {
   self.postMessage({ kind: "thread-log", text, level });
 }
 
-// Pipe-registry SAB handed to us by main BEFORE the emnapi load message
-// (see worker.ts onCreateWorker).  Stash it so onLoad's wasi-shim attaches
-// to the same cross-thread pipe space.  Without this, any pipe op the
-// pool worker performs lives in a different memory than main's.
+// SABs handed to us by main BEFORE the emnapi load message (see
+// worker.ts onCreateWorker).  Stash them so onLoad's wasi-shim attaches
+// to the same cross-thread state.  Without these, any pipe / file op
+// the pool worker performs lives in a different memory than main's.
 let pipeRegistry: PipeRegistry | undefined;
+let fsSnapshot: FsSnapshotRegistry | undefined;
 self.addEventListener("message", (e: MessageEvent) => {
   const data = e.data as { kind?: string; sab?: SharedArrayBuffer } | null;
   if (data?.kind === "edge-pipe-sab" && data.sab) {
     pipeRegistry = PipeRegistry.attach(data.sab);
+  } else if (data?.kind === "edge-fs-snapshot-sab" && data.sab) {
+    fsSnapshot = FsSnapshotRegistry.attach(data.sab);
   }
 });
 
@@ -77,6 +81,8 @@ const handler = new ThreadMessageHandler({
       postExit: () => { /* threads don't drive process.exit */ },
       yieldStrategy: syncYieldStrategy,
       pipeRegistry,
+      fsSnapshot,
+      fsSnapshotRole: "reader",
     });
 
     // Child-side WASIThreads stub.  Required by emnapi protocol:

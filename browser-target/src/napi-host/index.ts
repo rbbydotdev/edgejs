@@ -570,11 +570,50 @@ export function createNapiHost(opts: NapiHostOptions): NapiHost {
         wasmMallocImpl = malloc as (n: number) => number;
       }
       const proxied = createInstanceProxy(realInstance);
+
+      // Track JS-driven wasm re-entries.  emnapi's napi callback
+      // dispatch + setImmediate / next-tick handlers reach wasm via
+      // `wasmTable.get(idx)(...)`.  Those re-enter wasm on a fresh JS
+      // call stack — NO promising activation between us and the import
+      // call.  So our Suspending impls must NOT return a Promise from
+      // such re-entries: JSPI would reject with "trying to suspend
+      // without WebAssembly.promising".  We mark these calls by
+      // resetting __edgePromisingDepth to 0 during dispatch, then
+      // restoring on return.  The Suspending impls check the depth
+      // and pick sync vs async accordingly.
+      //
+      // call_indirect from inside wasm doesn't go through this Proxy's
+      // `get` method (raw funcref entries), so wasm-internal callbacks
+      // continue to suspend normally.
+      const realTable = realInstance.exports.__indirect_function_table as WebAssembly.Table;
+      type DepthHolder = { __edgePromisingDepth?: number };
+      const wrappedTable = new Proxy(realTable, {
+        get(target, prop, receiver) {
+          if (prop === "get") {
+            return (idx: number): Function | null => {
+              const fn = target.get(idx);
+              if (typeof fn !== "function") return fn;
+              return function jsReentryWrap(this: unknown, ...args: unknown[]): unknown {
+                const dh = globalThis as DepthHolder;
+                const prev = dh.__edgePromisingDepth ?? 0;
+                dh.__edgePromisingDepth = 0;
+                try {
+                  return (fn as Function).apply(this, args);
+                } finally {
+                  dh.__edgePromisingDepth = prev;
+                }
+              };
+            };
+          }
+          return Reflect.get(target, prop, receiver);
+        },
+      });
+
       napiModule.init({
         instance: proxied,
         module: wasmModule,
         memory: opts.memory,
-        table: realInstance.exports.__indirect_function_table as WebAssembly.Table,
+        table: wrappedTable,
       });
     },
   };

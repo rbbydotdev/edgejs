@@ -6,6 +6,7 @@
 import { buildImports } from "./imports-generated";
 import { createWasiShim, ExitSignal, type BridgeRequest } from "./wasi-shim";
 import { PipeRegistry } from "./wasi-shim/pipes-sab";
+import { FsSnapshotRegistry } from "./wasi-shim/fs-snapshot-sab";
 import { syncYieldStrategy } from "./wasi-shim/yield-sync";
 import type { YieldStrategy } from "./wasi-shim/yield-strategy";
 import { WASIThreads, type WASIInstance } from "./napi-host/emnapi";
@@ -144,6 +145,56 @@ async function runEdgeWithEmnapi() {
   // actually reaches main.  See `wasi-shim/pipes-sab.ts`.
   const pipeRegistry = PipeRegistry.create();
 
+  // Cross-thread file snapshot — SAB-backed read-only file table.  Pool
+  // workers opening bundled files (Node module loading via libuv pool)
+  // route through this; main fetches via the layered FS adapter on
+  // first miss, populates the snapshot, every subsequent open is
+  // wire-speed.  See `wasi-shim/fs-snapshot-sab.ts`.
+  const fsSnapshot = FsSnapshotRegistry.create();
+
+  // Main-side handler for cold-miss load requests from pool workers.
+  // setInterval lets us drain during JSPI suspend windows; main's JS
+  // event loop runs whenever wasm is parked in a Suspending import.
+  // Per request: read the path from the ring, fetch via the layered FS
+  // adapter (bundled-fs sync XHR or opfs), publish bytes into the
+  // snapshot, mark consumed.  Notify happens inside publishLoaded.
+  setInterval(() => {
+    let req;
+    while ((req = fsSnapshot.drainNext()) !== null) {
+      const res = fs.open(req.path, {});
+      if (!res.ok) {
+        fsSnapshot.publishError(req.slotIdx, res.errno);
+        fsSnapshot.markConsumed(req.ringIdx);
+        continue;
+      }
+      // Read the full file via the layered adapter.  Bundled files
+      // are bounded; we buffer in chunks then concatenate.
+      const handle = res.value;
+      const statRes = fs.fstat(handle);
+      const size = statRes.ok ? statRes.value.size : 1 << 20;
+      const buf = new Uint8Array(size);
+      let off = 0;
+      while (off < buf.length) {
+        const slice = buf.subarray(off);
+        const r = fs.read(handle, slice);
+        if (!r.ok) {
+          fsSnapshot.publishError(req.slotIdx, r.errno);
+          fs.close(handle);
+          fsSnapshot.markConsumed(req.ringIdx);
+          off = -1;
+          break;
+        }
+        if (r.value === 0) break;
+        off += r.value;
+      }
+      if (off < 0) continue;
+      fs.close(handle);
+      fsSnapshot.publishLoaded(req.path, buf.subarray(0, off), req.slotIdx);
+      fsSnapshot.markConsumed(req.ringIdx);
+      post("log", { text: `[fs-snapshot] loaded ${req.path} (${off}B) slot=${req.slotIdx}`, level: "info" });
+    }
+  }, 5);
+
   // Diagnostic: dump main-side pipe activity periodically while we're
   // bringing this up.  Pool workers post their own stats via
   // thread-log.  Quiet when there's no activity — we only care that the
@@ -164,6 +215,8 @@ async function runEdgeWithEmnapi() {
     memory,
     yieldStrategy,
     pipeRegistry,
+    fsSnapshot,
+    fsSnapshotRole: "loader",
     // Small HTTP server: opens a TCP listener on :3000, replies to any
     // request with "hi from edge\n".  The path/port are not used for
     // routing — the SW intercepts /_edge/* and pushes any request onto
@@ -335,11 +388,12 @@ async function runEdgeWithEmnapi() {
         type: "module",
         name: "edgejs-thread",
       });
-      // Hand the pipe-registry SAB to the child immediately so its
-      // wasi-shim can attach to the same cross-thread pipe space.  Post
-      // BEFORE emnapi's `load` message so the child has the SAB stashed
-      // when it builds its shim.
+      // Hand the pipe-registry + fs-snapshot SABs to the child
+      // immediately so its wasi-shim can attach to the same
+      // cross-thread state.  Post BEFORE emnapi's `load` message so
+      // the child has the SABs stashed when it builds its shim.
       childWorker.postMessage({ kind: "edge-pipe-sab", sab: pipeRegistry.sharedBuffer });
+      childWorker.postMessage({ kind: "edge-fs-snapshot-sab", sab: fsSnapshot.sharedBuffer });
       // Forward non-__emnapi__ messages (logs, debug breadcrumbs) from the
       // child to the page.  ThreadManager will attach its own listener for
       // __emnapi__-wrapped protocol messages; we co-exist on the same
@@ -454,11 +508,21 @@ async function runEdgeWithEmnapi() {
   let exitCode: number | null = null;
   let threwMsg: string | null = null;
   const tStart = nowMs();
+  // Track depth of the promising-wrapped activation so Suspending
+  // imports can detect when they're being called from a JS-driven
+  // re-entry (depth=0) vs from inside _start (depth>0).  Re-entries
+  // can't suspend (no promising frame on the current call stack), so
+  // the Suspending impls do a sync Atomics.wait instead of returning
+  // a Promise in that case.  See pollOneoffAsyncImpl / futexWaitAsyncImpl.
+  type DepthHolder = { __edgePromisingDepth?: number };
+  const dh = globalThis as DepthHolder;
+  dh.__edgePromisingDepth = (dh.__edgePromisingDepth ?? 0) + 1;
   try { await startFn(); }
   catch (e) {
     if (e instanceof ExitSignal) exitCode = e.code;
     else threwMsg = (e as Error).stack ?? String(e);
   }
+  finally { dh.__edgePromisingDepth = (dh.__edgePromisingDepth ?? 1) - 1; }
   const runMs = nowMs() - tStart;
 
   post("log", {

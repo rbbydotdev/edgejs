@@ -26,6 +26,7 @@ import {
 import type { YieldStrategy } from "./wasi-shim/yield-strategy";
 import { syncYieldStrategy } from "./wasi-shim/yield-sync";
 import { PipeRegistry, isPipeFd, pipeFdSlot, pipeFdIsWrite, type PipePollHandle } from "./wasi-shim/pipes-sab";
+import { FsSnapshotRegistry, isFsFd } from "./wasi-shim/fs-snapshot-sab";
 
 const ERRNO_SUCCESS = 0;
 const ERRNO_BADF = 8;
@@ -111,6 +112,20 @@ export interface ShimContext {
    *  back to per-worker local state when omitted — only enough to keep
    *  the smoke test happy, real workloads will need it. */
   pipeRegistry?: PipeRegistry;
+  /** Cross-thread file snapshot.  Backed by a SAB so every worker can
+   *  open + read + close files via globally consistent fd numbers.
+   *  Lazy-cached: first open of a path enqueues a load request to main
+   *  via the registry's in-SAB request ring; subsequent opens of the
+   *  same path hit the cached data region directly.  Reads are SAB-
+   *  direct on the data path. */
+  fsSnapshot?: FsSnapshotRegistry;
+  /** Snapshot role.  "loader" = this worker owns the layered FS adapter
+   *  and drains the request ring (i.e. main worker).  "reader" = this
+   *  worker reads from the snapshot only (i.e. libuv pool workers).
+   *  The loader's own opens MUST bypass the snapshot — Atomics.wait
+   *  would deadlock its own setInterval drainer.  Defaults to "reader"
+   *  when omitted. */
+  fsSnapshotRole?: "loader" | "reader";
 }
 
 /** Inbound HTTP request the bridge port wants edge to handle. */
@@ -281,6 +296,7 @@ export function createWasiShim(ctx: ShimContext): {
     if (vfds.has(fd)) return true;
     if (sockets.has(fd)) return true;
     if (isPipeFd(fd) && ctx.pipeRegistry?.isAlive(pipeFdSlot(fd))) return true;
+    if (isFsFd(fd) && ctx.fsSnapshot && ctx.fsSnapshot.fdSize(fd) >= 0) return true;
     return false;
   }
 
@@ -334,6 +350,47 @@ export function createWasiShim(ctx: ShimContext): {
     syscall: string,
     options: import("./host/fs/types").OpenOptions = {},
   ): number {
+    // Read-only opens with a shared snapshot: route through the SAB-
+    // backed file table.  Only readers (pool workers) use this — the
+    // loader (main worker) MUST use its local FS adapter, because
+    // Atomics.wait on a slot would deadlock the loader's own setInterval
+    // request-drain handler.
+    if (ctx.fsSnapshot && ctx.fsSnapshotRole !== "loader" && !options.write && !options.create && !options.truncate && !options.directory) {
+      const lookup = ctx.fsSnapshot.lookup(normalized);
+      let slotIdx: number;
+      if (lookup.kind === "loaded") {
+        slotIdx = lookup.slotIdx;
+      } else {
+        // Either no slot yet (miss) or another worker is loading.
+        // If miss, enqueue and wait.  If loading, just wait.
+        if (lookup.kind === "miss") {
+          const requested = ctx.fsSnapshot.enqueueLoad(normalized);
+          if (requested < 0) {
+            ctx.postLog(`[wasi] ${syscall} ${normalized} → snapshot table full (ENOSPC)`, "warn");
+            return FsErrno.NOENT;
+          }
+          slotIdx = requested;
+        } else {
+          slotIdx = lookup.slotIdx;
+        }
+        const status = ctx.fsSnapshot.waitOnSlot(slotIdx);
+        if (status !== 2 /* PS_STATUS_LOADED */) {
+          // Negative status = errno-coded failure.  Map common cases;
+          // anything else falls through to ENOENT so wasm-side
+          // path-probing keeps walking.
+          return status < 0 ? -status : FsErrno.NOENT;
+        }
+      }
+      const fd = ctx.fsSnapshot.allocFd(slotIdx);
+      if (fd < 0) {
+        ctx.postLog(`[wasi] ${syscall} ${normalized} → snapshot fd table full`, "warn");
+        return FsErrno.NOENT;
+      }
+      view(ctx.memory).setUint32(openedFdPtr, fd, true);
+      ctx.postLog(`[wasi] ${syscall} ${normalized} → fd ${fd} (snapshot)`, "info");
+      return ERRNO_SUCCESS;
+    }
+
     const res = ctx.fs.open(normalized, options);
     if (!res.ok) {
       // Quiet the noisy "ENOENT for paths the FS doesn't serve" log to keep
@@ -951,6 +1008,18 @@ export function createWasiShim(ctx: ShimContext): {
     nsubs: number,
     neventsPtr: number,
   ): number | Promise<number> {
+    // JSPI re-entry detection.  If we're being called from a JS-driven
+    // wasm re-entry (microtask, napi callback, setImmediate handler),
+    // there's no promising frame on the current call stack — returning
+    // a Promise here would crash with "trying to suspend without
+    // WebAssembly.promising".  Fall through to the sync impl which
+    // blocks the JS thread on Atomics.wait.  napi callbacks that hit
+    // this path are typically short waits (mutex contention), so the
+    // block is bounded.
+    const depthHolder = globalThis as { __edgePromisingDepth?: number };
+    if ((depthHolder.__edgePromisingDepth ?? 0) <= 0) {
+      return pollOneoffSyncImpl(inPtr, outPtr, nsubs, neventsPtr);
+    }
     const dv = view(ctx.memory);
     const r = pollOneoffWalkSubs(dv, inPtr, outPtr, nsubs);
     let nWritten = r.nWritten;
@@ -1073,6 +1142,10 @@ export function createWasiShim(ctx: ShimContext): {
         ctx.pipeRegistry.close(fd);
         return ERRNO_SUCCESS;
       }
+      if (isFsFd(fd) && ctx.fsSnapshot) {
+        ctx.fsSnapshot.close(fd);
+        return ERRNO_SUCCESS;
+      }
       const vfd = vfds.get(fd);
       if (vfd?.fsHandle !== undefined) {
         // Best-effort: release the FS handle, ignore errno (we're closing
@@ -1108,6 +1181,20 @@ export function createWasiShim(ctx: ShimContext): {
     // get their real stat from the FileSystem facade.  Other virtual fds
     // (e.g. /dev/urandom) stay character-device.
     fd_filestat_get(fd: number, statPtr: number) {
+      if (isFsFd(fd) && ctx.fsSnapshot) {
+        const size = ctx.fsSnapshot.fdSize(fd);
+        if (size < 0) return ERRNO_BADF;
+        const dv = view(ctx.memory);
+        dv.setBigUint64(statPtr +  0, 0n, true);
+        dv.setBigUint64(statPtr +  8, BigInt(fd), true);
+        dv.setUint8(statPtr + 16, 4); // FILETYPE_REGULAR_FILE
+        dv.setBigUint64(statPtr + 24, 1n, true);
+        dv.setBigUint64(statPtr + 32, BigInt(size), true);
+        dv.setBigUint64(statPtr + 40, 0n, true);
+        dv.setBigUint64(statPtr + 48, 0n, true);
+        dv.setBigUint64(statPtr + 56, 0n, true);
+        return ERRNO_SUCCESS;
+      }
       if (fd > 2 && !vfds.has(fd) && !PREOPEN_FDS.has(fd)) return ERRNO_NOSYS;
       const vfd = vfds.get(fd);
       if (vfd?.fsHandle !== undefined) {
@@ -1133,6 +1220,27 @@ export function createWasiShim(ctx: ShimContext): {
       const sock = sockets.get(fd);
       if (sock) {
         return readFromSocket(sock, iovsPtr, iovsLen, nreadPtr);
+      }
+      if (isFsFd(fd) && ctx.fsSnapshot) {
+        // Cross-thread snapshot read.  Atomic-bumps position; copies
+        // bytes directly from SAB data region into wasm memory.
+        const dvw = view(ctx.memory);
+        const mem = bytes(ctx.memory);
+        let total = 0;
+        for (let i = 0; i < iovsLen; i++) {
+          const base = dvw.getUint32(iovsPtr + i * 8, true);
+          const len = dvw.getUint32(iovsPtr + i * 8 + 4, true);
+          if (len === 0) continue;
+          const n = ctx.fsSnapshot.read(fd, mem.subarray(base, base + len));
+          if (n < 0) {
+            dvw.setUint32(nreadPtr, total, true);
+            return ERRNO_BADF;
+          }
+          total += n;
+          if (n < len) break;
+        }
+        dvw.setUint32(nreadPtr, total, true);
+        return ERRNO_SUCCESS;
       }
       if (isPipeFd(fd) && ctx.pipeRegistry) {
         // Cross-thread pipe read.  Reads what's currently in the SAB ring
@@ -1471,7 +1579,16 @@ export function createWasiShim(ctx: ShimContext): {
   // Returns either a synchronous i32 (no suspend) OR a Promise<i32>
   // (engine suspends wasm).  JSPI-Suspending wrap interprets the
   // return type: i32 → continue, Promise → suspend.
+  //
+  // JS-driven re-entry (depth==0): we MUST return sync.  No promising
+  // frame on the call stack means JSPI rejects any Promise return
+  // with "trying to suspend without WebAssembly.promising".  Fall
+  // through to futexWaitSyncImpl which blocks via Atomics.wait.
   function futexWaitAsyncImpl(futexPtr: number, expected: number, timeoutPtr: number, retPtr: number): number | Promise<number> {
+    const depthHolder = globalThis as { __edgePromisingDepth?: number };
+    if ((depthHolder.__edgePromisingDepth ?? 0) <= 0) {
+      return futexWaitSyncImpl(futexPtr, expected, timeoutPtr, retPtr);
+    }
     const i32View = new NativeInt32Array(ctx.memory.buffer, futexPtr & ~3, 1);
     const waitAsync = (NativeAtomics as unknown as {
       waitAsync?: (i32: Int32Array, idx: number, val: number, timeout?: number) =>
