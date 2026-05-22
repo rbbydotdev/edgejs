@@ -92,19 +92,11 @@ const handler = new ThreadMessageHandler({
     // env state would already be undefined behavior in real Node too
     // (you can't share napi_env across threads without an explicit
     // threadsafe-function ref).
-    // TEMP diagnostic: capture last N child-thread imports.
-    const childCallLog: string[] = [];
-    const MAX_LOG = 60;
     const wasmImports = buildImports(wasmMemory, {
       wasi_snapshot_preview1: shim.wasi_snapshot_preview1 as Record<string, Function>,
       wasix_32v1: shim.wasix_32v1 as Record<string, Function>,
       wasi: { ...shim.wasi, ...wasiThreads.getImportObject().wasi },
-    }, (ns, sym, args, ret, isStub) => {
-      const argSummary = args.map(a => typeof a === "number" ? a : String(a).slice(0, 12)).join(",");
-      childCallLog.push(`${isStub ? "STUB " : "impl "}${ns}.${sym}(${argSummary}) -> ${ret}`);
-      if (childCallLog.length > MAX_LOG) childCallLog.shift();
-    });
-    (globalThis as Record<string, unknown>).__childCallLog = childCallLog;
+    }, () => { /* trace off in production */ });
     (wasmImports.env as Record<string, unknown>).memory = wasmMemory;
 
     const originalInstance = await WebAssembly.instantiate(wasmModule, wasmImports);
@@ -114,11 +106,6 @@ const handler = new ThreadMessageHandler({
   },
   onError: (err, type) => {
     postLog(`[thread] error in ${type}: ${err.message ?? String(err)}`, "err");
-    const calls = (globalThis as Record<string, unknown>).__childCallLog as string[] | undefined;
-    if (calls) {
-      postLog(`[thread] last ${calls.length} child wasm-import calls:`, "warn");
-      for (const c of calls) postLog(`[thread]   ${c}`, "warn");
-    }
   },
 });
 
