@@ -279,4 +279,8 @@ setupBridge();
 // useful for benchmarks or to chase a real spin without abort.
 const spinLimitParam = params.get("spinLimit");
 const spinLimit = spinLimitParam !== null ? Math.max(0, Number(spinLimitParam) | 0) : undefined;
-postToRuntime({ kind: "start", memSnapshotSymbols, diagnoseSabAliasing, watchByteLength, userScript, spinLimit });
+// ?trace=0 disables per-call wasi import tracing.  Tracing allocates
+// arg/return objects on every import (25k+ per HTTP request); skipping
+// it is a real win for benchmarks and production deployments.
+const traceDisabled = params.get("trace") === "0";
+postToRuntime({ kind: "start", memSnapshotSymbols, diagnoseSabAliasing, watchByteLength, userScript, spinLimit, traceDisabled });

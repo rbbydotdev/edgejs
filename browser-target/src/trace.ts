@@ -32,6 +32,12 @@ const now = performance.now.bind(performance);
 export class Trace {
   private records: TraceRecord[] = [];
   private startNow = now();
+  /** When true, `record()` short-circuits.  Set this for benchmarks /
+   *  production where we don't need the per-call trace and the
+   *  args.map(coerce) + object allocation on every wasi import is real
+   *  overhead (25k+ calls per HTTP request).  Page can flip via
+   *  `?trace=0`. */
+  disabled = false;
 
   record(
     ns: string,
@@ -41,6 +47,7 @@ export class Trace {
     stub: boolean,
     mem?: { before: Record<string, string>; after: Record<string, string> },
   ): void {
+    if (this.disabled) return;
     this.records.push({
       t: now() - this.startNow,
       ns, sym,

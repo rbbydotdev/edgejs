@@ -93,6 +93,14 @@ async function runHelloSmokeTest() {
 async function runEdgeWithEmnapi() {
   post("section", { text: "── edgejs.wasm (emnapi + WASI host) ──" });
   const trace = new Trace();
+  // Page may opt out of per-call tracing via ?trace=0.  Tracing
+  // allocates args/return objects on every wasi import (~25k+ per
+  // HTTP request), so skipping it is a real perf win for benchmarks
+  // and production.
+  if (traceDisabled) {
+    trace.disabled = true;
+    post("log", { text: "[worker] tracing disabled (?trace=0)", level: "info" });
+  }
 
   const resp = await fetch("/edgejs.wasm");
   const wasmBytes = await resp.arrayBuffer();
@@ -643,6 +651,10 @@ let userScript: string | null = null;
 // wasi imports fire, abort."  Real workloads on healthy traffic
 // shouldn't get anywhere near this; only genuine tight loops will.
 let spinStreakLimit = 2_000_000;
+// `?trace=0` from page disables per-call trace recording — saves the
+// args/return object allocation on every wasi import.  Real perf win
+// for steady-state traffic.
+let traceDisabled = false;
 
 // HTTP bridge: requests come in via a SharedArrayBuffer the SW writes
 // directly into.  This is the only way to get data through to the worker
@@ -769,6 +781,9 @@ self.onmessage = (e) => {
     }
     if (typeof e.data.spinLimit === "number" && e.data.spinLimit >= 0) {
       spinStreakLimit = e.data.spinLimit;
+    }
+    if (e.data.traceDisabled === true) {
+      traceDisabled = true;
     }
     boot();
   }
