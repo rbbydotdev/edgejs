@@ -153,12 +153,16 @@ async function runEdgeWithEmnapi() {
   const fsSnapshot = FsSnapshotRegistry.create();
 
   // Main-side handler for cold-miss load requests from pool workers.
-  // setInterval lets us drain during JSPI suspend windows; main's JS
-  // event loop runs whenever wasm is parked in a Suspending import.
-  // Per request: read the path from the ring, fetch via the layered FS
-  // adapter (bundled-fs sync XHR or opfs), publish bytes into the
-  // snapshot, mark consumed.  Notify happens inside publishLoaded.
-  setInterval(() => {
+  // Event-driven: Atomics.waitAsync on the snapshot's ring wake
+  // counter resolves whenever a pool worker enqueues.  Wakes drive
+  // immediate drain — no polling floor.  Per request: read the path
+  // from the ring, fetch via the layered FS adapter (bundled-fs sync
+  // XHR or opfs), publish bytes into the snapshot, mark consumed.
+  //
+  // The waitAsync resolves regardless of whether main's wasm is
+  // currently JSPI-suspended; both states leave JS macrotasks free
+  // to run.
+  function drainOnce(): void {
     let req;
     while ((req = fsSnapshot.drainNext()) !== null) {
       const res = fs.open(req.path, {});
@@ -167,8 +171,6 @@ async function runEdgeWithEmnapi() {
         fsSnapshot.markConsumed(req.ringIdx);
         continue;
       }
-      // Read the full file via the layered adapter.  Bundled files
-      // are bounded; we buffer in chunks then concatenate.
       const handle = res.value;
       const statRes = fs.fstat(handle);
       const size = statRes.ok ? statRes.value.size : 1 << 20;
@@ -193,7 +195,29 @@ async function runEdgeWithEmnapi() {
       fsSnapshot.markConsumed(req.ringIdx);
       post("log", { text: `[fs-snapshot] loaded ${req.path} (${off}B) slot=${req.slotIdx}`, level: "info" });
     }
-  }, 5);
+  }
+  (async function ringDrainLoop() {
+    // First sweep before any wait — covers the case where a pool
+    // worker enqueued before main got here.
+    drainOnce();
+    while (true) {
+      const h = fsSnapshot.ringWakeHandle();
+      const waitAsync = (Atomics as unknown as {
+        waitAsync?: (i32: Int32Array, idx: number, val: number) =>
+          { async: boolean; value: Promise<string> | string };
+      }).waitAsync;
+      if (!waitAsync) {
+        // Engines without waitAsync (very old) fall back to a sleep
+        // poll loop so we don't busy-spin.  Modern Chrome/Node have it.
+        await new Promise((r) => setTimeout(r, 5));
+        drainOnce();
+        continue;
+      }
+      const result = waitAsync(h.i32, h.idx, h.seen);
+      if (result.async) await result.value;
+      drainOnce();
+    }
+  })();
 
   // Diagnostic: dump main-side pipe activity periodically while we're
   // bringing this up.  Pool workers post their own stats via

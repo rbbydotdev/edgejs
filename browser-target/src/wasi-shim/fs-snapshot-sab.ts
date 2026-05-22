@@ -515,6 +515,14 @@ export class FsSnapshotRegistry {
     Atomics.add(this.i32, GH_OFF_RING_HEAD >>> 2, 1);
   }
 
+  /** Wake counter for the request ring.  Main worker can
+   *  `Atomics.waitAsync` on this to be event-woken when a pool worker
+   *  enqueues a load request — no polling needed. */
+  ringWakeHandle(): { i32: Int32Array; idx: number; seen: number } {
+    const idx = GH_OFF_RING_WAKE >>> 2;
+    return { i32: this.i32, idx, seen: Atomics.load(this.i32, idx) };
+  }
+
   // ---- FD allocation / read / close ----
 
   private fdI32(slot: number, off: number): number {
