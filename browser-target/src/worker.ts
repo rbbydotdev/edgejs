@@ -10,7 +10,7 @@ import type { YieldStrategy } from "./wasi-shim/yield-strategy";
 import { WASIThreads, type WASIInstance } from "./napi-host/emnapi";
 import { Trace, toUnifiedJsonl } from "./trace";
 import { createNapiHost } from "./napi-host";
-import { composePolicies, defaultBrowserPolicies } from "./policies";
+import { composePolicies, defaultBrowserPolicies, compressionViaCompressionStream } from "./policies";
 import { createBundledFs } from "./host/fs/adapters/bundled";
 import { createOpfsFs } from "./host/fs/adapters/opfs";
 import { layered } from "./host/fs/adapters/layered";
@@ -93,8 +93,20 @@ async function runEdgeWithEmnapi() {
   // for the framework and `defaultBrowserPolicies` for the rationale of each
   // member.  Worker-only deployments can fork this list — e.g. append an
   // outbound-fetch-tunnel policy to enable client-side http.request.
+  // Feature-detect JSPI first so policy composition can opt into
+  // host-async-dependent policies (compression-via-compressionstream).
+  const hasJspi = typeof (WebAssembly as unknown as { Suspending?: unknown }).Suspending === "function"
+    && typeof (WebAssembly as unknown as { promising?: unknown }).promising === "function";
+
+  // Compose the browser policies.  Note: compression-via-compressionstream
+  // is registered but NOT enabled by default — it triggers a JSPI
+  // architectural issue (any async JS path that re-enters wasm needs
+  // its caller wrapped with WebAssembly.promising).  Tracked separately.
+  void compressionViaCompressionStream;
+  const browserPolicies = defaultBrowserPolicies;
   const { builtinOverrides, userScriptPrelude, applied: appliedPolicies } =
-    composePolicies(defaultBrowserPolicies);
+    composePolicies(browserPolicies);
+  void hasJspi;
   const napi = createNapiHost({ memory, builtinOverrides });
   post("log", { text: `policies applied: ${appliedPolicies.join(", ")}`, level: "info" });
   post("log", { text: `napi-host: ${Object.keys(napi.imports.napi).length} napi entries seeded`, level: "info" });
@@ -117,8 +129,6 @@ async function runEdgeWithEmnapi() {
   // (Chrome 137+, Node 24+ with flags), else sync (Atomics.wait).
   let yieldStrategy: YieldStrategy = syncYieldStrategy;
   let entryPointWrapper: (fn: Function) => Function = (fn) => fn;
-  const hasJspi = typeof (WebAssembly as unknown as { Suspending?: unknown }).Suspending === "function"
-    && typeof (WebAssembly as unknown as { promising?: unknown }).promising === "function";
   if (hasJspi) {
     const { jspiYieldStrategy } = await import("./wasi-shim/yield-jspi");
     yieldStrategy = jspiYieldStrategy;

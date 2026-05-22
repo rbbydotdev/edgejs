@@ -95,11 +95,8 @@ const handler = new ThreadMessageHandler({
     const wasmImports = buildImports(wasmMemory, {
       wasi_snapshot_preview1: shim.wasi_snapshot_preview1 as Record<string, Function>,
       wasix_32v1: shim.wasix_32v1 as Record<string, Function>,
-      // Merge wasi-threads' import object over our shim.wasi so the child
-      // also gets the proper thread-spawn (no-op for childThread: true)
-      // and any other namespace contributions.
       wasi: { ...shim.wasi, ...wasiThreads.getImportObject().wasi },
-    }, () => { /* trace off for child threads */ });
+    }, () => { /* trace off in production */ });
     (wasmImports.env as Record<string, unknown>).memory = wasmMemory;
 
     const originalInstance = await WebAssembly.instantiate(wasmModule, wasmImports);
@@ -108,12 +105,7 @@ const handler = new ThreadMessageHandler({
     return { instance, module: wasmModule };
   },
   onError: (err, type) => {
-    postLog(`[thread] error in ${type}: ${err.message ?? String(err)} (${err?.constructor?.name ?? "?"})`, "err");
-    const stack = (err as { stack?: string }).stack;
-    if (stack) {
-      const lines = stack.split("\n").slice(0, 18);
-      for (const line of lines) postLog(`[thread]   ${line}`, "err");
-    }
+    postLog(`[thread] error in ${type}: ${err.message ?? String(err)}`, "err");
   },
 });
 
