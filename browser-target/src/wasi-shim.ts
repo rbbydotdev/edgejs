@@ -1324,30 +1324,39 @@ export function createWasiShim(ctx: ShimContext): {
   //     `WebAssembly.Suspending` by the JSPI strategy, the wasm
   //     suspends without blocking the worker's event loop.
 
-  function futexWaitSyncImpl(futexPtr: number, expected: number, timeoutPtr: number): number {
+  // WASIX futex_wait signature (api_wasix.h:4013):
+  //   __wasi_errno_t __wasi_futex_wait(
+  //       uint32_t* futex, uint32_t expected,
+  //       const __wasi_option_timestamp_t* timeout,
+  //       __wasi_bool_t* retptr0  // OUT: true=woke, false=timed-out
+  //   );
+  // Earlier 3-arg shape was wrong — wasi-libc reads garbage from retptr0
+  // and may abort.
+
+  function futexWaitSyncImpl(futexPtr: number, expected: number, timeoutPtr: number, retPtr: number): number {
     const i32View = new NativeInt32Array(ctx.memory.buffer, futexPtr & ~3, 1);
+    let result: "ok" | "timed-out" | "not-equal";
     if (timeoutPtr === 0) {
-      NativeAtomics.wait(i32View, 0, expected);
+      result = NativeAtomics.wait(i32View, 0, expected);
     } else {
       const dv = view(ctx.memory);
       const ns = dv.getBigUint64(timeoutPtr, true);
-      NativeAtomics.wait(i32View, 0, expected, Math.max(0, Number(ns / 1_000_000n)));
+      result = NativeAtomics.wait(i32View, 0, expected, Math.max(0, Number(ns / 1_000_000n)));
     }
-    // wasi-libc rechecks the condition after futex_wait returns, so
-    // returning 0 (success) is correct for ok/timed-out/not-equal alike.
+    if (retPtr !== 0) {
+      view(ctx.memory).setUint8(retPtr, result === "ok" ? 1 : 0);
+    }
     return 0;
   }
 
-  async function futexWaitAsyncImpl(futexPtr: number, expected: number, timeoutPtr: number): Promise<number> {
+  async function futexWaitAsyncImpl(futexPtr: number, expected: number, timeoutPtr: number, retPtr: number): Promise<number> {
     const i32View = new NativeInt32Array(ctx.memory.buffer, futexPtr & ~3, 1);
     const waitAsync = (NativeAtomics as unknown as {
       waitAsync?: (i32: Int32Array, idx: number, val: number, timeout?: number) =>
         { async: boolean; value: Promise<string> | string };
     }).waitAsync;
     if (!waitAsync) {
-      // Engine missing Atomics.waitAsync — the JSPI strategy shouldn't
-      // have selected this impl in that case, but be defensive.
-      return futexWaitSyncImpl(futexPtr, expected, timeoutPtr);
+      return futexWaitSyncImpl(futexPtr, expected, timeoutPtr, retPtr);
     }
     let r: { async: boolean; value: Promise<string> | string };
     if (timeoutPtr === 0) {
@@ -1357,7 +1366,17 @@ export function createWasiShim(ctx: ShimContext): {
       const ns = dv.getBigUint64(timeoutPtr, true);
       r = waitAsync(i32View, 0, expected, Math.max(0, Number(ns / 1_000_000n)));
     }
-    if (r.async) await r.value;
+    let woke = true;
+    if (r.async) {
+      const settled = await r.value;
+      woke = settled === "ok";
+    } else {
+      // Sync return — r.value is the result string.
+      woke = r.value === "ok";
+    }
+    if (retPtr !== 0) {
+      view(ctx.memory).setUint8(retPtr, woke ? 1 : 0);
+    }
     return 0;
   }
 
@@ -1533,17 +1552,21 @@ export function createWasiShim(ctx: ShimContext): {
     // wasix_32v1 declaration via `strategy.wrapFutexWait(syncImpl, asyncImpl)`.
     // Under JSPI the strategy returns a `WebAssembly.Suspending` wrap so
     // the wasm actually suspends instead of blocking the JS thread.
-    futex_wait(inPtr: number, expected: number, timeoutPtr: number) {
-      return futexWaitSyncImpl(inPtr, expected, timeoutPtr);
+    futex_wait(inPtr: number, expected: number, timeoutPtr: number, retPtr: number) {
+      return futexWaitSyncImpl(inPtr, expected, timeoutPtr, retPtr);
     },
-    futex_wake(futexPtr: number, count: number) {
+    // WASIX futex_wake signature:
+    //   __wasi_errno_t __wasi_futex_wake(uint32_t* futex, __wasi_bool_t* retptr0);
+    //   retptr0: true if a thread was actually woken.
+    futex_wake(futexPtr: number, retPtr: number) {
       const i32View = new NativeInt32Array(ctx.memory.buffer, futexPtr & ~3, 1);
-      NativeAtomics.notify(i32View, 0, count > 0 ? count : 1);
+      const woken = NativeAtomics.notify(i32View, 0, 1);
+      if (retPtr !== 0) view(ctx.memory).setUint8(retPtr, woken > 0 ? 1 : 0);
       return ERRNO_SUCCESS;
     },
+    // WASIX futex_wake_all signature: same as wake but wakes ALL waiters.
     futex_wake_all(futexPtr: number) {
       const i32View = new NativeInt32Array(ctx.memory.buffer, futexPtr & ~3, 1);
-      // Wake ALL waiters — pass +Infinity per Atomics.notify spec.
       NativeAtomics.notify(i32View, 0, Infinity);
       return ERRNO_SUCCESS;
     },

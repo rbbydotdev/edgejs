@@ -45,13 +45,15 @@ export type AsyncCapablePollOneoff = (
   neventsPtr: number,
 ) => number | Promise<number>;
 
-/** Signature of the sync futex_wait impl. */
-export type SyncFutexWait = (futexPtr: number, expected: number, timeoutPtr: number) => number;
+/** Signature of the sync futex_wait impl.  Matches WASIX's __wasi_futex_wait
+ *  (api_wasix.h:4013): (futex, expected, timeoutPtr, retPtr0) -> errno.
+ *  retPtr0 receives a bool (true = woke, false = timed out). */
+export type SyncFutexWait = (futexPtr: number, expected: number, timeoutPtr: number, retPtr: number) => number;
 
-/** Signature of the async-capable futex_wait impl.  Returns either
- *  the i32 result immediately, or a Promise that resolves to the i32
- *  once the wait completes. */
-export type AsyncCapableFutexWait = (futexPtr: number, expected: number, timeoutPtr: number) => number | Promise<number>;
+/** Signature of the async-capable futex_wait impl.  Returns the errno
+ *  sync, or a Promise<errno> if the suspend completes asynchronously.
+ *  Writes the woke/timed-out bool to retPtr in both cases. */
+export type AsyncCapableFutexWait = (futexPtr: number, expected: number, timeoutPtr: number, retPtr: number) => number | Promise<number>;
 
 export interface YieldStrategy {
   /** Identifier for logging / diagnostic; matches the filename. */
