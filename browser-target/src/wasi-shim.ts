@@ -1612,10 +1612,26 @@ export function createWasiShim(ctx: ShimContext): {
   // JS-driven re-entry (depth==0): we MUST return sync.  No promising
   // frame on the call stack means JSPI rejects any Promise return
   // with "trying to suspend without WebAssembly.promising".  Fall
-  // through to futexWaitSyncImpl which blocks via Atomics.wait.
+  // through to plain Atomics.wait — which DOES block the JS thread for
+  // the duration of the wait (host microtasks can't drain).  See
+  // NOTES.md `jspi-re-entry-blocks-microtasks`.  In practice, almost
+  // all re-entry futex_wait calls are µs-scale mutex contention; the
+  // one historical long-wait case (libuv pool init) is pre-warmed via
+  // the constructor in deps/libuv-wasix/src/threadpool.c.  If a future
+  // workload hits a long re-entry wait, the warning log below leaves
+  // the offending call site as the last line in the trace — fix it
+  // *there*, don't clamp the wait at this layer (clamping would lie to
+  // the wasm about the wait completing, corrupting any mutex protected
+  // state).
+  let reentryWaitWarned = false;
   function futexWaitAsyncImpl(futexPtr: number, expected: number, timeoutPtr: number, retPtr: number): number | Promise<number> {
     const depthHolder = globalThis as { __edgePromisingDepth?: number };
     if ((depthHolder.__edgePromisingDepth ?? 0) <= 0) {
+      const requested = parseOptionTimeoutMs(timeoutPtr);
+      if ((requested === undefined || requested > 100) && !reentryWaitWarned) {
+        reentryWaitWarned = true; // once per shim — keep the log readable
+        ctx.postLog(`[wasi] futex_wait in JSPI re-entry, sync-blocking JS thread (timeout=${requested ?? "forever"}ms). If the worker hangs, this is the last line before it — fix the call site that drove this re-entry into a Suspending import.`, "warn");
+      }
       return futexWaitSyncImpl(futexPtr, expected, timeoutPtr, retPtr);
     }
     const i32View = new NativeInt32Array(ctx.memory.buffer, futexPtr & ~3, 1);

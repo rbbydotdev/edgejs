@@ -35,7 +35,10 @@ see [ARCHIVE.md](./ARCHIVE.md).
 | OPFS persistence | ❌ | in-memory only |
 | `worker_threads` | ❌ | not started |
 | `child_process` | ❌ | needs subprocess model |
-| Concurrent HTTP | ⚠️ | single-flight per-SW |
+| Concurrent HTTP | ✅ | ring of 16 SAB slots; SW Map keyed by reqId |
+| Async `fs.readFile` / `fs.writeFile` | ✅ | cross-thread SAB file table; pool workers share data region with main |
+| Cross-thread pipe wakeup (`uv_async_send`) | ✅ | SAB-backed pipes; pool→main wake unblocks main's `poll_oneoff` |
+| libuv thread pool init | ✅ | pre-warmed via `__attribute__((constructor))` in `libuv-wasix/src/threadpool.c` (runs inside `_start` promising frame) |
 
 **Boot cost**: ~130-200ms `_start` + ~50ms wasm compile (cached after first run).
 
@@ -55,8 +58,29 @@ the browser-target tree.
 
 ### Boot-blocking / correctness
 
-- `crude-circuit-breaker` — `CALL_LIMIT = 20000` in worker.ts. Real fix:
-  watchdog timer on progress, not call count.
+- `crude-circuit-breaker` — **PARTIALLY RESOLVED** (2026-05-22).
+  Replaced flat `CALL_LIMIT` with a same-symbol streak watchdog (200k
+  consecutive identical wasi imports → abort).  Healthy traffic
+  (varied wasi calls) doesn't trip; only genuine tight-loop spins do.
+  Underlying cause of the typical spin (libuv timer polling on
+  `clock_time_get`) is a separate investigation.
+- `jspi-re-entry-blocks-microtasks` — when a JS-driven microtask /
+  napi callback enters wasm and that wasm calls a Suspending import
+  (`futex_wait` / `poll_oneoff`), there is no promising frame on the
+  current call stack.  JSPI rejects Promise returns.  We fall back to
+  `Atomics.wait` sync, which blocks the worker's JS thread for the
+  duration (no host microtasks drain).  Almost all such waits are µs
+  mutex contention from libuv `uv__work_submit`; the one known
+  long-wait re-entry (libuv pool init) is pre-warmed via a constructor
+  so it runs inside the outer `_start` promising frame.  Warning log
+  fires on the first re-entry sync wait with timeout>100ms or
+  unbounded; if you see this and the worker hangs, **fix the call
+  site that drove the re-entry into a wait** (e.g. move into the
+  promising path via a constructor, or refactor to not wait in
+  re-entry).  Clamping the wait at the shim layer is unsafe — it
+  would lie to wasm about wait completion and corrupt mutex-
+  protected state.  Architectural alternative: `runtime-on-separate-
+  worker` (debt below).
 - `fake-fs-fallback` — `path_filestat_get` returns success for paths
   the FS doesn't recognize (kept to avoid breaking libc cwd probes).
 - `dynCall-before-table-ready` — `unofficial_napi_create_env` passes
@@ -100,14 +124,20 @@ the browser-target tree.
 ### Sockets / HTTP
 
 - `single-listener` — one TCP listener at a time
-- `single-flight` — one inflight HTTP request per Service Worker
+- ~~`single-flight`~~ — **RESOLVED** (2026-05-22).  Bridge SAB is a
+  ring of 16 atomic-claimable slots; the SW already keyed pending
+  requests by reqId.  Concurrent HTTP verified end-to-end.
 - `no-keep-alive` — `Connection: close` forced in request synthesizer
 - `no-chunked-encoding` — auto-flush requires `Content-Length`
 - `no-outbound` — `sock_connect` returns ENOSYS
 - `no-socketpair` — `child_process` etc. won't work
 - `no-sendfile` — `sock_send_file` returns ENOSYS
 - `sw-sab-relay` — workaround for Chrome SAB/postMessage→SW incompat
-- `no-blocking-pipe` — `fd_pipe` reader-before-writer returns EAGAIN
+- ~~`no-blocking-pipe`~~ — **RESOLVED** (2026-05-22).  Pipes are
+  SAB-backed cross-thread ring buffers (`wasi-shim/pipes-sab.ts`).
+  Pool worker `uv_async_send` writes the wake byte; main's
+  `poll_oneoff` races a `waitAsync` on the per-pipe wake counter
+  alongside the bridge wake.  Atomic head/tail; refcounted close.
 - `wake-slot-collisions` — 255 conn slots max
 - `fake-local-addr`, `fake-peer` — addr structs don't reflect real binding
 - `no-ipv6` — sock_bind parses IPv4 only
@@ -116,10 +146,24 @@ the browser-target tree.
 
 - `opfs-not-yet-persistent` — in-memory only; tab reload loses state
 - `opfs-flat-store` — readdir does prefix scan, no real dir structure
-- `sync-xhr-network-blocking` — bundled adapter blocks worker on cold-cache fetch
-- `no-write-support` — bundled adapter is read-only
+- `sync-xhr-network-blocking` — bundled adapter blocks worker on cold-cache fetch.
+  Mitigated for pool workers: their opens route through the SAB
+  snapshot (`wasi-shim/fs-snapshot-sab.ts`); only the *loader* (main
+  worker) hits the sync XHR, and pool reads are SAB-direct.
+- `no-write-support` — bundled adapter is read-only (the SAB snapshot
+  has its own in-memory writable layer; bundled files stay immutable).
 - `no-readdir` — bundled adapter has no listing endpoint
 - `naïve-stat-via-fetch` — stat via HEAD, no mtime/ctime
+- `sab-fs-snapshot-bounded` (2026-05-22) — SAB-backed fs snapshot has
+  fixed regions: 128 path slots, 64KB names, 256 fd slots, 24MB data.
+  Each writable file pre-allocates a 1MB buffer.  Heavy module loading
+  or many concurrent writable files can exhaust.  Bumping limits costs
+  SAB headroom; spill-to-disk needs OPFS persistence first.
+- `sab-fs-read-only-writes-not-persisted` (2026-05-22) — writable
+  files in the SAB snapshot are in-memory only.  `fs.writeFile` from
+  any worker is visible to subsequent reads from any worker via the
+  shared SAB, but contents are lost on tab reload.  Real persistence
+  needs the OPFS layer wired as a back-store for snapshot writes.
 
 ### napi / Buffer
 
@@ -131,6 +175,23 @@ the browser-target tree.
   public Buffer JS API.
 - Multiple `#!~debt` in `unofficial.ts` — most no-op stubs writing
   sensible defaults to out-params. Promote when a workload lights them up.
+
+### Architectural alternatives (not yet pursued)
+
+- `runtime-on-separate-worker` (2026-05-22) — Emscripten's
+  `PROXY_TO_PTHREAD` analog.  Today our "main worker" mixes two
+  concerns: hosting the wasm runtime, and owning the cross-worker
+  state (bridge SAB drain, FS snapshot loader, page postMessage
+  relay).  When a JSPI re-entry sync wait freezes the main worker,
+  everything stalls.  Splitting into a *relay worker* (owns bridge
+  SAB + FS loader + page comm) and a *runtime worker* (hosts the
+  wasm, JSPI runs there) would CONTAIN the freeze: only wasm
+  progress stalls; bridge queues new requests, page UI keeps moving,
+  pool workers keep operating.  Note: this is a containment
+  improvement, not a fix for the freeze itself — the wasm activation
+  in re-entry still blocks for the duration of its wait.  Matches
+  Emscripten's documented production pattern (see NOTES on
+  jspi-re-entry-blocks-microtasks above).
 
 ### Production gaps (post-Phase-B microtask rebuild)
 
