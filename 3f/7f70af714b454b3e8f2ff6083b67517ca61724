@@ -1,0 +1,25 @@
+browser-target/src/worker.ts
+  s_3c284a8c3d32d2::t_d3764c7239b59b 404-411,418
+browser-target/src/wasi-shim.ts
+  s_3c284a8c3d32d2::t_c504f9d962b3d5 897-910
+  s_3c284a8c3d32d2::t_86362dff2fe4b7 1390-1395,1397-1404
+browser-target/src/napi-host/index.ts
+  s_3c284a8c3d32d2::t_11fc8be88b6a37 574-575,577-580,582-587,593,605-606,611
+  s_3c284a8c3d32d2::t_23b95f579c8d97 601-604,607
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "3f7f70af714b454b3e8f2ff6083b67517ca61724",
+  "prompts": {},
+  "sessions": {
+    "s_3c284a8c3d32d2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "aba00247-eb0d-4299-a1aa-1451ccea7316",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
