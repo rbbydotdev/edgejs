@@ -424,7 +424,13 @@ async function runEdgeWithEmnapi() {
   //
   // 200k threshold gives ~ms-scale slack on a 200ns/import budget;
   // misfires only on genuine spins.
-  const SPIN_STREAK_LIMIT = 200_000;
+  // Configurable spin threshold.  Page passes `?spinLimit=N` via the
+  // start message; 0 disables entirely.  Default 2M (~tens of seconds
+  // of real spin) is conservative — high enough that healthy traffic
+  // doesn't trip even under load (typical bench saw 145+ dispatched
+  // before the underlying clock_time_get spin pinned the counter),
+  // low enough that genuinely stuck wasm aborts in a useful window.
+  const SPIN_STREAK_LIMIT = spinStreakLimit;
   let lastSymKey = "";
   let consecutive = 0;
   const wasmImports = buildImports(memory, overrides, (ns, sym, args, ret, stub) => {
@@ -435,7 +441,7 @@ async function runEdgeWithEmnapi() {
     trace.record(ns, sym, args, ret, stub, mem ?? undefined);
     const key = ns + "." + sym;
     if (key === lastSymKey) {
-      if (++consecutive >= SPIN_STREAK_LIMIT) {
+      if (SPIN_STREAK_LIMIT > 0 && ++consecutive >= SPIN_STREAK_LIMIT) {
         throw new Error(`spin detected: ${SPIN_STREAK_LIMIT} consecutive ${key} calls — wasm is making no progress`);
       }
     } else {
@@ -625,6 +631,11 @@ let memSnapshotSymbols: Set<string> = new Set();
 let runDiagnosticsFirst = false;
 let watchByteLength = false;
 let userScript: string | null = null;
+// Spin watchdog threshold — page can override via ?spinLimit=N (0
+// disables).  Default 2M means "if 2 million consecutive identical
+// wasi imports fire, abort."  Real workloads on healthy traffic
+// shouldn't get anywhere near this; only genuine tight loops will.
+let spinStreakLimit = 2_000_000;
 
 // HTTP bridge: requests come in via a SharedArrayBuffer the SW writes
 // directly into.  This is the only way to get data through to the worker
@@ -748,6 +759,9 @@ self.onmessage = (e) => {
     }
     if (typeof e.data.userScript === "string" && e.data.userScript.length > 0) {
       userScript = e.data.userScript;
+    }
+    if (typeof e.data.spinLimit === "number" && e.data.spinLimit >= 0) {
+      spinStreakLimit = e.data.spinLimit;
     }
     boot();
   }

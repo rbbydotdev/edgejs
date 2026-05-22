@@ -275,4 +275,8 @@ async function setupBridge() {
 setupBridge();
 // Defer the "start" message until the runtime worker exists — the
 // bridge worker spawns it after publishing the FS snapshot SAB.
-postToRuntime({ kind: "start", memSnapshotSymbols, diagnoseSabAliasing, watchByteLength, userScript });
+// ?spinLimit=N (0 disables) — override the wasi-call spin watchdog,
+// useful for benchmarks or to chase a real spin without abort.
+const spinLimitParam = params.get("spinLimit");
+const spinLimit = spinLimitParam !== null ? Math.max(0, Number(spinLimitParam) | 0) : undefined;
+postToRuntime({ kind: "start", memSnapshotSymbols, diagnoseSabAliasing, watchByteLength, userScript, spinLimit });
