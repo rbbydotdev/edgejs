@@ -228,7 +228,7 @@ async function runEdgeWithEmnapi() {
     args: ["edgejs", "-e", userScriptPrelude + (userScript ?? `
       const http = require('http');
       const fs = require('fs');
-      http.createServer((req, res) => {
+      const server = http.createServer((req, res) => {
         if (req.url === '/fs-cb') {
           fs.readFile('/node/deps/undici/src/package.json', (err, buf) => {
             if (err) { res.statusCode = 500; res.end('fs.readFile-cb err: ' + err.message + '\\n'); return; }
@@ -279,7 +279,14 @@ async function runEdgeWithEmnapi() {
         } else {
           res.end('hi from edge\\n');
         }
-      }).listen(3000, () => console.log('listening'));
+      });
+      // Disable keep-alive so the post-response timer doesn't pin
+      // the libuv loop between sequential requests.  Was holding ~1s
+      // gap between /_edge/fs requests because Node was waiting for
+      // either a follow-up request or keepAliveTimeout expiry.
+      server.keepAliveTimeout = 0;
+      server.headersTimeout = 0;
+      server.listen(3000, () => console.log('listening'));
     `)],
     // Match native napi_wasmer baseline — wasmer-wasix passes no env by
     // default and edge boots fine.  Adding env vars made wasi-libc trigger
@@ -308,7 +315,7 @@ async function runEdgeWithEmnapi() {
     // Copy to a plain ArrayBuffer so postMessage doesn't drag in the SAB.
     const bodyCopy = new Uint8Array(res.body.length);
     bodyCopy.set(res.body);
-    post("log", { text: `[worker] dispatching response reqId=${res.reqId} status=${res.status} bytes=${bodyCopy.length}`, level: "info" });
+    post("log", { text: `[worker] dispatching response reqId=${res.reqId} status=${res.status} bytes=${bodyCopy.length} t=${nowMs().toFixed(2)}`, level: "info" });
     self.postMessage({
       kind: "page-edge-res",
       reqId: res.reqId,
@@ -757,6 +764,7 @@ function drainBridgeSab(): BridgeRequest[] {
     const jsonBytes = new Uint8Array(len);
     jsonBytes.set(bridgeU8.subarray(payloadStart, payloadStart + len));
     Atomics.store(bridgeI32, statusIdx, BRIDGE_SLOT_STATUS_EMPTY);
+    post("log", { text: `[worker] drained req reqId=${reqId} t=${nowMs().toFixed(2)}`, level: "info" });
     let parsed: { method: string; path: string; headers: Record<string, string>; bodyB64?: string };
     try {
       parsed = JSON.parse(bridgeDecoder.decode(jsonBytes));
