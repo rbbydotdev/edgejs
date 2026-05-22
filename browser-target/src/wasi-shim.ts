@@ -888,12 +888,19 @@ export function createWasiShim(ctx: ShimContext): {
   // the ACCEPT slot's expected/actual mismatch as the wake signal:
   // pushRequest() does Atomics.add+notify on that slot, which causes
   // waitAsync's value-check to differ and the Promise to resolve.
-  async function pollOneoffAsyncImpl(
+  function pollOneoffAsyncImpl(
     inPtr: number,
     outPtr: number,
     nsubs: number,
     neventsPtr: number,
-  ): Promise<number> {
+  ): number | Promise<number> {
+    // JSPI re-entry guard: if called from JS-driven wasm entry (e.g.
+    // emnapi's setImmediate-fired async work), we can't suspend.
+    // Fall back to sync path which blocks the JS thread briefly.
+    const flagHolder = globalThis as { __edgeInPromisingFrame?: boolean };
+    if (flagHolder.__edgeInPromisingFrame === false) {
+      return pollOneoffSyncImpl(inPtr, outPtr, nsubs, neventsPtr);
+    }
     const dv = view(ctx.memory);
     const r = pollOneoffWalkSubs(dv, inPtr, outPtr, nsubs);
     let nWritten = r.nWritten;
@@ -933,7 +940,16 @@ export function createWasiShim(ctx: ShimContext): {
     }).waitAsync;
     if (waitAsync) {
       const result = waitAsync(wake, idx, seen, ms);
-      if (result.async) await result.value;
+      if (result.async) {
+        // Suspend: wait completes, then finish event emission.
+        return (async () => {
+          await result.value;
+          if (wakePoll) wakePoll();
+          const finalN = pollOneoffEmitPostWaitEvents(dv, inPtr, outPtr, nWritten, nsubs);
+          dv.setUint32(neventsPtr, finalN, true);
+          return ERRNO_SUCCESS;
+        })();
+      }
     } else {
       NativeAtomics.wait(wake, idx, seen, ms);
     }
@@ -1358,7 +1374,23 @@ export function createWasiShim(ctx: ShimContext): {
     return 0;
   }
 
-  async function futexWaitAsyncImpl(futexPtr: number, expected: number, timeoutPtr: number, retPtr: number): Promise<number> {
+  // Returns either a synchronous i32 (no suspend) OR a Promise<i32>
+  // (engine suspends wasm).  JSPI-Suspending wrap interprets the
+  // return type: i32 → continue, Promise → suspend.
+  //
+  // JSPI rejects suspension when the call stack has JS frames between
+  // the wasm and the `WebAssembly.promising` entry.  emnapi's JS-driven
+  // dispatch (napi_create_function callbacks, setImmediate-fired async
+  // work) re-enters wasm without promising wrap.  Our wrappedTable in
+  // napi-host flips `__edgeInPromisingFrame` to false for those calls.
+  // When false, we return sync (blocking briefly) instead of Promise
+  // (avoiding SuspendError).
+  function futexWaitAsyncImpl(futexPtr: number, expected: number, timeoutPtr: number, retPtr: number): number | Promise<number> {
+    const flagHolder = globalThis as { __edgeInPromisingFrame?: boolean };
+    if (flagHolder.__edgeInPromisingFrame === false) {
+      // JS-driven re-entry — must not suspend.  Fall back to sync.
+      return futexWaitSyncImpl(futexPtr, expected, timeoutPtr, retPtr);
+    }
     const i32View = new NativeInt32Array(ctx.memory.buffer, futexPtr & ~3, 1);
     const waitAsync = (NativeAtomics as unknown as {
       waitAsync?: (i32: Int32Array, idx: number, val: number, timeout?: number) =>
@@ -1371,17 +1403,19 @@ export function createWasiShim(ctx: ShimContext): {
     const r = timeoutMs === undefined
       ? waitAsync(i32View, 0, expected)
       : waitAsync(i32View, 0, expected, timeoutMs);
-    let woke = true;
-    if (r.async) {
+    if (!r.async) {
+      // waitAsync resolved sync ("not-equal" — value didn't match
+      // expected at call time).  Return sync.
+      const woke = r.value === "ok";
+      if (retPtr !== 0) view(ctx.memory).setUint8(retPtr, woke ? 1 : 0);
+      return 0;
+    }
+    // Async path: return Promise that the engine suspends on.
+    return (async () => {
       const settled = await r.value;
-      woke = settled === "ok";
-    } else {
-      woke = r.value === "ok";
-    }
-    if (retPtr !== 0) {
-      view(ctx.memory).setUint8(retPtr, woke ? 1 : 0);
-    }
-    return 0;
+      if (retPtr !== 0) view(ctx.memory).setUint8(retPtr, settled === "ok" ? 1 : 0);
+      return 0;
+    })();
   }
 
   // ---- wasix_32v1 ----

@@ -570,11 +570,57 @@ export function createNapiHost(opts: NapiHostOptions): NapiHost {
         wasmMallocImpl = malloc as (n: number) => number;
       }
       const proxied = createInstanceProxy(realInstance);
+
+      // JSPI re-entry tracking.  emnapi's setImmediate-driven async
+      // work + napi_create_function callbacks call wasm via
+      // `wasmTable.get(cb)(args)`.  Those are JS-to-wasm re-entries
+      // that are NOT promising-wrapped.  If the wasm in there tries
+      // to call a Suspending import, JSPI rejects with
+      // "trying to suspend JS frames" because there are JS frames
+      // between the wasm and the promising entry.
+      //
+      // We wrap the table so JS dispatch flips a global flag.  Our
+      // Suspending impls (wasi-shim/yield-jspi via wasi-shim.ts)
+      // check the flag: when set (we're inside a JS-driven re-entry),
+      // they return sync values (blocking the JS thread for that
+      // duration) instead of Promises.  When unset (we're in the
+      // main promising-_start path), they return Promises and JSPI
+      // suspends normally.
+      //
+      // wasm-internal call_indirect does NOT go through this Proxy's
+      // get method — it uses the table's raw funcref entries.  Only
+      // JS callers see the wrapping.
+      const realTable = realInstance.exports.__indirect_function_table as WebAssembly.Table;
+      let _wrapCalls = 0;
+      (globalThis as Record<string, unknown>).__edgeTableWrapCount = () => _wrapCalls;
+      const wrappedTable = new Proxy(realTable, {
+        get(target, prop, receiver) {
+          if (prop === "get") {
+            return (idx: number): Function | null => {
+              const fn = target.get(idx);
+              if (typeof fn !== "function") return fn;
+              return function jsReentryWrap(this: unknown, ...args: unknown[]): unknown {
+                _wrapCalls++;
+                const flagHolder = globalThis as { __edgeInPromisingFrame?: boolean };
+                const prev = flagHolder.__edgeInPromisingFrame;
+                flagHolder.__edgeInPromisingFrame = false;
+                try {
+                  return (fn as Function).apply(this, args);
+                } finally {
+                  flagHolder.__edgeInPromisingFrame = prev;
+                }
+              };
+            };
+          }
+          return Reflect.get(target, prop, receiver);
+        },
+      });
+
       napiModule.init({
         instance: proxied,
         module: wasmModule,
         memory: opts.memory,
-        table: realInstance.exports.__indirect_function_table as WebAssembly.Table,
+        table: wrappedTable,
       });
     },
   };

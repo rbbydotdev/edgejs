@@ -401,10 +401,20 @@ async function runEdgeWithEmnapi() {
   let exitCode: number | null = null;
   let threwMsg: string | null = null;
   const tStart = nowMs();
+  // Set the JSPI-re-entry flag.  The promising-wrapped _start runs the
+  // wasm event loop; Suspending imports inside CAN suspend (flag !==
+  // false).  When emnapi (or anyone else) dispatches a wasm call from
+  // JS via wasmTable.get, the napi-host's wrappedTable flips this to
+  // false for that inner call so the Suspending impls fall back to
+  // sync (avoiding "trying to suspend JS frames").
+  (globalThis as { __edgeInPromisingFrame?: boolean }).__edgeInPromisingFrame = true;
   try { await startFn(); }
   catch (e) {
     if (e instanceof ExitSignal) exitCode = e.code;
     else threwMsg = (e as Error).stack ?? String(e);
+  }
+  finally {
+    (globalThis as { __edgeInPromisingFrame?: boolean }).__edgeInPromisingFrame = undefined;
   }
   const runMs = nowMs() - tStart;
 
