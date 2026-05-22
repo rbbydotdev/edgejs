@@ -14,8 +14,9 @@ import { Trace, toUnifiedJsonl } from "./trace";
 import { createNapiHost } from "./napi-host";
 import { composePolicies, defaultBrowserPolicies, compressionViaCompressionStream } from "./policies";
 import { createBundledFs } from "./host/fs/adapters/bundled";
-import { createOpfsFs } from "./host/fs/adapters/opfs";
-import { layered } from "./host/fs/adapters/layered";
+// opfs + layered adapters now live on the bridge worker.  Runtime
+// worker has only a minimal bundled-fs for any wasi-shim paths that
+// don't go through the SAB snapshot (legacy / debug paths).
 import { DEFAULT_MEM_OPTIONS, instrumentNamespace, pendingMem } from "./mem-snapshot";
 import { runSabViewAliasingDiagnostic, formatReport as formatSabReport } from "./diagnostics/sab-view-aliasing";
 import { createByteLengthWatcher, formatEvents as formatBlEvents } from "./diagnostics/byteLength-watcher";
@@ -30,6 +31,19 @@ const nowMs = performance.now.bind(performance);
 function post(kind: string, payload: Record<string, unknown> = {}) {
   self.postMessage({ kind, ...payload });
 }
+
+// FS snapshot SAB is sent to us by main.ts BEFORE the "start" message
+// (main.ts spawns bridge worker first, waits for its `bridge-ready`,
+// then spawns us and immediately hands us the SAB).  Bridge worker
+// keeps draining the snapshot's request ring while our wasm runs —
+// this is the core of the runtime-on-separate-worker split.
+let fsSnapshotSab: SharedArrayBuffer | null = null;
+self.addEventListener("message", (e: MessageEvent) => {
+  const data = e.data as { kind?: string; sab?: SharedArrayBuffer } | null;
+  if (data?.kind === "edge-fs-snapshot-sab" && data.sab) {
+    fsSnapshotSab = data.sab;
+  }
+});
 
 async function runHelloSmokeTest() {
   post("section", { text: "── hello.wasm (smoke test) ──" });
@@ -113,19 +127,14 @@ async function runEdgeWithEmnapi() {
   post("log", { text: `policies applied: ${appliedPolicies.join(", ")}`, level: "info" });
   post("log", { text: `napi-host: ${Object.keys(napi.imports.napi).length} napi entries seeded`, level: "info" });
 
-  // FileSystem facade — layered combinator: reads check bundled first
-  // (covers /node-lib/** + /node/deps/**), fall through to opfs for any
-  // other path.  Writes go straight to opfs (bundled returns ROFS, layered
-  // skips it).  The opfs adapter is currently in-memory only (see
-  // #!~debt opfs-not-yet-persistent inside opfs.ts); persistence to real
-  // OPFS is deferred to chunk B-2.
-  const bundledFs = createBundledFs({
+  // FileSystem facade.  Runtime worker only keeps a minimal bundled-fs
+  // for legacy paths (mostly /dev/* probes during boot).  Real file I/O
+  // routes through the SAB-backed snapshot — pool workers (and runtime
+  // itself) open via the snapshot's reader path; the bridge worker
+  // owns the layered (bundled + opfs) adapter and drives the loader.
+  const fs = createBundledFs({
     log: (line) => post("log", { text: line, level: "info" }),
   });
-  const opfsFs = await createOpfsFs({
-    log: (line) => post("log", { text: line, level: "info" }),
-  });
-  const fs = layered(bundledFs, opfsFs);
 
   // Pick yield strategy: JSPI if WebAssembly.Suspending is available
   // (Chrome 137+, Node 24+ with flags), else sync (Atomics.wait).
@@ -145,79 +154,22 @@ async function runEdgeWithEmnapi() {
   // actually reaches main.  See `wasi-shim/pipes-sab.ts`.
   const pipeRegistry = PipeRegistry.create();
 
-  // Cross-thread file snapshot — SAB-backed read-only file table.  Pool
-  // workers opening bundled files (Node module loading via libuv pool)
-  // route through this; main fetches via the layered FS adapter on
-  // first miss, populates the snapshot, every subsequent open is
-  // wire-speed.  See `wasi-shim/fs-snapshot-sab.ts`.
-  const fsSnapshot = FsSnapshotRegistry.create();
-
-  // Main-side handler for cold-miss load requests from pool workers.
-  // Event-driven: Atomics.waitAsync on the snapshot's ring wake
-  // counter resolves whenever a pool worker enqueues.  Wakes drive
-  // immediate drain — no polling floor.  Per request: read the path
-  // from the ring, fetch via the layered FS adapter (bundled-fs sync
-  // XHR or opfs), publish bytes into the snapshot, mark consumed.
+  // Cross-thread file snapshot — SAB-backed read-only file table
+  // shared with the bridge worker (loader) and pool workers (readers).
+  // Runtime worker attaches as a reader only — it does NOT run the
+  // drain loop (would deadlock its own wasm on Atomics.wait if a
+  // re-entry triggered a cold-miss).  Bridge worker drives the
+  // loader; see bridge-worker.ts.
   //
-  // The waitAsync resolves regardless of whether main's wasm is
-  // currently JSPI-suspended; both states leave JS macrotasks free
-  // to run.
-  function drainOnce(): void {
-    let req;
-    while ((req = fsSnapshot.drainNext()) !== null) {
-      const res = fs.open(req.path, {});
-      if (!res.ok) {
-        fsSnapshot.publishError(req.slotIdx, res.errno);
-        fsSnapshot.markConsumed(req.ringIdx);
-        continue;
-      }
-      const handle = res.value;
-      const statRes = fs.fstat(handle);
-      const size = statRes.ok ? statRes.value.size : 1 << 20;
-      const buf = new Uint8Array(size);
-      let off = 0;
-      while (off < buf.length) {
-        const slice = buf.subarray(off);
-        const r = fs.read(handle, slice);
-        if (!r.ok) {
-          fsSnapshot.publishError(req.slotIdx, r.errno);
-          fs.close(handle);
-          fsSnapshot.markConsumed(req.ringIdx);
-          off = -1;
-          break;
-        }
-        if (r.value === 0) break;
-        off += r.value;
-      }
-      if (off < 0) continue;
-      fs.close(handle);
-      fsSnapshot.publishLoaded(req.path, buf.subarray(0, off), req.slotIdx);
-      fsSnapshot.markConsumed(req.ringIdx);
-      post("log", { text: `[fs-snapshot] loaded ${req.path} (${off}B) slot=${req.slotIdx}`, level: "info" });
-    }
+  // The SAB was created by the bridge worker and forwarded to us via
+  // main.ts ("edge-fs-snapshot-sab" message).  Must be present before
+  // we hit this point — main.ts spawns bridge first and waits for its
+  // ready signal.
+  if (!fsSnapshotSab) {
+    post("log", { text: "[runtime] fs snapshot SAB not received from bridge worker", level: "err" });
+    return;
   }
-  (async function ringDrainLoop() {
-    // First sweep before any wait — covers the case where a pool
-    // worker enqueued before main got here.
-    drainOnce();
-    while (true) {
-      const h = fsSnapshot.ringWakeHandle();
-      const waitAsync = (Atomics as unknown as {
-        waitAsync?: (i32: Int32Array, idx: number, val: number) =>
-          { async: boolean; value: Promise<string> | string };
-      }).waitAsync;
-      if (!waitAsync) {
-        // Engines without waitAsync (very old) fall back to a sleep
-        // poll loop so we don't busy-spin.  Modern Chrome/Node have it.
-        await new Promise((r) => setTimeout(r, 5));
-        drainOnce();
-        continue;
-      }
-      const result = waitAsync(h.i32, h.idx, h.seen);
-      if (result.async) await result.value;
-      drainOnce();
-    }
-  })();
+  const fsSnapshot = FsSnapshotRegistry.attach(fsSnapshotSab);
 
   // Diagnostic: dump main-side pipe activity periodically while we're
   // bringing this up.  Pool workers post their own stats via
@@ -240,7 +192,12 @@ async function runEdgeWithEmnapi() {
     yieldStrategy,
     pipeRegistry,
     fsSnapshot,
-    fsSnapshotRole: "loader",
+    // Runtime worker is a *reader* of the snapshot.  Bridge worker
+    // owns the loader role; runtime's own opens that miss the cache
+    // will Atomics.wait on the slot status — that's safe because the
+    // notify comes from bridge worker (a different thread), so we
+    // don't deadlock on our own loop.
+    fsSnapshotRole: "reader",
     // Small HTTP server: opens a TCP listener on :3000, replies to any
     // request with "hi from edge\n".  The path/port are not used for
     // routing — the SW intercepts /_edge/* and pushes any request onto

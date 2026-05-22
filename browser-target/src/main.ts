@@ -33,7 +33,51 @@ if (!crossOriginIsolated) {
   append("WARNING: crossOriginIsolated=false. Shared memory may fail.", "warn");
 }
 
-const worker = new Worker(new URL("./worker.ts", import.meta.url), { type: "module" });
+// Bridge worker — owns the layered FS adapter and the FS snapshot
+// loader.  Spawned first so it can publish its SAB before the runtime
+// worker tries to attach.  See bridge-worker.ts for rationale.
+const bridgeWorker = new Worker(new URL("./bridge-worker.ts", import.meta.url), { type: "module" });
+let fsSnapshotSab: SharedArrayBuffer | null = null;
+
+// Runtime worker — hosts the wasm runtime + JSPI.  Spawned after the
+// bridge worker publishes its SAB so we can hand it through on spawn.
+let worker: Worker | null = null;
+const pendingMessagesForRuntime: unknown[] = [];
+function postToRuntime(msg: unknown, transfer?: Transferable[]) {
+  if (worker) {
+    if (transfer && transfer.length > 0) worker.postMessage(msg, transfer);
+    else worker.postMessage(msg);
+  } else {
+    pendingMessagesForRuntime.push(msg);
+  }
+}
+
+bridgeWorker.onmessage = (e) => {
+  const { kind } = e.data ?? {};
+  if (kind === "log") {
+    append(e.data.text, e.data.level ?? "info");
+  } else if (kind === "bridge-ready") {
+    fsSnapshotSab = e.data.fsSnapshotSab as SharedArrayBuffer;
+    append("bridge worker ready; spawning runtime worker", "info");
+    spawnRuntimeWorker();
+  }
+};
+
+function spawnRuntimeWorker() {
+  worker = new Worker(new URL("./worker.ts", import.meta.url), { type: "module" });
+  // Hand the FS snapshot SAB to runtime before any other message.
+  worker.postMessage({ kind: "edge-fs-snapshot-sab", sab: fsSnapshotSab });
+  worker.onmessage = onWorkerMessage;
+  worker.onerror = (e) => {
+    append(`WORKER ERROR: ${e.message} (${e.filename}:${e.lineno})`, "err");
+    statusEl.textContent = "worker crashed";
+  };
+  while (pendingMessagesForRuntime.length > 0) {
+    const msg = pendingMessagesForRuntime.shift();
+    if (msg !== undefined) worker.postMessage(msg);
+  }
+}
+
 // Holds the active SW once setupBridge resolves.  Used to forward edge
 // responses (edge-res) back via sw.postMessage so the SW can resolve
 // the pending fetch.
@@ -60,7 +104,7 @@ function bridgeSlotByteOff(slot: number, byteOff: number): number {
   return BRIDGE_SLOTS_OFFSET + slot * BRIDGE_SLOT_SIZE + byteOff;
 }
 
-worker.onmessage = (e) => {
+function onWorkerMessage(e: MessageEvent) {
   const { kind } = e.data;
   if (kind === "log") {
     append(e.data.text, e.data.level ?? "info");
@@ -143,10 +187,7 @@ function dispatchEdgeReq(reqId: number, method: string, path: string, headers: R
   Atomics.add(wakeI32, 0, 1);
   Atomics.notify(wakeI32, 0);
 }
-worker.onerror = (e) => {
-  append(`WORKER ERROR: ${e.message} (${e.filename}:${e.lineno})`, "err");
-  statusEl.textContent = "worker crashed";
-};
+// (worker.onerror is set inside spawnRuntimeWorker so we don't deref a null worker)
 
 function installDownload(payload: string, format: "json" | "jsonl") {
   const mime = format === "json" ? "application/json" : "application/x-ndjson";
@@ -232,4 +273,6 @@ async function setupBridge() {
 }
 
 setupBridge();
-worker.postMessage({ kind: "start", memSnapshotSymbols, diagnoseSabAliasing, watchByteLength, userScript });
+// Defer the "start" message until the runtime worker exists — the
+// bridge worker spawns it after publishing the FS snapshot SAB.
+postToRuntime({ kind: "start", memSnapshotSymbols, diagnoseSabAliasing, watchByteLength, userScript });
