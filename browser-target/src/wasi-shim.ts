@@ -1333,16 +1333,25 @@ export function createWasiShim(ctx: ShimContext): {
   // Earlier 3-arg shape was wrong — wasi-libc reads garbage from retptr0
   // and may abort.
 
+  // Parse a WASIX `__wasi_option_timestamp_t*` (16-byte tagged union).
+  // Layout: u8 tag at offset 0 (0=None, 1=Some), u64 timestamp at
+  // offset 8 (aligned).  Returns the timeout in MS, or `undefined`
+  // for "wait forever" (null pointer or None variant).
+  function parseOptionTimeoutMs(timeoutPtr: number): number | undefined {
+    if (timeoutPtr === 0) return undefined;
+    const dv = view(ctx.memory);
+    const tag = dv.getUint8(timeoutPtr);
+    if (tag === 0) return undefined; // None = wait forever
+    const ns = dv.getBigUint64(timeoutPtr + 8, true);
+    return Math.max(0, Number(ns / 1_000_000n));
+  }
+
   function futexWaitSyncImpl(futexPtr: number, expected: number, timeoutPtr: number, retPtr: number): number {
     const i32View = new NativeInt32Array(ctx.memory.buffer, futexPtr & ~3, 1);
-    let result: "ok" | "timed-out" | "not-equal";
-    if (timeoutPtr === 0) {
-      result = NativeAtomics.wait(i32View, 0, expected);
-    } else {
-      const dv = view(ctx.memory);
-      const ns = dv.getBigUint64(timeoutPtr, true);
-      result = NativeAtomics.wait(i32View, 0, expected, Math.max(0, Number(ns / 1_000_000n)));
-    }
+    const timeoutMs = parseOptionTimeoutMs(timeoutPtr);
+    const result = timeoutMs === undefined
+      ? NativeAtomics.wait(i32View, 0, expected)
+      : NativeAtomics.wait(i32View, 0, expected, timeoutMs);
     if (retPtr !== 0) {
       view(ctx.memory).setUint8(retPtr, result === "ok" ? 1 : 0);
     }
@@ -1358,20 +1367,15 @@ export function createWasiShim(ctx: ShimContext): {
     if (!waitAsync) {
       return futexWaitSyncImpl(futexPtr, expected, timeoutPtr, retPtr);
     }
-    let r: { async: boolean; value: Promise<string> | string };
-    if (timeoutPtr === 0) {
-      r = waitAsync(i32View, 0, expected);
-    } else {
-      const dv = view(ctx.memory);
-      const ns = dv.getBigUint64(timeoutPtr, true);
-      r = waitAsync(i32View, 0, expected, Math.max(0, Number(ns / 1_000_000n)));
-    }
+    const timeoutMs = parseOptionTimeoutMs(timeoutPtr);
+    const r = timeoutMs === undefined
+      ? waitAsync(i32View, 0, expected)
+      : waitAsync(i32View, 0, expected, timeoutMs);
     let woke = true;
     if (r.async) {
       const settled = await r.value;
       woke = settled === "ok";
     } else {
-      // Sync return — r.value is the result string.
       woke = r.value === "ok";
     }
     if (retPtr !== 0) {
