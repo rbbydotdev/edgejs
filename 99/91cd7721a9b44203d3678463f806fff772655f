@@ -1,0 +1,24 @@
+browser-target/src/worker.ts
+  s_3c284a8c3d32d2::t_dc98f5a5a04db1 427-433
+  s_3c284a8c3d32d2::t_e226bf465027b1 444
+  s_3c284a8c3d32d2::t_992a5287b039ae 634-638
+  s_3c284a8c3d32d2::t_ca70a502a1270d 763-765
+browser-target/src/main.ts
+  s_3c284a8c3d32d2::t_471a30ca05b4d6 278-282
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "9991cd7721a9b44203d3678463f806fff772655f",
+  "prompts": {},
+  "sessions": {
+    "s_3c284a8c3d32d2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "aba00247-eb0d-4299-a1aa-1451ccea7316",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
