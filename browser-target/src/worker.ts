@@ -5,6 +5,8 @@
 
 import { buildImports } from "./imports-generated";
 import { createWasiShim, ExitSignal, type BridgeRequest } from "./wasi-shim";
+import { syncYieldStrategy } from "./wasi-shim/yield-sync";
+import type { YieldStrategy } from "./wasi-shim/yield-strategy";
 import { Trace, toUnifiedJsonl } from "./trace";
 import { createNapiHost } from "./napi-host";
 import { composePolicies, defaultBrowserPolicies } from "./policies";
@@ -110,10 +112,26 @@ async function runEdgeWithEmnapi() {
   });
   const fs = layered(bundledFs, opfsFs);
 
+  // Pick yield strategy: JSPI if WebAssembly.Suspending is available
+  // (Chrome 137+, Node 24+ with flags), else sync (Atomics.wait).
+  let yieldStrategy: YieldStrategy = syncYieldStrategy;
+  let entryPointWrapper: (fn: Function) => Function = (fn) => fn;
+  const hasJspi = typeof (WebAssembly as unknown as { Suspending?: unknown }).Suspending === "function"
+    && typeof (WebAssembly as unknown as { promising?: unknown }).promising === "function";
+  if (hasJspi) {
+    const { jspiYieldStrategy } = await import("./wasi-shim/yield-jspi");
+    yieldStrategy = jspiYieldStrategy;
+    entryPointWrapper = (fn) => jspiYieldStrategy.wrapExport(fn);
+    post("log", { text: "[worker] JSPI available — using jspiYieldStrategy", level: "info" });
+  } else {
+    post("log", { text: "[worker] JSPI unavailable — falling back to syncYieldStrategy (Atomics.wait)", level: "info" });
+  }
+
   // Wasi shim — provides wasi_snapshot_preview1, wasix_32v1, wasi.thread-spawn
   // and a SocketBus we wire to the HTTP bridge port below.
   const shim = createWasiShim({
     memory,
+    yieldStrategy,
     // Small HTTP server: opens a TCP listener on :3000, replies to any
     // request with "hi from edge\n".  The path/port are not used for
     // routing — the SW intercepts /_edge/* and pushes any request onto
@@ -207,10 +225,25 @@ async function runEdgeWithEmnapi() {
     post("log", { text: `byteLength initial: ${memory.buffer.byteLength}`, level: "info" });
   }
 
+  // Edge's rebuilt wasm imports `unofficial_napi_*` under the
+  // `napi_extension_wasmer_v0` module (per their `__import_module__`
+  // attribute), not under `napi` like the older build did.  Our
+  // napi-host still registers ALL napi_* impls in `napi.imports.napi`,
+  // so split them across the two namespaces here.  Mirrors
+  // scripts/node-harness.mjs.
+  const napiAll = napi.imports.napi as Record<string, Function>;
+  const napiStandard: Record<string, Function> = {};
+  const napiExtension: Record<string, Function> = {};
+  for (const k of Object.keys(napiAll)) {
+    if (k.startsWith("unofficial_napi_")) napiExtension[k] = napiAll[k];
+    else napiStandard[k] = napiAll[k];
+  }
+
   // Compose: emnapi's napi/env/emnapi + our wasi/wasix.  Anything not covered
   // here falls through to the generated logging stubs.
   const overrides = {
-    napi: napi.imports.napi as Record<string, Function>,
+    napi: napiStandard,
+    napi_extension_wasmer_v0: napiExtension,
     env: napi.imports.env as Record<string, Function>,
     wasi_snapshot_preview1: wasiNs,
     wasix_32v1: wasixNs,
@@ -263,10 +296,16 @@ async function runEdgeWithEmnapi() {
   const start = (instance.exports as { _start?: () => void })._start;
   if (!start) { post("log", { text: "no _start export", level: "err" }); return; }
 
+  // Under JSPI, entryPointWrapper turns _start into a Promise-returning
+  // function so Suspending-wrapped imports (timer-only poll_oneoff) can
+  // suspend the wasm without blocking the worker's event loop —
+  // host microtasks (fetch, CompressionStream, etc.) drain during the
+  // suspend window.  Under sync strategy, identity (sync call as before).
+  const startFn = entryPointWrapper(start);
   let exitCode: number | null = null;
   let threwMsg: string | null = null;
   const tStart = nowMs();
-  try { start(); }
+  try { await startFn(); }
   catch (e) {
     if (e instanceof ExitSignal) exitCode = e.code;
     else threwMsg = (e as Error).stack ?? String(e);
