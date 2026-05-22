@@ -2762,3 +2762,61 @@ contract.
 
 *Snapshot taken 2026-05-21 at commit `c369dc61`.  When you resume,
 `git log c369dc61..HEAD` will show what's happened since.*
+
+
+---
+
+## Microtask drain investigation — 2026-05-22
+
+After Phase B (rebuilt edge.js with proper `unofficial_napi_*` wasm imports)
+shipped, two skipped regression tests remained:
+- `regression-lazy-load-from-microtask.js` — `console.log('a','b')` inside
+  a `Promise.then` produces no output (lazy-load returns non-function)
+- `regression-microtask-not-starved.js` — pending `setTimeout` blocks
+  `Promise.then` resolution past the timer fire
+
+We investigated whether the deeper fix could land via JS-side patches alone.
+Spun up an isolated subagent experiment in `/tmp/microtask-drain-experiment/`
+to test escape hatches outside of edge.js's wasm.
+
+**Finding**: edge.js's main loop (`src/edge_runtime.cc:1870`) calls
+`unofficial_napi_process_microtasks(env)` once per iteration expecting
+`Isolate::PerformMicrotaskCheckpoint()`.  V8's PerformCheckpoint early-returns
+when `MicrotasksScope::GetMicrotasksScopeDepth() > 0`.  In an isolated test
+(`exp8-harness-fix-pattern.mjs`), calling `instance.exports._start()` from a
+fresh `setImmediate` callback opens scope depth 0, and `process._tickCallback()`
+from inside a host import DOES drain promises queued mid-wasm.
+
+**But this doesn't translate to edge.js's full runtime.** Inside `_start`,
+edge runs its own libuv loop.  Timer / I/O callbacks fire INSIDE Node's
+outer InternalCallbackScope, not under their own fresh MicrotasksScope.
+Scope depth stays >= 1 throughout `_start`.  So even with the harness
+wrap + `_tickCallback` plumbed through, intra-loop drain doesn't happen.
+End-of-`_start` drain does — but by then the bug reproducer's timer
+callback has already run with stale state.
+
+**Prior hypothesis (wrong)**: emnapi creates a separate V8 Context per env,
+so Node's `_tickCallback` drains the wrong queue.  Untrue — emnapi's "Context"
+is a pure JS class, no `v8::Context`; queues are shared.
+
+**Real fix paths** (in NOTES.md item #1):
+1. Asyncify-at-the-syscall-boundary — wasm yields to event loop on
+   timer-only `poll_oneoff`, scope closes, drain runs, resume.
+2. C++ patch in edge.js to wrap napi_call_function in
+   `MicrotasksScope(kRunMicrotasks)` so each user-callback returns
+   trigger a drain.
+3. Full Asyncify on `_start`.
+4. Move wasm to worker_threads + main-thread microtask pump (architectural).
+
+**State as of this entry**:
+- `unofficial_napi_process_microtasks` calls `process._tickCallback` via
+  the `__edgeHostTickCallback` snapshot in `host/globals-shim.ts`.  This
+  is "correct intent": it composes properly once any of the above fixes
+  land.  Today it only drains at end-of-`_start`.
+- Harness left as direct `instance.exports._start()` call (the
+  setImmediate wrap doesn't help our deep loop and only complicates
+  reading the entry point).
+- Two regression tests stay `.skip` until rebuild lands.
+
+Files left from the investigation (delete when no longer interesting):
+`/tmp/microtask-drain-experiment/{tiny.wat,tiny.wasm,exp1..exp9*.mjs,.cjs}`.

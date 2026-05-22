@@ -49,6 +49,36 @@ if (hostCrypto && !g.__edgeHostNativeCrypto) {
   });
 }
 
+// Snapshot host Node's `process._tickCallback` BEFORE edge replaces the
+// `process` global with its own lib module.  Node's `_tickCallback` calls
+// `internalBinding('task_queue').runMicrotasks` which calls
+// `Isolate::PerformMicrotaskCheckpoint` — the only JS path to drain V8's
+// microtask queue.  Edge's main loop calls `unofficial_napi_process_microtasks`
+// (`src/edge_runtime.cc:1870`) once per loop turn and expects an actual
+// drain; our impl in `microtask-ops.ts` invokes this snapshot.
+//
+// CRITICAL: this only works when the wasm is entered from a "scope-depth-0"
+// JS context (libuv callback, setImmediate, fresh script).  If entered from
+// inside a microtask continuation (e.g. post-await in an ESM file),
+// PerformMicrotaskCheckpoint no-ops due to V8's scope guard.  The Node
+// harness re-enters `_start` from `setImmediate` to satisfy this.
+//
+// Browser-worker note: a DedicatedWorker has no Node `process._tickCallback`.
+// The snapshot will be null and the drain op falls back to noop — needs the
+// browser equivalent (likely Asyncify-style yields per NOTES.md #1).
+const hostProcess = (globalThis as { process?: { _tickCallback?: () => void } }).process;
+const hostTickCallback = (hostProcess && typeof hostProcess._tickCallback === "function")
+  ? hostProcess._tickCallback.bind(hostProcess)
+  : null;
+if (!g.__edgeHostTickCallback) {
+  Object.defineProperty(g, "__edgeHostTickCallback", {
+    value: hostTickCallback,
+    writable: false,
+    configurable: false,
+    enumerable: false,
+  });
+}
+
 // Tried intercepting globalThis.Buffer via a property descriptor to force
 // Buffer.poolSize = 0 (which makes every Buffer.allocUnsafe un-pooled, so
 // our wasm-backed napi_create_buffer/_arraybuffer overrides catch each

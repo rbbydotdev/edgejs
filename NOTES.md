@@ -171,32 +171,45 @@ Phase B (wasm imports for `unofficial_napi_*` ops) closed
 `lazy-load-from-microtask` or `microtasks-starved-by-pending-timer`
 (verified by `tests/js/regression-*.{js,skip}`).
 
-**The constraint, refined after deeper investigation**:
+**The constraint (browser target — the actual deployment shape)**:
 
-Edge's main loop (`src/edge_runtime.cc:1870`) calls
-`unofficial_napi_process_microtasks(env)` once per iteration, expecting
-V8 `Isolate::PerformMicrotaskCheckpoint()` semantics.  We need to honor
-that contract for promise-based host code (CompressionStream, fetch,
-postMessage) to make progress.  We can't:
+Wasm runs inside a `DedicatedWorker`.  That worker has its own event
+loop and microtask queue.  `queueMicrotask` / `Promise.then` queue
+onto it; microtasks drain at TASK BOUNDARIES (after an event handler
+returns, after a `postMessage` is processed, after a `setTimeout`
+fires).  No browser exposes `PerformMicrotaskCheckpoint` to JS.
 
-1. V8 microtask queues are PER-CONTEXT, not per-isolate.
-2. emnapi creates edge.js's env on its own V8 context, separate from
-   Node's default context.
-3. The only JS-visible drain primitive is Node's `process._tickCallback()`
-   (which internally calls `internalBinding('task_queue').runMicrotasks`
-   = `Isolate::PerformMicrotaskCheckpoint`).  That drains NODE's
-   context queue, NOT edge's.  Verified empirically: calling
-   `globalThis.__edgeHostTickCallback()` from inside edge's user code
-   does not surface user-queued `Promise.then` continuations.
-4. emnapi exposes no drain primitive for the env's queue (verified by
-   grep over `@emnapi/core` + `@emnapi/runtime`).
-5. Atomics.wait + tighter loops don't help — synchronous code between
-   wakeups doesn't yield to V8's per-context microtask checkpoint.
+Edge's `_start` runs as ONE long synchronous task on the worker
+thread.  It never returns to the worker's event loop, so no task
+boundary fires, so microtasks never drain.  When `poll_oneoff` blocks
+on `Atomics.wait`, the worker thread is stuck — microtasks couldn't
+drain even in principle until that wait releases.
 
-The architectural wall is V8's per-context queue isolation combined
-with no JS-accessible drain primitive for foreign contexts.  This
-gates EVERY host-async-then-callback policy (compression, future
-crypto-via-subtle, wasm-compile-via-host, etc.) — they all hit it.
+The fix shape: wasm has to YIELD back to the worker's event loop
+periodically.  Then the loop turns, microtasks drain (including
+any `await fetch(...)` / `await stream.read()` continuations), and
+we resume wasm.  That's exactly what Asyncify-at-the-syscall-boundary
+buys us.
+
+**Node-harness side-note** (for diagnostic context, not the fix):
+Edge's `src/edge_runtime.cc:1870` calls `unofficial_napi_process_microtasks(env)`
+once per loop iteration expecting `Isolate::PerformMicrotaskCheckpoint()`.
+We DO plumb Node's `process._tickCallback` through to honor that
+contract (snapshot in `host/globals-shim.ts`, invoked by
+`microtask-ops.ts`).  Isolated experiments
+(`/tmp/microtask-drain-experiment/exp8-harness-fix-pattern.mjs`)
+confirmed the drain primitive works when wasm is called from a
+scope-depth-0 entry (libuv callback, `setImmediate`).  BUT inside
+edge.js's full runtime, scope depth stays >= 1 throughout `_start`'s
+execution because the wasm doesn't exit + re-enter Node's scope
+between libuv-internal callbacks — so V8's
+`MicrotasksScope::PerformCheckpoint(>0 depth)` early-returns and
+the drain only fires at end-of-`_start`.  Calling _tickCallback is
+still correct intent (composes when a future fix gives us
+scope-depth-0 callback boundaries) but doesn't currently close the
+two regression-skipped bugs.  Doesn't translate to browser anyway.
+Solution has to come from the wasm-yields-to-event-loop side
+(Asyncify-at-the-syscall-boundary), not the host-side-drain side.
 
 **Real approaches:**
 

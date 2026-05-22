@@ -94,29 +94,46 @@ export function buildMicrotaskOpsImports(
     },
 
     /**
-     * "Drain pending microtasks now."  Edge's loop calls this once per
-     * iteration (`src/edge_runtime.cc:1870`) expecting V8's
-     * `Isolate::PerformMicrotaskCheckpoint()` semantics — actually drain
-     * the microtask queue so promise continuations make progress.
+     * "Drain pending microtasks now."  Edge's main loop calls this once
+     * per iteration (`src/edge_runtime.cc:1870`) expecting V8's
+     * `Isolate::PerformMicrotaskCheckpoint()` semantics.
      *
-     * #!~debt cant-drain-edge-context-microtasks: we cannot honor this
-     * contract.  V8 microtask queues are per-context; emnapi creates
-     * edge.js's env on its own V8 context (separate from Node's
-     * default context).  Calling Node's `process._tickCallback()` —
-     * the only JS-visible path to PerformMicrotaskCheckpoint — drains
-     * NODE's context queue, NOT edge's.  emnapi exposes no
-     * drain primitive for the env's queue (verified by grep over
-     * @emnapi/core + @emnapi/runtime).
+     * Implementation: invoke host Node's `process._tickCallback` which
+     * internally calls `internalBinding('task_queue').runMicrotasks` —
+     * the only JS-visible path to PerformMicrotaskCheckpoint.  The
+     * snapshot is captured by `host/globals-shim.ts` BEFORE edge
+     * replaces the `process` global.
      *
-     * Consequence: promises queued by edge's user code only resolve
-     * when control leaks back to Node's outer event loop — which
-     * happens only after `_start` returns, or via emnapi's internal
-     * MessageChannel-based scheduling (visible as multi-second delays
-     * in `policy-outbound-fetch-tunnel`).  Tracked in NOTES.md
-     * followup #1; needs novel solution (syscall-level Asyncify or
-     * full multi-threaded emnapi mode).
+     * #!~debt scope-depth-guard: V8's PerformMicrotaskCheckpoint
+     * early-returns when `GetMicrotasksScopeDepth() > 0`.  In the Node
+     * harness we end up at depth >= 1 throughout `_start` because Node's
+     * own `InternalCallbackScope` around our entry call opens one
+     * MicrotasksScope.  So this call DRAINS only the queue items
+     * pending at end-of-_start (when the outer scope closes), not
+     * intra-loop.  For full intra-loop drain we need either:
+     *  - edge.js's C++ to wrap napi_call_function calls in their own
+     *    `MicrotasksScope(kRunMicrotasks)` so each user-callback
+     *    return triggers a drain (wasm rebuild required), OR
+     *  - Asyncify-style yielding so edge's wasi syscalls return to
+     *    Node, scopes close, drain runs, then resume (rebuild + new
+     *    wasm machinery).
+     * See NOTES.md item #1 and ARCHIVE.md "microtask drain
+     * investigation 2026-05-22".
+     *
+     * Calling _tickCallback is still correct intent and harmless when
+     * the scope guard fires — it's a no-op then.  Composes properly
+     * once a rebuild lands.
+     *
+     * Browser-worker: the snapshot is null and this falls back to
+     * noop — the browser equivalent (likely Asyncify-style yields)
+     * is the same item #1.
      */
     unofficial_napi_process_microtasks(_env: number): number {
+      const tickCb = (globalThis as { __edgeHostTickCallback?: (() => void) | null }).__edgeHostTickCallback;
+      if (typeof tickCb === "function") {
+        try { tickCb(); }
+        catch { /* swallow: host-side tick errors must not break wasm */ }
+      }
       return NAPI_OK;
     },
 
