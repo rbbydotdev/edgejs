@@ -25,9 +25,11 @@ import {
 } from "./host/fs/types";
 import type { YieldStrategy } from "./wasi-shim/yield-strategy";
 import { syncYieldStrategy } from "./wasi-shim/yield-sync";
+import { PipeRegistry, isPipeFd, pipeFdSlot, pipeFdIsWrite, type PipePollHandle } from "./wasi-shim/pipes-sab";
 
 const ERRNO_SUCCESS = 0;
 const ERRNO_BADF = 8;
+const ERRNO_NOMEM = 48;
 const ERRNO_AGAIN = 6;
 const ERRNO_NOSYS = 52;
 
@@ -102,6 +104,13 @@ export interface ShimContext {
    *  on Node v24+ / Chrome 137+ to use engine-native suspension so host
    *  microtasks drain during waits.  See `wasi-shim/yield-strategy.ts`. */
   yieldStrategy?: YieldStrategy;
+  /** Cross-thread pipe registry.  Backed by a SAB so every worker (main +
+   *  libuv pool + child workers) sees the same pipe state.  Required for
+   *  uv_async_send (pool → main wakeup) and any future pipe-using libuv
+   *  feature (child_process stdin/stdout, process.send IPC, etc.).  Falls
+   *  back to per-worker local state when omitted — only enough to keep
+   *  the smoke test happy, real workloads will need it. */
+  pipeRegistry?: PipeRegistry;
 }
 
 /** Inbound HTTP request the bridge port wants edge to handle. */
@@ -205,6 +214,15 @@ export function createWasiShim(ctx: ShimContext): {
       flushBuf(stderrBuf, "warn");
       return data.length;
     }
+    if (isPipeFd(fd) && ctx.pipeRegistry) {
+      // Cross-thread pipe.  Any worker can write — bytes go into the SAB
+      // ring buffer and notify the reader's wake counter.
+      if (!pipeFdIsWrite(fd)) {
+        // Writing to a read end is undefined; libuv shouldn't do this.
+        return -1;
+      }
+      return ctx.pipeRegistry.write(pipeFdSlot(fd), data);
+    }
     // Socket fds buffer writes until close OR until the buffer holds a
     // complete HTTP response, whichever comes first.  Edge's HTTP server
     // doesn't call shutdown/close after writing the response — it expects
@@ -258,7 +276,12 @@ export function createWasiShim(ctx: ShimContext): {
   // returned by path_open/fd_pipe.  Anything else → BADF, so the wasm
   // doesn't iterate forever thinking arbitrary fds are alive.
   function isKnownFd(fd: number): boolean {
-    return (fd >= 0 && fd <= 2) || PREOPEN_FDS.has(fd) || vfds.has(fd) || sockets.has(fd);
+    if (fd >= 0 && fd <= 2) return true;
+    if (PREOPEN_FDS.has(fd)) return true;
+    if (vfds.has(fd)) return true;
+    if (sockets.has(fd)) return true;
+    if (isPipeFd(fd) && ctx.pipeRegistry?.isAlive(pipeFdSlot(fd))) return true;
+    return false;
   }
 
   function urandomFd(): VirtualFd {
@@ -683,10 +706,11 @@ export function createWasiShim(ctx: ShimContext): {
     inPtr: number,
     outPtr: number,
     nsubs: number,
-  ): { nWritten: number; minTimeoutNs: number; hasSocketSub: boolean } {
+  ): { nWritten: number; minTimeoutNs: number; hasSocketSub: boolean; pipeReadSubs: Array<{ slot: number; handle: PipePollHandle }> } {
     let nWritten = 0;
     let minTimeoutNs = -1;
     let hasSocketSub = false;
+    const pipeReadSubs: Array<{ slot: number; handle: PipePollHandle }> = [];
     for (let i = 0; i < nsubs; i++) {
       const base = inPtr + i * POLL_SUB_SIZE;
       const userdata = dv.getBigUint64(base + 0, true);
@@ -717,6 +741,25 @@ export function createWasiShim(ctx: ShimContext): {
             ready = sock.state === SOCK_STATE_CONNECTED;
             nbytes = ready ? 65536n : 0n;
           }
+        } else if (isPipeFd(fd) && ctx.pipeRegistry) {
+          // Pipe poll.  FdRead (ty=1): ready iff bytes buffered.  FdWrite
+          // (ty=2): always ready for now — we don't track downstream pressure
+          // beyond the simple "buffer not full" check at write time, which
+          // is sufficient for libuv's uv_async_send + Node's pipe APIs.
+          if (ty === 1) {
+            const slot = pipeFdSlot(fd);
+            const handle = ctx.pipeRegistry.pollHandle(slot);
+            if (handle.ready()) {
+              ready = true;
+              nbytes = BigInt(ctx.pipeRegistry.available(slot));
+            } else {
+              pipeReadSubs.push({ slot, handle });
+              ready = false;
+            }
+          } else {
+            ready = true;
+            nbytes = 4096n;
+          }
         } else {
           const vfd = vfds.get(fd);
           if (vfd?.fsHandle !== undefined) {
@@ -745,7 +788,7 @@ export function createWasiShim(ctx: ShimContext): {
         nWritten++;
       }
     }
-    return { nWritten, minTimeoutNs, hasSocketSub };
+    return { nWritten, minTimeoutNs, hasSocketSub, pipeReadSubs };
   }
 
   // After waking from a wait, scan subs and emit (a) any newly-ready socket
@@ -775,6 +818,20 @@ export function createWasiShim(ctx: ShimContext): {
         dv.setUint16(eb + 24, 0, true);
         for (let p = 26; p < POLL_EVT_SIZE; p++) dv.setUint8(eb + p, 0);
         nWritten++;
+      } else if (isPipeFd(fd) && ctx.pipeRegistry && !pipeFdIsWrite(fd)) {
+        const slot = pipeFdSlot(fd);
+        const avail = ctx.pipeRegistry.available(slot);
+        if (avail > 0) {
+          const eb = outPtr + nWritten * POLL_EVT_SIZE;
+          dv.setBigUint64(eb + 0, userdata, true);
+          dv.setUint16(eb + 8, 0, true);
+          dv.setUint8(eb + 10, ty);
+          for (let p = 11; p < 16; p++) dv.setUint8(eb + p, 0);
+          dv.setBigUint64(eb + 16, BigInt(avail), true);
+          dv.setUint16(eb + 24, 0, true);
+          for (let p = 26; p < POLL_EVT_SIZE; p++) dv.setUint8(eb + p, 0);
+          nWritten++;
+        }
       }
     }
     for (let i = 0; i < nsubs; i++) {
@@ -913,17 +970,20 @@ export function createWasiShim(ctx: ShimContext): {
       return pollOneoffAwaitTimer(ms, dv, inPtr, outPtr, nWritten, nsubs, neventsPtr);
     }
 
-    // Any sub kind not immediately ready: block on the accept slot.
-    // Wake sources:
+    // Any sub kind not immediately ready: race the wake sources.
     //   - HTTP bridge pushRequest() (Atomics.add+notify on wake[0])
-    //   - libuv pipe writes (via fd_write on a virtual fd — when those
-    //     are wired to notify wake[0], cross-thread async signaling
-    //     works through the same channel)
-    // Without those notifies, we wait until the timeout caps the call,
-    // libuv re-invokes poll, and the loop spins through with a bounded
-    // delay rather than asserting.
-    const idx = WAKE_ACCEPT_IDX;
-    const seen = NativeAtomics.load(wake, idx);
+    //   - Cross-thread pipe writes (Atomics.add+notify on per-pipe
+    //     wakeCounter — see pipes-sab.ts).  PipeRegistry returns one
+    //     PollHandle per not-yet-ready pipe-read sub; we waitAsync on
+    //     each and Promise.race them with the bridge wake + the
+    //     timeout.  First wake unblocks; we re-evaluate readiness and
+    //     emit events for whatever is now ready.
+    //
+    // Without race-of-waiters, a pool-worker pipe write wouldn't unblock
+    // a main-thread poll that was waiting on the bridge slot.  This
+    // breaks `uv_async_send` and any other cross-thread pipe wake.
+    const acceptIdx = WAKE_ACCEPT_IDX;
+    const acceptSeen = NativeAtomics.load(wake, acceptIdx);
     const ms = minTimeoutNs >= 0
       ? Math.max(0, Math.min(60_000, Math.ceil(minTimeoutNs / 1_000_000)))
       : 30_000;
@@ -932,11 +992,25 @@ export function createWasiShim(ctx: ShimContext): {
         { async: boolean; value: Promise<string> | string };
     }).waitAsync;
     if (waitAsync) {
-      const result = waitAsync(wake, idx, seen, ms);
-      if (result.async) {
-        // Suspend: wait completes, then finish event emission.
+      const racers: Promise<unknown>[] = [];
+      const bridgeRes = waitAsync(wake, acceptIdx, acceptSeen, ms);
+      if (bridgeRes.async) racers.push(bridgeRes.value as Promise<unknown>);
+      for (const { handle } of r.pipeReadSubs) {
+        const pr = waitAsync(handle.i32, handle.idx, handle.seen, ms);
+        if (pr.async) racers.push(pr.value as Promise<unknown>);
+        else {
+          // Sync return from waitAsync means "not-equal" — the wake
+          // counter already changed.  The reader is ready now; skip the
+          // race entirely.
+          if (wakePoll) wakePoll();
+          const finalN = pollOneoffEmitPostWaitEvents(dv, inPtr, outPtr, nWritten, nsubs);
+          dv.setUint32(neventsPtr, finalN, true);
+          return ERRNO_SUCCESS;
+        }
+      }
+      if (racers.length > 0) {
         return (async () => {
-          await result.value;
+          await Promise.race(racers);
           if (wakePoll) wakePoll();
           const finalN = pollOneoffEmitPostWaitEvents(dv, inPtr, outPtr, nWritten, nsubs);
           dv.setUint32(neventsPtr, finalN, true);
@@ -944,7 +1018,7 @@ export function createWasiShim(ctx: ShimContext): {
         })();
       }
     } else {
-      NativeAtomics.wait(wake, idx, seen, ms);
+      NativeAtomics.wait(wake, acceptIdx, acceptSeen, ms);
     }
     if (wakePoll) wakePoll();
     nWritten = pollOneoffEmitPostWaitEvents(dv, inPtr, outPtr, nWritten, nsubs);
@@ -993,6 +1067,10 @@ export function createWasiShim(ctx: ShimContext): {
         closeConnection(sock);
         sockets.delete(fd);
         if (listenFd === fd) listenFd = null;
+        return ERRNO_SUCCESS;
+      }
+      if (isPipeFd(fd) && ctx.pipeRegistry) {
+        ctx.pipeRegistry.close(fd);
         return ERRNO_SUCCESS;
       }
       const vfd = vfds.get(fd);
@@ -1055,6 +1133,29 @@ export function createWasiShim(ctx: ShimContext): {
       const sock = sockets.get(fd);
       if (sock) {
         return readFromSocket(sock, iovsPtr, iovsLen, nreadPtr);
+      }
+      if (isPipeFd(fd) && ctx.pipeRegistry) {
+        // Cross-thread pipe read.  Reads what's currently in the SAB ring
+        // buffer; returns 0 if empty (callers that need to block use
+        // poll_oneoff first).
+        if (pipeFdIsWrite(fd)) {
+          view(ctx.memory).setUint32(nreadPtr, 0, true);
+          return ERRNO_BADF;
+        }
+        const dvw = view(ctx.memory);
+        const mem = bytes(ctx.memory);
+        const slot = pipeFdSlot(fd);
+        let total = 0;
+        for (let i = 0; i < iovsLen; i++) {
+          const base = dvw.getUint32(iovsPtr + i * 8, true);
+          const len = dvw.getUint32(iovsPtr + i * 8 + 4, true);
+          if (len === 0) continue;
+          const n = ctx.pipeRegistry.read(slot, mem.subarray(base, base + len));
+          total += n;
+          if (n < len) break;
+        }
+        dvw.setUint32(nreadPtr, total, true);
+        return ERRNO_SUCCESS;
       }
       const vfd = vfds.get(fd);
       if (!vfd) {
@@ -1484,36 +1585,48 @@ export function createWasiShim(ctx: ShimContext): {
       return ERRNO_SUCCESS;
     },
 
-    // fd_pipe — allocate a pipe pair.  Read end pulls bytes the write
-    // end pushed.  No SAB/blocking — synchronous semantics are sufficient
-    // because pipes are used during bootstrap as a sync-fd contract that
-    // mostly carries small metadata.
+    // fd_pipe — allocate a cross-thread pipe pair.  Implementation lives
+    // in `wasi-shim/pipes-sab.ts`: ring-buffer over a SharedArrayBuffer
+    // region that every worker's wasi-shim attaches to.  Required so
+    // libuv's `uv_async_send` (pool → main wakeup, a pipe write
+    // internally) actually reaches the reader.
     //
-    // #!~debt no-blocking-pipe: a reader that reads-before-write returns
-    // 0 (EOF-ish).  Real impl would block on Atomics.wait like the socket
-    // recv path.  Fine for bootstrap probes; userland child_process I/O
-    // would need the upgrade.
+    // The fd numbers we hand out encode the slot index directly, so any
+    // worker that loads the fd from shared wasm memory can route reads
+    // and writes without a side table — see `isPipeFd` / `pipeFdSlot`.
     fd_pipe(fdReadOutPtr: number, fdWriteOutPtr: number) {
-      const buffer: number[] = [];
-      const readFd = NEXT_VFD++;
-      const writeFd = NEXT_VFD++;
-      vfds.set(readFd, {
-        read(buf) {
-          const take = Math.min(buf.length, buffer.length);
-          for (let i = 0; i < take; i++) buf[i] = buffer.shift()!;
-          return take;
-        },
-      });
-      vfds.set(writeFd, {
-        read() { return 0; },
-        write(data) {
-          for (let i = 0; i < data.length; i++) buffer.push(data[i]!);
-          return data.length;
-        },
-      });
+      if (!ctx.pipeRegistry) {
+        ctx.postLog("fd_pipe called with no pipeRegistry — falling back to per-worker local pipe", "warn");
+        const buffer: number[] = [];
+        const readFd = NEXT_VFD++;
+        const writeFd = NEXT_VFD++;
+        vfds.set(readFd, {
+          read(buf) {
+            const take = Math.min(buf.length, buffer.length);
+            for (let i = 0; i < take; i++) buf[i] = buffer.shift()!;
+            return take;
+          },
+        });
+        vfds.set(writeFd, {
+          read() { return 0; },
+          write(data) {
+            for (let i = 0; i < data.length; i++) buffer.push(data[i]!);
+            return data.length;
+          },
+        });
+        const dv = view(ctx.memory);
+        dv.setUint32(fdReadOutPtr, readFd, true);
+        dv.setUint32(fdWriteOutPtr, writeFd, true);
+        return ERRNO_SUCCESS;
+      }
+      const alloc = ctx.pipeRegistry.allocate();
+      if (!alloc) {
+        ctx.postLog("fd_pipe: registry full (>64 in-flight pipes)", "warn");
+        return ERRNO_NOMEM;
+      }
       const dv = view(ctx.memory);
-      dv.setUint32(fdReadOutPtr, readFd, true);
-      dv.setUint32(fdWriteOutPtr, writeFd, true);
+      dv.setUint32(fdReadOutPtr, alloc.readFd, true);
+      dv.setUint32(fdWriteOutPtr, alloc.writeFd, true);
       return ERRNO_SUCCESS;
     },
 

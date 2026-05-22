@@ -5,6 +5,7 @@
 
 import { buildImports } from "./imports-generated";
 import { createWasiShim, ExitSignal, type BridgeRequest } from "./wasi-shim";
+import { PipeRegistry } from "./wasi-shim/pipes-sab";
 import { syncYieldStrategy } from "./wasi-shim/yield-sync";
 import type { YieldStrategy } from "./wasi-shim/yield-strategy";
 import { WASIThreads, type WASIInstance } from "./napi-host/emnapi";
@@ -138,11 +139,17 @@ async function runEdgeWithEmnapi() {
     post("log", { text: "[worker] JSPI unavailable — falling back to syncYieldStrategy (Atomics.wait)", level: "info" });
   }
 
+  // Cross-thread pipe registry — SAB shared with every worker we spawn
+  // so libuv's uv_async_send (pool → main wake, a pipe write internally)
+  // actually reaches main.  See `wasi-shim/pipes-sab.ts`.
+  const pipeRegistry = PipeRegistry.create();
+
   // Wasi shim — provides wasi_snapshot_preview1, wasix_32v1, wasi.thread-spawn
   // and a SocketBus we wire to the HTTP bridge port below.
   const shim = createWasiShim({
     memory,
     yieldStrategy,
+    pipeRegistry,
     // Small HTTP server: opens a TCP listener on :3000, replies to any
     // request with "hi from edge\n".  The path/port are not used for
     // routing — the SW intercepts /_edge/* and pushes any request onto
@@ -314,6 +321,11 @@ async function runEdgeWithEmnapi() {
         type: "module",
         name: "edgejs-thread",
       });
+      // Hand the pipe-registry SAB to the child immediately so its
+      // wasi-shim can attach to the same cross-thread pipe space.  Post
+      // BEFORE emnapi's `load` message so the child has the SAB stashed
+      // when it builds its shim.
+      childWorker.postMessage({ kind: "edge-pipe-sab", sab: pipeRegistry.sharedBuffer });
       // Forward non-__emnapi__ messages (logs, debug breadcrumbs) from the
       // child to the page.  ThreadManager will attach its own listener for
       // __emnapi__-wrapped protocol messages; we co-exist on the same

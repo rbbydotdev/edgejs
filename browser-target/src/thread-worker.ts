@@ -33,12 +33,25 @@ import { createWasiShim } from "./wasi-shim";
 import { syncYieldStrategy } from "./wasi-shim/yield-sync";
 import { ThreadMessageHandler, WASIThreads, type WASIInstance } from "./napi-host/emnapi";
 import { createBundledFs } from "./host/fs/adapters/bundled";
+import { PipeRegistry } from "./wasi-shim/pipes-sab";
 
 declare const self: DedicatedWorkerGlobalScope;
 
 function postLog(text: string, level: "info" | "warn" | "err" = "info") {
   self.postMessage({ kind: "thread-log", text, level });
 }
+
+// Pipe-registry SAB handed to us by main BEFORE the emnapi load message
+// (see worker.ts onCreateWorker).  Stash it so onLoad's wasi-shim attaches
+// to the same cross-thread pipe space.  Without this, any pipe op the
+// pool worker performs lives in a different memory than main's.
+let pipeRegistry: PipeRegistry | undefined;
+self.addEventListener("message", (e: MessageEvent) => {
+  const data = e.data as { kind?: string; sab?: SharedArrayBuffer } | null;
+  if (data?.kind === "edge-pipe-sab" && data.sab) {
+    pipeRegistry = PipeRegistry.attach(data.sab);
+  }
+});
 
 // Wrap the global onmessage handler with diagnostic logging so we can
 // trace the load/start protocol.
@@ -62,6 +75,7 @@ const handler = new ThreadMessageHandler({
       },
       postExit: () => { /* threads don't drive process.exit */ },
       yieldStrategy: syncYieldStrategy,
+      pipeRegistry,
     });
 
     // Child-side WASIThreads stub.  Required by emnapi protocol:
