@@ -103,57 +103,23 @@ const handler = new ThreadMessageHandler({
     (wasmImports.env as Record<string, unknown>).memory = wasmMemory;
 
     const originalInstance = await WebAssembly.instantiate(wasmModule, wasmImports);
-    postLog(`[thread] instantiated original`);
     const instance = wasiThreads.initialize(originalInstance, wasmModule, wasmMemory);
-    postLog(`[thread] initialized via wasiThreads.initialize, has wasi_thread_start=${typeof (instance.exports as Record<string, unknown>).wasi_thread_start === "function"}`);
     postLog(`[thread] instantiated + initialized, awaiting start`);
     return { instance, module: wasmModule };
   },
   onError: (err, type) => {
-    postLog(`[thread] error in ${type}: ${err.message ?? String(err)}`, "err");
-    // Stack from wasm RuntimeError contains wasm-function indices we can
-    // grep for to identify the trap site.  Browsers also include source
-    // mapped names when available.
+    postLog(`[thread] error in ${type}: ${err.message ?? String(err)} (${err?.constructor?.name ?? "?"})`, "err");
     const stack = (err as { stack?: string }).stack;
     if (stack) {
-      const lines = stack.split("\n").slice(0, 12);
+      const lines = stack.split("\n").slice(0, 18);
       for (const line of lines) postLog(`[thread]   ${line}`, "err");
     }
   },
 });
 
-// Capture the wasm memory once it's known (after load) so we can read
-// start_args on subsequent 'start' messages.
-let sharedMemory: WebAssembly.Memory | null = null;
-
 self.onmessage = (e: MessageEvent) => {
-  const data = e.data as { __emnapi__?: { type?: string; payload?: { wasmMemory?: WebAssembly.Memory; arg?: number; tid?: number } } } | null;
-  const type = data?.__emnapi__?.type ?? "(non-emnapi)";
-  const payload = data?.__emnapi__?.payload;
-  if (type === "load" && payload?.wasmMemory) {
-    sharedMemory = payload.wasmMemory;
-  }
-  if (type === "start" && sharedMemory && typeof payload?.arg === "number") {
-    const argPtr = payload.arg;
-    const tid = payload.tid;
-    try {
-      const dv = new DataView(sharedMemory.buffer);
-      const stack = dv.getUint32(argPtr, true);
-      const tlsBase = dv.getUint32(argPtr + 4, true);
-      const startFunc = dv.getUint32(argPtr + 8, true);
-      const startArg = dv.getUint32(argPtr + 12, true);
-      postLog(`[thread] start tid=${tid} argPtr=${argPtr} stack=${stack} tlsBase=${tlsBase} startFunc=${startFunc} startArg=${startArg}`);
-    } catch (e) {
-      postLog(`[thread] failed to read start_args: ${(e as Error)?.message}`, "err");
-    }
-  } else {
-    postLog(`[thread] onmessage type=${type}`);
-  }
-  try {
-    handler.handle(e as never);
-  } catch (e) {
-    const err = e as Error;
-    postLog(`[thread] handler.handle THREW: ${err?.message ?? String(e)}`, "err");
-    throw e;
-  }
+  // ThreadMessageHandler.handle expects a strongly-typed
+  // WorkerMessageEvent<...> but its runtime check is duck-typed
+  // (`e?.data?.__emnapi__`), so the cast is safe.
+  handler.handle(e as never);
 };

@@ -855,7 +855,13 @@ export function createWasiShim(ctx: ShimContext): {
     const r = pollOneoffWalkSubs(dv, inPtr, outPtr, nsubs);
     let nWritten = r.nWritten;
     const { minTimeoutNs, hasSocketSub } = r;
-    if (nWritten === 0 && (minTimeoutNs >= 0 || hasSocketSub)) {
+    // poll(fds, n, timeout=-1) must block until at least one fd is ready —
+    // never return 0 with -1 timeout (libuv-wasix asserts this at
+    // posix-poll.c:234).  We wait when there are subs (any kind) and
+    // nothing's ready yet.  Wake source is the accept slot (HTTP bridge
+    // pushRequest, future per-pipe notifies); timeout caps the wait so
+    // genuinely stalled cases still release.
+    if (nWritten === 0 && nsubs > 0) {
       const idx = WAKE_ACCEPT_IDX;
       const seen = NativeAtomics.load(wake, idx);
       const ms = minTimeoutNs >= 0
@@ -865,6 +871,7 @@ export function createWasiShim(ctx: ShimContext): {
       if (wakePoll) wakePoll();
       nWritten = pollOneoffEmitPostWaitEvents(dv, inPtr, outPtr, nWritten, nsubs);
     }
+    void hasSocketSub;
     dv.setUint32(neventsPtr, nWritten, true);
     return ERRNO_SUCCESS;
   }
@@ -892,8 +899,9 @@ export function createWasiShim(ctx: ShimContext): {
     let nWritten = r.nWritten;
     const { minTimeoutNs, hasSocketSub } = r;
 
-    if (nWritten > 0 || (minTimeoutNs < 0 && !hasSocketSub)) {
-      // Nothing to wait on, or events already ready — sync return.
+    if (nWritten > 0 || nsubs === 0) {
+      // Events already ready, or genuinely nothing to wait for (caller
+      // passed empty subscription list — a no-op poll).
       dv.setUint32(neventsPtr, nWritten, true);
       return ERRNO_SUCCESS;
     }
@@ -905,10 +913,15 @@ export function createWasiShim(ctx: ShimContext): {
       return pollOneoffAwaitTimer(ms, dv, inPtr, outPtr, nWritten, nsubs, neventsPtr);
     }
 
-    // Socket-aware wait.  Wake comes from pushRequest()'s
-    // Atomics.add+notify on the ACCEPT slot, which makes waitAsync's
-    // value-check differ from `seen` and resolves the Promise.  Timeout
-    // bounds the wait so a never-arriving request still releases.
+    // Any sub kind not immediately ready: block on the accept slot.
+    // Wake sources:
+    //   - HTTP bridge pushRequest() (Atomics.add+notify on wake[0])
+    //   - libuv pipe writes (via fd_write on a virtual fd — when those
+    //     are wired to notify wake[0], cross-thread async signaling
+    //     works through the same channel)
+    // Without those notifies, we wait until the timeout caps the call,
+    // libuv re-invokes poll, and the loop spins through with a bounded
+    // delay rather than asserting.
     const idx = WAKE_ACCEPT_IDX;
     const seen = NativeAtomics.load(wake, idx);
     const ms = minTimeoutNs >= 0
@@ -922,8 +935,6 @@ export function createWasiShim(ctx: ShimContext): {
       const result = waitAsync(wake, idx, seen, ms);
       if (result.async) await result.value;
     } else {
-      // Engines without waitAsync (none of our current targets) — sync
-      // fall back.  Blocks the JS thread but at least makes progress.
       NativeAtomics.wait(wake, idx, seen, ms);
     }
     if (wakePoll) wakePoll();
@@ -938,7 +949,11 @@ export function createWasiShim(ctx: ShimContext): {
       flushBuf(stdoutBuf, "out");
       flushBuf(stderrBuf, "warn");
       ctx.postExit(code >>> 0);
-      throw new ExitSignal(code >>> 0);
+      const exitErr = new ExitSignal(code >>> 0);
+      // Capture call site on the error so downstream (emnapi onError,
+      // harness catch) can show which wasm function called proc_exit.
+      try { Error.captureStackTrace?.(exitErr, undefined as never); } catch { /* */ }
+      throw exitErr;
     },
 
     fd_write(fd: number, iovsPtr: number, iovsLen: number, nwrittenPtr: number) {
@@ -1743,7 +1758,10 @@ export function createWasiShim(ctx: ShimContext): {
   return { wasi_snapshot_preview1, wasix_32v1, wasi, bus };
 }
 
-export class ExitSignal {
-  constructor(public readonly code: number) {}
-  toString() { return `ExitSignal(code=${this.code})`; }
+export class ExitSignal extends Error {
+  constructor(public readonly code: number) {
+    super(`ExitSignal(code=${code})`);
+    this.name = "ExitSignal";
+  }
+  override toString() { return `ExitSignal(code=${this.code})`; }
 }
