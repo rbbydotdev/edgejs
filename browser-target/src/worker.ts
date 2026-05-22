@@ -292,10 +292,11 @@ async function runEdgeWithEmnapi() {
     }, [bodyCopy.buffer]);
   });
   shim.bus.setWakePoll(() => {
-    // Drain the SAB inbox.  Each wake corresponds to (at most) one
-    // request from the page (relayed from the SW).
-    const req = drainBridgeSab();
-    if (req) shim.bus.pushRequest(req);
+    // Drain the SAB inbox.  Multiple requests can be ready in the same
+    // wake — push each to the bus.  Bus assigns a new socket fd per
+    // request, so concurrent requests get independent connections.
+    const reqs = drainBridgeSab();
+    for (const req of reqs) shim.bus.pushRequest(req);
   });
   // SAB doesn't survive MessagePort.postMessage to a Service Worker in
   // current Chrome; the message is silently dropped (verified — a plain
@@ -628,61 +629,92 @@ let userScript: string | null = null;
 // would queue but never get drained until the worker yields back to its
 // event loop, which doesn't happen during a sync wasm call.
 //
-// Layout of bridgeSab (Int32 indices into a SharedArrayBuffer):
-//   [0] wake counter — incremented + Atomics.notify'd by SW on a new req,
-//                       blocked on by the shim inside accept_v2 / poll
-//   [1] payload length (in bytes) of the JSON request at offset 16
-//   [2] reqId
-//   [3] reserved
-//   bytes [16..]: JSON-encoded { method, path, headers, bodyB64 } and
-//                  optionally a binary body appended after.
+// Bridge SAB — ring of NUM_BRIDGE_SLOTS independent request slots, so
+// the SW can have multiple HTTP requests in flight at once.  Was single-
+// slot; concurrent requests piled up serially.
 //
-// Responses go back via self.postMessage to the page (kind:"page-edge-res"),
-// which forwards to the SW via sw.postMessage.  SAB doesn't survive postMessage
-// to a Service Worker on current Chrome, so the page-mediated relay is the
-// only working path.
-const BRIDGE_SAB_SIZE = 256 * 1024; // 256 KB scratch — request body max
+// SAB layout (Int32 indices):
+//   [0..3]                  reserved (kept so older snapshots can attach;
+//                           wake counter lives in the separate `wakeSab`
+//                           the shim hands out via setWakePoll).
+//   [16..16+NS*SS)          slot 0..N-1, each SLOT_SIZE bytes:
+//     slot[0]   status      0=empty, 1=writing (page-claimed, not yet
+//                           ready), 2=ready (worker may consume)
+//     slot[4]   reqId       per-request id from the SW
+//     slot[8]   payloadLen  byte length of JSON at slot+16
+//     slot[12]  reserved
+//     slot[16..] JSON {method,path,headers,bodyB64?}
+//
+// Concurrency.  Page-side dispatchEdgeReq scans for status==0 and
+// cmpxchg-claims to status=1, writes, then stores status=2.  Worker
+// drainBridgeSab loops, taking any status==2 slots and freeing them.
+// 3-state status avoids reading partial writes.
+//
+// Responses still go back via self.postMessage (page-edge-res) keyed
+// by reqId.  The SW already maps reqId → pending promise.
+const NUM_BRIDGE_SLOTS = 16;
+const BRIDGE_SLOT_SIZE = 32 * 1024;
+const BRIDGE_SLOTS_OFFSET = 16; // bytes
+const BRIDGE_SLOT_HEADER_BYTES = 16; // bytes within a slot before payload
+const BRIDGE_SAB_SIZE = BRIDGE_SLOTS_OFFSET + NUM_BRIDGE_SLOTS * BRIDGE_SLOT_SIZE;
 const bridgeSab = new SharedArrayBuffer(BRIDGE_SAB_SIZE);
 const bridgeI32 = new Int32Array(bridgeSab);
 const bridgeU8 = new Uint8Array(bridgeSab);
-const BRIDGE_HEADER_BYTES = 16;
-let lastBridgeCounter = 0;
 const bridgeDecoder = new TextDecoder("utf-8", { fatal: false });
 
-function drainBridgeSab(): BridgeRequest | null {
+const BRIDGE_SLOT_STATUS_EMPTY = 0;
+const BRIDGE_SLOT_STATUS_WRITING = 1;
+const BRIDGE_SLOT_STATUS_READY = 2;
+
+function slotI32Idx(slot: number, byteOff: number): number {
+  return ((BRIDGE_SLOTS_OFFSET + slot * BRIDGE_SLOT_SIZE + byteOff) >>> 2);
+}
+function slotByteOff(slot: number, byteOff: number): number {
+  return BRIDGE_SLOTS_OFFSET + slot * BRIDGE_SLOT_SIZE + byteOff;
+}
+
+function drainBridgeSab(): BridgeRequest[] {
   // Called by the shim's wait-and-poll path when Atomics.wait returns.
-  // Reads any pending request out of the SAB and clears the slot.
-  const counter = Atomics.load(bridgeI32, 0);
-  post("log", { text: `[worker] drainBridgeSab counter=${counter} last=${lastBridgeCounter}`, level: "info" });
-  if (counter === lastBridgeCounter) return null;
-  lastBridgeCounter = counter;
-  const len = Atomics.load(bridgeI32, 1);
-  const reqId = Atomics.load(bridgeI32, 2);
-  post("log", { text: `[worker] drainBridgeSab len=${len} reqId=${reqId}`, level: "info" });
-  if (len <= 0 || len > BRIDGE_SAB_SIZE - BRIDGE_HEADER_BYTES) return null;
-  // Copy JSON out of the SAB (TextDecoder rejects SAB views).
-  const jsonBytes = new Uint8Array(len);
-  jsonBytes.set(bridgeU8.subarray(BRIDGE_HEADER_BYTES, BRIDGE_HEADER_BYTES + len));
-  let parsed: { method: string; path: string; headers: Record<string, string>; bodyB64?: string };
-  try {
-    parsed = JSON.parse(bridgeDecoder.decode(jsonBytes));
-  } catch {
-    return null;
+  // Scans all slots, returning any that are READY.  Marks each EMPTY
+  // before returning so a slow page-side write that races with our
+  // scan can't lose data — the slot can only re-enter the WRITING
+  // state via an explicit cmpxchg from EMPTY.
+  const out: BridgeRequest[] = [];
+  for (let slot = 0; slot < NUM_BRIDGE_SLOTS; slot++) {
+    const statusIdx = slotI32Idx(slot, 0);
+    if (Atomics.load(bridgeI32, statusIdx) !== BRIDGE_SLOT_STATUS_READY) continue;
+    const reqId = Atomics.load(bridgeI32, slotI32Idx(slot, 4));
+    const len = Atomics.load(bridgeI32, slotI32Idx(slot, 8));
+    if (len <= 0 || len > BRIDGE_SLOT_SIZE - BRIDGE_SLOT_HEADER_BYTES) {
+      Atomics.store(bridgeI32, statusIdx, BRIDGE_SLOT_STATUS_EMPTY);
+      continue;
+    }
+    const payloadStart = slotByteOff(slot, BRIDGE_SLOT_HEADER_BYTES);
+    const jsonBytes = new Uint8Array(len);
+    jsonBytes.set(bridgeU8.subarray(payloadStart, payloadStart + len));
+    Atomics.store(bridgeI32, statusIdx, BRIDGE_SLOT_STATUS_EMPTY);
+    let parsed: { method: string; path: string; headers: Record<string, string>; bodyB64?: string };
+    try {
+      parsed = JSON.parse(bridgeDecoder.decode(jsonBytes));
+    } catch {
+      continue;
+    }
+    let body: ArrayBuffer | null = null;
+    if (parsed.bodyB64) {
+      const bin = atob(parsed.bodyB64);
+      const buf = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) buf[i] = bin.charCodeAt(i);
+      body = buf.buffer;
+    }
+    out.push({
+      reqId,
+      method: parsed.method,
+      path: parsed.path,
+      headers: parsed.headers,
+      body,
+    });
   }
-  let body: ArrayBuffer | null = null;
-  if (parsed.bodyB64) {
-    const bin = atob(parsed.bodyB64);
-    const buf = new Uint8Array(bin.length);
-    for (let i = 0; i < bin.length; i++) buf[i] = bin.charCodeAt(i);
-    body = buf.buffer;
-  }
-  return {
-    reqId,
-    method: parsed.method,
-    path: parsed.path,
-    headers: parsed.headers,
-    body,
-  };
+  return out;
 }
 
 function onBridgeMessage(_e: MessageEvent) {

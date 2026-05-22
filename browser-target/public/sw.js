@@ -16,9 +16,10 @@
 //   Atomics.notify, then the page reports the response back, and the
 //   SW resolves the fetch.
 //
-// #!~debt single-flight: one inflight request at a time per SW
-// instance.  Fine for the bring-up roundtrip; serving real concurrent
-// load needs a per-request channel or a ring buffer.
+// Concurrency: the SW keys pending requests by reqId in a Map, so
+// multiple in-flight fetches are independent at this layer.  The worker
+// bridge SAB on the other end is a ring of N slots; each request gets
+// its own slot, so the whole pipeline is multi-request-capable.
 
 const BRIDGE_PREFIX = "/_edge/";
 const pending = new Map(); // reqId → { resolve, reject }

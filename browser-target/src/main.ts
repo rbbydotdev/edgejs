@@ -43,8 +43,22 @@ let activeSW: ServiceWorker | null = null;
 let bridgeI32: Int32Array | null = null;
 let bridgeU8: Uint8Array | null = null;
 let wakeI32: Int32Array | null = null;
-const BRIDGE_SAB_HEADER_BYTES = 16;
 const bridgeEncoder = new TextEncoder();
+// Bridge SAB layout — must match worker.ts.  Ring of NUM_SLOTS request
+// slots; each is independently claimable for concurrent in-flight HTTP.
+const NUM_BRIDGE_SLOTS = 16;
+const BRIDGE_SLOT_SIZE = 32 * 1024;
+const BRIDGE_SLOTS_OFFSET = 16;
+const BRIDGE_SLOT_HEADER_BYTES = 16;
+const BRIDGE_SLOT_STATUS_EMPTY = 0;
+const BRIDGE_SLOT_STATUS_WRITING = 1;
+const BRIDGE_SLOT_STATUS_READY = 2;
+function bridgeSlotI32Idx(slot: number, byteOff: number): number {
+  return ((BRIDGE_SLOTS_OFFSET + slot * BRIDGE_SLOT_SIZE + byteOff) >>> 2);
+}
+function bridgeSlotByteOff(slot: number, byteOff: number): number {
+  return BRIDGE_SLOTS_OFFSET + slot * BRIDGE_SLOT_SIZE + byteOff;
+}
 
 worker.onmessage = (e) => {
   const { kind } = e.data;
@@ -89,7 +103,6 @@ function dispatchEdgeReq(reqId: number, method: string, path: string, headers: R
     append("bridge: edge-req arrived before SAB transport was ready", "warn");
     return;
   }
-  append(`bridge: dispatchEdgeReq id=${reqId} wakeBefore=${Atomics.load(wakeI32, 0)} bridgeBefore=${Atomics.load(bridgeI32, 0)}`, "info");
   const payload = {
     method,
     path,
@@ -97,17 +110,38 @@ function dispatchEdgeReq(reqId: number, method: string, path: string, headers: R
     bodyB64: body && body.byteLength > 0 ? arrayBufferToBase64(body) : undefined,
   };
   const json = bridgeEncoder.encode(JSON.stringify(payload));
-  if (json.length > bridgeU8.length - BRIDGE_SAB_HEADER_BYTES) {
-    append("bridge: request too large for SAB", "warn");
+  const slotPayloadCapacity = BRIDGE_SLOT_SIZE - BRIDGE_SLOT_HEADER_BYTES;
+  if (json.length > slotPayloadCapacity) {
+    append(`bridge: request too large for slot (${json.length} > ${slotPayloadCapacity})`, "warn");
     return;
   }
-  bridgeU8.set(json, BRIDGE_SAB_HEADER_BYTES);
-  Atomics.store(bridgeI32, 1, json.length);
-  Atomics.store(bridgeI32, 2, reqId);
-  Atomics.add(bridgeI32, 0, 1);
+  // Claim an empty slot.  Atomic cmpxchg ensures concurrent SW
+  // dispatches (rare but possible if the SW intercepts overlap) don't
+  // race for the same slot.  Spin briefly if the ring is full —
+  // worker is single-threaded and drains all-at-once on each wake.
+  let claimedSlot = -1;
+  const maxSpins = 100;
+  for (let spin = 0; spin < maxSpins; spin++) {
+    for (let slot = 0; slot < NUM_BRIDGE_SLOTS; slot++) {
+      const statusIdx = bridgeSlotI32Idx(slot, 0);
+      if (Atomics.compareExchange(bridgeI32, statusIdx, BRIDGE_SLOT_STATUS_EMPTY, BRIDGE_SLOT_STATUS_WRITING) === BRIDGE_SLOT_STATUS_EMPTY) {
+        claimedSlot = slot;
+        break;
+      }
+    }
+    if (claimedSlot >= 0) break;
+  }
+  if (claimedSlot < 0) {
+    append(`bridge: dispatchEdgeReq reqId=${reqId} — ring full, dropping`, "warn");
+    return;
+  }
+  // Write payload, reqId, length, then publish via status=READY.
+  bridgeU8.set(json, bridgeSlotByteOff(claimedSlot, BRIDGE_SLOT_HEADER_BYTES));
+  Atomics.store(bridgeI32, bridgeSlotI32Idx(claimedSlot, 4), reqId);
+  Atomics.store(bridgeI32, bridgeSlotI32Idx(claimedSlot, 8), json.length);
+  Atomics.store(bridgeI32, bridgeSlotI32Idx(claimedSlot, 0), BRIDGE_SLOT_STATUS_READY);
   Atomics.add(wakeI32, 0, 1);
-  const notified = Atomics.notify(wakeI32, 0);
-  append(`bridge: dispatchEdgeReq notified=${notified} wakeAfter=${Atomics.load(wakeI32, 0)} bridgeAfter=${Atomics.load(bridgeI32, 0)}`, "info");
+  Atomics.notify(wakeI32, 0);
 }
 worker.onerror = (e) => {
   append(`WORKER ERROR: ${e.message} (${e.filename}:${e.lineno})`, "err");
