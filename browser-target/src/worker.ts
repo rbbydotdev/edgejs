@@ -277,10 +277,22 @@ async function runEdgeWithEmnapi() {
     onCreateWorker: (_ctx) => {
       void _ctx;
       // Spawn the child-thread worker.  Vite imports it as a module worker.
-      return new Worker(new URL("./thread-worker.ts", import.meta.url), {
+      const childWorker = new Worker(new URL("./thread-worker.ts", import.meta.url), {
         type: "module",
         name: "edgejs-thread",
       });
+      // Forward non-__emnapi__ messages (logs, debug breadcrumbs) from the
+      // child to the page.  ThreadManager will attach its own listener for
+      // __emnapi__-wrapped protocol messages; we co-exist on the same
+      // worker via addEventListener (multiple message listeners allowed).
+      childWorker.addEventListener("message", (e: MessageEvent) => {
+        const data = e.data as { __emnapi__?: unknown; kind?: string; text?: string; level?: string } | null;
+        if (!data || data.__emnapi__ !== undefined) return;
+        if (data.kind === "thread-log") {
+          post("log", { text: data.text ?? "", level: data.level ?? "info" });
+        }
+      });
+      return childWorker;
     },
   });
 
