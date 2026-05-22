@@ -164,26 +164,55 @@ or splitting the wasm runtime off the JS thread.
 
 ## Active followups (priority order)
 
-### 1. Microtask checkpoint pump (Phase B follow-up)
+### 1. Microtask checkpoint pump (Phase B follow-up) — needs novel solution
 
 Phase B (wasm imports for `unofficial_napi_*` ops) closed
 `task-queue-fallback-recursion`, but did NOT close
 `lazy-load-from-microtask` or `microtasks-starved-by-pending-timer`
 (verified by `tests/js/regression-*.{js,skip}`).
 
-The deeper issue is that we have no host-side microtask checkpoint
-pump that runs between wasm "macrotasks." When wasm blocks on
-`poll_oneoff` (Atomics.wait), the JS thread can't drain pending
-host microtasks until the wait releases.
+**The constraint**: in JS, the microtask queue only drains when control
+returns to the event loop.  When edge's wasi shim handles `poll_oneoff`
+with a timer subscription, it calls `Atomics.wait` to block until the
+timer fires.  `Atomics.wait` is synchronous — it blocks the JS thread
+that the wasm + edge's V8 context BOTH run on.  No event-loop turn,
+no microtask drain.  Splitting wasm to another worker doesn't help:
+user JS executes inside edge's V8 context, which lives on whichever
+thread runs the wasm — so the user's `Promise.then` callback is queued
+on the blocked thread regardless.  Looping shorter `Atomics.wait`s
+doesn't help either, since synchronous code between iterations doesn't
+yield to the event loop.
 
-Candidate approaches:
-- **Split wasm onto a worker** — wasm in worker, host JS on main
-  thread, drain microtasks naturally between postMessage volleys.
-  Largest impact; complicates SW bridge.
-- **Periodic Atomics.wait wakeups** — wait with short timeouts and
-  drain microtasks each cycle. Cheaper, but tail-latency penalty.
-- **Async-await reshape** — turn `_start` into Asyncify-wrapped
-  loop yielding to host between syscalls. Costly to build.
+**Two real approaches:**
+
+- **(a) Syscall-level Asyncify at the wasi-shim boundary.**  When
+  `poll_oneoff` is called with a timer-only subscription (no fd events),
+  the wasi-shim saves the wasm context, returns control to JS,
+  `setTimeout(resume, N)` for the timer, microtasks drain naturally
+  during the gap, then we re-enter wasm on the timer fire.  Smaller
+  blast radius than full Asyncify — only the syscall boundary needs to
+  yield, not arbitrary call stacks.  Implementation cost: moderate.
+  Performance cost: at most one event-loop hop per timer-only wait.
+  Requires either real Asyncify (Emscripten compile flag) OR our own
+  continuation primitive (probably an indirect-call resumption table
+  built into the wasi shim).
+
+- **(b) Full Asyncify on `_start`.**  Recompile with `-s ASYNCIFY=1`
+  or equivalent for WASIX, wrap `_start` so any wasm function can
+  yield to the host.  Pyodide / Emception use this.  Cost: ~20-30%
+  perf overhead, +25-50% wasm binary size, unclear WASIX support.
+  Largest blast radius — every wasm function becomes potentially
+  reentrant.  Strictly more capable than (a) but more invasive.
+
+**Recommended first step**: investigate (a) — verify wasi-shim can
+intercept timer-only `poll_oneoff`, prove the resumption primitive
+works on a toy wasm, then graft into the edge.js shim.  Only fall
+back to (b) if (a) hits a fundamental wall.
+
+This bug is not load-bearing for any test currently in the corpus
+(the regressions are `.skip`), so it can sleep while we ship other
+phases — but it gates Node-correct concurrency semantics that real
+apps depend on (Promise.then before timer, await before timer).
 
 ### 2. Offload policies (Phase C in the architecture plan)
 
