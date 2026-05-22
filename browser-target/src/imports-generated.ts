@@ -20,7 +20,14 @@ export function buildImports(
   function makeStub(ns: string, sym: string, defaultRet: number) {
     return (...args: unknown[]) => { trace(ns, sym, args, defaultRet, true); return defaultRet; };
   }
-  function wrapImpl(ns: string, sym: string, fn: Function) {
+  function wrapImpl(ns: string, sym: string, fn: Function | object) {
+    // JSPI Suspending wrappers are opaque host objects, not callable JS
+    // functions — the engine handles them directly when they appear in
+    // the WebAssembly imports object.  Pass them through untouched.
+    const SuspendingCtor = (WebAssembly as unknown as { Suspending?: new (...a: unknown[]) => unknown }).Suspending;
+    if (typeof SuspendingCtor === 'function' && fn instanceof SuspendingCtor) {
+      return fn as never;
+    }
     return (...args: unknown[]) => {
       let ret: unknown;
       let threw: unknown = undefined;

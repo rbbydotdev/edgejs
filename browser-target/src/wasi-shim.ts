@@ -23,6 +23,8 @@ import {
   FsErrno,
   FileType,
 } from "./host/fs/types";
+import type { YieldStrategy } from "./wasi-shim/yield-strategy";
+import { syncYieldStrategy } from "./wasi-shim/yield-sync";
 
 const ERRNO_SUCCESS = 0;
 const ERRNO_BADF = 8;
@@ -94,6 +96,12 @@ export interface ShimContext {
   fs: FileSystem;
   postLog: (line: string, level?: string) => void;
   postExit: (code: number) => void;
+  /** How blocking syscalls bridge to the host's async machinery.
+   *  Defaults to `syncYieldStrategy` — wasm thread blocks on Atomics.wait,
+   *  microtasks don't drain until `_start` returns.  Pass `jspiYieldStrategy`
+   *  on Node v24+ / Chrome 137+ to use engine-native suspension so host
+   *  microtasks drain during waits.  See `wasi-shim/yield-strategy.ts`. */
+  yieldStrategy?: YieldStrategy;
 }
 
 /** Inbound HTTP request the bridge port wants edge to handle. */
@@ -166,6 +174,7 @@ const captured = {
   now: performance.now.bind(performance),
   timeOrigin: performance.timeOrigin,
 };
+
 
 export function createWasiShim(ctx: ShimContext): {
   wasi_snapshot_preview1: Record<string, Function>;
@@ -655,6 +664,230 @@ export function createWasiShim(ctx: ShimContext): {
     return total;
   }
 
+  // ---- poll_oneoff helpers + sync/async impls ----
+  //
+  // The sync impl is the original behavior (Atomics.wait blocks the JS
+  // thread).  The async-capable impl can return a Promise<number> for
+  // the timer-only case; the chosen YieldStrategy decides which one is
+  // exposed as the wasm import (and whether to wrap with
+  // WebAssembly.Suspending).
+
+  const POLL_SUB_SIZE = 48;
+  const POLL_EVT_SIZE = 32;
+
+  // First pass: walk subscriptions, emit any events that are immediately
+  // ready, and report the wait parameters the caller needs to honor if no
+  // events were ready.
+  function pollOneoffWalkSubs(
+    dv: DataView,
+    inPtr: number,
+    outPtr: number,
+    nsubs: number,
+  ): { nWritten: number; minTimeoutNs: number; hasSocketSub: boolean } {
+    let nWritten = 0;
+    let minTimeoutNs = -1;
+    let hasSocketSub = false;
+    for (let i = 0; i < nsubs; i++) {
+      const base = inPtr + i * POLL_SUB_SIZE;
+      const userdata = dv.getBigUint64(base + 0, true);
+      const ty = dv.getUint8(base + 8);
+      let ready = false;
+      let nbytes = 0n;
+      const evtType = ty;
+      let errno = 0;
+      if (ty === 0) {
+        const timeoutNs = dv.getBigUint64(base + 24, true);
+        const asNum = Number(timeoutNs);
+        if (minTimeoutNs < 0 || asNum < minTimeoutNs) minTimeoutNs = asNum;
+      } else if (ty === 1 || ty === 2) {
+        const fd = dv.getUint32(base + 16, true);
+        const sock = sockets.get(fd);
+        if (sock) {
+          hasSocketSub = true;
+          if (ty === 1) {
+            if (sock.state === SOCK_STATE_LISTEN) {
+              ready = sock.pendingReqs.length > 0;
+              nbytes = ready ? 1n : 0n;
+            } else if (sock.state === SOCK_STATE_CONNECTED) {
+              const avail = sock.recvBuf.length - sock.recvOff;
+              ready = avail > 0;
+              nbytes = BigInt(avail);
+            }
+          } else {
+            ready = sock.state === SOCK_STATE_CONNECTED;
+            nbytes = ready ? 65536n : 0n;
+          }
+        } else {
+          const vfd = vfds.get(fd);
+          if (vfd?.fsHandle !== undefined) {
+            ready = true;
+            nbytes = 0n;
+          } else if (vfd) {
+            ready = false;
+          } else if (fd <= 2 || PREOPEN_FDS.has(fd)) {
+            ready = true;
+            nbytes = 0n;
+          } else {
+            errno = ERRNO_BADF;
+            ready = true;
+          }
+        }
+      }
+      if (ready) {
+        const eb = outPtr + nWritten * POLL_EVT_SIZE;
+        dv.setBigUint64(eb + 0, userdata, true);
+        dv.setUint16(eb + 8, errno, true);
+        dv.setUint8(eb + 10, evtType);
+        for (let p = 11; p < 16; p++) dv.setUint8(eb + p, 0);
+        dv.setBigUint64(eb + 16, nbytes, true);
+        dv.setUint16(eb + 24, 0, true);
+        for (let p = 26; p < POLL_EVT_SIZE; p++) dv.setUint8(eb + p, 0);
+        nWritten++;
+      }
+    }
+    return { nWritten, minTimeoutNs, hasSocketSub };
+  }
+
+  // After waking from a wait, scan subs and emit (a) any newly-ready socket
+  // FdRead events and (b) one Clock event (the rest fold into the next call).
+  function pollOneoffEmitPostWaitEvents(
+    dv: DataView,
+    inPtr: number,
+    outPtr: number,
+    initialNWritten: number,
+    nsubs: number,
+  ): number {
+    let nWritten = initialNWritten;
+    for (let i = 0; i < nsubs; i++) {
+      const base = inPtr + i * POLL_SUB_SIZE;
+      const userdata = dv.getBigUint64(base + 0, true);
+      const ty = dv.getUint8(base + 8);
+      if (ty !== 1) continue;
+      const fd = dv.getUint32(base + 16, true);
+      const s = sockets.get(fd);
+      if (s && s.state === SOCK_STATE_LISTEN && s.pendingReqs.length > 0) {
+        const eb = outPtr + nWritten * POLL_EVT_SIZE;
+        dv.setBigUint64(eb + 0, userdata, true);
+        dv.setUint16(eb + 8, 0, true);
+        dv.setUint8(eb + 10, ty);
+        for (let p = 11; p < 16; p++) dv.setUint8(eb + p, 0);
+        dv.setBigUint64(eb + 16, 1n, true);
+        dv.setUint16(eb + 24, 0, true);
+        for (let p = 26; p < POLL_EVT_SIZE; p++) dv.setUint8(eb + p, 0);
+        nWritten++;
+      }
+    }
+    for (let i = 0; i < nsubs; i++) {
+      const base = inPtr + i * POLL_SUB_SIZE;
+      const userdata = dv.getBigUint64(base + 0, true);
+      const ty = dv.getUint8(base + 8);
+      if (ty !== 0) continue;
+      const eb = outPtr + nWritten * POLL_EVT_SIZE;
+      dv.setBigUint64(eb + 0, userdata, true);
+      dv.setUint16(eb + 8, 0, true);
+      dv.setUint8(eb + 10, 0);
+      for (let p = 11; p < POLL_EVT_SIZE; p++) dv.setUint8(eb + p, 0);
+      nWritten++;
+      break;
+    }
+    return nWritten;
+  }
+
+  // The async helper that actually awaits the timer.  Defining it as a
+  // proper `async` function — empirically (vs returning `new Promise(...)`
+  // from the caller) — is what JSPI's Suspending wrapper needs to
+  // recognize the yield.  Returning a Promise directly without async
+  // didn't trigger the suspend/resume cycle (Promise stays pending
+  // forever; setTimeout never fires).  Likely related to V8's
+  // microtask-scope handling of bare Promises vs async-function returns.
+  async function pollOneoffAwaitTimer(
+    ms: number,
+    dv: DataView,
+    inPtr: number,
+    outPtr: number,
+    nWrittenSoFar: number,
+    nsubs: number,
+    neventsPtr: number,
+  ): Promise<number> {
+    await new Promise<void>((resolve) => setTimeout(resolve, ms));
+    const dvAfter = view(ctx.memory);
+    const finalN = pollOneoffEmitPostWaitEvents(dvAfter, inPtr, outPtr, nWrittenSoFar, nsubs);
+    dvAfter.setUint32(neventsPtr, finalN, true);
+    void dv;
+    return ERRNO_SUCCESS;
+  }
+
+  function pollOneoffSyncImpl(
+    inPtr: number,
+    outPtr: number,
+    nsubs: number,
+    neventsPtr: number,
+  ): number {
+    const dv = view(ctx.memory);
+    const r = pollOneoffWalkSubs(dv, inPtr, outPtr, nsubs);
+    let nWritten = r.nWritten;
+    const { minTimeoutNs, hasSocketSub } = r;
+    if (nWritten === 0 && (minTimeoutNs >= 0 || hasSocketSub)) {
+      const idx = WAKE_ACCEPT_IDX;
+      const seen = NativeAtomics.load(wake, idx);
+      const ms = minTimeoutNs >= 0
+        ? Math.max(0, Math.min(60_000, Math.ceil(minTimeoutNs / 1_000_000)))
+        : 30_000;
+      NativeAtomics.wait(wake, idx, seen, ms);
+      if (wakePoll) wakePoll();
+      nWritten = pollOneoffEmitPostWaitEvents(dv, inPtr, outPtr, nWritten, nsubs);
+    }
+    dv.setUint32(neventsPtr, nWritten, true);
+    return ERRNO_SUCCESS;
+  }
+
+  // Async-capable variant.  Returns a sync number when no waiting is
+  // needed (events ready immediately) so JSPI doesn't suspend wasm
+  // unnecessarily.  Returns a Promise<number> when a timer-only wait is
+  // required; the JSPI engine suspends the wasm caller for the duration,
+  // letting host microtasks drain during the gap.  The socket-sub path
+  // still uses Atomics.wait synchronously (would need its own
+  // promise-based mechanism via wakePoll-as-Promise to fully yield;
+  // future work).
+  async function pollOneoffAsyncImpl(
+    inPtr: number,
+    outPtr: number,
+    nsubs: number,
+    neventsPtr: number,
+  ): Promise<number> {
+    const dv = view(ctx.memory);
+    const r = pollOneoffWalkSubs(dv, inPtr, outPtr, nsubs);
+    let nWritten = r.nWritten;
+    const { minTimeoutNs, hasSocketSub } = r;
+
+    if (nWritten > 0 || (minTimeoutNs < 0 && !hasSocketSub)) {
+      // Nothing to wait on, or events already ready — sync return.
+      dv.setUint32(neventsPtr, nWritten, true);
+      return ERRNO_SUCCESS;
+    }
+
+    if (minTimeoutNs >= 0 && !hasSocketSub) {
+      // Timer-only wait: yield via Promise so the engine suspends wasm
+      // and host microtasks drain naturally during the setTimeout window.
+      const ms = Math.max(0, Math.min(60_000, Math.ceil(minTimeoutNs / 1_000_000)));
+      return pollOneoffAwaitTimer(ms, dv, inPtr, outPtr, nWritten, nsubs, neventsPtr);
+    }
+
+    // Socket sub path: fall back to sync Atomics.wait.  Doesn't help with
+    // microtask drain on socket-wakeup paths but matches existing
+    // behavior.  Promise-based socket waits are future work.
+    const idx = WAKE_ACCEPT_IDX;
+    const seen = NativeAtomics.load(wake, idx);
+    const ms = minTimeoutNs >= 0
+      ? Math.max(0, Math.min(60_000, Math.ceil(minTimeoutNs / 1_000_000)))
+      : 30_000;
+    NativeAtomics.wait(wake, idx, seen, ms);
+    if (wakePoll) wakePoll();
+    nWritten = pollOneoffEmitPostWaitEvents(dv, inPtr, outPtr, nWritten, nsubs);
+    dv.setUint32(neventsPtr, nWritten, true);
+    return ERRNO_SUCCESS;
+  }
+
   // ---- wasi_snapshot_preview1 ----
   const wasi_snapshot_preview1: Record<string, Function> = {
     proc_exit(code: number) {
@@ -958,9 +1191,15 @@ export function createWasiShim(ctx: ShimContext): {
     },
 
     // poll_oneoff — Reads the subscription array, walks each one, and
-    // writes any events that are immediately ready.  Sleeps (via
-    // Atomics.wait on the accept slot) if every sub is blocked AND the
-    // earliest clock-deadline is non-zero.
+    // writes any events that are immediately ready.  Sleeps if every sub
+    // is blocked AND the earliest clock-deadline is non-zero.
+    //
+    // The body is split into two impls (sync + async-capable) sharing
+    // helpers, so the chosen YieldStrategy can pick which to expose as
+    // the wasm import.  The sync version is the original (Atomics.wait);
+    // the async version yields via setTimeout for timer-only waits so
+    // host microtasks drain naturally during the suspend.  See
+    // `wasi-shim/yield-strategy.ts`.
     //
     // Subscription layout (Wasix manual.rs:54): { u64 userdata; u8 type;
     // [pad]; union { Clock(clock_id:u32, timeout:u64, prec:u64, flags:u16),
@@ -976,143 +1215,11 @@ export function createWasiShim(ctx: ShimContext): {
     // no proper precision, no absolute-vs-relative clock distinction —
     // we treat all clock timeouts as relative-nanoseconds and clamp.
     poll_oneoff(inPtr: number, outPtr: number, nsubs: number, neventsPtr: number) {
-      const dv = view(ctx.memory);
-      const SUB_SIZE = 48;
-      const EVT_SIZE = 32;
-      let nWritten = 0;
-      let minTimeoutNs = -1; // -1 = no clock sub seen
-      for (let i = 0; i < nsubs; i++) {
-        const base = inPtr + i * SUB_SIZE;
-        const userdata = dv.getBigUint64(base + 0, true);
-        const ty = dv.getUint8(base + 8);
-        let ready = false;
-        let nbytes = 0n;
-        let evtType = ty;
-        let errno = 0;
-        if (ty === 0) {
-          // Clock: union at base+16: clock_id(u32) timeout(u64) prec(u64) flags(u16)
-          const timeoutNs = dv.getBigUint64(base + 24, true);
-          // Track min for the post-loop sleep.
-          const asNum = Number(timeoutNs);
-          if (minTimeoutNs < 0 || asNum < minTimeoutNs) minTimeoutNs = asNum;
-        } else if (ty === 1 || ty === 2) {
-          // FdRead / FdWrite: union at base+16: file_descriptor (u32)
-          const fd = dv.getUint32(base + 16, true);
-          const sock = sockets.get(fd);
-          if (sock) {
-            if (ty === 1) {
-              // Read-ready: a listener with queued requests OR a connection
-              // with unread bytes.
-              if (sock.state === SOCK_STATE_LISTEN) {
-                ready = sock.pendingReqs.length > 0;
-                nbytes = ready ? 1n : 0n;
-              } else if (sock.state === SOCK_STATE_CONNECTED) {
-                const avail = sock.recvBuf.length - sock.recvOff;
-                ready = avail > 0;
-                nbytes = BigInt(avail);
-              }
-            } else {
-              // Write-ready: always ready for connection sockets.
-              ready = sock.state === SOCK_STATE_CONNECTED;
-              nbytes = ready ? 65536n : 0n;
-            }
-          } else {
-            const vfd = vfds.get(fd);
-            if (vfd?.fsHandle !== undefined) {
-              // Regular file — always ready for read.
-              ready = true;
-              nbytes = 0n;
-            } else if (vfd) {
-              // Pipe / virtual fd: not ready (no producer in this run).
-              // Reporting "ready" here turns into a spin loop because the
-              // subsequent fd_read returns 0 bytes and libuv re-polls.
-              ready = false;
-            } else if (fd <= 2 || PREOPEN_FDS.has(fd)) {
-              // stdio / preopens: report ready.
-              ready = true;
-              nbytes = 0n;
-            } else {
-              errno = ERRNO_BADF;
-              ready = true;
-            }
-          }
-        }
-        if (ready) {
-          const eb = outPtr + nWritten * EVT_SIZE;
-          dv.setBigUint64(eb + 0, userdata, true);
-          dv.setUint16(eb + 8, errno, true);
-          dv.setUint8(eb + 10, evtType);
-          // pad through 16
-          for (let p = 11; p < 16; p++) dv.setUint8(eb + p, 0);
-          // event_fd_readwrite { nbytes: u64; flags: u16 }
-          dv.setBigUint64(eb + 16, nbytes, true);
-          dv.setUint16(eb + 24, 0, true);
-          for (let p = 26; p < EVT_SIZE; p++) dv.setUint8(eb + p, 0);
-          nWritten++;
-        }
-      }
-      // Check if any sub is on a socket fd — if so we should block until
-      // a request arrives (Atomics.wait on the wake slot), not return 0
-      // and spin.
-      let hasSocketSub = false;
-      for (let i = 0; i < nsubs && !hasSocketSub; i++) {
-        const base = inPtr + i * SUB_SIZE;
-        const ty = dv.getUint8(base + 8);
-        if (ty === 1 || ty === 2) {
-          const fd = dv.getUint32(base + 16, true);
-          if (sockets.has(fd)) hasSocketSub = true;
-        }
-      }
-      if (nWritten === 0 && (minTimeoutNs >= 0 || hasSocketSub)) {
-        // Block until either the timeout expires or a request lands.
-        // If no clock sub provided, fall back to a 30s poll window
-        // (matches wasmer-wasix accept-timeout default).
-        const idx = WAKE_ACCEPT_IDX;
-        const seen = NativeAtomics.load(wake, idx);
-        const ms = minTimeoutNs >= 0
-          ? Math.max(0, Math.min(60_000, Math.ceil(minTimeoutNs / 1_000_000)))
-          : 30_000;
-        NativeAtomics.wait(wake, idx, seen, ms);
-        if (wakePoll) wakePoll();
-        // If wakePoll dropped a request onto a listening socket, surface
-        // a corresponding fd-ready event for any matching subscription.
-        for (let i = 0; i < nsubs; i++) {
-          const base = inPtr + i * SUB_SIZE;
-          const userdata = dv.getBigUint64(base + 0, true);
-          const ty = dv.getUint8(base + 8);
-          if (ty !== 1) continue; // FdRead only
-          const fd = dv.getUint32(base + 16, true);
-          const s = sockets.get(fd);
-          if (s && s.state === SOCK_STATE_LISTEN && s.pendingReqs.length > 0) {
-            const eb = outPtr + nWritten * EVT_SIZE;
-            dv.setBigUint64(eb + 0, userdata, true);
-            dv.setUint16(eb + 8, 0, true);
-            dv.setUint8(eb + 10, ty);
-            for (let p = 11; p < 16; p++) dv.setUint8(eb + p, 0);
-            dv.setBigUint64(eb + 16, 1n, true);
-            dv.setUint16(eb + 24, 0, true);
-            for (let p = 26; p < EVT_SIZE; p++) dv.setUint8(eb + p, 0);
-            nWritten++;
-          }
-        }
-        // After waking, surface any clock subscriptions as fired.  Same
-        // walk but emit Clock events.
-        for (let i = 0; i < nsubs; i++) {
-          const base = inPtr + i * SUB_SIZE;
-          const userdata = dv.getBigUint64(base + 0, true);
-          const ty = dv.getUint8(base + 8);
-          if (ty !== 0) continue;
-          const eb = outPtr + nWritten * EVT_SIZE;
-          dv.setBigUint64(eb + 0, userdata, true);
-          dv.setUint16(eb + 8, 0, true);
-          dv.setUint8(eb + 10, 0);
-          for (let p = 11; p < EVT_SIZE; p++) dv.setUint8(eb + p, 0);
-          nWritten++;
-          break; // emit one clock; the rest fold in next call
-        }
-      }
-      dv.setUint32(neventsPtr, nWritten, true);
-      return ERRNO_SUCCESS;
+      // Placeholder — overwritten below the wasi_snapshot_preview1 object
+      // declaration with the strategy-wrapped variant.  Kept here so the
+      // returned object literally has a `poll_oneoff` property at type
+      // declaration time.
+      return pollOneoffSyncImpl(inPtr, outPtr, nsubs, neventsPtr);
     },
 
     // sock_shutdown(fd, how) — `how` is a bitmask: 1=RD, 2=WR, 3=BOTH.
@@ -1488,6 +1595,15 @@ export function createWasiShim(ctx: ShimContext): {
       return -1;
     },
   };
+
+  // Apply the chosen yield strategy.  Default = sync (Atomics.wait,
+  // microtasks drain only at end-of-_start).  The harness picks
+  // jspiYieldStrategy at startup if WebAssembly.Suspending is available.
+  const strategy = ctx.yieldStrategy ?? syncYieldStrategy;
+  wasi_snapshot_preview1.poll_oneoff = strategy.wrapPollOneoff(
+    pollOneoffSyncImpl,
+    pollOneoffAsyncImpl,
+  );
 
   return { wasi_snapshot_preview1, wasix_32v1, wasi, bus };
 }

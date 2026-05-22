@@ -61,8 +61,14 @@ function runOne(t) {
   const extra = existsSync(t.harnessArgsPath)
     ? read(t.harnessArgsPath).trim().split(/\s+/).filter(Boolean)
     : [];
+  // JSPI flag is benign on engines that don't support JSPI (Node v22
+  // just accepts the flag without exposing WebAssembly.Suspending; the
+  // harness detects and falls back to syncYieldStrategy).  Keep it in
+  // the default arg list so Node v24+ runs pick up the upgrade
+  // automatically without per-test wiring.
   const args = [
     "--experimental-wasm-exnref",
+    "--experimental-wasm-jspi",
     "--import", tsxLoader,
     harnessPath,
     "--quiet",

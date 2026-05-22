@@ -54,6 +54,22 @@ const userScript = (eIdx >= 0 && eIdx + 1 < args.length)
 // Lazy-import the shim modules through tsx so .ts files work directly.
 // (`node --import tsx` registers the loader.)
 const { createWasiShim, ExitSignal } = await import(`file://${browserTarget}/src/wasi-shim.ts`);
+const { syncYieldStrategy } = await import(`file://${browserTarget}/src/wasi-shim/yield-sync.ts`);
+
+// JSPI yield strategy when the engine supports it.  Requires Node v24+
+// started with `--experimental-wasm-jspi --experimental-wasm-exnref`.
+// Falls back to syncYieldStrategy (Atomics.wait) on Node v22 / no flags —
+// the previous behavior, with the microtask-drain limitation per
+// NOTES.md item #1.
+let yieldStrategy = syncYieldStrategy;
+let entryPointWrapper = (fn) => fn;
+const hasJspi = typeof WebAssembly.Suspending === "function"
+  && typeof WebAssembly.promising === "function";
+if (hasJspi) {
+  const { jspiYieldStrategy } = await import(`file://${browserTarget}/src/wasi-shim/yield-jspi.ts`);
+  yieldStrategy = jspiYieldStrategy;
+  entryPointWrapper = (fn) => jspiYieldStrategy.wrapExport(fn);
+}
 const { createNapiHost } = await import(`file://${browserTarget}/src/napi-host/index.ts`);
 const { Trace } = await import(`file://${browserTarget}/src/trace.ts`);
 const policiesMod = await import(`file://${browserTarget}/src/policies/index.ts`);
@@ -210,7 +226,9 @@ const shim = createWasiShim({
     // else: drop debug lines to keep harness output clean
   },
   postExit: () => {},
+  yieldStrategy,
 });
+log(`[harness] yield strategy: ${yieldStrategy.name}`);
 
 // Edge's rebuilt wasm now imports the `unofficial_napi_*` symbols under
 // the `napi_extension_wasmer_v0` module (per their `__import_module__`
@@ -255,8 +273,18 @@ log(`[harness] running _start — args=${JSON.stringify(edgeArgs)}`);
 
 const t0 = nowMs();
 let exitCode = 0;
+
+// Under the JSPI yield strategy, the entry-point wrapper turns the raw
+// wasm `_start` export into a Promise-returning function so JS-callers
+// can await mid-execution suspensions caused by Suspending-wrapped
+// imports (e.g. timer-only poll_oneoff).  Under the sync strategy the
+// wrapper is identity and we just call it.
+//
+// We always `await` the return value — sync strategy returns undefined
+// (which awaits to undefined, no-op), JSPI returns a real Promise.
+const startFn = entryPointWrapper(instance.exports._start);
 try {
-  instance.exports._start();
+  await startFn();
 } catch (e) {
   if (e instanceof ExitSignal) {
     log(`[harness] _start exit=${e.code}`);
