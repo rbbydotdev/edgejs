@@ -1,0 +1,23 @@
+browser-target/src/wasi-shim.ts
+  s_3c284a8c3d32d2::t_d841c5b964af64 898-901
+browser-target/src/napi-host/microtask-ops.ts
+  s_3c284a8c3d32d2::t_2838e9de860c14 101-105,107-113,115-119
+browser-target/src/policies/compression-via-compressionstream.ts
+  s_3c284a8c3d32d2::t_52a834625710cb 44,46-53,55-57
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "af509db6da8f369d190586bec487f01bd2175344",
+  "prompts": {},
+  "sessions": {
+    "s_3c284a8c3d32d2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "aba00247-eb0d-4299-a1aa-1451ccea7316",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
