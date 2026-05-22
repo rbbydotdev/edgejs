@@ -570,58 +570,11 @@ export function createNapiHost(opts: NapiHostOptions): NapiHost {
         wasmMallocImpl = malloc as (n: number) => number;
       }
       const proxied = createInstanceProxy(realInstance);
-
-      // JSPI re-entry depth tracking.  emnapi's setImmediate-driven
-      // async work + napi callbacks dispatch wasm via
-      // `wasmTable.get(cb)(args)`.  Those are JS-to-wasm re-entries
-      // that are NOT promising-wrapped.  Suspending an import inside
-      // such a call hits JSPI's "trying to suspend JS frames" error
-      // because there are JS frames between the wasm and the
-      // promising entry.
-      //
-      // We wrap table-get so JS dispatch decrements the promising
-      // depth counter (worker.ts sets it >0 around await startFn).
-      // Our Suspending impls check the depth: depth>0 → suspend OK;
-      // depth==0 → throw (Node's invariant: JS-dispatched N-API
-      // calls never wait inside the call itself; if our wasm tries
-      // to, we have a real layering bug to fix, not a path to mask).
-      //
-      // wasm-internal call_indirect does NOT go through this Proxy's
-      // get method — it uses the table's raw funcref entries.  Only
-      // JS callers see the wrapping.
-      const realTable = realInstance.exports.__indirect_function_table as WebAssembly.Table;
-      type DepthHolder = { __edgePromisingDepth?: number };
-      const wrappedTable = new Proxy(realTable, {
-        get(target, prop, receiver) {
-          if (prop === "get") {
-            return (idx: number): Function | null => {
-              const fn = target.get(idx);
-              if (typeof fn !== "function") return fn;
-              return function jsReentryWrap(this: unknown, ...args: unknown[]): unknown {
-                // A JS frame here breaks the JSPI suspension chain.
-                // Save outer depth and reset to 0 — inner Suspending
-                // imports will see depth==0 and throw rather than
-                // silently failing or deadlocking.
-                const dh = globalThis as DepthHolder;
-                const prev = dh.__edgePromisingDepth ?? 0;
-                dh.__edgePromisingDepth = 0;
-                try {
-                  return (fn as Function).apply(this, args);
-                } finally {
-                  dh.__edgePromisingDepth = prev;
-                }
-              };
-            };
-          }
-          return Reflect.get(target, prop, receiver);
-        },
-      });
-
       napiModule.init({
         instance: proxied,
         module: wasmModule,
         memory: opts.memory,
-        table: wrappedTable,
+        table: realInstance.exports.__indirect_function_table as WebAssembly.Table,
       });
     },
   };

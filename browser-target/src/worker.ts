@@ -153,7 +153,34 @@ async function runEdgeWithEmnapi() {
     // minimum it contains the Buffer.poolSize=0 hack (see
     // policies/buffer-pool-disable.ts) plus any other monkey-patches the
     // active policies install.
-    args: ["edgejs", "-e", userScriptPrelude + (userScript ?? "require('http').createServer((req,res)=>{res.end('hi from edge\\n')}).listen(3000,()=>console.log('listening'))")],
+    args: ["edgejs", "-e", userScriptPrelude + (userScript ?? `
+      const http = require('http');
+      const fs = require('fs');
+      http.createServer((req, res) => {
+        if (req.url === '/fs-cb') {
+          fs.readFile('/node/deps/undici/src/package.json', (err, buf) => {
+            if (err) { res.statusCode = 500; res.end('fs.readFile-cb err: ' + err.message + '\\n'); return; }
+            res.end('fs.readFile-cb ok len=' + buf.length + '\\n');
+          });
+        } else if (req.url === '/fs') {
+          fs.promises.readFile('/node/deps/undici/src/package.json')
+            .then(buf => res.end('fs.readFile ok len=' + buf.length + '\\n'))
+            .catch(err => { res.statusCode = 500; res.end('fs.readFile err: ' + err.message + '\\n'); });
+        } else if (req.url === '/fs-open') {
+          fs.open('/node/deps/undici/src/package.json', 'r', (err, fd) => {
+            if (err) { res.statusCode = 500; res.end('fs.open err: ' + err.message + '\\n'); return; }
+            res.end('fs.open ok fd=' + fd + '\\n');
+          });
+        } else if (req.url === '/randomFill') {
+          require('crypto').randomFill(Buffer.alloc(32), (err, buf) => {
+            if (err) { res.statusCode = 500; res.end('randomFill err: ' + err.message + '\\n'); return; }
+            res.end('randomFill ok hex=' + buf.toString('hex') + '\\n');
+          });
+        } else {
+          res.end('hi from edge\\n');
+        }
+      }).listen(3000, () => console.log('listening'));
+    `)],
     // Match native napi_wasmer baseline — wasmer-wasix passes no env by
     // default and edge boots fine.  Adding env vars made wasi-libc trigger
     // a different init path that breaks uv_cwd downstream.
@@ -401,21 +428,10 @@ async function runEdgeWithEmnapi() {
   let exitCode: number | null = null;
   let threwMsg: string | null = null;
   const tStart = nowMs();
-  // JSPI re-entry depth tracking.  promising-wrapped _start increments;
-  // napi-host's wrappedTable decrements during JS-driven wasm dispatch
-  // (so a Suspending import inside that dispatch sees depth==0 and
-  // throws — Node's invariant: JS-dispatched N-API calls never wait
-  // inside the call).
-  type DepthHolder = { __edgePromisingDepth?: number };
-  const dh = globalThis as DepthHolder;
-  dh.__edgePromisingDepth = (dh.__edgePromisingDepth ?? 0) + 1;
   try { await startFn(); }
   catch (e) {
     if (e instanceof ExitSignal) exitCode = e.code;
     else threwMsg = (e as Error).stack ?? String(e);
-  }
-  finally {
-    dh.__edgePromisingDepth = (dh.__edgePromisingDepth ?? 1) - 1;
   }
   const runMs = nowMs() - tStart;
 
