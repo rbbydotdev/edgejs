@@ -1054,6 +1054,38 @@ export function createWasiShim(ctx: ShimContext): {
     let nWritten = r.nWritten;
     const { minTimeoutNs, hasSocketSub } = r;
 
+    // Diagnostic: instrument the spin investigation.  Log every Nth
+    // poll_oneoff call with its key shape.  If clock_time_get is
+    // spinning, EITHER poll_oneoff is being skipped entirely (we'll
+    // see large gaps in the counter) OR poll_oneoff is returning
+    // immediately with nWritten>0 (events instantly ready — usually
+    // means an always-ready sub).
+    // Reset the clock_time_get-spin probe.  Reaching poll_oneoff means
+    // libuv made it back to its I/O wait — anything spinning on
+    // clock_time_get without poll_oneoff in between is a real wasm-side
+    // tight loop (NOT the libuv main loop, which always hits us).
+    const clockProbe = (globalThis as { __edgeClockProbe?: { streak: number; logged: boolean } }).__edgeClockProbe;
+    if (clockProbe) clockProbe.streak = 0;
+
+    const probe = (globalThis as { __edgePollProbe?: { n: number; lastT: number; tinyTimeoutCount: number; tinyTimeoutLogged: boolean } });
+    const probeState = probe.__edgePollProbe ?? (probe.__edgePollProbe = { n: 0, lastT: 0, tinyTimeoutCount: 0, tinyTimeoutLogged: false });
+    probeState.n++;
+    // Count tiny (<1µs) timeouts and dump a stack on the 20th — that
+    // identifies what wasm code is keeping libuv from suspending.
+    if (minTimeoutNs >= 0 && minTimeoutNs < 1000) {
+      probeState.tinyTimeoutCount++;
+      if (probeState.tinyTimeoutCount === 20 && !probeState.tinyTimeoutLogged) {
+        probeState.tinyTimeoutLogged = true;
+        const stk = new Error("tiny-timeout-stack").stack ?? "(no stack)";
+        ctx.postLog(`[poll-probe] tiny-timeout streak detected (count=${probeState.tinyTimeoutCount}, latest minTimeoutNs=${minTimeoutNs}, subs=${nsubs}) — stack:\n${stk}`, "warn");
+      }
+    }
+    if (probeState.n <= 30 || probeState.n % 500 === 0) {
+      const t = (typeof performance !== "undefined" ? performance.now() : 0);
+      ctx.postLog(`[poll-probe] n=${probeState.n} subs=${nsubs} minTimeoutNs=${minTimeoutNs} hasSocket=${hasSocketSub} immReady=${nWritten} dt=${(t - probeState.lastT).toFixed(1)}ms tinyCount=${probeState.tinyTimeoutCount}`, "info");
+      probeState.lastT = t;
+    }
+
     if (nWritten > 0 || nsubs === 0) {
       // Events already ready, or genuinely nothing to wait for (caller
       // passed empty subscription list — a no-op poll).
@@ -1471,6 +1503,18 @@ export function createWasiShim(ctx: ShimContext): {
     },
 
     clock_time_get(_clockId: number, _precision: bigint, timePtr: number) {
+      // Diagnostic: detect "clock_time_get spin" by counting consecutive
+      // calls without any other wasi import in between.  On the 1000th
+      // consecutive call, dump a stack to identify the wasm caller —
+      // that's the code path keeping libuv from blocking.
+      const probe = (globalThis as { __edgeClockProbe?: { streak: number; logged: boolean } });
+      const p = probe.__edgeClockProbe ?? (probe.__edgeClockProbe = { streak: 0, logged: false });
+      p.streak++;
+      if (p.streak === 1000 && !p.logged) {
+        p.logged = true;
+        const stk = new Error("clock-spin-stack").stack ?? "(no stack)";
+        ctx.postLog(`[clock-probe] 1000 consecutive clock_time_get calls — wasm caller stack:\n${stk}`, "warn");
+      }
       const ns = BigInt(Math.round(captured.timeOrigin + captured.now())) * 1_000_000n;
       view(ctx.memory).setBigUint64(timePtr, ns, true);
       return ERRNO_SUCCESS;

@@ -448,6 +448,13 @@ async function runEdgeWithEmnapi() {
       consecutive = 0;
       lastSymKey = key;
     }
+    // Reset the clock_time_get-specific streak when any other wasi
+    // import fires — the spin probe in clock_time_get tracks runs of
+    // pure clock_time_get calls (no other wasi activity).
+    if (key !== "wasi_snapshot_preview1.clock_time_get") {
+      const cp = (globalThis as { __edgeClockProbe?: { streak: number; logged: boolean } }).__edgeClockProbe;
+      if (cp) cp.streak = 0;
+    }
   });
 
   // emnapi puts its own env.memory; make sure it's the one we want.
