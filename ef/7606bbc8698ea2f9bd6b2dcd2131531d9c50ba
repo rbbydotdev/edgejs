@@ -1,0 +1,26 @@
+browser-target/src/thread-worker.ts
+  s_3c284a8c3d32d2::t_5af3b6ec309038 95-97,102,104-107
+  s_3c284a8c3d32d2::t_4aa1bb4de9204d 103
+  s_3c284a8c3d32d2::t_5f0e01c4b19771 117-121
+browser-target/src/wasi-shim.ts
+  s_3c284a8c3d32d2::t_02fe7adecb59a0 1327-1336,1338,1340,1344-1347,1352,1359,1369-1378
+  s_3c284a8c3d32d2::t_51d364765e3a5b 1555-1556,1558-1561,1563-1564,1567
+browser-target/src/wasi-shim/yield-strategy.ts
+  s_3c284a8c3d32d2::t_da67239345c243 48-51,53-56
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "ef7606bbc8698ea2f9bd6b2dcd2131531d9c50ba",
+  "prompts": {},
+  "sessions": {
+    "s_3c284a8c3d32d2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "aba00247-eb0d-4299-a1aa-1451ccea7316",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
