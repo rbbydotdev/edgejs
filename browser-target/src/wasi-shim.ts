@@ -238,6 +238,13 @@ export function createWasiShim(ctx: ShimContext): {
       }
       return ctx.pipeRegistry.write(pipeFdSlot(fd), data);
     }
+    if (isFsFd(fd) && ctx.fsSnapshot) {
+      // Cross-thread writable file.  Routes to the SAB-backed data
+      // region; atomic position advance.  Writable slots are pre-
+      // allocated with a fixed buffer; ENOSPC if the file grows past.
+      const n = ctx.fsSnapshot.write(fd, data);
+      return n < 0 ? -1 : n;
+    }
     // Socket fds buffer writes until close OR until the buffer holds a
     // complete HTTP response, whichever comes first.  Edge's HTTP server
     // doesn't call shutdown/close after writing the response — it expects
@@ -350,6 +357,28 @@ export function createWasiShim(ctx: ShimContext): {
     syscall: string,
     options: import("./host/fs/types").OpenOptions = {},
   ): number {
+    // Writable opens always route through the SAB snapshot (when
+    // available) so writes are visible across every worker.  Both
+    // loader and reader paths use openWritable; no waiting involved.
+    if (ctx.fsSnapshot && !options.directory && (options.write || options.create || options.truncate)) {
+      const slot = ctx.fsSnapshot.openWritable(normalized, {
+        create: options.create,
+        truncate: options.truncate,
+      });
+      if (slot < 0) {
+        ctx.postLog(`[wasi] ${syscall} ${normalized} (writable) → errno=${-slot}`, "warn");
+        return -slot;
+      }
+      const fd = ctx.fsSnapshot.allocFd(slot);
+      if (fd < 0) {
+        ctx.postLog(`[wasi] ${syscall} ${normalized} → snapshot fd table full`, "warn");
+        return FsErrno.NOENT;
+      }
+      view(ctx.memory).setUint32(openedFdPtr, fd, true);
+      ctx.postLog(`[wasi] ${syscall} ${normalized} → fd ${fd} (snapshot/writable)`, "info");
+      return ERRNO_SUCCESS;
+    }
+
     // Read-only opens with a shared snapshot: route through the SAB-
     // backed file table.  Only readers (pool workers) use this — the
     // loader (main worker) MUST use its local FS adapter, because

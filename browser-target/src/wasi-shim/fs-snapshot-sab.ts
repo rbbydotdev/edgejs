@@ -65,17 +65,27 @@ const DATA_OFFSET = FS_OFFSET + NUM_FD_SLOTS * FD_SLOT_SIZE;
 const SAB_TOTAL = DATA_OFFSET + DATA_REGION_SIZE;
 
 // Path slot fields (relative to slot base).
-const PS_OFF_STATUS    = 0;   // u32 atomic — 0=empty, 1=loading, 2=loaded, -errno on failure
+const PS_OFF_STATUS    = 0;   // u32 atomic — see PS_STATUS_*; negative = -errno
 const PS_OFF_HASH      = 4;   // u32 — djb2 hash of the path (for fast prefilter)
 const PS_OFF_NAME_OFF  = 8;   // u32 — byte offset into PATH_NAMES region
 const PS_OFF_NAME_LEN  = 12;  // u32 — length of path string
 const PS_OFF_DATA_OFF  = 16;  // u32 — byte offset into DATA region (relative to DATA_OFFSET)
-const PS_OFF_DATA_SIZE = 20;  // u32 — size of file bytes
+const PS_OFF_DATA_SIZE = 20;  // u32 atomic — logical file size in bytes (≤ capacity)
 const PS_OFF_REFCOUNT  = 24;  // u32 atomic — # of open fds against this slot
+const PS_OFF_DATA_CAP  = 28;  // u32 — allocated buffer capacity (writable slots only)
 
 const PS_STATUS_EMPTY    = 0;
-const PS_STATUS_LOADING  = 1;
-const PS_STATUS_LOADED   = 2;
+const PS_STATUS_LOADING  = 1;  // read-only: main is fetching
+const PS_STATUS_LOADED   = 2;  // read-only: data ready, immutable
+const PS_STATUS_WRITABLE = 3;  // read-write: in-memory file with pre-allocated buffer
+
+// Writable slot buffer size.  Fixed per slot — the data region is
+// bump-allocated, so we can't grow a slot in place.  Most edge.js
+// write workloads (small tmpfiles, OPFS-shim writes, log lines) fit
+// in 1MB; anything larger returns ENOSPC.  Bumping this just costs
+// SAB headroom up front (currently 24MB data region ÷ 1MB = up to
+// 24 writable files concurrently before the bump allocator fails).
+const WRITABLE_CAPACITY = 1024 * 1024;
 
 // FD slot fields.
 const FD_OFF_ALIVE     = 0;   // u32 atomic — 0=free, 1=in use
@@ -270,9 +280,111 @@ export class FsSnapshotRegistry {
     Atomics.store(this.i32, this.psI32(slotIdx, PS_OFF_NAME_LEN), nameBytes.length);
     Atomics.store(this.i32, this.psI32(slotIdx, PS_OFF_DATA_OFF), dataOff);
     Atomics.store(this.i32, this.psI32(slotIdx, PS_OFF_DATA_SIZE), bytes.length);
+    Atomics.store(this.i32, this.psI32(slotIdx, PS_OFF_DATA_CAP), bytes.length);
     Atomics.store(this.i32, this.psI32(slotIdx, PS_OFF_STATUS), PS_STATUS_LOADED);
     Atomics.notify(this.i32, this.psI32(slotIdx, PS_OFF_STATUS));
     return slotIdx;
+  }
+
+  // ---- Writable open / write ----
+  //
+  // Writable files live in the same SAB data region as read-only files
+  // but each slot pre-allocates a fixed-size buffer (WRITABLE_CAPACITY).
+  // The "logical size" (DATA_SIZE) starts at 0 (or at the imported
+  // size on truncate-existing) and grows on write up to the capacity.
+  // Concurrent fd_write on the same fd uses an atomic position FAA.
+
+  /** Open or create a writable file at `path`.  If the path already
+   *  has a slot:
+   *   - LOADED (read-only) + truncate: error EROFS (won't promote a
+   *     bundled file to writable — those are immutable).
+   *   - WRITABLE: reuse the slot.  Optionally truncate.
+   *   - LOADING / negative status: error.
+   *  If no slot exists: claim an empty slot, allocate buffer, mark
+   *  WRITABLE.  Returns slotIdx on success or -errno on failure. */
+  openWritable(path: string, opts: { truncate?: boolean; create?: boolean }): number {
+    const normalized = normalize(path);
+    const hash = djb2(normalized);
+    const existing = this.findAnyForPath(normalized, hash);
+    if (existing >= 0) {
+      const status = Atomics.load(this.i32, this.psI32(existing, PS_OFF_STATUS));
+      if (status === PS_STATUS_WRITABLE) {
+        if (opts.truncate) {
+          Atomics.store(this.i32, this.psI32(existing, PS_OFF_DATA_SIZE), 0);
+        }
+        return existing;
+      }
+      if (status === PS_STATUS_LOADED) {
+        return -30; // EROFS — bundled snapshot files are immutable
+      }
+      return -16; // EBUSY — slot is in some other state (loading, error)
+    }
+    if (!opts.create) {
+      // O_RDWR without O_CREAT on a non-existent path: ENOENT.
+      return -44;
+    }
+    const slotIdx = this.claimEmptyPathSlot();
+    if (slotIdx < 0) return -28; // ENOSPC (slot table full)
+    // Stamp name + hash before flipping status so concurrent lookups
+    // see a consistent record.
+    const nameBytes = this.enc.encode(normalized);
+    const nameOff = this.bumpAlloc(GH_OFF_NAMES_NEXT, PATH_NAMES_SIZE, nameBytes.length);
+    if (nameOff < 0) {
+      Atomics.store(this.i32, this.psI32(slotIdx, PS_OFF_STATUS), PS_STATUS_EMPTY);
+      return -28;
+    }
+    this.u8.set(nameBytes, PN_OFFSET + nameOff);
+    const dataOff = this.bumpAlloc(GH_OFF_DATA_NEXT, DATA_REGION_SIZE, WRITABLE_CAPACITY);
+    if (dataOff < 0) {
+      Atomics.store(this.i32, this.psI32(slotIdx, PS_OFF_STATUS), PS_STATUS_EMPTY);
+      return -28;
+    }
+    Atomics.store(this.i32, this.psI32(slotIdx, PS_OFF_HASH), hash);
+    Atomics.store(this.i32, this.psI32(slotIdx, PS_OFF_NAME_OFF), nameOff);
+    Atomics.store(this.i32, this.psI32(slotIdx, PS_OFF_NAME_LEN), nameBytes.length);
+    Atomics.store(this.i32, this.psI32(slotIdx, PS_OFF_DATA_OFF), dataOff);
+    Atomics.store(this.i32, this.psI32(slotIdx, PS_OFF_DATA_SIZE), 0);
+    Atomics.store(this.i32, this.psI32(slotIdx, PS_OFF_DATA_CAP), WRITABLE_CAPACITY);
+    Atomics.store(this.i32, this.psI32(slotIdx, PS_OFF_STATUS), PS_STATUS_WRITABLE);
+    Atomics.notify(this.i32, this.psI32(slotIdx, PS_OFF_STATUS));
+    return slotIdx;
+  }
+
+  /** Write bytes to a writable fd at its current position.  Atomically
+   *  advances position by the number of bytes written.  Returns bytes
+   *  written; 0 on capacity exhaustion (caller maps to ENOSPC).
+   *  Updates the slot's DATA_SIZE if position+written exceeds it. */
+  write(fd: number, src: Uint8Array): number {
+    const slot = fsFdSlot(fd);
+    if (slot < 0 || slot >= NUM_FD_SLOTS) return -1;
+    if (Atomics.load(this.i32, this.fdI32(slot, FD_OFF_ALIVE)) !== 1) return -1;
+    const pathSlot = Atomics.load(this.i32, this.fdI32(slot, FD_OFF_PATH_SLOT));
+    const status = Atomics.load(this.i32, this.psI32(pathSlot, PS_OFF_STATUS));
+    if (status !== PS_STATUS_WRITABLE) return -1; // read-only or invalid
+    const capacity = Atomics.load(this.i32, this.psI32(pathSlot, PS_OFF_DATA_CAP));
+    const dataOff = Atomics.load(this.i32, this.psI32(pathSlot, PS_OFF_DATA_OFF));
+    const positionIdx = this.fdI32(slot, FD_OFF_POSITION);
+    const sizeIdx = this.psI32(pathSlot, PS_OFF_DATA_SIZE);
+    while (true) {
+      const pos = Atomics.load(this.i32, positionIdx);
+      if (pos >= capacity) return 0;
+      const space = capacity - pos;
+      const toWrite = Math.min(space, src.length);
+      if (Atomics.compareExchange(this.i32, positionIdx, pos, pos + toWrite) === pos) {
+        const start = DATA_OFFSET + dataOff + pos;
+        for (let i = 0; i < toWrite; i++) this.u8[start + i] = src[i]!;
+        // Bump logical size if our write extended it.  Other writers
+        // racing on a different position might have already pushed it
+        // further; only store-if-greater.
+        while (true) {
+          const curSize = Atomics.load(this.i32, sizeIdx);
+          const want = pos + toWrite;
+          if (want <= curSize) break;
+          if (Atomics.compareExchange(this.i32, sizeIdx, curSize, want) === curSize) break;
+        }
+        return toWrite;
+      }
+    }
   }
 
   /** Called by main when a load fails.  Mark the slot with an errno
@@ -297,7 +409,9 @@ export class FsSnapshotRegistry {
     const slot = this.findAnyForPath(normalized, hash);
     if (slot < 0) return { kind: "miss" };
     const status = Atomics.load(this.i32, this.psI32(slot, PS_OFF_STATUS));
-    if (status === PS_STATUS_LOADED) {
+    // Both LOADED (immutable snapshot) and WRITABLE (in-memory file)
+    // are "openable for read" — the rest of the slot fields are valid.
+    if (status === PS_STATUS_LOADED || status === PS_STATUS_WRITABLE) {
       const dataSize = Atomics.load(this.i32, this.psI32(slot, PS_OFF_DATA_SIZE));
       Atomics.add(this.i32, GH_OFF_HIT_COUNT >>> 2, 1);
       return { kind: "loaded", slotIdx: slot, dataSize };

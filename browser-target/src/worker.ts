@@ -245,6 +245,15 @@ async function runEdgeWithEmnapi() {
             if (err) { res.statusCode = 500; res.end('fs.open err: ' + err.message + '\\n'); return; }
             res.end('fs.open ok fd=' + fd + '\\n');
           });
+        } else if (req.url === '/write') {
+          const payload = 'hello-from-write-' + Date.now();
+          fs.writeFile('/tmp/edge-write-test.txt', payload, (err) => {
+            if (err) { res.statusCode = 500; res.end('writeFile err: ' + err.message + '\\n'); return; }
+            fs.readFile('/tmp/edge-write-test.txt', 'utf-8', (e2, data) => {
+              if (e2) { res.statusCode = 500; res.end('readBack err: ' + e2.message + '\\n'); return; }
+              res.end('write+read ok wrote=' + payload.length + 'B read=' + data.length + 'B match=' + (data === payload) + '\\n');
+            });
+          });
         } else if (req.url === '/randomFill') {
           require('crypto').randomFill(Buffer.alloc(32), (err, buf) => {
             if (err) { res.statusCode = 500; res.end('randomFill err: ' + err.message + '\\n'); return; }
