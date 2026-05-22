@@ -1,1 +1,1 @@
---policies buffer-pool-disable,buffer-wasm-aliased,task-queue-enqueue-fix,crypto-host-random
+--policies buffer-pool-disable,buffer-wasm-aliased,crypto-host-random
