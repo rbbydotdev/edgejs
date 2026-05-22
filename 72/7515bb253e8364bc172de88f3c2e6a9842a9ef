@@ -1,0 +1,23 @@
+browser-target/src/napi-host/index.ts
+  s_3c284a8c3d32d2::t_e89e75122403f7 577
+browser-target/src/worker.ts
+  s_3c284a8c3d32d2::t_b2ed3e4136a18c 156-159,166-167,174-183
+  s_3c284a8c3d32d2::t_db36aec65455b6 160-165,169-173
+  s_3c284a8c3d32d2::t_68b594712f3f3b 168
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "727515bb253e8364bc172de88f3c2e6a9842a9ef",
+  "prompts": {},
+  "sessions": {
+    "s_3c284a8c3d32d2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "aba00247-eb0d-4299-a1aa-1451ccea7316",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
