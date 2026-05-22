@@ -1,0 +1,29 @@
+browser-target/src/wasi-shim/pipes-sab.ts
+  s_3c284a8c3d32d2::t_ca3f083ad1a4d5 99-100,103
+  s_3c284a8c3d32d2::t_a32732f449421c 198,227
+  s_3c284a8c3d32d2::t_8d9b31b78b1e5c 204,207
+  s_3c284a8c3d32d2::t_276a6b0290afea 205-206
+  s_3c284a8c3d32d2::t_6ffe769264dc51 144
+  s_3c284a8c3d32d2::t_2e5d9af09e7a4b 90,96-98,101-102,104-109
+  s_3c284a8c3d32d2::t_9091bb3d250664 239,242
+browser-target/src/worker.ts
+  s_3c284a8c3d32d2::t_93f424d3b01729 147-160
+browser-target/src/thread-worker.ts
+  s_3c284a8c3d32d2::t_8be89cad9676f2 56
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "53f0c493f459f6cb3559455c8889bd7fe58ce967",
+  "prompts": {},
+  "sessions": {
+    "s_3c284a8c3d32d2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "aba00247-eb0d-4299-a1aa-1451ccea7316",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
