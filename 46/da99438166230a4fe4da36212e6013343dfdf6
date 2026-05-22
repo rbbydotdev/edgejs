@@ -1,0 +1,42 @@
+tests/js/regression-microtask-not-starved.stdout
+  s_3c284a8c3d32d2::t_c18d0c660f7b8e 1
+tests/js/regression-lazy-load-from-microtask.stdout
+  s_3c284a8c3d32d2::t_173ae694a1154b 1
+tests/js/regression-lazy-load-from-microtask.js
+  s_3c284a8c3d32d2::t_8401a45092766f 1-13
+tests/js/regression-microtask-not-starved.js
+  s_3c284a8c3d32d2::t_7b8c23dba379c0 1-20
+browser-target/src/napi-host/index.ts
+  s_3c284a8c3d32d2::t_3873d7d56aab59 24
+  s_3c284a8c3d32d2::t_c9d33e577eb377 473-476
+tests/js/regression-lazy-load-from-microtask.skip
+  s_3c284a8c3d32d2::t_e1ac4ba775e9ba 1
+tests/js/regression-microtask-not-starved.skip
+  s_3c284a8c3d32d2::t_b4090176cd558e 1
+NOTES.md
+  s_3c284a8c3d32d2::t_e4f8394267460d 72-76,80-92
+  s_3c284a8c3d32d2::t_1fe8f73581f34e 135,137-140,145-149,158-161
+  s_3c284a8c3d32d2::t_0220495fd3555f 167-186
+ARCHITECTURE.md
+  s_3c284a8c3d32d2::t_a2a418b1f8d24b 165-166
+  s_3c284a8c3d32d2::t_cf043e7df3603e 201-204
+  s_3c284a8c3d32d2::t_b4443331351e91 241-247
+browser-target/src/napi-host/microtask-ops.ts
+  s_3c284a8c3d32d2::t_3c2016875fd419 160-205
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.11",
+  "base_commit_sha": "46da99438166230a4fe4da36212e6013343dfdf6",
+  "prompts": {},
+  "sessions": {
+    "s_3c284a8c3d32d2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "aba00247-eb0d-4299-a1aa-1451ccea7316",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
