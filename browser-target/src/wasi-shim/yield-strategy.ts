@@ -45,6 +45,14 @@ export type AsyncCapablePollOneoff = (
   neventsPtr: number,
 ) => number | Promise<number>;
 
+/** Signature of the sync futex_wait impl. */
+export type SyncFutexWait = (futexPtr: number, expected: number, timeoutPtr: number) => number;
+
+/** Signature of the async-capable futex_wait impl.  Returns either
+ *  the i32 result immediately, or a Promise that resolves to the i32
+ *  once the wait completes. */
+export type AsyncCapableFutexWait = (futexPtr: number, expected: number, timeoutPtr: number) => number | Promise<number>;
+
 export interface YieldStrategy {
   /** Identifier for logging / diagnostic; matches the filename. */
   readonly name: "sync" | "jspi" | "asyncify";
@@ -57,6 +65,17 @@ export interface YieldStrategy {
   wrapPollOneoff(
     syncImpl: SyncPollOneoff,
     asyncImpl: AsyncCapablePollOneoff,
+  ): Function;
+
+  /** Build the wasm-import function for `futex_wait`.
+   *  Same shape as wrapPollOneoff — sync strategy returns the sync impl
+   *  (`Atomics.wait` blocks the thread; fine for dedicated workers,
+   *  blocks event loop for main); JSPI strategy returns a
+   *  `WebAssembly.Suspending` wrap around the async impl so the wasm
+   *  suspends without blocking host microtasks/macrotasks. */
+  wrapFutexWait(
+    syncImpl: SyncFutexWait,
+    asyncImpl: AsyncCapableFutexWait,
   ): Function;
 
   /** Wrap a wasm export (typically `_start`) so callers can drive it

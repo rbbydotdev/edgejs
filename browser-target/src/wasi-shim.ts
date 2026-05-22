@@ -1297,6 +1297,55 @@ export function createWasiShim(ctx: ShimContext): {
     },
   };
 
+  // ---- futex_wait sync + async-capable impls ----
+  //
+  // Both are valid implementations of `wasix_32v1.futex_wait(futexPtr,
+  // expected, timeoutPtr) -> errno`.  The yield strategy picks one:
+  //   - sync: Atomics.wait blocks the calling thread.  Fine in CHILD
+  //     workers (dedicated to their wasm thread).  Acceptable but
+  //     event-loop-blocking in main worker if hit there (rare in
+  //     normal operation).
+  //   - jspi: Atomics.waitAsync returns a Promise; wrapped via
+  //     `WebAssembly.Suspending` by the JSPI strategy, the wasm
+  //     suspends without blocking the worker's event loop.
+
+  function futexWaitSyncImpl(futexPtr: number, expected: number, timeoutPtr: number): number {
+    const i32View = new NativeInt32Array(ctx.memory.buffer, futexPtr & ~3, 1);
+    if (timeoutPtr === 0) {
+      NativeAtomics.wait(i32View, 0, expected);
+    } else {
+      const dv = view(ctx.memory);
+      const ns = dv.getBigUint64(timeoutPtr, true);
+      NativeAtomics.wait(i32View, 0, expected, Math.max(0, Number(ns / 1_000_000n)));
+    }
+    // wasi-libc rechecks the condition after futex_wait returns, so
+    // returning 0 (success) is correct for ok/timed-out/not-equal alike.
+    return 0;
+  }
+
+  async function futexWaitAsyncImpl(futexPtr: number, expected: number, timeoutPtr: number): Promise<number> {
+    const i32View = new NativeInt32Array(ctx.memory.buffer, futexPtr & ~3, 1);
+    const waitAsync = (NativeAtomics as unknown as {
+      waitAsync?: (i32: Int32Array, idx: number, val: number, timeout?: number) =>
+        { async: boolean; value: Promise<string> | string };
+    }).waitAsync;
+    if (!waitAsync) {
+      // Engine missing Atomics.waitAsync — the JSPI strategy shouldn't
+      // have selected this impl in that case, but be defensive.
+      return futexWaitSyncImpl(futexPtr, expected, timeoutPtr);
+    }
+    let r: { async: boolean; value: Promise<string> | string };
+    if (timeoutPtr === 0) {
+      r = waitAsync(i32View, 0, expected);
+    } else {
+      const dv = view(ctx.memory);
+      const ns = dv.getBigUint64(timeoutPtr, true);
+      r = waitAsync(i32View, 0, expected, Math.max(0, Number(ns / 1_000_000n)));
+    }
+    if (r.async) await r.value;
+    return 0;
+  }
+
   // ---- wasix_32v1 ----
   const wasix_32v1: Record<string, Function> = {
     proc_exit2(code: number) {
@@ -1453,6 +1502,44 @@ export function createWasiShim(ctx: ShimContext): {
     },
     proc_signal(_pid: number, _signo: number) {
       return ERRNO_SUCCESS;
+    },
+
+    // ---- futex (atomic wait/wake on shared memory) ----
+    //
+    // wasi-libc and the C++ ABI's __cxa_guard_acquire use futex_wait/wake
+    // for thread synchronization (mutex contention, static init guards,
+    // pthread_cond_wait, etc.).  WASIX signature:
+    //
+    //   futex_wait(futexPtr: *u32, expected: u32, timeoutPtr: *u64) -> errno
+    //   futex_wake(futexPtr: *u32, count: u32) -> errno  (count=1 => wake one)
+    //   futex_wake_all(futexPtr: *u32) -> errno
+    //
+    // futex_wait is a placeholder here — overwritten below the
+    // wasix_32v1 declaration via `strategy.wrapFutexWait(syncImpl, asyncImpl)`.
+    // Under JSPI the strategy returns a `WebAssembly.Suspending` wrap so
+    // the wasm actually suspends instead of blocking the JS thread.
+    futex_wait(inPtr: number, expected: number, timeoutPtr: number) {
+      return futexWaitSyncImpl(inPtr, expected, timeoutPtr);
+    },
+    futex_wake(futexPtr: number, count: number) {
+      const i32View = new NativeInt32Array(ctx.memory.buffer, futexPtr & ~3, 1);
+      NativeAtomics.notify(i32View, 0, count > 0 ? count : 1);
+      return ERRNO_SUCCESS;
+    },
+    futex_wake_all(futexPtr: number) {
+      const i32View = new NativeInt32Array(ctx.memory.buffer, futexPtr & ~3, 1);
+      // Wake ALL waiters — pass +Infinity per Atomics.notify spec.
+      NativeAtomics.notify(i32View, 0, Infinity);
+      return ERRNO_SUCCESS;
+    },
+    // wasi-libc threads exit via this when wasi_thread_start's user
+    // function returns.  Throwing the string "unwind" is emnapi's
+    // documented sentinel: ThreadMessageHandler._start catches that
+    // specific value as a clean unwind and proceeds to send the
+    // cleanup-thread message back to the manager.  Other thrown values
+    // re-propagate as fatal.
+    thread_exit(_rval: number) {
+      throw "unwind";
     },
 
     // ---- socket layer (TCP IPv4 loopback) ----
@@ -1647,6 +1734,10 @@ export function createWasiShim(ctx: ShimContext): {
   wasi_snapshot_preview1.poll_oneoff = strategy.wrapPollOneoff(
     pollOneoffSyncImpl,
     pollOneoffAsyncImpl,
+  );
+  wasix_32v1.futex_wait = strategy.wrapFutexWait(
+    futexWaitSyncImpl,
+    futexWaitAsyncImpl,
   );
 
   return { wasi_snapshot_preview1, wasix_32v1, wasi, bus };

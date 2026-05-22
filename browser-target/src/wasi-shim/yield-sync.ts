@@ -8,19 +8,22 @@
 // until `_start` returns and Node's outer event loop turns.  Pre-JSPI
 // architectural reality.
 
-import type { YieldStrategy, SyncPollOneoff, AsyncCapablePollOneoff } from "./yield-strategy";
+import type { YieldStrategy, SyncPollOneoff, AsyncCapablePollOneoff, SyncFutexWait, AsyncCapableFutexWait } from "./yield-strategy";
 
 export const syncYieldStrategy: YieldStrategy = {
   name: "sync",
 
   wrapPollOneoff(syncImpl: SyncPollOneoff, _asyncImpl: AsyncCapablePollOneoff): Function {
     void _asyncImpl;
-    // Identity — the wasm import IS the sync impl.
+    return syncImpl;
+  },
+
+  wrapFutexWait(syncImpl: SyncFutexWait, _asyncImpl: AsyncCapableFutexWait): Function {
+    void _asyncImpl;
     return syncImpl;
   },
 
   wrapExport(fn: Function): Function {
-    // No wrapping — caller invokes synchronously, same as before.
     return fn;
   },
 };

@@ -32,7 +32,7 @@
 // JS frames between, so we're safe.  Avoid invoking the wrapped export
 // from a JS function that itself goes wasm → js → wasm.
 
-import type { YieldStrategy, SyncPollOneoff, AsyncCapablePollOneoff } from "./yield-strategy";
+import type { YieldStrategy, SyncPollOneoff, AsyncCapablePollOneoff, SyncFutexWait, AsyncCapableFutexWait } from "./yield-strategy";
 
 interface WebAssemblyWithJspi {
   Suspending: new (fn: Function) => Function;
@@ -60,9 +60,15 @@ export const jspiYieldStrategy: YieldStrategy = {
     if (!jspi) {
       throw new Error("jspiYieldStrategy: WebAssembly.Suspending unavailable; check engine + flags");
     }
-    // The asyncImpl returns `number | Promise<number>`.  When it returns
-    // a Promise, the engine suspends wasm until it settles.  When it
-    // returns a number sync, wasm continues without suspending.
+    return new jspi.Suspending(asyncImpl);
+  },
+
+  wrapFutexWait(_syncImpl: SyncFutexWait, asyncImpl: AsyncCapableFutexWait): Function {
+    void _syncImpl;
+    const jspi = getJspi();
+    if (!jspi) {
+      throw new Error("jspiYieldStrategy: WebAssembly.Suspending unavailable; check engine + flags");
+    }
     return new jspi.Suspending(asyncImpl);
   },
 
