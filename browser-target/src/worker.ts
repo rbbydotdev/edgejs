@@ -240,7 +240,18 @@ async function runEdgeWithEmnapi() {
         } else if (req.url === '/fs-open') {
           fs.open('/node/deps/undici/src/package.json', 'r', (err, fd) => {
             if (err) { res.statusCode = 500; res.end('fs.open err: ' + err.message + '\\n'); return; }
-            res.end('fs.open ok fd=' + fd + '\\n');
+            fs.close(fd, () => res.end('fs.open+close ok fd=' + fd + '\\n'));
+          });
+        } else if (req.url === '/fs-readonly') {
+          // open sync, read async — isolates the cost of one async read
+          // call (which should be fastfs short-circuited).
+          let fd;
+          try { fd = fs.openSync('/node/deps/undici/src/package.json', 'r'); } catch (e) { res.statusCode = 500; res.end('fs.openSync err: ' + e.message + '\\n'); return; }
+          const buf = Buffer.alloc(8192);
+          fs.read(fd, buf, 0, 8192, 0, (err, bytesRead) => {
+            try { fs.closeSync(fd); } catch {}
+            if (err) { res.statusCode = 500; res.end('fs.read err: ' + err.message + '\\n'); return; }
+            res.end('fs.read async ok bytes=' + bytesRead + '\\n');
           });
         } else if (req.url === '/write') {
           const payload = 'hello-from-write-' + Date.now();
