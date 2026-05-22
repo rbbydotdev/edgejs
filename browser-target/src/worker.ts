@@ -12,7 +12,7 @@ import type { YieldStrategy } from "./wasi-shim/yield-strategy";
 import { WASIThreads, type WASIInstance } from "./napi-host/emnapi";
 import { Trace, toUnifiedJsonl } from "./trace";
 import { createNapiHost } from "./napi-host";
-import { composePolicies, defaultBrowserPolicies, compressionViaCompressionStream } from "./policies";
+import { composePolicies, defaultBrowserPolicies, compressionViaCompressionStream, policyRegistry } from "./policies";
 import { createBundledFs } from "./host/fs/adapters/bundled";
 // opfs + layered adapters now live on the bridge worker.  Runtime
 // worker has only a minimal bundled-fs for any wasi-shim paths that
@@ -127,7 +127,16 @@ async function runEdgeWithEmnapi() {
   // architectural issue (any async JS path that re-enters wasm needs
   // its caller wrapped with WebAssembly.promising).  Tracked separately.
   void compressionViaCompressionStream;
-  const browserPolicies = defaultBrowserPolicies;
+  // Extra opt-in policies from `?policies=name1,name2` on the page.
+  // Unknown names are warned and ignored.
+  const extraPolicies = extraPolicyNames
+    .map((n) => {
+      const p = policyRegistry[n];
+      if (!p) post("log", { text: `[policies] unknown policy name "${n}" (ignored)`, level: "warn" });
+      return p;
+    })
+    .filter((p): p is NonNullable<typeof p> => p !== undefined);
+  const browserPolicies = [...defaultBrowserPolicies, ...extraPolicies];
   const { builtinOverrides, userScriptPrelude, applied: appliedPolicies } =
     composePolicies(browserPolicies);
   void hasJspi;
@@ -674,6 +683,9 @@ let spinStreakLimit = 2_000_000;
 // args/return object allocation on every wasi import.  Real perf win
 // for steady-state traffic.
 let traceDisabled = false;
+// Comma-separated policy names from `?policies=` URL param.  Appended
+// to defaultBrowserPolicies.
+let extraPolicyNames: string[] = [];
 
 // HTTP bridge: requests come in via a SharedArrayBuffer the SW writes
 // directly into.  This is the only way to get data through to the worker
@@ -803,6 +815,9 @@ self.onmessage = (e) => {
     }
     if (e.data.traceDisabled === true) {
       traceDisabled = true;
+    }
+    if (Array.isArray(e.data.extraPolicies)) {
+      extraPolicyNames = e.data.extraPolicies.filter((s: unknown): s is string => typeof s === "string");
     }
     boot();
   }

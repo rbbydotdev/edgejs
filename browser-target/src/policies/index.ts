@@ -122,6 +122,7 @@ export { compressionViaCompressionStream } from "./compression-via-compressionst
 export { inboundHttpsViaSW } from "./inbound-https-via-sw";
 export { outboundThrow } from "./outbound-throw";
 export { outboundFetchTunnel } from "./outbound-fetch-tunnel";
+export { fastReadFile } from "./fast-readfile";
 
 import { bufferPoolDisable } from "./buffer-pool-disable";
 import { bufferWriteSync } from "./buffer-write-sync";
@@ -132,6 +133,7 @@ import { compressionViaCompressionStream } from "./compression-via-compressionst
 import { inboundHttpsViaSW } from "./inbound-https-via-sw";
 import { outboundThrow } from "./outbound-throw";
 import { outboundFetchTunnel } from "./outbound-fetch-tunnel";
+import { fastReadFile } from "./fast-readfile";
 
 // =============================================================================
 // SANE DEFAULTS
@@ -202,4 +204,5 @@ export const policyRegistry: Record<string, Policy> = {
   [inboundHttpsViaSW.name]: inboundHttpsViaSW,
   [outboundThrow.name]: outboundThrow,
   [outboundFetchTunnel.name]: outboundFetchTunnel,
+  [fastReadFile.name]: fastReadFile,
 };

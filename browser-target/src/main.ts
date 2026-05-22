@@ -283,4 +283,8 @@ const spinLimit = spinLimitParam !== null ? Math.max(0, Number(spinLimitParam) |
 // arg/return objects on every import (25k+ per HTTP request); skipping
 // it is a real win for benchmarks and production deployments.
 const traceDisabled = params.get("trace") === "0";
-postToRuntime({ kind: "start", memSnapshotSymbols, diagnoseSabAliasing, watchByteLength, userScript, spinLimit, traceDisabled });
+// ?policies=name1,name2 — opt-in extra policies appended to defaults.
+// See policies/index.ts policyRegistry for available names.
+const policiesParam = params.get("policies");
+const extraPolicies = policiesParam ? policiesParam.split(",").map((s) => s.trim()).filter(Boolean) : [];
+postToRuntime({ kind: "start", memSnapshotSymbols, diagnoseSabAliasing, watchByteLength, userScript, spinLimit, traceDisabled, extraPolicies });
