@@ -1,26 +1,37 @@
-// Child-thread Worker entry — receives a "load" message with the shared
-// wasm Module + SAB-backed Memory from the main worker (via ThreadManager),
-// instantiates its OWN WebAssembly.Instance against them, then on "start"
-// runs __wasm_init_tls(tls_base) + wasi_thread_start(tid, startArg).
+// Child-thread Worker entry — receives `load` + `start` messages from the
+// main worker (via emnapi's ThreadManager protocol), instantiates its OWN
+// WebAssembly.Instance against the shared Module + Memory, then calls
+// `wasi_thread_start(tid, arg)` to run the user's thread function.
 //
-// The instance is per-worker, so __tls_base / __tls_size globals are
-// per-instance globals, AND the malloc that backs the TLS region happens
-// in the child's context — every C-side `__thread` variable in edge.js
-// (errno, OpenSSL per-thread state, libuv per-thread caches) gets its own
-// region instead of aliasing across workers.
+// The instance is per-worker, so `__tls_base` / `__tls_size` globals are
+// per-instance globals AND `wasi_thread_start`'s prologue allocates a fresh
+// TLS region in shared linear memory.  Every C-side `__thread` variable in
+// edge.js (errno, OpenSSL per-thread error state, libuv per-thread caches)
+// gets its own region instead of aliasing across workers.
 //
-// WHY A SEPARATE FILE (NOT REUSE worker.ts)
+// WHY A SEPARATE FILE
 //
-// Main worker.ts handles the full edge.js boot: emnapi context creation,
-// napi-host setup, policies, FS facade, HTTP bridge.  Child threads need
-// NONE of that — they re-instantiate the wasm module against the existing
-// memory and run a single function.  Reusing worker.ts would either crash
-// (double-init of singletons) or pay the full boot cost per thread.
+// Main worker.ts handles full edge.js boot: emnapi context, napi-host,
+// policies, FS facade, HTTP bridge.  Child threads need NONE of that — they
+// re-instantiate the wasm module against existing memory and call one
+// function.  Reusing worker.ts would either crash (double-init of
+// singletons) or pay the full boot cost per thread.
+//
+// PROTOCOL (emnapi/wasi-threads ThreadManager ↔ ThreadMessageHandler)
+//
+//   main → child:   { __emnapi__: { type: 'load',  payload: { wasmModule, wasmMemory, sab } } }
+//   child → main:   { __emnapi__: { type: 'loaded', payload: {} } }
+//   main → child:   { __emnapi__: { type: 'start', payload: { tid, arg, sab } } }
+//   child:          calls instance.exports.wasi_thread_start(tid, arg)
+//   child → main:   { __emnapi__: { type: 'cleanup-thread', payload: { tid } } }   (when start returns)
+//
+// The TLS init (`__wasm_init_tls(tls_base)`) happens INSIDE wasm's own
+// wasi_thread_start prologue — we don't call it from JS.
 
 import { buildImports } from "./imports-generated";
 import { createWasiShim } from "./wasi-shim";
 import { syncYieldStrategy } from "./wasi-shim/yield-sync";
-import { ThreadMessageHandler, type WASIInstance } from "./napi-host/emnapi";
+import { ThreadMessageHandler, WASIThreads, type WASIInstance } from "./napi-host/emnapi";
 import { createBundledFs } from "./host/fs/adapters/bundled";
 
 declare const self: DedicatedWorkerGlobalScope;
@@ -29,75 +40,84 @@ function postLog(text: string, level: "info" | "warn" | "err" = "info") {
   self.postMessage({ kind: "thread-log", text, level });
 }
 
-// Minimal WASIInstance shim: ThreadMessageHandler calls instance.exports
-// directly via __wasm_init_tls / wasi_thread_start in its _start path,
-// but it still calls our `wasi.initialize` / `wasi.start` for the side
-// effect of setting any "ready" flag.  We satisfy the interface with
-// no-ops because our wasi-shim doesn't have a separate initialize stage.
-const wasiStub: WASIInstance = {
-  wasiImport: undefined,
-  initialize(_instance: object) { void _instance; },
-  start(_instance: object): number { void _instance; return 0; },
-  getImportObject(): { wasi: Record<string, Function> } {
-    return { wasi: {} };
-  },
-};
-
-// One handler per child thread; created on first message receipt.
-new ThreadMessageHandler({
+const handler = new ThreadMessageHandler({
   postMessage: (msg) => self.postMessage(msg),
-  // Override the default instantiate so we use OUR wasi-shim + napi
-  // namespace split, not emnapi's defaults.
-  onLoad: async (payload) => {
-    const { wasmModule, wasmMemory } = payload;
+  onLoad: async ({ wasmModule, wasmMemory }): Promise<WebAssembly.WebAssemblyInstantiatedSource> => {
     postLog(`[thread] load received, instantiating against shared memory`);
 
-    // Build wasi imports for this thread.  Sync yield strategy — child
-    // threads don't drive the microtask pump; they just do work.
-    // FS adapter: bundled (read-only).  Threads don't need OPFS yet.
+    // Build wasi imports for this thread.  Sync yield — child threads
+    // don't drive a microtask pump.  FS is bundled (read-only); threads
+    // don't need OPFS for typical work.
     const fs = createBundledFs({ log: () => { /* quiet */ } });
     const shim = createWasiShim({
       memory: wasmMemory,
       args: ["edge-thread"],
       env: {},
       fs,
-      postLog: (text, level) => postLog(text, (level === "out" || level === "err" || level === "warn") ? (level === "out" ? "info" : level) : "info"),
+      postLog: (text, level) => {
+        const lvl = level === "out" ? "info" : level === "err" || level === "warn" ? level : "info";
+        postLog(text, lvl as "info" | "warn" | "err");
+      },
       postExit: () => { /* threads don't drive process.exit */ },
       yieldStrategy: syncYieldStrategy,
     });
 
-    // Napi imports for child threads are STUBS — child threads run wasm
-    // that uses libc TLS, OpenSSL, etc., but they don't drive their own
-    // emnapi context.  Falling through to the generated default-return
-    // stubs (return 0) is correct here: any napi call from a worker
-    // thread that depends on env state would already be undefined behavior.
+    // Child-side WASIThreads stub.  Required by emnapi protocol:
+    // the child must run wasiThreads.initialize(originalInstance, ...)
+    // — NOT just return the raw instance — so the wasi-threads layer
+    // hooks up per-thread state (TLS init via __wasm_init_tls, futex
+    // routing, etc.).  Without this the spawn succeeds but TLS aliases
+    // across threads (the exact bug we set out to fix).
+    //
+    // childThread: true puts WASIThreads in passive mode — no Worker
+    // factory, no ThreadManager.  It just provides the namespace and
+    // does the initialize() side-effects.
+    const wasiStub: WASIInstance = {
+      wasiImport: undefined,
+      initialize(_i: object) { void _i; },
+      start(_i: object): number { void _i; return 0; },
+      getImportObject(): { wasi: Record<string, Function> } { return { wasi: shim.wasi }; },
+    };
+    const wasiThreads = new WASIThreads({
+      wasi: wasiStub,
+      childThread: true,
+    });
+
+    // Napi imports for child threads are stubs.  Child threads run wasm
+    // that uses libc/__thread/OpenSSL TLS — they don't drive their own
+    // emnapi context.  Default-return stubs in buildImports (napi=0) are
+    // correct here: any napi call from a worker thread that depends on
+    // env state would already be undefined behavior in real Node too
+    // (you can't share napi_env across threads without an explicit
+    // threadsafe-function ref).
     const wasmImports = buildImports(wasmMemory, {
-      napi: undefined,
-      napi_extension_wasmer_v0: undefined,
-      env: undefined,
       wasi_snapshot_preview1: shim.wasi_snapshot_preview1 as Record<string, Function>,
       wasix_32v1: shim.wasix_32v1 as Record<string, Function>,
-      wasi: shim.wasi,
+      // Merge wasi-threads' import object over our shim.wasi so the child
+      // also gets the proper thread-spawn (no-op for childThread: true)
+      // and any other namespace contributions.
+      wasi: { ...shim.wasi, ...wasiThreads.getImportObject().wasi },
     }, () => { /* trace off for child threads */ });
     (wasmImports.env as Record<string, unknown>).memory = wasmMemory;
 
-    const instance = await WebAssembly.instantiate(wasmModule, wasmImports);
-
-    // Per-thread TLS init.  `__wasm_init_tls(tls_base)` writes the
-    // thread's __tls_base global (per-instance) and zeroes/copies the
-    // TLS template into the new region.  The region itself is allocated
-    // by emnapi's wasi-threads, which calls our wasm's `malloc` for the
-    // tls_size bytes BEFORE invoking wasi_thread_start.
-    //
-    // ThreadMessageHandler does the actual __wasm_init_tls + wasi_thread_start
-    // calls itself — we just have to return the right instance shape.
+    const originalInstance = await WebAssembly.instantiate(wasmModule, wasmImports);
+    // initialize() is where the wasi-threads layer wires per-thread
+    // state: it's the in-child analogue of setup() in the main thread.
+    // ThreadMessageHandler's _start will then call wasi_thread_start,
+    // which internally runs __wasm_init_tls against a fresh per-thread
+    // TLS region.
+    const instance = wasiThreads.initialize(originalInstance, wasmModule, wasmMemory);
+    postLog(`[thread] instantiated + initialized, awaiting start`);
     return { instance, module: wasmModule };
+  },
+  onError: (err, type) => {
+    postLog(`[thread] error in ${type}: ${err.message ?? String(err)}`, "err");
   },
 });
 
-// Tell main we're ready.  ThreadManager waits for this before considering
-// the worker available for the pool.
-self.postMessage({ kind: "thread-ready" });
-postLog("[thread] worker spawned, awaiting load");
-
-void wasiStub;
+self.onmessage = (e: MessageEvent) => {
+  // ThreadMessageHandler.handle expects a strongly-typed
+  // WorkerMessageEvent<...> but its runtime check is a duck-typed
+  // `e?.data?.__emnapi__` so the cast is safe.
+  handler.handle(e as never);
+};

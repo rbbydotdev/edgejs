@@ -463,7 +463,15 @@ std::string ValueToUtf8(napi_env env, napi_value value) {
 
 void SetPropertyIfPresent(napi_env env, napi_value obj, napi_value key, napi_value value) {
   if (env == nullptr || obj == nullptr || key == nullptr || value == nullptr) return;
-  napi_set_property(env, obj, key, value);
+  // See edge_handle_wrap.cc:189 for the rationale: napi_set_property
+  // (= JS strict-mode assignment) throws when the inherited prototype
+  // property is non-writable.  napi_define_properties with writable+
+  // configurable creates an own-property shadow, which is the correct
+  // semantic for these callers.
+  napi_property_descriptor desc = {nullptr, key, nullptr, nullptr, nullptr, value,
+                                   static_cast<napi_property_attributes>(napi_writable | napi_configurable | napi_enumerable),
+                                   nullptr};
+  napi_define_properties(env, obj, 1, &desc);
 }
 
 napi_value GetNamedPropertyValue(napi_env env, napi_value obj, const char* key) {

@@ -258,6 +258,22 @@ async function runEdgeWithEmnapi() {
   };
   const wasiThreads = new WASIThreads({
     wasi: wasiStub,
+    // CRITICAL for browsers: pre-spawn a pool so pthread_create doesn't
+    // block on `Atomics.wait` for a worker that hasn't initialized yet.
+    // Without `reuseWorker`, the main wasm thread calls wasi.thread-spawn
+    // synchronously and waits for the new worker — but in a browser
+    // DedicatedWorker context the worker can't initialize while we're
+    // blocked in Atomics.wait.  Deadlock.
+    //
+    // Strict mode means we error if more threads are needed than the
+    // pool; better than silent deadlock.  Tune `size` per workload —
+    // 4 covers libuv's default thread pool (used by crypto.pbkdf2,
+    // dns.lookup, fs ops with no native syscall, etc.).
+    reuseWorker: { size: 4, strict: true },
+    // Synchronous semantics: pthread_create returns only after the
+    // thread actually started, matching real Node.  1000ms timeout
+    // for safety; libuv expects sync creation.
+    waitThreadStart: 1000,
     onCreateWorker: (_ctx) => {
       void _ctx;
       // Spawn the child-thread worker.  Vite imports it as a module worker.
@@ -349,7 +365,13 @@ async function runEdgeWithEmnapi() {
   });
   try {
     wasiThreads.setup(threadInstanceProxy, module, memory);
-    post("log", { text: "wasi-threads: ready to spawn (TLS-isolated child workers)", level: "info" });
+    // Preload the worker pool BEFORE _start runs.  pthread_create
+    // (libuv thread pool, dns.lookup callbacks, etc.) is sync from
+    // wasm's POV; if workers aren't already alive at spawn time the
+    // main thread blocks on Atomics.wait while waiting for them to
+    // initialize.  Preloading avoids that race.
+    await wasiThreads.preloadWorkers();
+    post("log", { text: "wasi-threads: ready to spawn (TLS-isolated child workers, pool preloaded)", level: "info" });
   } catch (e) {
     post("log", { text: `wasi-threads.setup threw: ${(e as Error).message}`, level: "warn" });
   }

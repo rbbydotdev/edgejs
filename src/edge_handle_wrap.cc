@@ -188,7 +188,17 @@ napi_value GetHandleOnCloseSymbol(napi_env env) {
 
 void SetPropertyIfPresent(napi_env env, napi_value obj, napi_value key, napi_value value) {
   if (env == nullptr || obj == nullptr || key == nullptr || value == nullptr) return;
-  napi_set_property(env, obj, key, value);
+  // Use napi_define_property with writable+configurable so we create a
+  // per-instance OWN property that shadows the prototype.  Plain
+  // napi_set_property (= JS `obj[key] = value`) throws in strict mode
+  // when the inherited prototype property is non-writable — which is
+  // exactly the case for `MessagePort.prototype[handle_onclose]`
+  // (lib/internal/worker/io.js defines it writable:false as a default
+  // for all ports; we want per-port shadowing).
+  napi_property_descriptor desc = {nullptr, key, nullptr, nullptr, nullptr, value,
+                                   static_cast<napi_property_attributes>(napi_writable | napi_configurable | napi_enumerable),
+                                   nullptr};
+  napi_define_properties(env, obj, 1, &desc);
 }
 
 }  // namespace
