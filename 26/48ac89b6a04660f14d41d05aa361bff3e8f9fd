@@ -1,0 +1,19 @@
+browser-target/src/wasi-shim.ts
+  s_3c284a8c3d32d2::t_1ff5056d3f1c7b 1336-1348,1351-1354,1370-1373
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "2648ac89b6a04660f14d41d05aa361bff3e8f9fd",
+  "prompts": {},
+  "sessions": {
+    "s_3c284a8c3d32d2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "aba00247-eb0d-4299-a1aa-1451ccea7316",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
