@@ -162,8 +162,8 @@ active policies' `userScriptPrelude` is prepended before evaluation.
 | Node feature | Layer | How |
 |---|---|---|
 | JS execution | host V8 | Not in wasm (`imports` mode) — host runs all JS. |
-| Microtask queue | host V8 + L3 intercept | `installTaskQueueEnqueueShim` routes `enqueueMicrotask` to host's `queueMicrotask`. |
-| Promise rejection | host V8 + L3 intercept | `setPromiseRejectCallback` captured; host's `unhandledrejection` events forwarded. |
+| Microtask queue | host V8 + L1 wasm import | `unofficial_napi_enqueue_microtask` (in `microtask-ops.ts`) routes to host's `queueMicrotask`. |
+| Promise rejection | host V8 + L1 wasm import | `unofficial_napi_set_promise_reject_callback` captures lib's handler; `installHostPromiseRejectListeners` forwards host `unhandledrejection` events. |
 | Buffer storage | L3 napi patch | Every `Buffer.buffer === wasmMemory.buffer` (SAB), via `buffer-wasm-aliased` policy. |
 | TCP / sockets | L1 (`wasi-shim.ts`) | Virtual socket table; sockets route through Service Worker bridge. |
 | HTTPS termination | L4 override (`https-as-http`) | Service Worker IS the TLS endpoint; wasm sees pre-parsed HTTP. |
@@ -187,8 +187,6 @@ one file with a `name`, `description`, and any of `builtinOverrides`
   share memory with wasm (no JS-heap mirror, no sync). Also patches
   AB-prototype primordials to be polymorphic on SAB receivers (needed
   for webstreams/crypto lib code that uses strict V8 getters).
-- `taskQueueEnqueueFix` — L4 redundant safety net for the microtask
-  binding recursion (the primary fix is the L3 napi-host intercept).
 
 **In `defaultBrowserPolicies` (browser deployments)**:
 - All of `minimalPolicies`, plus:
@@ -200,6 +198,10 @@ one file with a `name`, `description`, and any of `builtinOverrides`
   polyfill of `http.request`. For deployments where outbound is needed.
 - `bufferWriteSync` — alternative to `bufferWasmAliased` using post-write
   syncs. Diagnostic / fallback. Don't use both at once.
+- `taskQueueEnqueueFix` — legacy L4 patch that overrides
+  `internalBinding('task_queue').enqueueMicrotask` at the lib level.
+  Made redundant by the L1 wasm import (`unofficial_napi_enqueue_microtask`)
+  in `microtask-ops.ts`. Kept for diagnostic / fallback use.
 - `cryptoHostRandom` — first offload policy.  Routes
   `crypto.randomBytes`, `randomFillSync`, `randomFill`, `randomUUID`
   to the host's native WebCrypto (snapshotted onto
@@ -236,9 +238,13 @@ for behaviors that can't be expressed as module-source overrides:
 - **`patchEmnapiDefineForEmptyValue`** — rewrites property descriptors
   with all-zero `{method,getter,setter,value}` to use the `undefined`
   handle, so `emnapiDefineProperty` doesn't crash.
-- **`installTaskQueueEnqueueShim`** — intercepts `napi_create_function`
-  for the names `enqueueMicrotask` and `setPromiseRejectCallback`,
-  replacing the wasm-callback-backed JS function with a host-side shim.
+- **`installHostPromiseRejectListeners`** (in `microtask-ops.ts`) —
+  wires host `process.on('unhandledRejection')` /
+  `addEventListener('unhandledrejection')` events to lib's handler
+  captured by the L1 wasm import `unofficial_napi_set_promise_reject_callback`.
+  Replaces the former `installTaskQueueEnqueueShim` — now superseded
+  by the L1 wasm import path for both `enqueueMicrotask` and
+  `setPromiseRejectCallback`.
 - **`napi_run_script` wrapper** — universal builtin-override hook for
   lazy-required modules (`inspector`, `url`, `crypto`, …). Parses
   `//# sourceURL=node:<id>` and rewrites the source per policy

@@ -162,7 +162,6 @@ import { outboundFetchTunnel } from "./outbound-fetch-tunnel";
 export const minimalPolicies: Policy[] = [
   bufferPoolDisable,
   bufferWasmAliased,
-  taskQueueEnqueueFix,
 ];
 
 /**
@@ -180,7 +179,6 @@ export const minimalPolicies: Policy[] = [
 export const defaultBrowserPolicies: Policy[] = [
   bufferPoolDisable,
   bufferWasmAliased,
-  taskQueueEnqueueFix,
   inboundHttpsViaSW,
   outboundThrow,
 ];

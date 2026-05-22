@@ -157,3 +157,49 @@ export function buildMicrotaskOpsImports(
     },
   };
 }
+
+/**
+ * Wire host promise-rejection events to lib's captured callback.
+ *
+ * Lib registers its handler via `setPromiseRejectCallback`, which goes
+ * through edge's C++ binding → `unofficial_napi_set_promise_reject_callback`
+ * wasm import → `state.promiseRejectCallback`.  Host-level events
+ * (`process.on('unhandledRejection')` on Node, `addEventListener('unhandledrejection')`
+ * in browser workers) are then forwarded here.
+ *
+ * Lib's callback signature: `(type, promise, reason)` where type is:
+ *   0 kPromiseRejectWithNoHandler
+ *   1 kPromiseHandlerAddedAfterReject
+ *   2 kPromiseRejectAfterResolved
+ *   3 kPromiseResolveAfterResolved
+ *
+ * Install once at napi-host setup; both Node and browser-worker shapes
+ * are supported (we hook whichever exists).
+ */
+export function installHostPromiseRejectListeners(
+  state: MicrotaskOpsState,
+  postLog?: (line: string, level: "out" | "warn" | "err" | "debug") => void,
+): void {
+  function dispatch(type: number, promise: unknown, reason: unknown): void {
+    const cb = state.promiseRejectCallback;
+    if (!cb) return;
+    try { cb(type, promise, reason); }
+    catch (e) { postLog?.(`[promise-reject] lib handler threw: ${(e as Error)?.message}`, "warn"); }
+  }
+  const proc = (globalThis as { process?: { on?: (event: string, fn: (...a: unknown[]) => void) => void } }).process;
+  if (proc && typeof proc.on === "function") {
+    proc.on("unhandledRejection", (reason: unknown, promise: unknown) => dispatch(0, promise, reason));
+    proc.on("rejectionHandled", (promise: unknown) => dispatch(1, promise, undefined));
+  }
+  const gAddEvent = (globalThis as { addEventListener?: (event: string, fn: (...a: unknown[]) => void) => void }).addEventListener;
+  if (typeof gAddEvent === "function") {
+    gAddEvent("unhandledrejection", (event: unknown) => {
+      const ev = event as { promise?: unknown; reason?: unknown };
+      dispatch(0, ev.promise, ev.reason);
+    });
+    gAddEvent("rejectionhandled", (event: unknown) => {
+      const ev = event as { promise?: unknown };
+      dispatch(1, ev.promise, undefined);
+    });
+  }
+}

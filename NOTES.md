@@ -69,22 +69,27 @@ the browser-target tree.
   `internal/util/inspect`, `tty`, etc). Visible as `TypeError: fn is
   not a function` from realm.js:401 when `console.log` is first used
   inside a callback. Workaround: prelude pre-primes lazy paths by
-  calling `console.log('','')` with swapped-out write functions. Root
-  cause likely in napi state lifetime across microtask boundaries —
-  may be resolved when we adopt a proper coordinated microtask queue.
+  calling `console.log('','')` with swapped-out write functions.
+  **Verified still present** after Phase B microtask rebuild — see
+  `tests/js/regression-lazy-load-from-microtask.{js,skip}`. Hypothesis
+  refined: root cause is in `napi_run_script` / `compileForInternalLoader`
+  state, not microtask queueing.
 - `microtasks-starved-by-pending-timer` — when a `setTimeout(..., N)`
   is pending, edge's wasm event loop blocks ALL microtasks until the
   timer fires. Test code avoids setTimeout watchdogs; relies on the
-  test-runner's 30s subprocess timeout for genuine hangs. Root cause
-  likely in `poll_oneoff` waiting on timers before draining JS tasks.
-- `task-queue-fallback-recursion` — edge's C++ `TaskQueueEnqueueMicrotask`
-  fallback calls `globalThis.queueMicrotask` (= lib's wrapper that
-  calls this very binding). Mitigated by:
-  - L3: `installTaskQueueEnqueueShim` (napi-host intercept).
-  - L4: `task-queue-enqueue-fix` policy (redundant safety net).
-  - **Proper fix**: rebuild edge.js with `__attribute__((used))` on
-    the DCE'd `unofficial_napi_enqueue_microtask` declaration so it
-    becomes a real wasm import we can implement. Pending.
+  test-runner's 30s subprocess timeout for genuine hangs. **Verified
+  still present** after Phase B — see
+  `tests/js/regression-microtask-not-starved.{js,skip}`. Hypothesis
+  refined: WASI `poll_oneoff` Atomics.wait blocks the JS thread that
+  would otherwise drain the host microtask queue. Fix requires either
+  (a) split wasm onto a worker so host can drain, or (b) periodic
+  microtask-checkpoint wakeups inside the wait loop.
+- `task-queue-fallback-recursion` — **RESOLVED** by Phase B. Edge's
+  C++ `TaskQueueEnqueueMicrotask` now calls
+  `unofficial_napi_enqueue_microtask` (wasm import) which routes to
+  host's `queueMicrotask` directly — no recursion path. The L4
+  `task-queue-enqueue-fix` policy is no longer in defaults; kept in
+  the registry as opt-in/diagnostic. See ARCHIVE.md for history.
 - `buffer-wasm-aliased-policy-required` — the structural properties
   the new buffer model relies on (`Buffer.buffer` IS the SAB;
   byteOffset is the wasm ptr; `.length` is per-buffer) are now
@@ -127,20 +132,21 @@ the browser-target tree.
 - Multiple `#!~debt` in `unofficial.ts` — most no-op stubs writing
   sensible defaults to out-params. Promote when a workload lights them up.
 
-### Production gaps (post-microtask-shim)
+### Production gaps (post-Phase-B microtask rebuild)
 
-These are real semantic differences vs Node that the current shim
-doesn't fully address. Each waits on either a wasm rebuild + real
-napi imports for `unofficial_napi_*` microtask ops, or a deeper L3
-intercept layer:
+Real semantic differences vs Node that Phase B (wasm imports for
+`unofficial_napi_*` microtask ops) did NOT close. Each needs a
+deeper intervention — typically a real microtask checkpoint pump
+or splitting the wasm runtime off the JS thread.
 
 - **`WebAssembly.compile()` deadlock** — V8 needs `PumpMessageLoop` +
   microtask checkpoint to resolve the promise. No foreground task
   pump in our setup.
-- **`process.on('unhandledRejection')` partially wired** — L3 intercept
-  captures the lib handler and forwards host events, but lib defers
-  emission via tickCallback which our runtime doesn't drive in the
-  same window. Verifiable as: rejection IS captured by L3 but doesn't
+- **`process.on('unhandledRejection')` partially wired** — wasm
+  import captures the lib handler into `MicrotaskOpsState` and
+  `installHostPromiseRejectListeners` forwards host events, but lib
+  defers emission via tickCallback which our runtime doesn't drive
+  in the same window. Verifiable as: rejection IS captured but doesn't
   surface to user listeners before process exit.
 - **WeakRef / FinalizationRegistry leaks** — `ClearKeptObjects` never
   runs (would be a side-effect of proper microtask checkpoint).
@@ -149,26 +155,35 @@ intercept layer:
   code may observe different interleaving than real Node.
 - **`worker_threads.MessageChannel` would deadlock** — microtask-
   coordinated wakeups across workers need a single coordinated queue.
+- **`lazy-load-from-microtask`** — see debt entry above. Regression
+  test at `tests/js/regression-lazy-load-from-microtask.js`.
+- **`microtasks-starved-by-pending-timer`** — see debt entry above.
+  Regression test at `tests/js/regression-microtask-not-starved.js`.
 
 ---
 
 ## Active followups (priority order)
 
-### 1. Rebuild edge.js with proper microtask napi imports
+### 1. Microtask checkpoint pump (Phase B follow-up)
 
-Patch `napi/include/unofficial_napi.h` to add `__attribute__((used))`
-on `unofficial_napi_enqueue_microtask`, `unofficial_napi_process_microtasks`,
-`unofficial_napi_set_promise_reject_callback`, `unofficial_napi_set_promise_hooks`.
+Phase B (wasm imports for `unofficial_napi_*` ops) closed
+`task-queue-fallback-recursion`, but did NOT close
+`lazy-load-from-microtask` or `microtasks-starved-by-pending-timer`
+(verified by `tests/js/regression-*.{js,skip}`).
 
-Rebuild via `make build-wasix` (wasixcc + setup-wasix-deps + CMake).
-Verify the symbols appear in the wasm imports list.
+The deeper issue is that we have no host-side microtask checkpoint
+pump that runs between wasm "macrotasks." When wasm blocks on
+`poll_oneoff` (Atomics.wait), the JS thread can't drain pending
+host microtasks until the wait releases.
 
-Implement them host-side with a real coordinated queue. Drop the L3
-shims (`installTaskQueueEnqueueShim`) and the L4 `task-queue-enqueue-fix`
-policy. The L1 imports become the authoritative path.
-
-Closes: `task-queue-fallback-recursion`, likely closes
-`lazy-load-from-microtask` and `microtasks-starved-by-pending-timer`.
+Candidate approaches:
+- **Split wasm onto a worker** — wasm in worker, host JS on main
+  thread, drain microtasks naturally between postMessage volleys.
+  Largest impact; complicates SW bridge.
+- **Periodic Atomics.wait wakeups** — wait with short timeouts and
+  drain microtasks each cycle. Cheaper, but tail-latency penalty.
+- **Async-await reshape** — turn `_start` into Asyncify-wrapped
+  loop yielding to host between syscalls. Costly to build.
 
 ### 2. Offload policies (Phase C in the architecture plan)
 

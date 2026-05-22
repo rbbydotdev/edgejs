@@ -1,0 +1,1 @@
+Open bug `lazy-load-from-microtask` (NOTES.md). Phase B microtask rebuild did NOT close it — `compileForInternalLoader` still fails when first invoked from a microtask continuation. Root cause is deeper than queueMicrotask routing. Reproducer kept for diagnostic; remove `.skip` when fixed.

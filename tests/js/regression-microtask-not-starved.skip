@@ -1,0 +1,1 @@
+Open bug `microtasks-starved-by-pending-timer` (NOTES.md). Phase B microtask rebuild did NOT close it — microtasks still don't drain until soonest pending timer fires. Likely poll_oneoff Atomics.wait blocking JS thread from draining the host microtask queue. Reproducer kept for diagnostic; remove `.skip` when fixed.
