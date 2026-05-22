@@ -118,6 +118,7 @@ export { bufferWriteSync } from "./buffer-write-sync";
 export { bufferWasmAliased } from "./buffer-wasm-aliased";
 export { taskQueueEnqueueFix } from "./task-queue-enqueue-fix";
 export { cryptoHostRandom } from "./crypto-host-random";
+export { compressionViaCompressionStream } from "./compression-via-compressionstream";
 export { inboundHttpsViaSW } from "./inbound-https-via-sw";
 export { outboundThrow } from "./outbound-throw";
 export { outboundFetchTunnel } from "./outbound-fetch-tunnel";
@@ -127,6 +128,7 @@ import { bufferWriteSync } from "./buffer-write-sync";
 import { bufferWasmAliased } from "./buffer-wasm-aliased";
 import { taskQueueEnqueueFix } from "./task-queue-enqueue-fix";
 import { cryptoHostRandom } from "./crypto-host-random";
+import { compressionViaCompressionStream } from "./compression-via-compressionstream";
 import { inboundHttpsViaSW } from "./inbound-https-via-sw";
 import { outboundThrow } from "./outbound-throw";
 import { outboundFetchTunnel } from "./outbound-fetch-tunnel";
@@ -196,6 +198,7 @@ export const policyRegistry: Record<string, Policy> = {
   [bufferWasmAliased.name]: bufferWasmAliased,
   [taskQueueEnqueueFix.name]: taskQueueEnqueueFix,
   [cryptoHostRandom.name]: cryptoHostRandom,
+  [compressionViaCompressionStream.name]: compressionViaCompressionStream,
   [inboundHttpsViaSW.name]: inboundHttpsViaSW,
   [outboundThrow.name]: outboundThrow,
   [outboundFetchTunnel.name]: outboundFetchTunnel,

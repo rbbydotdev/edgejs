@@ -94,13 +94,27 @@ export function buildMicrotaskOpsImports(
     },
 
     /**
-     * "Drain pending microtasks now."  In real Node this calls
-     * `Isolate::PerformMicrotaskCheckpoint()` to force-drain V8's
-     * queue.  Our model: V8's queue IS the host's, and host V8 drains
-     * it naturally at task boundaries — we don't have a sync force-drain
-     * primitive from JS-land.  Return napi_ok; the practical effect is
-     * "microtasks will drain when control returns to host", which is
-     * what edge's wasm code typically needs anyway.
+     * "Drain pending microtasks now."  Edge's loop calls this once per
+     * iteration (`src/edge_runtime.cc:1870`) expecting V8's
+     * `Isolate::PerformMicrotaskCheckpoint()` semantics — actually drain
+     * the microtask queue so promise continuations make progress.
+     *
+     * #!~debt cant-drain-edge-context-microtasks: we cannot honor this
+     * contract.  V8 microtask queues are per-context; emnapi creates
+     * edge.js's env on its own V8 context (separate from Node's
+     * default context).  Calling Node's `process._tickCallback()` —
+     * the only JS-visible path to PerformMicrotaskCheckpoint — drains
+     * NODE's context queue, NOT edge's.  emnapi exposes no
+     * drain primitive for the env's queue (verified by grep over
+     * @emnapi/core + @emnapi/runtime).
+     *
+     * Consequence: promises queued by edge's user code only resolve
+     * when control leaks back to Node's outer event loop — which
+     * happens only after `_start` returns, or via emnapi's internal
+     * MessageChannel-based scheduling (visible as multi-second delays
+     * in `policy-outbound-fetch-tunnel`).  Tracked in NOTES.md
+     * followup #1; needs novel solution (syscall-level Asyncify or
+     * full multi-threaded emnapi mode).
      */
     unofficial_napi_process_microtasks(_env: number): number {
       return NAPI_OK;

@@ -171,43 +171,71 @@ Phase B (wasm imports for `unofficial_napi_*` ops) closed
 `lazy-load-from-microtask` or `microtasks-starved-by-pending-timer`
 (verified by `tests/js/regression-*.{js,skip}`).
 
-**The constraint**: in JS, the microtask queue only drains when control
-returns to the event loop.  When edge's wasi shim handles `poll_oneoff`
-with a timer subscription, it calls `Atomics.wait` to block until the
-timer fires.  `Atomics.wait` is synchronous — it blocks the JS thread
-that the wasm + edge's V8 context BOTH run on.  No event-loop turn,
-no microtask drain.  Splitting wasm to another worker doesn't help:
-user JS executes inside edge's V8 context, which lives on whichever
-thread runs the wasm — so the user's `Promise.then` callback is queued
-on the blocked thread regardless.  Looping shorter `Atomics.wait`s
-doesn't help either, since synchronous code between iterations doesn't
-yield to the event loop.
+**The constraint, refined after deeper investigation**:
 
-**Two real approaches:**
+Edge's main loop (`src/edge_runtime.cc:1870`) calls
+`unofficial_napi_process_microtasks(env)` once per iteration, expecting
+V8 `Isolate::PerformMicrotaskCheckpoint()` semantics.  We need to honor
+that contract for promise-based host code (CompressionStream, fetch,
+postMessage) to make progress.  We can't:
 
-- **(a) Syscall-level Asyncify at the wasi-shim boundary.**  When
-  `poll_oneoff` is called with a timer-only subscription (no fd events),
-  the wasi-shim saves the wasm context, returns control to JS,
-  `setTimeout(resume, N)` for the timer, microtasks drain naturally
-  during the gap, then we re-enter wasm on the timer fire.  Smaller
-  blast radius than full Asyncify — only the syscall boundary needs to
-  yield, not arbitrary call stacks.  Implementation cost: moderate.
-  Performance cost: at most one event-loop hop per timer-only wait.
-  Requires either real Asyncify (Emscripten compile flag) OR our own
-  continuation primitive (probably an indirect-call resumption table
-  built into the wasi shim).
+1. V8 microtask queues are PER-CONTEXT, not per-isolate.
+2. emnapi creates edge.js's env on its own V8 context, separate from
+   Node's default context.
+3. The only JS-visible drain primitive is Node's `process._tickCallback()`
+   (which internally calls `internalBinding('task_queue').runMicrotasks`
+   = `Isolate::PerformMicrotaskCheckpoint`).  That drains NODE's
+   context queue, NOT edge's.  Verified empirically: calling
+   `globalThis.__edgeHostTickCallback()` from inside edge's user code
+   does not surface user-queued `Promise.then` continuations.
+4. emnapi exposes no drain primitive for the env's queue (verified by
+   grep over `@emnapi/core` + `@emnapi/runtime`).
+5. Atomics.wait + tighter loops don't help — synchronous code between
+   wakeups doesn't yield to V8's per-context microtask checkpoint.
 
-- **(b) Full Asyncify on `_start`.**  Recompile with `-s ASYNCIFY=1`
+The architectural wall is V8's per-context queue isolation combined
+with no JS-accessible drain primitive for foreign contexts.  This
+gates EVERY host-async-then-callback policy (compression, future
+crypto-via-subtle, wasm-compile-via-host, etc.) — they all hit it.
+
+**Real approaches:**
+
+- **(a) Move wasm to a Worker (emnapi multithreaded mode).**  Per
+  emnapi docs (https://emnapi-docs.vercel.app/guide/multithreaded-async.html):
+  spawn a Worker with the wasm + napi context inside it, host JS on
+  main thread.  Main thread's microtask queue drains naturally between
+  postMessage volleys, and wasm-side waits use SAB-coordinated wakeups
+  through the worker.  Requires emnapi vendoring + recompile of edge.js
+  with pthread support, plus a substantial harness/SW restructure.
+  Largest correctness win; biggest surface change.
+
+- **(b) Syscall-level Asyncify at the wasi-shim boundary.**  When
+  `poll_oneoff` is called with a timer-only subscription, the wasi-shim
+  saves the wasm context, returns control to JS, `setTimeout(resume, N)`
+  for the timer, microtasks drain in the gap, then we re-enter wasm on
+  the timer fire.  Smaller blast radius than full Asyncify — only the
+  syscall boundary yields, not arbitrary call stacks.  Requires real
+  Asyncify (Emscripten compile flag) OR our own continuation primitive
+  in the wasi shim.
+
+- **(c) Full Asyncify on `_start`.**  Recompile with `-s ASYNCIFY=1`
   or equivalent for WASIX, wrap `_start` so any wasm function can
   yield to the host.  Pyodide / Emception use this.  Cost: ~20-30%
   perf overhead, +25-50% wasm binary size, unclear WASIX support.
-  Largest blast radius — every wasm function becomes potentially
-  reentrant.  Strictly more capable than (a) but more invasive.
 
-**Recommended first step**: investigate (a) — verify wasi-shim can
-intercept timer-only `poll_oneoff`, prove the resumption primitive
-works on a toy wasm, then graft into the edge.js shim.  Only fall
-back to (b) if (a) hits a fundamental wall.
+- **(d) Expose a context-aware drain in emnapi.**  Upstream patch
+  to emnapi adding `napiModule.emnapi.runMicrotasks()` that calls
+  `context->GetMicrotaskQueue()->PerformCheckpoint(isolate)` on edge's
+  V8 context.  Tightest fix BUT (i) requires C++ side support since
+  V8 context isn't reachable from JS, and (ii) upstream coordination
+  with toyobayashi/emnapi.  Probably folds into our existing emnapi
+  vendoring plan (followup #4).
+
+**Recommended order**: (d) first — investigate whether it's possible
+to add a JS-callable drain in emnapi for edge's env's context.  If
+upstream merges or we vendor + patch, this is the cleanest fix.
+Fall back to (b) syscall-level Asyncify if (d) doesn't pan out.
+(a) and (c) are heavy lifts kept for completeness.
 
 This bug is not load-bearing for any test currently in the corpus
 (the regressions are `.skip`), so it can sleep while we ship other
@@ -216,10 +244,21 @@ apps depend on (Promise.then before timer, await before timer).
 
 ### 2. Offload policies (Phase C in the architecture plan)
 
-Independent of #1. Each is a swappable plug-in:
+**Blocked-by-#1**: every host-async policy (compression, crypto-via-subtle,
+wasm-compile-via-host, streams) needs Promise continuations to resolve
+inside edge's context — see #1 for why this currently doesn't work.
+
+`compression-via-compressionstream` is shipped as a spec / reference
+(in `src/policies/`, registered as opt-in) but does NOT execute its
+callback today — kept so the fix path for #1 can validate against a
+concrete consumer.  Test deferred until #1 lands.
+
+Synchronous offloads (crypto random was the first) are NOT blocked
+and remain a fine direction independent of #1.
 
 - `crypto-via-subtle` — `crypto.createHash` / `Hmac` / `pbkdf2` /
   `randomBytes` route to SubtleCrypto. ~80% smaller crypto surface.
+  Mostly async — blocked by #1 except for sync helpers.
 - `compression-via-compressionstream` — gzip/deflate → browser's
   CompressionStream / DecompressionStream.
 - `streams-via-web-streams` — Node Readable/Writable adapter to/from
