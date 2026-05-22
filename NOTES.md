@@ -176,22 +176,26 @@ the browser-target tree.
 - Multiple `#!~debt` in `unofficial.ts` — most no-op stubs writing
   sensible defaults to out-params. Promote when a workload lights them up.
 
-### Architectural alternatives (not yet pursued)
+### Architectural changes shipped
 
-- `runtime-on-separate-worker` (2026-05-22) — Emscripten's
-  `PROXY_TO_PTHREAD` analog.  Today our "main worker" mixes two
-  concerns: hosting the wasm runtime, and owning the cross-worker
-  state (bridge SAB drain, FS snapshot loader, page postMessage
-  relay).  When a JSPI re-entry sync wait freezes the main worker,
-  everything stalls.  Splitting into a *relay worker* (owns bridge
-  SAB + FS loader + page comm) and a *runtime worker* (hosts the
-  wasm, JSPI runs there) would CONTAIN the freeze: only wasm
-  progress stalls; bridge queues new requests, page UI keeps moving,
-  pool workers keep operating.  Note: this is a containment
-  improvement, not a fix for the freeze itself — the wasm activation
-  in re-entry still blocks for the duration of its wait.  Matches
-  Emscripten's documented production pattern (see NOTES on
-  jspi-re-entry-blocks-microtasks above).
+- `runtime-on-separate-worker` (2026-05-22) — **SHIPPED** as commit
+  `0ee83dc5`.  Emscripten `PROXY_TO_PTHREAD` analog.  Split single
+  worker into two:
+  - `bridge-worker.ts` — owns the layered FS adapter (bundled-fs +
+    opfs) and the FS snapshot loader.  No wasm.  Its JS event loop
+    stays free during a runtime worker `Atomics.wait`.
+  - `worker.ts` (runtime worker) — pure wasm host + JSPI.  Attaches
+    to the FS snapshot as a *reader* (its own cold-miss opens
+    `Atomics.wait` on bridge to publish).
+  Contains the freeze impact (a long re-entry sync wait on runtime
+  doesn't stall the FS loader or pool workers) but does not eliminate
+  the wait itself.  If this proves problematic for some workload (too
+  many cross-worker hops, latency overhead, race surface), revert to
+  the previous monolithic shape by reverting `0ee83dc5` — the commit
+  is self-contained.  Trigger to keep an eye on: the
+  `[bridge] [fs-snapshot] loaded …` log line should appear during
+  startup and on any new path open; if it disappears, the loader
+  isn't running.
 
 ### Production gaps (post-Phase-B microtask rebuild)
 
