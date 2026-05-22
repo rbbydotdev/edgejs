@@ -1,0 +1,31 @@
+browser-target/src/policies/compression-via-compressionstream.ts
+  s_3c284a8c3d32d2::t_10809256ad5643 44-73
+  s_3c284a8c3d32d2::t_591fc3364c41cf 1-43,74-208
+browser-target/src/policies/index.ts
+  s_3c284a8c3d32d2::t_caabedc7051067 201
+  s_3c284a8c3d32d2::t_4f9637099c6829 121
+  s_3c284a8c3d32d2::t_8a7d12f4a62e24 131
+browser-target/src/napi-host/microtask-ops.ts
+  s_3c284a8c3d32d2::t_1754709696887e 101,110
+  s_3c284a8c3d32d2::t_07db29c9e46483 97-100,102-109,111-117
+NOTES.md
+  s_3c284a8c3d32d2::t_f813693d9e9832 201-221,226-238
+  s_3c284a8c3d32d2::t_1538b1392f3f21 174-199
+  s_3c284a8c3d32d2::t_3ffed373de41ae 247-257,261
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "4d04250fa59383423b125d0808fc2b7e1d73e586",
+  "prompts": {},
+  "sessions": {
+    "s_3c284a8c3d32d2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "aba00247-eb0d-4299-a1aa-1451ccea7316",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
