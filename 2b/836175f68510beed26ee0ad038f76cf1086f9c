@@ -1,0 +1,39 @@
+tests/js/http-server-listen.js
+  s_7bec0ecbfcdcd0::t_428137621d8720 1-18
+NOTES.md
+  s_7bec0ecbfcdcd0::t_80ab56d8b6cf94 172-179
+tests/js/fs-readfile-self.stdout
+  s_7bec0ecbfcdcd0::t_e71bc0619c9fc4 1-2
+tests/js/wasm-compile-then.stdout
+  s_7bec0ecbfcdcd0::t_78cd4b6fd55b2c 1
+tests/js/wasm-compile-then.js
+  s_7bec0ecbfcdcd0::t_7ed0c0113d1193 1-17
+tests/js/fs-readfile-self.js
+  s_7bec0ecbfcdcd0::t_5a4a4f311d3145 1-6,9-11
+  s_7bec0ecbfcdcd0::t_e100dd59303265 8
+  s_7bec0ecbfcdcd0::t_94f725c41f715c 7
+tests/js/http-server-listen.stdout
+  s_7bec0ecbfcdcd0::t_05ede17efea863 1
+tests/js/fs-readfile-self.skip
+  s_7bec0ecbfcdcd0::t_bd1b205d119757 1-6
+browser-target/scripts/browser-test-runner.mjs
+  s_7bec0ecbfcdcd0::t_12f202ffb0e9c8 83-90,93-114
+plans/lever-b-progress.md
+  s_7bec0ecbfcdcd0::t_f5cff92503d875 1755-1813
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "2b836175f68510beed26ee0ad038f76cf1086f9c",
+  "prompts": {},
+  "sessions": {
+    "s_7bec0ecbfcdcd0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d560d5ae-265f-44ae-89c4-d35659b3ab9e",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
