@@ -59,6 +59,15 @@ import {
   OP_NAPI_GET_ARRAYBUFFER_INFO, OP_NAPI_GET_BUFFER_INFO,
   OP_NAPI_GET_DATAVIEW_INFO,
   OP_NODE_API_SET_PROTOTYPE,
+  // Lever B batch 2 (0x0170–0x0175): error-create + throw + deferred ops.
+  OP_NAPI_CREATE_ERROR, OP_NAPI_CREATE_TYPE_ERROR, OP_NAPI_CREATE_RANGE_ERROR,
+  OP_NAPI_RESOLVE_DEFERRED, OP_NAPI_REJECT_DEFERRED, OP_NAPI_THROW,
+  // Lever B batch 2 (0x0160–0x016B): buffer/typed-array/value-creation ops.
+  OP_NAPI_CREATE_ARRAYBUFFER, OP_NAPI_CREATE_BUFFER, OP_NAPI_CREATE_BUFFER_COPY,
+  OP_NAPI_CREATE_TYPEDARRAY, OP_NAPI_CREATE_DATE, OP_NAPI_CREATE_SYMBOL,
+  OP_NAPI_CREATE_PROMISE, OP_NODE_API_CREATE_SHAREDARRAYBUFFER,
+  OP_NODE_API_IS_SHAREDARRAYBUFFER, OP_NAPI_RUN_SCRIPT, OP_NAPI_GET_CB_INFO,
+  OP_NAPI_CREATE_DOUBLE,
   REPLY_STATUS_INVALID_ARGS,
 } from "./rpc-protocol";
 
@@ -219,6 +228,17 @@ export function makeNapiOpRegistry(napi: Record<string, NapiFn>): NapiOpRegistry
     [OP_NAPI_COERCE_TO_NUMBER, "napi_coerce_to_number"],
     [OP_NAPI_COERCE_TO_OBJECT, "napi_coerce_to_object"],
     [OP_NAPI_COERCE_TO_STRING, "napi_coerce_to_string"],
+    // Lever B batch 2 (0x0164–0x016B subset): three-u32 creation/query ops.
+    // napi_create_date/create_double take a double; the factory passes the
+    // JS-number arg through, and JS numbers ARE doubles, so this is lossless.
+    // napi_create_promise has TWO out-pointers (deferred, promise) packed
+    // into the (a, ptr) slots; arity-shaped not semantics-shaped.
+    [OP_NAPI_CREATE_DATE, "napi_create_date"],
+    [OP_NAPI_CREATE_SYMBOL, "napi_create_symbol"],
+    [OP_NAPI_CREATE_PROMISE, "napi_create_promise"],
+    [OP_NODE_API_IS_SHAREDARRAYBUFFER, "node_api_is_sharedarraybuffer"],
+    [OP_NAPI_RUN_SCRIPT, "napi_run_script"],
+    [OP_NAPI_CREATE_DOUBLE, "napi_create_double"],
   ];
 
   const FOUR_U32: Array<[number, string]> = [
@@ -242,6 +262,17 @@ export function makeNapiOpRegistry(napi: Record<string, NapiFn>): NapiOpRegistry
     // (buffer_handle, &data, &length) — arity-shaped, not semantics-shaped.
     [OP_NAPI_GET_ARRAYBUFFER_INFO, "napi_get_arraybuffer_info"],
     [OP_NAPI_GET_BUFFER_INFO, "napi_get_buffer_info"],
+    // Lever B batch 2 (0x0170–0x0172): error-create ops.  code+msg are
+    // already-existing napi_value handles (NOT C strings), so they fit the
+    // four-u32 shape directly: (env, code, msg, &result).
+    [OP_NAPI_CREATE_ERROR, "napi_create_error"],
+    [OP_NAPI_CREATE_TYPE_ERROR, "napi_create_type_error"],
+    [OP_NAPI_CREATE_RANGE_ERROR, "napi_create_range_error"],
+    // Lever B batch 2 (0x0160, 0x0161, 0x0167): buffer/arraybuffer creation.
+    // Each has two out-pointers (&data, &result); arity-shaped factory.
+    [OP_NAPI_CREATE_ARRAYBUFFER, "napi_create_arraybuffer"],
+    [OP_NAPI_CREATE_BUFFER, "napi_create_buffer"],
+    [OP_NODE_API_CREATE_SHAREDARRAYBUFFER, "node_api_create_sharedarraybuffer"],
   ];
 
   // napi_delete_reference is two-arg (env, ref_handle); no result_ptr.
@@ -265,7 +296,12 @@ export function makeNapiOpRegistry(napi: Record<string, NapiFn>): NapiOpRegistry
     // +1 napi_get_all_property_names (Lever B six-u32),
     // +1 napi_get_dataview_info (Lever B six-u32),
     // +1 node_api_set_prototype (Lever B three-u32 no-result, inline).
-    count: TWO_U32.length + THREE_U32.length + FOUR_U32.length + 8,
+    // +1 napi_throw (Lever B batch 2 makeNoResult),
+    // +2 napi_resolve_deferred / napi_reject_deferred (batch 2 three-u32 no-result, inline).
+    // +1 napi_create_buffer_copy (batch 2 five-u32, inline),
+    // +1 napi_create_typedarray (batch 2 six-u32, inline),
+    // +1 napi_get_cb_info (batch 2 six-u32, inline).
+    count: TWO_U32.length + THREE_U32.length + FOUR_U32.length + 14,
     register(server: RpcServer): void {
       for (const [op, name] of TWO_U32) {
         server.register(op, makeTwoU32(napi[name], name));
@@ -323,6 +359,68 @@ export function makeNapiOpRegistry(napi: Record<string, NapiFn>): NapiOpRegistry
           };
         });
       }
+      // Lever B batch 2 (0x0175): napi_throw(env, error) — two args, no resultPtr.
+      // Same shape as napi_delete_reference / napi_object_freeze.
+      server.register(
+        OP_NAPI_THROW,
+        makeNoResult(napi["napi_throw"], "napi_throw"),
+      );
+      // Lever B batch 2 (0x0173): napi_resolve_deferred(env, deferred, resolution)
+      // — three args, no resultPtr.  Same shape as node_api_set_prototype.
+      {
+        const fn = napi["napi_resolve_deferred"];
+        const opName = "napi_resolve_deferred";
+        server.register(OP_NAPI_RESOLVE_DEFERRED, async (_ctx, args) => {
+          if (typeof fn !== "function") return err(`napi handler: ${opName} not found`);
+          if (args.byteLength < 12) return err("napi handler: args too short for three-u32-no-result");
+          const dv = new DataView(args.buffer, args.byteOffset, args.byteLength);
+          return {
+            payload: EMPTY,
+            status: fn(
+              dv.getUint32(0, true),
+              dv.getUint32(4, true),
+              dv.getUint32(8, true),
+            ),
+          };
+        });
+      }
+      // Lever B batch 2 (0x0174): napi_reject_deferred(env, deferred, rejection)
+      // — three args, no resultPtr.  Same shape as resolve_deferred.
+      {
+        const fn = napi["napi_reject_deferred"];
+        const opName = "napi_reject_deferred";
+        server.register(OP_NAPI_REJECT_DEFERRED, async (_ctx, args) => {
+          if (typeof fn !== "function") return err(`napi handler: ${opName} not found`);
+          if (args.byteLength < 12) return err("napi handler: args too short for three-u32-no-result");
+          const dv = new DataView(args.buffer, args.byteOffset, args.byteLength);
+          return {
+            payload: EMPTY,
+            status: fn(
+              dv.getUint32(0, true),
+              dv.getUint32(4, true),
+              dv.getUint32(8, true),
+            ),
+          };
+        });
+      }
+      // Lever B batch 2 (0x0162): napi_create_buffer_copy(env, length, data,
+      // &result_data, &result) — five-u32; matches makeFiveU32 arity exactly.
+      server.register(
+        OP_NAPI_CREATE_BUFFER_COPY,
+        makeFiveU32(napi["napi_create_buffer_copy"], "napi_create_buffer_copy"),
+      );
+      // Lever B batch 2 (0x0163): napi_create_typedarray(env, type, length,
+      // arraybuffer, byte_offset, &result) — six-u32; matches makeSixU32.
+      server.register(
+        OP_NAPI_CREATE_TYPEDARRAY,
+        makeSixU32(napi["napi_create_typedarray"], "napi_create_typedarray"),
+      );
+      // Lever B batch 2 (0x016a): napi_get_cb_info(env, cbinfo, &argc, argv,
+      // &this_arg, &data) — six-u32; matches makeSixU32.
+      server.register(
+        OP_NAPI_GET_CB_INFO,
+        makeSixU32(napi["napi_get_cb_info"], "napi_get_cb_info"),
+      );
     },
   };
 }

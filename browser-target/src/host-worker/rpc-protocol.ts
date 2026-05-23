@@ -169,6 +169,61 @@ export const OP_NODE_API_SET_PROTOTYPE = OP_DOMAIN_NAPI_RO | 0x0059;
 // Registered inline (no factory for "three-u32 no result"); see
 // napi-op-handlers.ts.
 
+// ── Lever B batch 2: buffer/typed-array/value-creation ops (0x0160–0x016B) ──
+// Allocated in range 0x0060–0x006B under OP_DOMAIN_NAPI_RO.
+
+export const OP_NAPI_CREATE_ARRAYBUFFER = OP_DOMAIN_NAPI_RO | 0x0060;
+// napi_create_arraybuffer(env, byte_length, &data, &result)  — four-u32.
+export const OP_NAPI_CREATE_BUFFER = OP_DOMAIN_NAPI_RO | 0x0061;
+// napi_create_buffer(env, length, &data, &result)  — four-u32.
+export const OP_NAPI_CREATE_BUFFER_COPY = OP_DOMAIN_NAPI_RO | 0x0062;
+// napi_create_buffer_copy(env, length, data, &result_data, &result)  — five-u32.
+export const OP_NAPI_CREATE_TYPEDARRAY = OP_DOMAIN_NAPI_RO | 0x0063;
+// napi_create_typedarray(env, type, length, arraybuffer, byte_offset, &result)
+// — six-u32.
+export const OP_NAPI_CREATE_DATE = OP_DOMAIN_NAPI_RO | 0x0064;
+// napi_create_date(env, time:double, &result)  — three-u32; JS-number IS
+// double on the JS-side factory wrapper, so makeThreeU32 works as-is.
+export const OP_NAPI_CREATE_SYMBOL = OP_DOMAIN_NAPI_RO | 0x0065;
+// napi_create_symbol(env, description, &result)  — three-u32.
+export const OP_NAPI_CREATE_PROMISE = OP_DOMAIN_NAPI_RO | 0x0066;
+// napi_create_promise(env, &deferred, &promise)  — three-u32 (two out-ptrs;
+// factory is arity-shaped, not semantics-shaped).
+export const OP_NODE_API_CREATE_SHAREDARRAYBUFFER = OP_DOMAIN_NAPI_RO | 0x0067;
+// node_api_create_sharedarraybuffer(env, byte_length, &data, &result)  — four-u32.
+export const OP_NODE_API_IS_SHAREDARRAYBUFFER = OP_DOMAIN_NAPI_RO | 0x0068;
+// node_api_is_sharedarraybuffer(env, value, &result:bool*)  — three-u32.
+export const OP_NAPI_RUN_SCRIPT = OP_DOMAIN_NAPI_RO | 0x0069;
+// napi_run_script(env, script, &result)  — three-u32.
+export const OP_NAPI_GET_CB_INFO = OP_DOMAIN_NAPI_RO | 0x006a;
+// napi_get_cb_info(env, cbinfo, &argc, argv, &this_arg, &data)  — six-u32.
+export const OP_NAPI_CREATE_DOUBLE = OP_DOMAIN_NAPI_RO | 0x006b;
+// napi_create_double(env, value:double, &result)  — three-u32; JS-number
+// IS double, factory passes through losslessly.
+
+// ── Lever B batch 2: error-create + throw + deferred ops (0x0170–0x0175) ──
+// Allocated in range 0x0070–0x0075 under OP_DOMAIN_NAPI_RO.
+//
+// The CREATE variants take napi_value handles for code/msg (already-existing
+// values), so they pack into four-u32 directly.  The THROW variants of these
+// errors (napi_throw_error/type_error/range_error) take C strings and need
+// string-encoding work — those are NOT in this batch.
+
+export const OP_NAPI_CREATE_ERROR = OP_DOMAIN_NAPI_RO | 0x0070;
+// napi_create_error(env, code: napi_value, msg: napi_value, &result)  — four-u32.
+export const OP_NAPI_CREATE_TYPE_ERROR = OP_DOMAIN_NAPI_RO | 0x0071;
+// napi_create_type_error(env, code: napi_value, msg: napi_value, &result)  — four-u32.
+export const OP_NAPI_CREATE_RANGE_ERROR = OP_DOMAIN_NAPI_RO | 0x0072;
+// napi_create_range_error(env, code: napi_value, msg: napi_value, &result)  — four-u32.
+export const OP_NAPI_RESOLVE_DEFERRED = OP_DOMAIN_NAPI_RO | 0x0073;
+// napi_resolve_deferred(env, deferred, resolution)  — three args, no resultPtr.
+// Registered inline (no factory for "three-u32 no result").
+export const OP_NAPI_REJECT_DEFERRED = OP_DOMAIN_NAPI_RO | 0x0074;
+// napi_reject_deferred(env, deferred, rejection)  — three args, no resultPtr.
+// Registered inline (no factory for "three-u32 no result").
+export const OP_NAPI_THROW = OP_DOMAIN_NAPI_RO | 0x0075;
+// napi_throw(env, error)  — two args, no resultPtr; fits makeNoResult.
+
 // ── NAPI callback-taking ops (F-5) ─────────────────────────────────
 export const OP_NAPI_CALL_FUNCTION = OP_DOMAIN_NAPI_CB | 0x0001;
 // napi_call_function(env, recv, fn, argc, argv_ptr, &result)
