@@ -1,5 +1,15 @@
 // Cross-thread WASI pipes backed by SharedArrayBuffer.
 //
+// #!~debt pipes-sab-not-on-sab-ring (L1 2026-05-23) — this module does
+// NOT use the unified `sab-ring` primitive that backs the HTTP bridge
+// and napi RPC.  Different shape: pipes are bidirectional ring buffers
+// per slot (head/tail cursors, refcount), not one-shot request/reply.
+// The sab-ring slot model (status state machine + opaque payload bytes)
+// is a poor fit.  Forcing it would add complexity for no benefit.
+// Revisit when/if multiple host workers need to share pipe state — at
+// that point we may want to add contextId/hostWorkerId fields to the
+// pipe slot header to match sab-ring's convention.  Listed in NOTES.md.
+//
 // Why this exists.  Real POSIX pipes are kernel objects: any thread in the
 // process can read or write the same pipe fd.  Our previous fd_pipe lived in
 // a per-worker JS `Map`, so each Web Worker had its own pipe state.  When
@@ -18,7 +28,7 @@
 //   [0..HEADER_SIZE)        : per-slot fixed headers (NUM_SLOTS * SLOT_HDR_SIZE)
 //   [HEADER_SIZE..TOTAL)    : per-slot ring buffers (NUM_SLOTS * BUFFER_SIZE)
 //
-// Slot header layout (32 bytes, all u32 little-endian):
+// Slot header layout (40 bytes, all u32 little-endian):
 //    0  alive          0=free, 1=in use (cmpxchg-allocated)
 //    4  capacity       buffer size in bytes (== BUFFER_SIZE)
 //    8  head           read cursor (monotonic, mod capacity for index)
@@ -26,7 +36,14 @@
 //   16  wakeCounter    Atomics.waitAsync target, incremented on every write
 //   20  bufferOffset   absolute offset into SAB for this slot's buffer
 //   24  refCount       number of open fds referring to this pipe (read+write)
-//   28  reserved
+//   28  contextId      emnapi context selector (sab-ring convention; L9)
+//   32  hostWorkerId   host worker selector (sab-ring convention; L9)
+//   36  reserved
+//
+// contextId / hostWorkerId default to 0 in the current single-host setup.
+// They are set at allocate() time so a future multi-host topology can
+// route notifications to the correct host worker.  Today readers do not
+// consume these fields; they are forward-compat reservations.
 //
 // FD numbering: PIPE_FD_BASE + slot * 2 + (writeEnd ? 1 : 0).  Using a high
 // base (5000) avoids collision with the existing per-worker vfd numbering
@@ -45,7 +62,7 @@ const G_OFF_W_BYTES = 8;
 const G_OFF_R_BYTES = 12;
 
 const NUM_SLOTS = 64;
-const SLOT_HDR_SIZE = 32;
+const SLOT_HDR_SIZE = 40; // bumped from 32 in L1 to add contextId + hostWorkerId
 const BUFFER_SIZE = 4096;
 const HEADER_TOTAL = NUM_SLOTS * SLOT_HDR_SIZE;
 const BODY_TOTAL = NUM_SLOTS * BUFFER_SIZE;
@@ -58,6 +75,8 @@ const OFF_TAIL = 12;
 const OFF_WAKE = 16;
 const OFF_BUF_OFF = 20;
 const OFF_REFCOUNT = 24;
+const OFF_CONTEXT_ID = 28;
+const OFF_HOST_WORKER_ID = 32;
 
 export const PIPE_FD_BASE = 5000;
 export const PIPE_FD_MAX = PIPE_FD_BASE + NUM_SLOTS * 2;
@@ -131,8 +150,12 @@ export class PipeRegistry {
 
   /** Allocate a new pipe pair.  Returns { readFd, writeFd } or null if the
    *  registry is full.  Caller's responsibility to release via `close()`
-   *  when both ends are closed (refcounted). */
-  allocate(): { readFd: number; writeFd: number } | null {
+   *  when both ends are closed (refcounted).
+   *
+   *  contextId + hostWorkerId tag the slot so future multi-host
+   *  topologies can route pipe wakeups to the right host worker.
+   *  Default 0/0 in the current single-host setup. */
+  allocate(contextId = 0, hostWorkerId = 0): { readFd: number; writeFd: number } | null {
     for (let slot = 0; slot < NUM_SLOTS; slot++) {
       const aliveIdx = this.slotHdrI32Idx(slot, OFF_ALIVE);
       if (Atomics.compareExchange(this.hdrI32, aliveIdx, 0, 1) === 0) {
@@ -143,6 +166,8 @@ export class PipeRegistry {
         Atomics.store(this.hdrI32, this.slotHdrI32Idx(slot, OFF_WAKE), 0);
         Atomics.store(this.hdrI32, this.slotHdrI32Idx(slot, OFF_BUF_OFF), GLOBAL_HDR_SIZE + HEADER_TOTAL + slot * BUFFER_SIZE);
         Atomics.store(this.hdrI32, this.slotHdrI32Idx(slot, OFF_REFCOUNT), 2);
+        Atomics.store(this.hdrI32, this.slotHdrI32Idx(slot, OFF_CONTEXT_ID), contextId);
+        Atomics.store(this.hdrI32, this.slotHdrI32Idx(slot, OFF_HOST_WORKER_ID), hostWorkerId);
         return {
           readFd: PIPE_FD_BASE + slot * 2,
           writeFd: PIPE_FD_BASE + slot * 2 + 1,
@@ -150,6 +175,16 @@ export class PipeRegistry {
       }
     }
     return null;
+  }
+
+  /** Read the contextId tag on an allocated slot. */
+  getContextId(slot: number): number {
+    return Atomics.load(this.hdrI32, this.slotHdrI32Idx(slot, OFF_CONTEXT_ID));
+  }
+
+  /** Read the hostWorkerId tag on an allocated slot. */
+  getHostWorkerId(slot: number): number {
+    return Atomics.load(this.hdrI32, this.slotHdrI32Idx(slot, OFF_HOST_WORKER_ID));
   }
 
   /** Decrement refcount for one fd.  When both ends are closed, mark slot

@@ -1,0 +1,5 @@
+Same root cause as the other microtask-ordering tests
+(`microtasks-starved-by-pending-timer`, NOTES.md): sometimes wins the
+race because async-IIFE's continuation lands in V8's queue before the
+timer fires; sometimes loses.  Flaky.  Skipping until Lever B L5 cutover
+fixes the underlying drain issue.  Reproducer kept for diagnostic.

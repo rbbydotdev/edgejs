@@ -93,14 +93,22 @@ const FD_OFF_PATH_SLOT = 4;   // u32 — index into path slots
 const FD_OFF_POSITION  = 8;   // u32 atomic — current read position (size < 4GB)
 
 // Request ring entry layout (one record per slot in the ring):
-//   [0..4)   u32 atomic status        0=pending, 1=published, 2=consumed
-//   [4..8)   u32 path_slot_idx        pre-claimed slot index that main should populate
-//   [8..12)  u32 path_len             length of path bytes
-//   [12..)   path bytes (UTF-8)       up to REQUEST_RING_ENTRY_SIZE - 12 bytes
-const RR_OFF_STATUS    = 0;
-const RR_OFF_SLOT_IDX  = 4;
-const RR_OFF_PATH_LEN  = 8;
-const RR_OFF_PATH      = 12;
+//   [0..4)    u32 atomic status        0=pending, 1=published, 2=consumed
+//   [4..8)    u32 contextId            sab-ring convention; default 0
+//   [8..12)   u32 hostWorkerId         sab-ring convention; default 0
+//   [12..16)  u32 path_slot_idx        pre-claimed slot index that main should populate
+//   [16..20)  u32 path_len             length of path bytes
+//   [20..)    path bytes (UTF-8)       up to REQUEST_RING_ENTRY_SIZE - 20 bytes
+//
+// L1 2026-05-23: bumped header from 12 to 20 bytes to add contextId +
+// hostWorkerId. Default 0/0; reserves the dimensions for L9
+// worker_threads where multiple host workers share this snapshot.
+const RR_OFF_STATUS          = 0;
+const RR_OFF_CONTEXT_ID      = 4;
+const RR_OFF_HOST_WORKER_ID  = 8;
+const RR_OFF_SLOT_IDX        = 12;
+const RR_OFF_PATH_LEN        = 16;
+const RR_OFF_PATH            = 20;
 const RR_MAX_PATH = REQUEST_RING_ENTRY_SIZE - RR_OFF_PATH;
 const RR_STATUS_PENDING   = 0;
 const RR_STATUS_PUBLISHED = 1;
@@ -147,6 +155,11 @@ export interface PendingRequest {
   ringIdx: number;
   slotIdx: number;
   path: string;
+  /** Tagged by enqueueLoad; default 0 in single-host setup.  Used by
+   *  multi-host topologies (L9 worker_threads) to route the load reply
+   *  back to the right host worker. */
+  contextId: number;
+  hostWorkerId: number;
 }
 
 export class FsSnapshotRegistry {
@@ -431,7 +444,7 @@ export class FsSnapshotRegistry {
   /** Enqueue a load request to main.  Claims an empty path slot atomically
    *  and writes the request into the ring.  Returns the slot index that
    *  the pool worker should wait on, or -1 if no slot/ring capacity. */
-  enqueueLoad(path: string): number {
+  enqueueLoad(path: string, contextId = 0, hostWorkerId = 0): number {
     const normalized = normalize(path);
     const slotIdx = this.claimEmptyPathSlot();
     if (slotIdx < 0) return -1;
@@ -464,6 +477,8 @@ export class FsSnapshotRegistry {
       }
     }
     const baseI32 = (RR_OFFSET + ringIdx * REQUEST_RING_ENTRY_SIZE) >>> 2;
+    Atomics.store(this.i32, baseI32 + (RR_OFF_CONTEXT_ID >>> 2), contextId);
+    Atomics.store(this.i32, baseI32 + (RR_OFF_HOST_WORKER_ID >>> 2), hostWorkerId);
     Atomics.store(this.i32, baseI32 + (RR_OFF_SLOT_IDX >>> 2), slotIdx);
     Atomics.store(this.i32, baseI32 + (RR_OFF_PATH_LEN >>> 2), Math.min(nameBytes.length, RR_MAX_PATH));
     const pathOff = RR_OFFSET + ringIdx * REQUEST_RING_ENTRY_SIZE + RR_OFF_PATH;
@@ -500,13 +515,15 @@ export class FsSnapshotRegistry {
     const baseI32 = (RR_OFFSET + ringIdx * REQUEST_RING_ENTRY_SIZE) >>> 2;
     const status = Atomics.load(this.i32, baseI32 + (RR_OFF_STATUS >>> 2));
     if (status !== RR_STATUS_PUBLISHED) return null;
+    const contextId = Atomics.load(this.i32, baseI32 + (RR_OFF_CONTEXT_ID >>> 2));
+    const hostWorkerId = Atomics.load(this.i32, baseI32 + (RR_OFF_HOST_WORKER_ID >>> 2));
     const slotIdx = Atomics.load(this.i32, baseI32 + (RR_OFF_SLOT_IDX >>> 2));
     const pathLen = Atomics.load(this.i32, baseI32 + (RR_OFF_PATH_LEN >>> 2));
     const pathOff = RR_OFFSET + ringIdx * REQUEST_RING_ENTRY_SIZE + RR_OFF_PATH;
     const copy = new Uint8Array(pathLen);
     copy.set(this.u8.subarray(pathOff, pathOff + pathLen));
     const path = this.dec.decode(copy);
-    return { ringIdx, slotIdx, path };
+    return { ringIdx, slotIdx, path, contextId, hostWorkerId };
   }
 
   markConsumed(ringIdx: number): void {

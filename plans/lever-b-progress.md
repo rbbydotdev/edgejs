@@ -317,3 +317,783 @@ Notes on reading the numbers:
 These compile clean; refactor of existing SAB channels onto sab-ring happens in L1.
 
 **Next:** L1 — refactor pipes-sab, fs-snapshot-sab, HTTP bridge SAB to use `sab-ring`. Pure refactor; behavior unchanged.
+### 2026-05-23T09:22:34.052Z  test=log  rev=d5126716  runs=3
+
+```json
+{
+  "timestamp": "2026-05-23T09:22:34.052Z",
+  "test": "log",
+  "gitRev": "d5126716",
+  "runs": 3,
+  "aggregated": {
+    "totalMs": {
+      "min": 315,
+      "max": 893,
+      "mean": 544.6666666666666,
+      "median": 426,
+      "n": 3
+    },
+    "wasmRunMs": {
+      "min": 120,
+      "max": 162,
+      "mean": 139.33333333333334,
+      "median": 136,
+      "n": 3
+    },
+    "totalCalls": {
+      "min": 14648,
+      "max": 14648,
+      "mean": 14648,
+      "median": 14648,
+      "n": 3
+    },
+    "namespaceCalls": {
+      "wasi_snapshot_preview1": {
+        "min": 142,
+        "max": 142,
+        "mean": 142,
+        "median": 142,
+        "n": 3
+      },
+      "wasi": {
+        "min": 4,
+        "max": 4,
+        "mean": 4,
+        "median": 4,
+        "n": 3
+      },
+      "wasix_32v1": {
+        "min": 99,
+        "max": 99,
+        "mean": 99,
+        "median": 99,
+        "n": 3
+      },
+      "napi_extension_wasmer_v0": {
+        "min": 172,
+        "max": 172,
+        "mean": 172,
+        "median": 172,
+        "n": 3
+      },
+      "napi": {
+        "min": 14231,
+        "max": 14231,
+        "mean": 14231,
+        "median": 14231,
+        "n": 3
+      }
+    },
+    "okRuns": 3,
+    "totalRuns": 3
+  },
+  "perRun": [
+    {
+      "ok": true,
+      "reason": null,
+      "totalMs": 893,
+      "wasmRunMs": 162,
+      "totalCalls": 14648,
+      "namespaceCalls": {
+        "wasi_snapshot_preview1": 142,
+        "wasi": 4,
+        "wasix_32v1": 99,
+        "napi_extension_wasmer_v0": 172,
+        "napi": 14231
+      }
+    },
+    {
+      "ok": true,
+      "reason": null,
+      "totalMs": 426,
+      "wasmRunMs": 136,
+      "totalCalls": 14648,
+      "namespaceCalls": {
+        "wasi_snapshot_preview1": 142,
+        "wasi": 4,
+        "wasix_32v1": 99,
+        "napi_extension_wasmer_v0": 172,
+        "napi": 14231
+      }
+    },
+    {
+      "ok": true,
+      "reason": null,
+      "totalMs": 315,
+      "wasmRunMs": 120,
+      "totalCalls": 14648,
+      "namespaceCalls": {
+        "wasi_snapshot_preview1": 142,
+        "wasi": 4,
+        "wasix_32v1": 99,
+        "napi_extension_wasmer_v0": 172,
+        "napi": 14231
+      }
+    }
+  ]
+}
+```
+
+### 2026-05-23T09:30:54.194Z  test=log  rev=d5126716  runs=3
+
+```json
+{
+  "timestamp": "2026-05-23T09:30:54.194Z",
+  "test": "log",
+  "gitRev": "d5126716",
+  "runs": 3,
+  "aggregated": {
+    "totalMs": {
+      "min": 435,
+      "max": 745,
+      "mean": 637,
+      "median": 731,
+      "n": 3
+    },
+    "wasmRunMs": {
+      "min": 135,
+      "max": 138,
+      "mean": 136.33333333333334,
+      "median": 136,
+      "n": 3
+    },
+    "totalCalls": {
+      "min": 14648,
+      "max": 14648,
+      "mean": 14648,
+      "median": 14648,
+      "n": 3
+    },
+    "namespaceCalls": {
+      "wasi_snapshot_preview1": {
+        "min": 142,
+        "max": 142,
+        "mean": 142,
+        "median": 142,
+        "n": 3
+      },
+      "wasi": {
+        "min": 4,
+        "max": 4,
+        "mean": 4,
+        "median": 4,
+        "n": 3
+      },
+      "wasix_32v1": {
+        "min": 99,
+        "max": 99,
+        "mean": 99,
+        "median": 99,
+        "n": 3
+      },
+      "napi_extension_wasmer_v0": {
+        "min": 172,
+        "max": 172,
+        "mean": 172,
+        "median": 172,
+        "n": 3
+      },
+      "napi": {
+        "min": 14231,
+        "max": 14231,
+        "mean": 14231,
+        "median": 14231,
+        "n": 3
+      }
+    },
+    "okRuns": 3,
+    "totalRuns": 3
+  },
+  "perRun": [
+    {
+      "ok": true,
+      "reason": null,
+      "totalMs": 731,
+      "wasmRunMs": 135,
+      "totalCalls": 14648,
+      "namespaceCalls": {
+        "wasi_snapshot_preview1": 142,
+        "wasi": 4,
+        "wasix_32v1": 99,
+        "napi_extension_wasmer_v0": 172,
+        "napi": 14231
+      }
+    },
+    {
+      "ok": true,
+      "reason": null,
+      "totalMs": 745,
+      "wasmRunMs": 136,
+      "totalCalls": 14648,
+      "namespaceCalls": {
+        "wasi_snapshot_preview1": 142,
+        "wasi": 4,
+        "wasix_32v1": 99,
+        "napi_extension_wasmer_v0": 172,
+        "napi": 14231
+      }
+    },
+    {
+      "ok": true,
+      "reason": null,
+      "totalMs": 435,
+      "wasmRunMs": 138,
+      "totalCalls": 14648,
+      "namespaceCalls": {
+        "wasi_snapshot_preview1": 142,
+        "wasi": 4,
+        "wasix_32v1": 99,
+        "napi_extension_wasmer_v0": 172,
+        "napi": 14231
+      }
+    }
+  ]
+}
+```
+
+### 2026-05-23T09:31:12.230Z  test=log  rev=d5126716  runs=5
+
+```json
+{
+  "timestamp": "2026-05-23T09:31:12.230Z",
+  "test": "log",
+  "gitRev": "d5126716",
+  "runs": 5,
+  "aggregated": {
+    "totalMs": {
+      "min": 363,
+      "max": 863,
+      "mean": 521.2,
+      "median": 470,
+      "n": 5
+    },
+    "wasmRunMs": {
+      "min": 119,
+      "max": 220,
+      "mean": 153.2,
+      "median": 133,
+      "n": 5
+    },
+    "totalCalls": {
+      "min": 14648,
+      "max": 14648,
+      "mean": 14648,
+      "median": 14648,
+      "n": 5
+    },
+    "namespaceCalls": {
+      "wasi_snapshot_preview1": {
+        "min": 142,
+        "max": 142,
+        "mean": 142,
+        "median": 142,
+        "n": 5
+      },
+      "wasi": {
+        "min": 4,
+        "max": 4,
+        "mean": 4,
+        "median": 4,
+        "n": 5
+      },
+      "wasix_32v1": {
+        "min": 99,
+        "max": 99,
+        "mean": 99,
+        "median": 99,
+        "n": 5
+      },
+      "napi_extension_wasmer_v0": {
+        "min": 172,
+        "max": 172,
+        "mean": 172,
+        "median": 172,
+        "n": 5
+      },
+      "napi": {
+        "min": 14231,
+        "max": 14231,
+        "mean": 14231,
+        "median": 14231,
+        "n": 5
+      }
+    },
+    "okRuns": 5,
+    "totalRuns": 5
+  },
+  "perRun": [
+    {
+      "ok": true,
+      "reason": null,
+      "totalMs": 863,
+      "wasmRunMs": 220,
+      "totalCalls": 14648,
+      "namespaceCalls": {
+        "wasi_snapshot_preview1": 142,
+        "wasi": 4,
+        "wasix_32v1": 99,
+        "napi_extension_wasmer_v0": 172,
+        "napi": 14231
+      }
+    },
+    {
+      "ok": true,
+      "reason": null,
+      "totalMs": 532,
+      "wasmRunMs": 164,
+      "totalCalls": 14648,
+      "namespaceCalls": {
+        "wasi_snapshot_preview1": 142,
+        "wasi": 4,
+        "wasix_32v1": 99,
+        "napi_extension_wasmer_v0": 172,
+        "napi": 14231
+      }
+    },
+    {
+      "ok": true,
+      "reason": null,
+      "totalMs": 470,
+      "wasmRunMs": 130,
+      "totalCalls": 14648,
+      "namespaceCalls": {
+        "wasi_snapshot_preview1": 142,
+        "wasi": 4,
+        "wasix_32v1": 99,
+        "napi_extension_wasmer_v0": 172,
+        "napi": 14231
+      }
+    },
+    {
+      "ok": true,
+      "reason": null,
+      "totalMs": 363,
+      "wasmRunMs": 119,
+      "totalCalls": 14648,
+      "namespaceCalls": {
+        "wasi_snapshot_preview1": 142,
+        "wasi": 4,
+        "wasix_32v1": 99,
+        "napi_extension_wasmer_v0": 172,
+        "napi": 14231
+      }
+    },
+    {
+      "ok": true,
+      "reason": null,
+      "totalMs": 378,
+      "wasmRunMs": 133,
+      "totalCalls": 14648,
+      "namespaceCalls": {
+        "wasi_snapshot_preview1": 142,
+        "wasi": 4,
+        "wasix_32v1": 99,
+        "napi_extension_wasmer_v0": 172,
+        "napi": 14231
+      }
+    }
+  ]
+}
+```
+
+### 2026-05-23T09:35:51.786Z  test=log  rev=d5126716  runs=3
+
+```json
+{
+  "timestamp": "2026-05-23T09:35:51.786Z",
+  "test": "log",
+  "gitRev": "d5126716",
+  "runs": 3,
+  "aggregated": {
+    "totalMs": {
+      "min": 1110,
+      "max": 1941,
+      "mean": 1450.6666666666667,
+      "median": 1301,
+      "n": 3
+    },
+    "wasmRunMs": {
+      "min": 238,
+      "max": 377,
+      "mean": 301.3333333333333,
+      "median": 289,
+      "n": 3
+    },
+    "totalCalls": {
+      "min": 14648,
+      "max": 14648,
+      "mean": 14648,
+      "median": 14648,
+      "n": 3
+    },
+    "namespaceCalls": {
+      "wasi_snapshot_preview1": {
+        "min": 142,
+        "max": 142,
+        "mean": 142,
+        "median": 142,
+        "n": 3
+      },
+      "wasi": {
+        "min": 4,
+        "max": 4,
+        "mean": 4,
+        "median": 4,
+        "n": 3
+      },
+      "wasix_32v1": {
+        "min": 99,
+        "max": 99,
+        "mean": 99,
+        "median": 99,
+        "n": 3
+      },
+      "napi_extension_wasmer_v0": {
+        "min": 172,
+        "max": 172,
+        "mean": 172,
+        "median": 172,
+        "n": 3
+      },
+      "napi": {
+        "min": 14231,
+        "max": 14231,
+        "mean": 14231,
+        "median": 14231,
+        "n": 3
+      }
+    },
+    "okRuns": 3,
+    "totalRuns": 3
+  },
+  "perRun": [
+    {
+      "ok": true,
+      "reason": null,
+      "totalMs": 1941,
+      "wasmRunMs": 238,
+      "totalCalls": 14648,
+      "namespaceCalls": {
+        "wasi_snapshot_preview1": 142,
+        "wasi": 4,
+        "wasix_32v1": 99,
+        "napi_extension_wasmer_v0": 172,
+        "napi": 14231
+      }
+    },
+    {
+      "ok": true,
+      "reason": null,
+      "totalMs": 1301,
+      "wasmRunMs": 377,
+      "totalCalls": 14648,
+      "namespaceCalls": {
+        "wasi_snapshot_preview1": 142,
+        "wasi": 4,
+        "wasix_32v1": 99,
+        "napi_extension_wasmer_v0": 172,
+        "napi": 14231
+      }
+    },
+    {
+      "ok": true,
+      "reason": null,
+      "totalMs": 1110,
+      "wasmRunMs": 289,
+      "totalCalls": 14648,
+      "namespaceCalls": {
+        "wasi_snapshot_preview1": 142,
+        "wasi": 4,
+        "wasix_32v1": 99,
+        "napi_extension_wasmer_v0": 172,
+        "napi": 14231
+      }
+    }
+  ]
+}
+```
+
+### 2026-05-23T09:38:04.758Z  test=log  rev=d5126716  runs=5
+
+```json
+{
+  "timestamp": "2026-05-23T09:38:04.758Z",
+  "test": "log",
+  "gitRev": "d5126716",
+  "runs": 5,
+  "aggregated": {
+    "totalMs": {
+      "min": 632,
+      "max": 1307,
+      "mean": 870.8,
+      "median": 857,
+      "n": 5
+    },
+    "wasmRunMs": {
+      "min": 188,
+      "max": 268,
+      "mean": 217.8,
+      "median": 208,
+      "n": 5
+    },
+    "totalCalls": {
+      "min": 14648,
+      "max": 14648,
+      "mean": 14648,
+      "median": 14648,
+      "n": 5
+    },
+    "namespaceCalls": {
+      "wasi_snapshot_preview1": {
+        "min": 142,
+        "max": 142,
+        "mean": 142,
+        "median": 142,
+        "n": 5
+      },
+      "wasi": {
+        "min": 4,
+        "max": 4,
+        "mean": 4,
+        "median": 4,
+        "n": 5
+      },
+      "wasix_32v1": {
+        "min": 99,
+        "max": 99,
+        "mean": 99,
+        "median": 99,
+        "n": 5
+      },
+      "napi_extension_wasmer_v0": {
+        "min": 172,
+        "max": 172,
+        "mean": 172,
+        "median": 172,
+        "n": 5
+      },
+      "napi": {
+        "min": 14231,
+        "max": 14231,
+        "mean": 14231,
+        "median": 14231,
+        "n": 5
+      }
+    },
+    "okRuns": 5,
+    "totalRuns": 5
+  },
+  "perRun": [
+    {
+      "ok": true,
+      "reason": null,
+      "totalMs": 1307,
+      "wasmRunMs": 268,
+      "totalCalls": 14648,
+      "namespaceCalls": {
+        "wasi_snapshot_preview1": 142,
+        "wasi": 4,
+        "wasix_32v1": 99,
+        "napi_extension_wasmer_v0": 172,
+        "napi": 14231
+      }
+    },
+    {
+      "ok": true,
+      "reason": null,
+      "totalMs": 886,
+      "wasmRunMs": 208,
+      "totalCalls": 14648,
+      "namespaceCalls": {
+        "wasi_snapshot_preview1": 142,
+        "wasi": 4,
+        "wasix_32v1": 99,
+        "napi_extension_wasmer_v0": 172,
+        "napi": 14231
+      }
+    },
+    {
+      "ok": true,
+      "reason": null,
+      "totalMs": 857,
+      "wasmRunMs": 206,
+      "totalCalls": 14648,
+      "namespaceCalls": {
+        "wasi_snapshot_preview1": 142,
+        "wasi": 4,
+        "wasix_32v1": 99,
+        "napi_extension_wasmer_v0": 172,
+        "napi": 14231
+      }
+    },
+    {
+      "ok": true,
+      "reason": null,
+      "totalMs": 632,
+      "wasmRunMs": 219,
+      "totalCalls": 14648,
+      "namespaceCalls": {
+        "wasi_snapshot_preview1": 142,
+        "wasi": 4,
+        "wasix_32v1": 99,
+        "napi_extension_wasmer_v0": 172,
+        "napi": 14231
+      }
+    },
+    {
+      "ok": true,
+      "reason": null,
+      "totalMs": 672,
+      "wasmRunMs": 188,
+      "totalCalls": 14648,
+      "namespaceCalls": {
+        "wasi_snapshot_preview1": 142,
+        "wasi": 4,
+        "wasix_32v1": 99,
+        "napi_extension_wasmer_v0": 172,
+        "napi": 14231
+      }
+    }
+  ]
+}
+```
+
+### 2026-05-23T09:38:39.108Z  test=log  rev=d5126716  runs=5
+
+```json
+{
+  "timestamp": "2026-05-23T09:38:39.108Z",
+  "test": "log",
+  "gitRev": "d5126716",
+  "runs": 5,
+  "aggregated": {
+    "totalMs": {
+      "min": 612,
+      "max": 1641,
+      "mean": 928.6,
+      "median": 808,
+      "n": 5
+    },
+    "wasmRunMs": {
+      "min": 181,
+      "max": 333,
+      "mean": 230.2,
+      "median": 226,
+      "n": 5
+    },
+    "totalCalls": {
+      "min": 14648,
+      "max": 14648,
+      "mean": 14648,
+      "median": 14648,
+      "n": 4
+    },
+    "namespaceCalls": {
+      "wasi_snapshot_preview1": {
+        "min": 142,
+        "max": 142,
+        "mean": 142,
+        "median": 142,
+        "n": 4
+      },
+      "wasi": {
+        "min": 4,
+        "max": 4,
+        "mean": 4,
+        "median": 4,
+        "n": 4
+      },
+      "wasix_32v1": {
+        "min": 99,
+        "max": 99,
+        "mean": 99,
+        "median": 99,
+        "n": 4
+      },
+      "napi_extension_wasmer_v0": {
+        "min": 172,
+        "max": 172,
+        "mean": 172,
+        "median": 172,
+        "n": 4
+      },
+      "napi": {
+        "min": 14231,
+        "max": 14231,
+        "mean": 14231,
+        "median": 14231,
+        "n": 4
+      }
+    },
+    "okRuns": 5,
+    "totalRuns": 5
+  },
+  "perRun": [
+    {
+      "ok": true,
+      "reason": null,
+      "totalMs": 1641,
+      "wasmRunMs": 333,
+      "totalCalls": null,
+      "namespaceCalls": {}
+    },
+    {
+      "ok": true,
+      "reason": null,
+      "totalMs": 808,
+      "wasmRunMs": 181,
+      "totalCalls": 14648,
+      "namespaceCalls": {
+        "wasi_snapshot_preview1": 142,
+        "wasi": 4,
+        "wasix_32v1": 99,
+        "napi_extension_wasmer_v0": 172,
+        "napi": 14231
+      }
+    },
+    {
+      "ok": true,
+      "reason": null,
+      "totalMs": 768,
+      "wasmRunMs": 226,
+      "totalCalls": 14648,
+      "namespaceCalls": {
+        "wasi_snapshot_preview1": 142,
+        "wasi": 4,
+        "wasix_32v1": 99,
+        "napi_extension_wasmer_v0": 172,
+        "napi": 14231
+      }
+    },
+    {
+      "ok": true,
+      "reason": null,
+      "totalMs": 814,
+      "wasmRunMs": 228,
+      "totalCalls": 14648,
+      "namespaceCalls": {
+        "wasi_snapshot_preview1": 142,
+        "wasi": 4,
+        "wasix_32v1": 99,
+        "napi_extension_wasmer_v0": 172,
+        "napi": 14231
+      }
+    },
+    {
+      "ok": true,
+      "reason": null,
+      "totalMs": 612,
+      "wasmRunMs": 183,
+      "totalCalls": 14648,
+      "namespaceCalls": {
+        "wasi_snapshot_preview1": 142,
+        "wasi": 4,
+        "wasix_32v1": 99,
+        "napi_extension_wasmer_v0": 172,
+        "napi": 14231
+      }
+    }
+  ]
+}
+```
+

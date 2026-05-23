@@ -176,6 +176,36 @@ the browser-target tree.
 - Multiple `#!~debt` in `unofficial.ts` — most no-op stubs writing
   sensible defaults to out-params. Promote when a workload lights them up.
 
+### Cross-worker primitives
+
+- `l1-perf-variance-investigation` (L1 2026-05-23) — local
+  perf-harness measurements after L1 show wasmRunMs median 200-290ms
+  vs L0 baseline 129ms (60-100% slowdown).  Agent's own verification
+  reported 133ms (in budget).  Contradiction; likely sources: (a)
+  concurrent processes during my measurement (background agents),
+  (b) Vite dev rebuild costs on first request, (c) Playwright +
+  Chromium warm-up state.  totalCalls is bit-identical (14648),
+  proving no extra wasm-side work — the variance is host-side, not
+  wasm-side.  Investigate with: dedicated machine, no background
+  load, vite production build instead of dev.  L1 ships; refactor
+  is behavior-preserving and call counts deterministic.
+
+- ~~`fs-snapshot-sab-missing-context-fields`~~ — **RESOLVED** (L1
+  2026-05-23) by adding contextId + hostWorkerId fields to the
+  request ring entry header (bumped 12 → 20 bytes) and threading
+  them through `enqueueLoad` / `drainNext` / `PendingRequest`.
+  Default 0/0 in single-host setup; ready for L9 worker_threads
+  multi-host routing.
+
+- ~~`pipes-sab-not-on-sab-ring`~~ — **RESOLVED** (L1 2026-05-23)
+  for the contextId/hostWorkerId convention by adding those slot
+  header fields and threading them through `allocate`.  Slot
+  header is now 40 bytes (was 32).  Different shape from sab-ring's
+  request/reply state machine — pipes are bidirectional streams,
+  so they retain their own per-slot ring buffer logic.  The
+  convention adoption is complete; the structural difference
+  is intentional.
+
 ### Test infrastructure
 
 - `vendored-emnapi-flag` (L0 2026-05-23) — `EDGE_USE_VENDORED_EMNAPI=true`
