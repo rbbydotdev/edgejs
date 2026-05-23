@@ -1,0 +1,49 @@
+plans/lever-b-progress.md
+  s_7bec0ecbfcdcd0::t_ba73faa2f20a6c 9-27
+  s_7bec0ecbfcdcd0::t_f85cf20a20134c 145-289
+  s_7bec0ecbfcdcd0::t_a234a2b4e43ad5 1-8,28-144
+  s_7bec0ecbfcdcd0::t_c7d528ab2e7c72 290-319
+browser-target/scripts/browser-test-runner.mjs
+  s_7bec0ecbfcdcd0::t_e0a49342d912de 40,42-49
+  s_7bec0ecbfcdcd0::t_6f887d1103e865 71-72
+  s_7bec0ecbfcdcd0::t_2a312228c2f901 217,219-220,243
+browser-target/src/napi-host/emnapi.ts
+  s_7bec0ecbfcdcd0::t_515982168257c7 34-38
+browser-target/scripts/browser-perf-runner.mjs
+  s_7bec0ecbfcdcd0::t_c52d8a9618c6d2 1-426
+browser-target/src/host-worker/rpc-client.ts
+  s_7bec0ecbfcdcd0::t_edd2752e82fdd9 123
+  s_7bec0ecbfcdcd0::t_e16340ae4105a9 99
+  s_7bec0ecbfcdcd0::t_80c98e37003990 1-41,45-98,100-122,124-130
+  s_7bec0ecbfcdcd0::t_879f47ee6c886b 42-44
+.gitignore
+  s_7bec0ecbfcdcd0::t_986978145b229c 29-33
+browser-target/src/host-worker/rpc-protocol.ts
+  s_7bec0ecbfcdcd0::t_fabcc9d90bdc6f 1-97
+browser-target/vite.config.ts
+  s_7bec0ecbfcdcd0::t_7361d8d684b31f 2-54,57-59
+browser-target/src/wasi-shim/sab-ring.ts
+  s_7bec0ecbfcdcd0::t_caa00a05fd2317 1-269
+NOTES.md
+  s_7bec0ecbfcdcd0::t_d5d0537d9fb8f4 181-189
+browser-target/scripts/_runner-common.mjs
+  s_7bec0ecbfcdcd0::t_0f72c05ce30400 1-100
+browser-target/package.json
+  s_7bec0ecbfcdcd0::t_6b576e47d280f2 10-11
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "d512671694111742c90b3c328e8a7ba0ca4e90b0",
+  "prompts": {},
+  "sessions": {
+    "s_7bec0ecbfcdcd0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d560d5ae-265f-44ae-89c4-d35659b3ab9e",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
