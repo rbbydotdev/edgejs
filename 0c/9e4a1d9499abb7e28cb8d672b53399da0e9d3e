@@ -1,0 +1,31 @@
+browser-target/index-l8.html
+  s_7bec0ecbfcdcd0::t_a469ba15d7ac73 29,31
+  s_7bec0ecbfcdcd0::t_0b2a46f4055d37 5-16,20,27-28,30,32,34
+  s_7bec0ecbfcdcd0::t_6bb6bab0cc3660 26
+  s_7bec0ecbfcdcd0::t_89321b6898a02e 1-4,17-19,21-25,33,35-38
+browser-target/scripts/probe-l8-importmap.mjs
+  s_7bec0ecbfcdcd0::t_2acb34d032c536 16
+  s_7bec0ecbfcdcd0::t_821557b069cb22 1-15,17-53
+browser-target/public/virtual-fs.mjs
+  s_7bec0ecbfcdcd0::t_6f5e479301d956 1-7
+browser-target/public/l8-test.html
+  s_7bec0ecbfcdcd0::t_04828e1faedd47 1-38
+plans/lever-b-progress.md
+  ai_agent 1304-1363
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "0c9e4a1d9499abb7e28cb8d672b53399da0e9d3e",
+  "prompts": {},
+  "sessions": {
+    "s_7bec0ecbfcdcd0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d560d5ae-265f-44ae-89c4-d35659b3ab9e",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
