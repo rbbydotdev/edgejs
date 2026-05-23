@@ -1,0 +1,33 @@
+experiments/r7-cbinfo-synthesis/probe.mjs
+  s_7bec0ecbfcdcd0::t_d40cb173d05aa7 1-121,131-157,159-199,204-205,209-282,287-356,361,368-369
+  s_7bec0ecbfcdcd0::t_a73e08c947ea56 158
+  s_7bec0ecbfcdcd0::t_3657c1532f24a8 122-130
+  s_7bec0ecbfcdcd0::t_7e4c20f1e158d6 283-286
+  s_7bec0ecbfcdcd0::t_73a8fc11e04a32 200-203,206-208
+  s_7bec0ecbfcdcd0::t_36c93e648f36ce 357-360,362-367
+experiments/r7-cbinfo-synthesis/package.json
+  s_7bec0ecbfcdcd0::t_640913811e3b66 1-14
+experiments/r7-cbinfo-synthesis/FINDINGS.md
+  s_7bec0ecbfcdcd0::t_132a18ad1f15d9 1-171
+experiments/OPEN-QUESTIONS.md
+  s_7bec0ecbfcdcd0::t_da80763464bfdf 3-11
+  s_7bec0ecbfcdcd0::t_46ce8a41f2ac5b 29
+experiments/r7-cbinfo-synthesis/package-lock.json
+  ai_agent 1-41
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "16969cbbb458e3203280b4e3b71ac07a8fd0f6f8",
+  "prompts": {},
+  "sessions": {
+    "s_7bec0ecbfcdcd0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d560d5ae-265f-44ae-89c4-d35659b3ab9e",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
