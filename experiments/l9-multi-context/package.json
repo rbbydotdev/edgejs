@@ -1,0 +1,12 @@
+{
+  "name": "l9-multi-context-experiment",
+  "version": "0.0.0",
+  "type": "module",
+  "private": true,
+  "description": "Q8: can a single host worker hold N independent emnapi contexts?",
+  "scripts": { "probe": "node probe.mjs" },
+  "dependencies": {
+    "@emnapi/runtime": "file:../../vendor/emnapi/packages/runtime",
+    "@emnapi/core": "file:../../vendor/emnapi/packages/core"
+  }
+}
