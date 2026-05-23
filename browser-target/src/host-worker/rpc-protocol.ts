@@ -97,6 +97,78 @@ export const OP_NAPI_REFERENCE_UNREF = OP_DOMAIN_NAPI_RO | 0x0020;
 export const OP_NAPI_TYPE_TAG_OBJECT = OP_DOMAIN_NAPI_RO | 0x0021;
 export const OP_NAPI_CHECK_OBJECT_TYPE_TAG = OP_DOMAIN_NAPI_RO | 0x0022;
 
+// ── NAPI object/array creation + mutation ops (Lever B batch) ──────
+//
+// Most are read-only-from-RPC-shape POV (return a status; results go
+// through shared memory at a resultPtr) so they live in the NAPI_RO
+// domain alongside the existing ops.  `napi_set_element` and
+// `napi_set_property` have no resultPtr; their fourth u32 is the value
+// handle being assigned.  See napi-op-handlers.ts for the factory mapping.
+export const OP_NAPI_CREATE_OBJECT = OP_DOMAIN_NAPI_RO | 0x0030;
+export const OP_NAPI_CREATE_ARRAY = OP_DOMAIN_NAPI_RO | 0x0031;
+export const OP_NAPI_CREATE_ARRAY_WITH_LENGTH = OP_DOMAIN_NAPI_RO | 0x0032;
+export const OP_NAPI_SET_ELEMENT = OP_DOMAIN_NAPI_RO | 0x0033;
+export const OP_NAPI_GET_ELEMENT = OP_DOMAIN_NAPI_RO | 0x0034;
+export const OP_NAPI_SET_PROPERTY = OP_DOMAIN_NAPI_RO | 0x0035;
+export const OP_NAPI_DELETE_PROPERTY = OP_DOMAIN_NAPI_RO | 0x0036;
+export const OP_NAPI_HAS_OWN_PROPERTY = OP_DOMAIN_NAPI_RO | 0x0037;
+export const OP_NAPI_OBJECT_FREEZE = OP_DOMAIN_NAPI_RO | 0x0038;
+export const OP_NAPI_INSTANCEOF = OP_DOMAIN_NAPI_RO | 0x0039;
+
+// ── Lever B batch: additional read-only napi ops (0x0140–0x0149) ────
+// Allocated in range 0x0040–0x0049 under OP_DOMAIN_NAPI_RO.
+
+export const OP_NAPI_CREATE_INT32 = OP_DOMAIN_NAPI_RO | 0x0040;
+// napi_create_int32(env, value: int32, &result)  — three-u32 shape.
+export const OP_NAPI_CREATE_UINT32 = OP_DOMAIN_NAPI_RO | 0x0041;
+// napi_create_uint32(env, value: uint32, &result)  — three-u32 shape.
+export const OP_NAPI_GET_VALUE_INT64 = OP_DOMAIN_NAPI_RO | 0x0042;
+// napi_get_value_int64(env, value, &result: int64*)  — three-u32; emnapi
+// writes 8 bytes to memory at resultPtr (host has direct memory access).
+export const OP_NAPI_GET_VALUE_EXTERNAL = OP_DOMAIN_NAPI_RO | 0x0043;
+// napi_get_value_external(env, value, &result)  — three-u32.
+export const OP_NAPI_IS_ARRAYBUFFER = OP_DOMAIN_NAPI_RO | 0x0044;
+// napi_is_arraybuffer(env, value, &result: bool*)  — three-u32.
+export const OP_NAPI_IS_DATAVIEW = OP_DOMAIN_NAPI_RO | 0x0045;
+// napi_is_dataview(env, value, &result: bool*)  — three-u32.
+export const OP_NAPI_IS_DETACHED_ARRAYBUFFER = OP_DOMAIN_NAPI_RO | 0x0046;
+// napi_is_detached_arraybuffer(env, value, &result: bool*)  — three-u32.
+export const OP_NAPI_GET_NEW_TARGET = OP_DOMAIN_NAPI_RO | 0x0047;
+// napi_get_new_target(env, cbinfo, &result)  — three-u32.
+export const OP_NAPI_GET_AND_CLEAR_LAST_EXCEPTION = OP_DOMAIN_NAPI_RO | 0x0048;
+// napi_get_and_clear_last_exception(env, &result)  — two-u32.
+export const OP_NAPI_GET_ALL_PROPERTY_NAMES = OP_DOMAIN_NAPI_RO | 0x0049;
+// napi_get_all_property_names(env, object, key_mode, key_filter,
+//                             key_conversion, &result)  — six-u32.
+
+// ── Lever B batch: coerce + buffer-introspection ops (0x0150–0x0159) ──
+// Allocated in range 0x0050–0x0059 under OP_DOMAIN_NAPI_RO.
+//
+// 0x0056 (napi_get_typedarray_info, 7 args) is intentionally NOT allocated:
+//   no makeSevenU32 factory exists in napi-op-handlers.ts.  Add later.
+// 0x0058 (napi_adjust_external_memory) is intentionally NOT allocated:
+//   it takes an int64 change-value that doesn't pack into u32 factory args.
+
+export const OP_NAPI_COERCE_TO_BOOL = OP_DOMAIN_NAPI_RO | 0x0050;
+// napi_coerce_to_bool(env, value, &result)  — three-u32 shape.
+export const OP_NAPI_COERCE_TO_NUMBER = OP_DOMAIN_NAPI_RO | 0x0051;
+// napi_coerce_to_number(env, value, &result)  — three-u32 shape.
+export const OP_NAPI_COERCE_TO_OBJECT = OP_DOMAIN_NAPI_RO | 0x0052;
+// napi_coerce_to_object(env, value, &result)  — three-u32 shape.
+export const OP_NAPI_COERCE_TO_STRING = OP_DOMAIN_NAPI_RO | 0x0053;
+// napi_coerce_to_string(env, value, &result)  — three-u32 shape.
+export const OP_NAPI_GET_ARRAYBUFFER_INFO = OP_DOMAIN_NAPI_RO | 0x0054;
+// napi_get_arraybuffer_info(env, arraybuffer, &data, &byte_length)  — four-u32.
+export const OP_NAPI_GET_BUFFER_INFO = OP_DOMAIN_NAPI_RO | 0x0055;
+// napi_get_buffer_info(env, value, &data, &length)  — four-u32.
+export const OP_NAPI_GET_DATAVIEW_INFO = OP_DOMAIN_NAPI_RO | 0x0057;
+// napi_get_dataview_info(env, dataview, &byte_length, &data, &arraybuffer,
+//                       &byte_offset)  — six-u32.
+export const OP_NODE_API_SET_PROTOTYPE = OP_DOMAIN_NAPI_RO | 0x0059;
+// node_api_set_prototype(env, object, prototype)  — three args, no resultPtr.
+// Registered inline (no factory for "three-u32 no result"); see
+// napi-op-handlers.ts.
+
 // ── NAPI callback-taking ops (F-5) ─────────────────────────────────
 export const OP_NAPI_CALL_FUNCTION = OP_DOMAIN_NAPI_CB | 0x0001;
 // napi_call_function(env, recv, fn, argc, argv_ptr, &result)

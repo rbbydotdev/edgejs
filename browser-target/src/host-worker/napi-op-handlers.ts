@@ -40,6 +40,25 @@ import {
   OP_NAPI_STRICT_EQUALS,
   OP_NAPI_DELETE_REFERENCE, OP_NAPI_GET_REFERENCE_VALUE,
   OP_NAPI_REFERENCE_REF, OP_NAPI_REFERENCE_UNREF,
+  OP_NAPI_CREATE_OBJECT, OP_NAPI_CREATE_ARRAY,
+  OP_NAPI_CREATE_ARRAY_WITH_LENGTH,
+  OP_NAPI_SET_ELEMENT, OP_NAPI_GET_ELEMENT,
+  OP_NAPI_SET_PROPERTY, OP_NAPI_DELETE_PROPERTY,
+  OP_NAPI_HAS_OWN_PROPERTY, OP_NAPI_OBJECT_FREEZE,
+  OP_NAPI_INSTANCEOF,
+  // Lever B batch (0x0140–0x0149):
+  OP_NAPI_CREATE_INT32, OP_NAPI_CREATE_UINT32,
+  OP_NAPI_GET_VALUE_INT64, OP_NAPI_GET_VALUE_EXTERNAL,
+  OP_NAPI_IS_ARRAYBUFFER, OP_NAPI_IS_DATAVIEW,
+  OP_NAPI_IS_DETACHED_ARRAYBUFFER, OP_NAPI_GET_NEW_TARGET,
+  OP_NAPI_GET_AND_CLEAR_LAST_EXCEPTION,
+  OP_NAPI_GET_ALL_PROPERTY_NAMES,
+  // Lever B batch (0x0150–0x0159): coerce + buffer-introspection ops.
+  OP_NAPI_COERCE_TO_BOOL, OP_NAPI_COERCE_TO_NUMBER,
+  OP_NAPI_COERCE_TO_OBJECT, OP_NAPI_COERCE_TO_STRING,
+  OP_NAPI_GET_ARRAYBUFFER_INFO, OP_NAPI_GET_BUFFER_INFO,
+  OP_NAPI_GET_DATAVIEW_INFO,
+  OP_NODE_API_SET_PROTOTYPE,
   REPLY_STATUS_INVALID_ARGS,
 } from "./rpc-protocol";
 
@@ -151,6 +170,10 @@ export function makeNapiOpRegistry(napi: Record<string, NapiFn>): NapiOpRegistry
     // because they came in F-1 already.  Listing here for completeness only
     // if we want to RE-register; we don't — the caller skips these via the
     // `excludeAlreadyRegistered` set.
+    [OP_NAPI_CREATE_OBJECT, "napi_create_object"],
+    [OP_NAPI_CREATE_ARRAY, "napi_create_array"],
+    // Lever B batch.
+    [OP_NAPI_GET_AND_CLEAR_LAST_EXCEPTION, "napi_get_and_clear_last_exception"],
   ];
 
   const THREE_U32: Array<[number, string]> = [
@@ -176,6 +199,26 @@ export function makeNapiOpRegistry(napi: Record<string, NapiFn>): NapiOpRegistry
     [OP_NAPI_GET_REFERENCE_VALUE, "napi_get_reference_value"],
     [OP_NAPI_REFERENCE_REF, "napi_reference_ref"],
     [OP_NAPI_REFERENCE_UNREF, "napi_reference_unref"],
+    [OP_NAPI_CREATE_ARRAY_WITH_LENGTH, "napi_create_array_with_length"],
+    // Lever B batch.  napi_create_int32/uint32 receive the value as a u32
+    // arg slot; emnapi's JS impl coerces to int32/uint32 internally.  JS
+    // numbers fit either range exactly so passing through makeThreeU32 is
+    // lossless.  napi_get_value_int64 writes 8 bytes to memory at
+    // resultPtr — the factory just forwards the pointer, no JS-side
+    // deserialization of the result.
+    [OP_NAPI_CREATE_INT32, "napi_create_int32"],
+    [OP_NAPI_CREATE_UINT32, "napi_create_uint32"],
+    [OP_NAPI_GET_VALUE_INT64, "napi_get_value_int64"],
+    [OP_NAPI_GET_VALUE_EXTERNAL, "napi_get_value_external"],
+    [OP_NAPI_IS_ARRAYBUFFER, "napi_is_arraybuffer"],
+    [OP_NAPI_IS_DATAVIEW, "napi_is_dataview"],
+    [OP_NAPI_IS_DETACHED_ARRAYBUFFER, "napi_is_detached_arraybuffer"],
+    [OP_NAPI_GET_NEW_TARGET, "napi_get_new_target"],
+    // Lever B batch (0x0150–0x0153): coerce-to-* ops, all three-u32.
+    [OP_NAPI_COERCE_TO_BOOL, "napi_coerce_to_bool"],
+    [OP_NAPI_COERCE_TO_NUMBER, "napi_coerce_to_number"],
+    [OP_NAPI_COERCE_TO_OBJECT, "napi_coerce_to_object"],
+    [OP_NAPI_COERCE_TO_STRING, "napi_coerce_to_string"],
   ];
 
   const FOUR_U32: Array<[number, string]> = [
@@ -184,6 +227,21 @@ export function makeNapiOpRegistry(napi: Record<string, NapiFn>): NapiOpRegistry
     [OP_NAPI_HAS_PROPERTY, "napi_has_property"],
     [OP_NAPI_HAS_NAMED_PROPERTY, "napi_has_named_property"],
     [OP_NAPI_STRICT_EQUALS, "napi_strict_equals"],
+    // makeFourU32 passes (env, a, b, ptr) to napiFn.  For these two ops the
+    // 4th u32 is the VALUE being assigned, not a resultPtr — the factory is
+    // arity-shaped, not semantics-shaped, so the wiring is correct.
+    [OP_NAPI_SET_ELEMENT, "napi_set_element"],
+    [OP_NAPI_SET_PROPERTY, "napi_set_property"],
+    // These four DO have a real resultPtr as the 4th u32.
+    [OP_NAPI_GET_ELEMENT, "napi_get_element"],
+    [OP_NAPI_DELETE_PROPERTY, "napi_delete_property"],
+    [OP_NAPI_HAS_OWN_PROPERTY, "napi_has_own_property"],
+    [OP_NAPI_INSTANCEOF, "napi_instanceof"],
+    // Lever B batch (0x0154–0x0155): buffer-introspection ops.  Both have
+    // two out-pointers; the factory's "a, b, ptr" arg slots map to
+    // (buffer_handle, &data, &length) — arity-shaped, not semantics-shaped.
+    [OP_NAPI_GET_ARRAYBUFFER_INFO, "napi_get_arraybuffer_info"],
+    [OP_NAPI_GET_BUFFER_INFO, "napi_get_buffer_info"],
   ];
 
   // napi_delete_reference is two-arg (env, ref_handle); no result_ptr.
@@ -203,7 +261,11 @@ export function makeNapiOpRegistry(napi: Record<string, NapiFn>): NapiOpRegistry
   void makeGetBoolean; // alias retained for documentation; same as makeThreeU32
 
   return {
-    count: TWO_U32.length + THREE_U32.length + FOUR_U32.length + 1, // +1 for delete_reference
+    // +1 delete_reference, +1 object_freeze, +3 callback ops (call/new/create_ref),
+    // +1 napi_get_all_property_names (Lever B six-u32),
+    // +1 napi_get_dataview_info (Lever B six-u32),
+    // +1 node_api_set_prototype (Lever B three-u32 no-result, inline).
+    count: TWO_U32.length + THREE_U32.length + FOUR_U32.length + 8,
     register(server: RpcServer): void {
       for (const [op, name] of TWO_U32) {
         server.register(op, makeTwoU32(napi[name], name));
@@ -219,10 +281,48 @@ export function makeNapiOpRegistry(napi: Record<string, NapiFn>): NapiOpRegistry
         OP_NAPI_DELETE_REFERENCE,
         makeNoResult(napi["napi_delete_reference"], "napi_delete_reference"),
       );
+      // napi_object_freeze(env, object): no result ptr, same shape as delete_reference.
+      server.register(
+        OP_NAPI_OBJECT_FREEZE,
+        makeNoResult(napi["napi_object_freeze"], "napi_object_freeze"),
+      );
       // F-5 callback ops.
       server.register(OP_NAPI_CALL_FUNCTION, makeSixU32(napi["napi_call_function"], "napi_call_function"));
       server.register(OP_NAPI_NEW_INSTANCE, makeFiveU32(napi["napi_new_instance"], "napi_new_instance"));
       server.register(OP_NAPI_CREATE_REFERENCE, makeFourU32(napi["napi_create_reference"], "napi_create_reference"));
+      // Lever B batch: six-u32 op (env, object, key_mode, key_filter,
+      // key_conversion, &result).
+      server.register(
+        OP_NAPI_GET_ALL_PROPERTY_NAMES,
+        makeSixU32(napi["napi_get_all_property_names"], "napi_get_all_property_names"),
+      );
+      // Lever B batch (0x0157): napi_get_dataview_info has six args
+      // (env, dataview, &byte_length, &data, &arraybuffer, &byte_offset) —
+      // fits the makeSixU32 factory shape exactly.
+      server.register(
+        OP_NAPI_GET_DATAVIEW_INFO,
+        makeSixU32(napi["napi_get_dataview_info"], "napi_get_dataview_info"),
+      );
+      // Lever B batch (0x0159): node_api_set_prototype(env, object, prototype)
+      // — three args, no resultPtr.  No "three-u32 no result" factory exists;
+      // register inline.  Pattern mirrors makeNoResult but with one more arg.
+      {
+        const fn = napi["node_api_set_prototype"];
+        const opName = "node_api_set_prototype";
+        server.register(OP_NODE_API_SET_PROTOTYPE, async (_ctx, args) => {
+          if (typeof fn !== "function") return err(`napi handler: ${opName} not found`);
+          if (args.byteLength < 12) return err("napi handler: args too short for three-u32-no-result");
+          const dv = new DataView(args.buffer, args.byteOffset, args.byteLength);
+          return {
+            payload: EMPTY,
+            status: fn(
+              dv.getUint32(0, true),
+              dv.getUint32(4, true),
+              dv.getUint32(8, true),
+            ),
+          };
+        });
+      }
     },
   };
 }
