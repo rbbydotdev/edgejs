@@ -1,0 +1,21 @@
+experiments/r4-rpc-boot-overhead/FINDINGS.md
+  s_7bec0ecbfcdcd0::t_2543c1e2c33cde 92-149
+experiments/OPEN-QUESTIONS.md
+  s_7bec0ecbfcdcd0::t_3e28f7fe6d0f05 25
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "5c669efb5acf22244c1ac47addf7ef4716c9f599",
+  "prompts": {},
+  "sessions": {
+    "s_7bec0ecbfcdcd0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d560d5ae-265f-44ae-89c4-d35659b3ab9e",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
