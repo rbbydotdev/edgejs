@@ -1,0 +1,15 @@
+{
+  "name": "l5-emnapi-v2-experiment",
+  "version": "0.0.0",
+  "type": "module",
+  "private": true,
+  "description": "Isolated probe: can emnapi v2 be used in our split-worker topology?",
+  "scripts": {
+    "probe": "node probe.mjs",
+    "probe:remote": "node probe-remote.mjs"
+  },
+  "dependencies": {
+    "@emnapi/runtime": "file:../../vendor/emnapi/packages/runtime",
+    "@emnapi/core": "file:../../vendor/emnapi/packages/core"
+  }
+}
