@@ -1,0 +1,14 @@
+{
+  "name": "l5-real-roundtrip-experiment",
+  "version": "0.0.0",
+  "type": "module",
+  "private": true,
+  "description": "Q2: cross-worker napi roundtrip via real workers, real shared memory, real emnapi v2.",
+  "scripts": {
+    "probe": "node probe.mjs"
+  },
+  "dependencies": {
+    "@emnapi/runtime": "file:../../vendor/emnapi/packages/runtime",
+    "@emnapi/core": "file:../../vendor/emnapi/packages/core"
+  }
+}
