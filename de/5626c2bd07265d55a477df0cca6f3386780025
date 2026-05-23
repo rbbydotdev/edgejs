@@ -1,0 +1,25 @@
+experiments/l5-malloc-deadlock/probe-pool.mjs
+  s_7bec0ecbfcdcd0::t_ae3406a0f95040 1-133
+experiments/l5-malloc-deadlock/package.json
+  s_7bec0ecbfcdcd0::t_3e29035dbdb86d 1-11
+experiments/l5-malloc-deadlock/probe-reproduce.mjs
+  s_7bec0ecbfcdcd0::t_db553f8c474c63 1-87
+experiments/l5-malloc-deadlock/FINDINGS.md
+  s_7bec0ecbfcdcd0::t_f686a0e6488876 1-154
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "de5626c2bd07265d55a477df0cca6f3386780025",
+  "prompts": {},
+  "sessions": {
+    "s_7bec0ecbfcdcd0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d560d5ae-265f-44ae-89c4-d35659b3ab9e",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
