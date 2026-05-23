@@ -1,0 +1,25 @@
+browser-target/src/host-worker/rpc-protocol.ts
+  s_7bec0ecbfcdcd0::t_bed763dd3bd3a3 340-392
+browser-target/src/host-worker/napi-op-handlers.ts
+  s_7bec0ecbfcdcd0::t_ce3e1007340b12 287-290
+  s_7bec0ecbfcdcd0::t_10a6ebbfe1b698 382-383
+  s_7bec0ecbfcdcd0::t_798512a87dd559 85-86
+  s_7bec0ecbfcdcd0::t_0a08875d13648e 381,384
+  s_7bec0ecbfcdcd0::t_7ee0fe2efab6b2 787-889
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "36b0110720fc68d2f1486efc81fc405608b19b4c",
+  "prompts": {},
+  "sessions": {
+    "s_7bec0ecbfcdcd0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d560d5ae-265f-44ae-89c4-d35659b3ab9e",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
