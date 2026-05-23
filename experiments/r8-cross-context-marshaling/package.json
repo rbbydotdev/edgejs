@@ -1,0 +1,14 @@
+{
+  "name": "r8-cross-context-marshaling-experiment",
+  "version": "0.0.0",
+  "type": "module",
+  "private": true,
+  "description": "R8: cross-context napi_value handle marshaling between host's emnapi and wasm's emnapi during Lever B reverse-channel callback dispatch.",
+  "scripts": {
+    "probe": "node probe.mjs"
+  },
+  "dependencies": {
+    "@emnapi/runtime": "file:../../vendor/emnapi/packages/runtime",
+    "@emnapi/core": "file:../../vendor/emnapi/packages/core"
+  }
+}
