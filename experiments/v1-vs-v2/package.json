@@ -1,0 +1,14 @@
+{
+  "name": "v1-vs-v2-experiment",
+  "version": "0.0.0",
+  "type": "module",
+  "private": true,
+  "description": "Validate that our split-worker patterns work on v1 (production) — not just v2 (validated in experiments).",
+  "scripts": {
+    "probe": "node probe-v1.mjs"
+  },
+  "dependencies": {
+    "@emnapi/runtime": "^1.10.0",
+    "@emnapi/core": "^1.4.0"
+  }
+}
