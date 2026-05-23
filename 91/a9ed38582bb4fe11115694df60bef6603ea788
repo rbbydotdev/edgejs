@@ -1,0 +1,26 @@
+browser-target/src/host-worker/napi-op-handlers.ts
+  s_7bec0ecbfcdcd0::t_98be4c0c248770 206
+  s_7bec0ecbfcdcd0::t_0d31073c651dd7 229
+  s_7bec0ecbfcdcd0::t_a3d4f2f0431679 258-260
+  s_7bec0ecbfcdcd0::t_35f084426d3118 142,155,169
+  s_7bec0ecbfcdcd0::t_dc19347e263990 185
+  s_7bec0ecbfcdcd0::t_989196b93c8dc0 105-136
+browser-target/src/main.ts
+  s_7bec0ecbfcdcd0::t_927fcf75ac3544 248-251
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "91a9ed38582bb4fe11115694df60bef6603ea788",
+  "prompts": {},
+  "sessions": {
+    "s_7bec0ecbfcdcd0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d560d5ae-265f-44ae-89c4-d35659b3ab9e",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
