@@ -47,9 +47,13 @@ let fsSnapshotSab: SharedArrayBuffer | null = null;
 // L3+ wires this into napi-host.
 import { attachRing as attachHostRing, type RingConfig as HostRingConfig } from "./wasi-shim/sab-ring";
 import { RpcClient } from "./host-worker/rpc-client";
-import { OP_PING } from "./host-worker/rpc-protocol";
+import { RpcServer } from "./host-worker/rpc-server";
+import { OP_PING, OP_WASM_ECHO, REPLY_STATUS_OK } from "./host-worker/rpc-protocol";
 const HOST_RPC_RING_CONFIG: HostRingConfig = { numSlots: 32, slotSize: 4 * 1024 };
 let hostRpcClient: RpcClient | null = null;
+/** Reverse-channel server: host can request things FROM wasm worker.
+ *  Used for finalizers, threadsafe function dispatch in L5+. */
+let reverseRpcServer: RpcServer | null = null;
 let hostWorkerId = -1;
 
 self.addEventListener("message", (e: MessageEvent) => {
@@ -62,6 +66,25 @@ self.addEventListener("message", (e: MessageEvent) => {
     const replyRing = attachHostRing(data.replySab, HOST_RPC_RING_CONFIG);
     hostRpcClient = new RpcClient(requestRing, replyRing);
     post("log", { text: `[runtime] host RPC client attached (hostWorkerId=${hostWorkerId})`, level: "info" });
+    // L4 reverse channel — host can send requests TO this worker.
+    // Reverse-direction SABs come in the same message.
+    const reverseReqSab = (data as { reverseRequestSab?: SharedArrayBuffer }).reverseRequestSab;
+    const reverseRepSab = (data as { reverseReplySab?: SharedArrayBuffer }).reverseReplySab;
+    if (reverseReqSab && reverseRepSab) {
+      const reverseRequestRing = attachHostRing(reverseReqSab, HOST_RPC_RING_CONFIG);
+      const reverseReplyRing = attachHostRing(reverseRepSab, HOST_RPC_RING_CONFIG);
+      reverseRpcServer = new RpcServer(reverseRequestRing, reverseReplyRing);
+      // OP_WASM_ECHO: round-trip a payload (L4 bench).
+      reverseRpcServer.register(OP_WASM_ECHO, async (_ctx, args) => {
+        const copy = new Uint8Array(args.byteLength);
+        copy.set(args);
+        return { payload: copy, status: REPLY_STATUS_OK };
+      });
+      void reverseRpcServer.start().catch((err) => {
+        post("log", { text: `[runtime] reverse RPC server crashed: ${(err as Error).message}`, level: "err" });
+      });
+      post("log", { text: "[runtime] reverse RPC server attached", level: "info" });
+    }
     // L2 proof-of-life: ping the host worker once at attach time.
     void hostRpcClient.call(OP_PING, hostWorkerId, 0, null).then((res) => {
       post("log", { text: `[runtime] host ping ok status=${res.status} replyBytes=${res.payload.byteLength}`, level: "info" });

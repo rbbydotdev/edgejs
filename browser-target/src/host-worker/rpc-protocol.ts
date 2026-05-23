@@ -42,6 +42,11 @@ export const OP_HOST_ECHO = OP_DOMAIN_CONTROL | 0x0004;
 // Used by L3 to benchmark RPC throughput and validate that the primitive
 // scales to larger payloads (napi ops will need 100s of bytes per call).
 
+export const OP_WASM_ECHO = OP_DOMAIN_CONTROL | 0x0005;
+// Mirror of OP_HOST_ECHO; host → wasm direction.  L4 reverse-channel
+// validation.  Used by finalizers (host signals wasm "this finalizer
+// should fire") and threadsafe function dispatch in L5+.
+
 // ── NAPI read-only ops (defined here; wired in L5) ──────────────────
 //
 // These are the ops L5 will route to the host worker once emnapi context

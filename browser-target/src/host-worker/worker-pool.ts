@@ -22,10 +22,18 @@ export interface HostWorkerHandle {
   id: number;
   /** The DedicatedWorker reference; for postMessage if needed. */
   worker: Worker;
+  // ── Forward channel (wasm → host) ────────────────────────────────
   /** SAB the WASM-side RpcClient writes requests into. */
   requestSab: SharedArrayBuffer;
   /** SAB the WASM-side RpcClient reads replies from. */
   replySab: SharedArrayBuffer;
+  // ── Reverse channel (host → wasm) ────────────────────────────────
+  /** SAB the host-side RpcClient writes requests into.
+   *  Used for: finalizers, threadsafe function dispatch, future
+   *  host→wasm signals. */
+  reverseRequestSab: SharedArrayBuffer;
+  /** SAB the host-side RpcClient reads replies from. */
+  reverseReplySab: SharedArrayBuffer;
   /** Resolves when the host worker has posted `ready`. */
   ready: Promise<void>;
 }
@@ -38,6 +46,10 @@ export function spawnHostWorker(): HostWorkerHandle {
   const id = nextId++;
   const requestRing = createRing(RING_CONFIG);
   const replyRing = createRing(RING_CONFIG);
+  // Reverse-direction rings (host → wasm).  Allocated alongside the
+  // forward pair so wasm worker can attach to them at the same handoff.
+  const reverseRequestRing = createRing(RING_CONFIG);
+  const reverseReplyRing = createRing(RING_CONFIG);
   // Vite requires static worker options; can't template the name.
   const worker = new Worker(
     new URL("./host-worker.ts", import.meta.url),
@@ -64,6 +76,8 @@ export function spawnHostWorker(): HostWorkerHandle {
     kind: "init",
     requestSab: requestRing.sab,
     replySab: replyRing.sab,
+    reverseRequestSab: reverseRequestRing.sab,
+    reverseReplySab: reverseReplyRing.sab,
     hostWorkerId: id,
   });
   return {
@@ -71,6 +85,8 @@ export function spawnHostWorker(): HostWorkerHandle {
     worker,
     requestSab: requestRing.sab,
     replySab: replyRing.sab,
+    reverseRequestSab: reverseRequestRing.sab,
+    reverseReplySab: reverseReplyRing.sab,
     ready,
   };
 }

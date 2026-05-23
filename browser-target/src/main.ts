@@ -99,6 +99,17 @@ async function spawnHostThenRuntime(): Promise<void> {
     await runEchoBench(benchEcho.iters, benchEcho.payload);
   }
   spawnRuntimeWorker();
+  // L4 reverse-echo probe: after runtime worker spawns and attaches its
+  // reverse-channel server, the host worker can echo via that channel.
+  // Triggered via ?probe=reverse-echo URL param.
+  if (probeReverseEcho && hostHandle) {
+    // Defer until runtime worker is reasonably alive — 500ms is enough
+    // for the SAB handoff in practice; tighter would race the reverse
+    // RpcServer's start.
+    setTimeout(() => {
+      hostHandle!.worker.postMessage({ kind: "reverse-echo", bytes: 64 });
+    }, 500);
+  }
 }
 
 async function runEchoBench(iters: number, payloadBytes: number): Promise<void> {
@@ -154,6 +165,8 @@ function spawnRuntimeWorker() {
       hostWorkerId: hostHandle.id,
       requestSab: hostHandle.requestSab,
       replySab: hostHandle.replySab,
+      reverseRequestSab: hostHandle.reverseRequestSab,
+      reverseReplySab: hostHandle.reverseReplySab,
     });
   }
   worker.onmessage = onWorkerMessage;
@@ -263,6 +276,7 @@ const userScript = params.get("script");
 const benchEcho = params.get("bench") === "echo"
   ? { iters: parseInt(params.get("iters") ?? "1000", 10), payload: parseInt(params.get("payload") ?? "32", 10) }
   : null;
+const probeReverseEcho = params.get("probe") === "reverse-echo";
 
 append("page bootstrap ok. crossOriginIsolated=" + crossOriginIsolated, "info");
 if (memSnapshotSymbols.length > 0) {

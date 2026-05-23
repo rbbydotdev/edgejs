@@ -1178,3 +1178,38 @@ batch sequential calls into one round-trip (the same pattern Pyodide's
 
 **Next:** L4 — reverse RPC channel (host → wasm) for finalizers and
 threadsafe function dispatch.
+
+---
+
+## L4 complete (2026-05-23)
+
+**Deliverables:**
+- `OP_WASM_ECHO` op in protocol (mirror of OP_HOST_ECHO)
+- Second SAB ring pair in worker-pool for host→wasm direction
+- Reverse `RpcClient` on host worker; reverse `RpcServer` on wasm worker
+- `runReverseEcho` message handler on host (triggered via postMessage)
+- `?probe=reverse-echo` URL param
+- `browser-target/scripts/probe-reverse-echo.mjs` probe script
+
+**Topology now:**
+- 4 workers (page + bridge + host + wasm)
+- 2 RPC channels:
+  - Forward (wasm→host): wasm has Client; host has Server
+  - Reverse (host→wasm): host has Client; wasm has Server
+- Both channels use independent SAB ring pairs
+
+**Proof of life:**
+```
+$ node browser-target/scripts/probe-reverse-echo.mjs
+probe-reverse-echo: OK 64B round-trip in 0.42ms
+```
+
+The 0.42ms cold-start is higher than steady-state (L3 measured ~22 μs
+for warm forward direction).  Reverse-channel perf should match forward
+when warm — same primitives.  L5 will exercise both channels with
+real napi load.
+
+**Tests:** 14 pass / 13 skip / 0 fail.
+
+**Next:** L5 — the big cutover.  Move emnapi context + user JS execution
+to host worker.  Microtask drain bug should close naturally.

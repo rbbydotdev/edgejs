@@ -24,6 +24,7 @@ import {
   type RingConfig,
 } from "../wasi-shim/sab-ring";
 import { RpcServer } from "./rpc-server";
+import { RpcClient } from "./rpc-client";
 import {
   OP_PING,
   OP_HOST_READY,
@@ -43,6 +44,8 @@ interface InitMessage {
   kind: "init";
   requestSab: SharedArrayBuffer;
   replySab: SharedArrayBuffer;
+  reverseRequestSab: SharedArrayBuffer;
+  reverseReplySab: SharedArrayBuffer;
   hostWorkerId: number;
 }
 
@@ -51,10 +54,22 @@ interface ReadyMessage {
   hostWorkerId: number;
 }
 
+interface ReverseEchoMessage {
+  kind: "reverse-echo";
+  bytes: number;
+}
+
 let hostWorkerId = -1;
 let requestRing: RingView | null = null;
 let replyRing: RingView | null = null;
 let server: RpcServer | null = null;
+// Reverse channel: host-side client for sending requests TO wasm
+// (finalizers, threadsafe function dispatch, future host→wasm signals).
+let reverseRequestRing: RingView | null = null;
+let reverseReplyRing: RingView | null = null;
+let reverseClient: RpcClient | null = null;
+/** Exposed for L4 bench script and future L5 callers. */
+export function getReverseClient(): RpcClient | null { return reverseClient; }
 
 function log(text: string, level: "info" | "warn" | "err" = "info"): void {
   self.postMessage({ kind: "host-log", text: `[host-worker:${hostWorkerId}] ${text}`, level });
@@ -79,32 +94,67 @@ function registerHandlers(srv: RpcServer): void {
   void OP_HOST_READY;
 }
 
+async function runReverseEcho(bytes: number): Promise<void> {
+  if (!reverseClient) {
+    log("reverse-echo: reverseClient not ready", "err");
+    return;
+  }
+  const { OP_WASM_ECHO } = await import("./rpc-protocol");
+  const payload = new Uint8Array(bytes);
+  for (let i = 0; i < bytes; i++) payload[i] = i & 0xff;
+  const t0 = performance.now();
+  const res = await reverseClient.call(OP_WASM_ECHO, hostWorkerId, 0, payload);
+  const dt = performance.now() - t0;
+  if (res.status !== 0 || res.payload.byteLength !== bytes) {
+    log(`reverse-echo FAILED: status=${res.status} bytes=${res.payload.byteLength}`, "err");
+    return;
+  }
+  // Verify bytes round-tripped.
+  for (let i = 0; i < bytes; i++) {
+    if (res.payload[i] !== (i & 0xff)) {
+      log(`reverse-echo: byte mismatch at index ${i}`, "err");
+      return;
+    }
+  }
+  log(`reverse-echo: ok ${bytes}B in ${dt.toFixed(3)}ms`);
+}
+
 self.addEventListener("message", (e: MessageEvent) => {
-  const data = e.data as Partial<InitMessage> | null;
+  const data = e.data as (Partial<InitMessage> | ReverseEchoMessage) | null;
+  if (data?.kind === "reverse-echo") {
+    void runReverseEcho(data.bytes ?? 32);
+    return;
+  }
   if (!data || data.kind !== "init") return;
   if (server !== null) {
     log("init received twice; ignoring second", "warn");
     return;
   }
   hostWorkerId = data.hostWorkerId ?? 0;
-  if (!data.requestSab || !data.replySab) {
-    log("init missing requestSab or replySab", "err");
+  if (!data.requestSab || !data.replySab || !data.reverseRequestSab || !data.reverseReplySab) {
+    log("init missing one of (request|reply|reverseRequest|reverseReply)Sab", "err");
     return;
   }
   try {
     requestRing = attachRing(data.requestSab, RING_CONFIG);
     replyRing = attachRing(data.replySab, RING_CONFIG);
+    reverseRequestRing = attachRing(data.reverseRequestSab, RING_CONFIG);
+    reverseReplyRing = attachRing(data.reverseReplySab, RING_CONFIG);
   } catch (err) {
     log(`attachRing failed: ${(err as Error).message}`, "err");
     return;
   }
   server = new RpcServer(requestRing, replyRing);
   registerHandlers(server);
+  // Reverse-channel client (host -> wasm).  Used by L5+ for finalizers
+  // and threadsafe function dispatch.  No handlers needed on host's
+  // side of this channel — replies route via requestId demux as usual.
+  reverseClient = new RpcClient(reverseRequestRing, reverseReplyRing);
   // Start drain loop (fire-and-forget).
   void server.start().catch((err) => {
     log(`rpc-server crashed: ${(err as Error).stack ?? err}`, "err");
   });
-  log("ready");
+  log("ready (forward + reverse channels both attached)");
   const ready: ReadyMessage = { kind: "ready", hostWorkerId };
   self.postMessage(ready);
 });
