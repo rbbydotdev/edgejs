@@ -1,0 +1,21 @@
+experiments/r10-emnapi-silent-write/FINDINGS.md
+  s_7bec0ecbfcdcd0::t_75b476cbdb164a 1-123
+experiments/OPEN-QUESTIONS.md
+  s_7bec0ecbfcdcd0::t_40f75560515d3c 25-26
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "716ae8d74fe9861bd59bbb061edd07be8e588358",
+  "prompts": {},
+  "sessions": {
+    "s_7bec0ecbfcdcd0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d560d5ae-265f-44ae-89c4-d35659b3ab9e",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
