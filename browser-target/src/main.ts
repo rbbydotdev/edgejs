@@ -135,6 +135,9 @@ async function spawnHostThenRuntime(): Promise<void> {
   if (f1NapiProbe) {
     await runF1NapiProbe();
   }
+  if (f9SweepProbe) {
+    await runF9SweepProbe();
+  }
 }
 
 async function runF1NapiProbe(): Promise<void> {
@@ -204,6 +207,151 @@ async function runF1NapiProbe(): Promise<void> {
     && t1.result === 0 && t2.result === 1 && t3.result === 6
     && ia.status === 0 && ia.result === 0;
   append(`f1-napi-probe: ${allOk ? "OK" : "FAIL"}`, allOk ? "info" : "err");
+}
+
+// F-9 sweep probe.  Picks one representative op per batch from F-9
+// batches 1-3 + clusters A/B/C and exercises it via real SAB-RPC to
+// the host worker.  Smoke test — catches gross wiring errors after
+// the factory-pattern additions.  Each op is asserted to return
+// status=0 and (where applicable) a non-zero handle.
+async function runF9SweepProbe(): Promise<void> {
+  if (!hostHandle) { append("f9-sweep: hostHandle not ready", "err"); return; }
+  if (!hostHandle.napiMemorySab) { append("f9-sweep: napiMemorySab missing", "err"); return; }
+  const { attachRing } = await import("./wasi-shim/sab-ring");
+  const { RpcClient } = await import("./host-worker/rpc-client");
+  const proto = await import("./host-worker/rpc-protocol");
+  const ringConfig = { numSlots: 32, slotSize: 4 * 1024 };
+  const client = new RpcClient(
+    attachRing(hostHandle.requestSab, ringConfig),
+    attachRing(hostHandle.replySab, ringConfig),
+  );
+  const memU8 = new Uint8Array(hostHandle.napiMemorySab);
+  const memU32 = new Uint32Array(hostHandle.napiMemorySab);
+
+  // Encode an args buffer of N u32s.
+  function encodeArgs(values: number[]): Uint8Array {
+    const buf = new Uint8Array(values.length * 4);
+    const dv = new DataView(buf.buffer);
+    for (let i = 0; i < values.length; i++) dv.setUint32(i * 4, values[i] >>> 0, true);
+    return buf;
+  }
+  async function callOp(op: number, name: string, argv: number[], outPtrs: number[] = []) {
+    const reply = await client.call(op, 0, 0, encodeArgs(argv));
+    const outs: Record<string, number> = {};
+    for (const ptr of outPtrs) outs[`@${ptr}`] = memU32[ptr / 4];
+    return { name, status: reply.status, outs };
+  }
+
+  const results: { name: string; status: number; ok: boolean; detail: string }[] = [];
+  // Reserve memory layout for out-pointers (256+ to avoid F-1 probe's 256-312 range).
+  let ptr = 400;
+  const allocPtr = (n = 4) => { const p = ptr; ptr += n; return p; };
+
+  // ── Batch 1 — object/array/property (0x0130-0x0139) ──
+  // create_object(env, &result) — TwoU32
+  {
+    const out = allocPtr();
+    const r = await callOp(proto.OP_NAPI_CREATE_OBJECT, "create_object", [1, out]);
+    const handle = memU32[out / 4];
+    results.push({ name: "create_object", status: r.status, ok: r.status === 0 && handle !== 0, detail: `status=${r.status} handle=${handle}` });
+  }
+  // create_array_with_length(env, length, &result) — ThreeU32
+  {
+    const out = allocPtr();
+    const r = await callOp(proto.OP_NAPI_CREATE_ARRAY_WITH_LENGTH, "create_array_with_length", [1, 5, out]);
+    const handle = memU32[out / 4];
+    results.push({ name: "create_array_with_length", status: r.status, ok: r.status === 0 && handle !== 0, detail: `status=${r.status} handle=${handle}` });
+  }
+
+  // ── Batch 2 — numeric (0x0140-0x0149) ──
+  // create_int32(env, value, &result) — ThreeU32.  Capture the handle for downstream coerce.
+  const int32Out = allocPtr();
+  {
+    const r = await callOp(proto.OP_NAPI_CREATE_INT32, "create_int32", [1, 42, int32Out]);
+    const handle = memU32[int32Out / 4];
+    results.push({ name: "create_int32", status: r.status, ok: r.status === 0 && handle !== 0, detail: `status=${r.status} handle=${handle}` });
+  }
+  const int32Handle = memU32[int32Out / 4];
+
+  // ── Batch 2 — coerce (0x0150-0x0159) ──
+  // coerce_to_bool(env, value, &result) — ThreeU32 on the int32 we just made.
+  {
+    const out = allocPtr();
+    const r = await callOp(proto.OP_NAPI_COERCE_TO_BOOL, "coerce_to_bool", [1, int32Handle, out]);
+    const handle = memU32[out / 4];
+    results.push({ name: "coerce_to_bool", status: r.status, ok: r.status === 0 && handle !== 0, detail: `status=${r.status} handle=${handle}` });
+  }
+
+  // ── Batch 2 — buffer/typedarray/value-creation (0x0160-0x016B) ──
+  // create_date(env, time:double, &result) — ThreeU32.  Double passed via JS number.
+  {
+    const out = allocPtr();
+    const r = await callOp(proto.OP_NAPI_CREATE_DATE, "create_date", [1, 0, out]);
+    const handle = memU32[out / 4];
+    results.push({ name: "create_date", status: r.status, ok: r.status === 0 && handle !== 0, detail: `status=${r.status} handle=${handle}` });
+  }
+
+  // ── Batch 3 — string (0x0180-0x018E) ──
+  // create_string_utf8(env, str_ptr, length, &result) — FourU32, with the string bytes
+  // in shared memory at strPtr.
+  {
+    const strBytes = new TextEncoder().encode("f9-sweep!");
+    const strPtr = allocPtr(strBytes.byteLength + 4);
+    memU8.set(strBytes, strPtr);
+    const out = allocPtr();
+    const r = await callOp(proto.OP_NAPI_CREATE_STRING_UTF8, "create_string_utf8",
+      [1, strPtr, strBytes.byteLength, out]);
+    const handle = memU32[out / 4];
+    results.push({ name: "create_string_utf8", status: r.status, ok: r.status === 0 && handle !== 0, detail: `status=${r.status} handle=${handle}` });
+  }
+
+  // ── Cluster A — env cleanup hook (0x01A0-0x01A1) ──
+  // add_env_cleanup_hook(env, cbPtr, dataPtr) — three-u32 no-result, custom inline.
+  // Verifies the handler runs + closure is registered (we never trigger the cleanup,
+  // so the closure stays dormant).
+  {
+    const r = await callOp(proto.OP_NAPI_ADD_ENV_CLEANUP_HOOK, "add_env_cleanup_hook", [1, 0xdead0001, 0xbeef0001]);
+    results.push({ name: "add_env_cleanup_hook", status: r.status, ok: r.status === 0, detail: `status=${r.status}` });
+  }
+
+  // ── Cluster B — externals (0x01B0-0x01B2) ──
+  // create_external(env, data, finalize_cb, finalize_hint, &result) — FiveU32.
+  {
+    const out = allocPtr();
+    const r = await callOp(proto.OP_NAPI_CREATE_EXTERNAL, "create_external", [1, 0xfeed0001, 0xdead0002, 0xbeef0002, out]);
+    const handle = memU32[out / 4];
+    results.push({ name: "create_external", status: r.status, ok: r.status === 0 && handle !== 0, detail: `status=${r.status} handle=${handle}` });
+  }
+
+  // ── Cluster C — wrap lifecycle (0x01C0-0x01C3) ──
+  // Need a value to wrap.  Use create_object's handle from earlier — but it was scoped
+  // and may be released; create a fresh one.
+  {
+    const objOut = allocPtr();
+    const cr = await callOp(proto.OP_NAPI_CREATE_OBJECT, "create_object(for_wrap)", [1, objOut]);
+    const objHandle = memU32[objOut / 4];
+    if (cr.status === 0 && objHandle !== 0) {
+      // wrap(env, value, native_obj, finalize_cb, finalize_hint, &result_opt) — 6 args
+      const refOut = allocPtr();
+      const wr = await callOp(proto.OP_NAPI_WRAP, "wrap", [1, objHandle, 0xfeed0003, 0xdead0003, 0xbeef0003, refOut]);
+      results.push({ name: "wrap", status: wr.status, ok: wr.status === 0, detail: `status=${wr.status} refOut=@${refOut}=${memU32[refOut/4]}` });
+      // unwrap(env, value, &result) — ThreeU32.  Should return the native_obj ptr we stored.
+      const unwrapOut = allocPtr();
+      const ur = await callOp(proto.OP_NAPI_UNWRAP, "unwrap", [1, objHandle, unwrapOut]);
+      const got = memU32[unwrapOut / 4];
+      results.push({ name: "unwrap", status: ur.status, ok: ur.status === 0 && got === 0xfeed0003, detail: `status=${ur.status} got=0x${got.toString(16)}` });
+    } else {
+      results.push({ name: "wrap", status: cr.status, ok: false, detail: "couldn't create object to wrap" });
+    }
+  }
+
+  // Emit per-op result + summary.
+  for (const r of results) {
+    append(`f9-sweep: ${r.ok ? "ok  " : "FAIL"}  ${r.name.padEnd(28)} ${r.detail}`, r.ok ? "info" : "err");
+  }
+  const allOk = results.every((r) => r.ok);
+  const passCount = results.filter((r) => r.ok).length;
+  append(`f9-sweep: ${passCount}/${results.length} ops OK — ${allOk ? "OK" : "FAIL"}`, allOk ? "info" : "err");
 }
 
 async function runL9MultiHostSpike(): Promise<void> {
@@ -491,6 +639,7 @@ const probeReverseEcho = params.get("probe") === "reverse-echo";
 const l5UserScript = params.get("l5script"); // L5 spike
 const l9MultiHost = params.get("probe") === "l9-multi-host"; // L9 spike
 const f1NapiProbe = params.get("probe") === "f1-napi";        // F-1 first napi op via RPC
+const f9SweepProbe = params.get("probe") === "f9-sweep";      // F-9 one-op-per-batch sweep
 
 append("page bootstrap ok. crossOriginIsolated=" + crossOriginIsolated, "info");
 if (memSnapshotSymbols.length > 0) {
