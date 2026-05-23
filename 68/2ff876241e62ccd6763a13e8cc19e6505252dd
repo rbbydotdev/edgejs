@@ -1,0 +1,29 @@
+browser-target/src/main.ts
+  s_7bec0ecbfcdcd0::t_713f21c6e8db92 248-260,274-277,281-282,285,289,291-295,301-306
+  s_7bec0ecbfcdcd0::t_87e2d6ad973302 105
+  s_7bec0ecbfcdcd0::t_caa1e08519937b 120-122,124
+NOTES.md
+  s_7bec0ecbfcdcd0::t_f199938edf8ae8 282-284
+  s_7bec0ecbfcdcd0::t_0ef1cbb80c76fe 275-277
+  s_7bec0ecbfcdcd0::t_fd5bfb118649ec 101-115
+ARCHITECTURE.md
+  s_7bec0ecbfcdcd0::t_e75645c0b91888 229-271
+plans/lever-b-progress.md
+  s_7bec0ecbfcdcd0::t_c3c8ffeade6bc3 1693-1754
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "682ff876241e62ccd6763a13e8cc19e6505252dd",
+  "prompts": {},
+  "sessions": {
+    "s_7bec0ecbfcdcd0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d560d5ae-265f-44ae-89c4-d35659b3ab9e",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
