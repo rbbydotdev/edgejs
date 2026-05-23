@@ -1213,3 +1213,91 @@ real napi load.
 
 **Next:** L5 — the big cutover.  Move emnapi context + user JS execution
 to host worker.  Microtask drain bug should close naturally.
+
+---
+
+## L5 spike validated (2026-05-23) — full L5 deferred
+
+**Spike scope:** prove user JS running on host worker's native V8
+exhibits Node-correct microtask ordering, without involving edge.js's
+wasm runtime at all.
+
+**Implementation:**
+- `OP_RUN_USER_SCRIPT` op
+- Host-worker handler: wraps source in `async () => { ... }`, runs via
+  `new Function`, awaits the returned Promise, then captures stdout
+  via a minimal injected `console` (no real edge.js Node API)
+- `?l5script=...` URL param routes to host eval
+- `probe-l5-script.mjs` verifies ordering
+
+**Spike test script:**
+```js
+const order = [];
+Promise.resolve().then(() => order.push('a'));
+Promise.resolve().then(() => order.push('b'));
+queueMicrotask(() => order.push('c'));
+await Promise.resolve();
+console.log(order.join(','));
+```
+
+**Result:**
+```
+$ node browser-target/scripts/probe-l5-script.mjs
+probe-l5-script: OK got "a,b,c" (matches Node-correct)
+```
+
+The microtask drain bug **does not exist on host V8**.  Moving user
+JS execution to the host worker is the architecturally correct fix.
+
+**What full L5 still requires (deferred):**
+
+1. Move emnapi context creation from wasm worker to host worker.
+   Today emnapi is `napi-host/index.ts` instantiated inside `worker.ts`.
+   Needs to move via the RPC channels we built in L2-L4.
+
+2. Move `napi-host/*.ts` JS impl to host worker.  All napi entry
+   points (`napi_typeof`, `napi_create_string_utf8`, ~234 functions)
+   need to run on host where V8 contexts + handles live.
+
+3. Wasm worker provides RPC client for ALL napi imports.  Each call
+   serializes args, sends to host, awaits reply.  This is the work
+   the L3 RPC throughput bench validated as feasible.
+
+4. Move Node's `lib/*.js` source delivery to host.  L5 Option A
+   (lazy fetch from wasm on first require) or Option B (pre-bundle
+   into host bundle at build time).
+
+5. The user-script entry path (`unofficial_napi_contextify_run_script`)
+   replaced with the L5-spike pattern: source goes to host, host runs
+   `new Function`, host stores resulting JS handle, hands back a
+   remote handle id to wasm.
+
+6. Handle table coordination: every JS value the user creates lives
+   in host's handle store.  Wasm has remote handle IDs that route
+   operations back to host via RPC.
+
+7. Microtask drain plumbing on host: edge's `process._tickCallback`
+   equivalent on host worker; should be cheap because host V8 drains
+   naturally.
+
+**Estimated effort for full L5: 1-3 weeks of focused work.**  The
+hardest parts are (2) napi-host migration and (6) handle table
+coordination.  Both have clear designs but require careful
+implementation + testing per op.
+
+**What's blocked by full L5:**
+
+- L6 (policies migration): policies that touch JS need to run on host
+- L7 (un-skip microtask regressions, run upstream corpus): regressions
+  only close when user JS lives on host
+- L8 ESM (post-foundation; needs L5 for module loader location)
+- L9 worker_threads (post-foundation; needs L5 + multi-host-worker shape)
+
+**Status of this session's L5 work:**
+- ✓ RPC primitive validated for L5 load (L3)
+- ✓ Bidirectional RPC validated (L4)
+- ✓ User pure-JS-on-host validated end-to-end (this spike)
+- ⊘ Full emnapi/napi-host migration: deferred to dedicated multi-day work
+
+Per project goal directive (3-attempt rule), L5 full is shelved with
+the above detailed roadmap.  Foundation (L0-L4 + L5 spike) is solid.

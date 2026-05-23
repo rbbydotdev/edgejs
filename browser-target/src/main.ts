@@ -110,6 +110,32 @@ async function spawnHostThenRuntime(): Promise<void> {
       hostHandle!.worker.postMessage({ kind: "reverse-echo", bytes: 64 });
     }, 500);
   }
+  // L5 spike: run a user script via host eval.  Bypasses edge.js
+  // entirely; useful for validating that microtasks drain correctly
+  // when user JS runs on host V8.
+  if (l5UserScript && hostHandle) {
+    await runL5UserScript(l5UserScript);
+  }
+}
+
+async function runL5UserScript(source: string): Promise<void> {
+  if (!hostHandle) return;
+  const { attachRing } = await import("./wasi-shim/sab-ring");
+  const { RpcClient } = await import("./host-worker/rpc-client");
+  const { OP_RUN_USER_SCRIPT } = await import("./host-worker/rpc-protocol");
+  const ringConfig = { numSlots: 32, slotSize: 4 * 1024 };
+  const reqRing = attachRing(hostHandle.requestSab, ringConfig);
+  const replyRing = attachRing(hostHandle.replySab, ringConfig);
+  const client = new RpcClient(reqRing, replyRing);
+  const payload = new TextEncoder().encode(source);
+  try {
+    const reply = await client.call(OP_RUN_USER_SCRIPT, 0, 0, payload);
+    const text = new TextDecoder().decode(reply.payload);
+    append(`l5-script-result: ${text}`, "info");
+    append(`l5-script-status: ${reply.status}`, reply.status === 0 ? "info" : "err");
+  } catch (e) {
+    append(`l5-script-error: ${(e as Error).message}`, "err");
+  }
 }
 
 async function runEchoBench(iters: number, payloadBytes: number): Promise<void> {
@@ -277,6 +303,7 @@ const benchEcho = params.get("bench") === "echo"
   ? { iters: parseInt(params.get("iters") ?? "1000", 10), payload: parseInt(params.get("payload") ?? "32", 10) }
   : null;
 const probeReverseEcho = params.get("probe") === "reverse-echo";
+const l5UserScript = params.get("l5script"); // L5 spike
 
 append("page bootstrap ok. crossOriginIsolated=" + crossOriginIsolated, "info");
 if (memSnapshotSymbols.length > 0) {

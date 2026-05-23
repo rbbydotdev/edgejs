@@ -47,6 +47,15 @@ export const OP_WASM_ECHO = OP_DOMAIN_CONTROL | 0x0005;
 // validation.  Used by finalizers (host signals wasm "this finalizer
 // should fire") and threadsafe function dispatch in L5+.
 
+export const OP_RUN_USER_SCRIPT = OP_DOMAIN_CONTROL | 0x0006;
+// L5 spike: evaluate a user script on the HOST worker's native V8.
+// Request payload: UTF-8 source bytes.
+// Reply payload: UTF-8 captured stdout bytes (console.log output) +
+//   any throw message tail-appended after a NUL sentinel.
+// Status: OK on script completion, HOST_ERROR if eval throws.
+// Microtasks queued by the script drain naturally on host V8 because
+// the host worker's event loop turns after the eval's task ends.
+
 // ── NAPI read-only ops (defined here; wired in L5) ──────────────────
 //
 // These are the ops L5 will route to the host worker once emnapi context

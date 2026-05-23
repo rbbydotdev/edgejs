@@ -29,7 +29,9 @@ import {
   OP_PING,
   OP_HOST_READY,
   OP_HOST_ECHO,
+  OP_RUN_USER_SCRIPT,
   REPLY_STATUS_OK,
+  REPLY_STATUS_HOST_ERROR,
 } from "./rpc-protocol";
 
 declare const self: DedicatedWorkerGlobalScope;
@@ -88,6 +90,56 @@ function registerHandlers(srv: RpcServer): void {
     const copy = new Uint8Array(args.byteLength);
     copy.set(args);
     return { payload: copy, status: REPLY_STATUS_OK };
+  });
+
+  // L5 spike: run user JS on host worker's native V8.  Microtasks
+  // queued by the script drain naturally because host's event loop
+  // turns after the eval finishes — no JSPI suspend, no scope-depth
+  // issue, no edge.js libuv wedging.
+  //
+  // Limitation today: only pure JS code.  Calls into Node API
+  // (console.log, process.exit, fs, etc.) go through edge.js's
+  // bindings which live on the wasm worker — they're NOT available
+  // here.  We provide a minimal `console.log` stub that captures
+  // stdout into an array; the reply payload is the concatenated
+  // captured stdout.
+  srv.register(OP_RUN_USER_SCRIPT, async (_ctx, args) => {
+    const source = new TextDecoder("utf-8").decode(args);
+    const out: string[] = [];
+    const capturedConsole = {
+      log: (...parts: unknown[]) => {
+        out.push(parts.map((p) => (typeof p === "string" ? p : JSON.stringify(p))).join(" "));
+      },
+      error: (...parts: unknown[]) => {
+        out.push(parts.map((p) => (typeof p === "string" ? p : JSON.stringify(p))).join(" "));
+      },
+    };
+    try {
+      // Wrap in async fn so we can `await` it — gives microtasks
+      // queued during the script body a chance to drain BEFORE we
+      // capture stdout and return the reply.  This is the same
+      // pattern await-resumes-as-microtask exercises: V8 drains its
+      // queue at the await boundary.
+      const fn = new Function(
+        "console",
+        // Allow returning promises / async work.
+        `return (async () => { ${source} })()`,
+      );
+      const ret = fn(capturedConsole);
+      if (ret && typeof ret.then === "function") {
+        await ret;
+      }
+      // One more microtask drain — for tests like `microtask-before-timer`
+      // where the script's microtasks are queued from setTimeout-deferred
+      // continuations.  An empty `await` here gives V8 one more checkpoint.
+      await Promise.resolve();
+      const payload = new TextEncoder().encode(out.join("\n"));
+      return { payload, status: REPLY_STATUS_OK };
+    } catch (e) {
+      const msg = (e instanceof Error ? e.stack ?? e.message : String(e)) || "user script threw";
+      const payload = new TextEncoder().encode(out.join("\n") + "\n\nERROR: " + msg);
+      return { payload, status: REPLY_STATUS_HOST_ERROR };
+    }
   });
 
   // OP_HOST_READY is host→wasm; host doesn't receive it.  No handler.
