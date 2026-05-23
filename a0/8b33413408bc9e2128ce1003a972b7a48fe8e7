@@ -1,0 +1,40 @@
+browser-target/src/worker.ts
+  s_7bec0ecbfcdcd0::t_c9b29007141edc 66-76
+  s_7bec0ecbfcdcd0::t_1fb708d37673c2 93-100
+browser-target/src/host-worker/rpc-client-sync.ts
+  s_7bec0ecbfcdcd0::t_16f81f9c84e205 134-140,147-150,153-159,180,185-186
+  s_7bec0ecbfcdcd0::t_bb7114925365c5 19-23,25-39
+  s_7bec0ecbfcdcd0::t_aa4fc4174b5ff3 65-71,74-75,80-94
+browser-target/src/host-worker/worker-pool.ts
+  s_7bec0ecbfcdcd0::t_97007a5f59c033 67-72
+  s_7bec0ecbfcdcd0::t_ba8c37da43ff90 112
+  s_7bec0ecbfcdcd0::t_3619044aae84f5 37-46
+  s_7bec0ecbfcdcd0::t_228dec96d5757d 85
+browser-target/src/host-worker/rpc-server.ts
+  s_7bec0ecbfcdcd0::t_5d275bd1728cae 52-53,57-58,63-71
+  s_7bec0ecbfcdcd0::t_e7486e6962ff9f 174-180
+browser-target/src/host-worker/rpc-client.ts
+  s_7bec0ecbfcdcd0::t_ba1028e2a1c267 34-35,39-40,45-50,52-53
+  s_7bec0ecbfcdcd0::t_d799b2edb4c953 88-96
+browser-target/src/host-worker/host-worker.ts
+  s_7bec0ecbfcdcd0::t_22527b1ab27e4b 369-372,382-388,393
+  s_7bec0ecbfcdcd0::t_0d45662e9466cd 61
+browser-target/src/main.ts
+  s_7bec0ecbfcdcd0::t_b99dffd2466c2e 365-368
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "a08b33413408bc9e2128ce1003a972b7a48fe8e7",
+  "prompts": {},
+  "sessions": {
+    "s_7bec0ecbfcdcd0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d560d5ae-265f-44ae-89c4-d35659b3ab9e",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
