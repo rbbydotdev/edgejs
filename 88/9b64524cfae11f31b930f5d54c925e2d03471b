@@ -1,0 +1,71 @@
+experiments/r5-diff-test-harness/FINDINGS.md
+  s_7bec0ecbfcdcd0::t_b54dc05a9a21c8 1-99
+experiments/r5-diff-test-harness/package-lock.json
+  ai_agent 1-41
+experiments/r1-reverse-during-forward/FINDINGS.md
+  s_7bec0ecbfcdcd0::t_cccca7688bbeaa 1-97
+experiments/r4-rpc-boot-overhead/package.json
+  s_7bec0ecbfcdcd0::t_70e0a4ce202aaa 1-8
+experiments/r3-tsfn-cross-worker/FINDINGS.md
+  s_7bec0ecbfcdcd0::t_3d99078b7a8986 1-82
+experiments/r3-tsfn-cross-worker/package.json
+  s_7bec0ecbfcdcd0::t_c437996ddbf2d9 1-14
+experiments/r1-reverse-during-forward/probe.mjs
+  s_7bec0ecbfcdcd0::t_4d831df4701d94 79
+  s_7bec0ecbfcdcd0::t_82ad0d206a1412 188
+  s_7bec0ecbfcdcd0::t_af187bc8ad4d5a 1-78,80-187,189-331
+experiments/r5-diff-test-harness/probe.mjs
+  s_7bec0ecbfcdcd0::t_392e3f5b8c0150 1-81,97-113,117,119-164,166-273
+  s_7bec0ecbfcdcd0::t_995a6d2e27031e 114-116,118
+  s_7bec0ecbfcdcd0::t_885d2a08d87648 82-96
+  s_7bec0ecbfcdcd0::t_80794f2361904e 165
+experiments/r5-diff-test-harness/package.json
+  s_7bec0ecbfcdcd0::t_5db9cbd5b6cee7 1-14
+experiments/r4-rpc-boot-overhead/probe.mjs
+  s_7bec0ecbfcdcd0::t_59a0d6da3e0109 4-8,11,13-16,18-23,27-30,39,49-50,59,88,97,111-113,115,118,120,124,131,137-139,144,155,169-171,183,185,192,194,203-204,213-220,222-223,247-248
+  s_7bec0ecbfcdcd0::t_e9f254d3070002 162
+  s_7bec0ecbfcdcd0::t_2fa9132e6b99d8 1-3,9-10,12,17,24-26,31-38,40-48,51-58,60-83,85,87,90,95-96,98-101,104-110,114,116-117,119,121-123,125-130,132-136,140-143,145-150,152-154,156-161,163-168,172-182,184,186-191,193,195-202,205-208,224-229,232-240,244-246,249-252,256-257,259-260,262-264,266-269
+  s_7bec0ecbfcdcd0::t_6caae986262258 84,86,89,91-94
+  s_7bec0ecbfcdcd0::t_f53e2251767a71 230-231,241-243,253-255,258,261,265
+  s_7bec0ecbfcdcd0::t_750eaca045d202 151
+  s_7bec0ecbfcdcd0::t_b4d1a195598c02 209-212,221
+  s_7bec0ecbfcdcd0::t_83ab2050552747 102-103
+experiments/r2-finalizer-dispatch/FINDINGS.md
+  s_7bec0ecbfcdcd0::t_c498ba622e8079 1-163
+experiments/r3-tsfn-cross-worker/probe.mjs
+  s_7bec0ecbfcdcd0::t_5346f895cdad2c 290-299
+  s_7bec0ecbfcdcd0::t_c6590138688cca 35
+  s_7bec0ecbfcdcd0::t_8c60bdf7410303 255
+  s_7bec0ecbfcdcd0::t_e7b16b4f7837ae 1-34,36-254,256-289,300-320,322-387
+  s_7bec0ecbfcdcd0::t_5a05f8ef0074cd 321
+experiments/OPEN-QUESTIONS.md
+  s_7bec0ecbfcdcd0::t_c510f6da060276 3-4,12,16-25
+experiments/r2-finalizer-dispatch/probe.mjs
+  s_7bec0ecbfcdcd0::t_201b6d0fd44dcb 1-54,60-143,146-149,151-212
+  s_7bec0ecbfcdcd0::t_e2b186f4335082 55-59
+  s_7bec0ecbfcdcd0::t_5d753a2c6dcfa6 144-145,150
+experiments/r1-reverse-during-forward/package.json
+  s_7bec0ecbfcdcd0::t_023316822d1a07 1-8
+experiments/r3-tsfn-cross-worker/package-lock.json
+  ai_agent 1-41
+experiments/r4-rpc-boot-overhead/FINDINGS.md
+  s_7bec0ecbfcdcd0::t_18639025119d51 1-91
+experiments/r2-finalizer-dispatch/package.json
+  s_7bec0ecbfcdcd0::t_972b00678c5140 1-8
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "889b64524cfae11f31b930f5d54c925e2d03471b",
+  "prompts": {},
+  "sessions": {
+    "s_7bec0ecbfcdcd0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d560d5ae-265f-44ae-89c4-d35659b3ab9e",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
