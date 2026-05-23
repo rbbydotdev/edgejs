@@ -1,0 +1,3 @@
+Open bug `microtasks-starved-by-pending-timer` (NOTES.md).  No promise
+microtask runs before the timer fires; all five .then() steps are
+skipped.  Same root cause as `microtask-before-timer.skip`.

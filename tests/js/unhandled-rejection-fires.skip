@@ -1,0 +1,5 @@
+NOTES.md "process.on('unhandledRejection') partially wired": lib defers
+emission via tickCallback which edge's runtime doesn't drive in the same
+window; rejection captured but doesn't surface to user listeners before
+exit.  Lever B (JS-host worker with own tickCallback drive) should close
+this.  Un-skip after.

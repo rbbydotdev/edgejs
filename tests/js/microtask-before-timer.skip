@@ -1,0 +1,10 @@
+Open bug `microtasks-starved-by-pending-timer` (NOTES.md).  Even with a
+`setTimeout(0)`, the microtask queued by `Promise.resolve().then()` does
+not drain before the timer fires.  This is a stronger statement than the
+existing regression-microtask-not-starved test (which used a pending
+100ms timer) — the bug shows up at the absolute minimum timer too.
+
+Anomaly: `await-resumes-as-microtask` (same .js dir) PASSES.  The async
+IIFE + await path apparently yields to microtasks while a bare
+`Promise.resolve().then()` does not.  Worth investigating when the
+microtask checkpoint pump work lands.

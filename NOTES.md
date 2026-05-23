@@ -176,6 +176,16 @@ the browser-target tree.
 - Multiple `#!~debt` in `unofficial.ts` — most no-op stubs writing
   sensible defaults to out-params. Promote when a workload lights them up.
 
+### Test infrastructure
+
+- `browser-runner-ignores-harness-args` — `browser-target/scripts/browser-test-runner.mjs`
+  doesn't honor sibling `.harness-args` files the way the node-harness
+  runner does. Tests that rely on per-test policy opt-in via CLI flags
+  (e.g. `policy-crypto-host-random.harness-args`) won't pick up the
+  right policy set when run through the browser. Map flags to URL
+  params (`?policies=...` is already wired) when the first test needs
+  this.
+
 ### Architectural changes shipped
 
 - `runtime-on-separate-worker` (2026-05-22) — **SHIPPED** as commit

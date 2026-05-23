@@ -1,0 +1,5 @@
+NOTES.md "WeakRef / FinalizationRegistry leaks": ClearKeptObjects never
+runs in edge's wasm event loop today; FR callbacks don't fire.  Will
+unskip after the microtask-checkpoint pump lands (Lever B or NOTES.md
+followup #1).  Also note: GC observation is non-deterministic — even
+once unskipped this test may be flaky without --expose-gc.

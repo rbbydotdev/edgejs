@@ -1460,6 +1460,47 @@ DEFINE_RAW_NODE_IN_PROCESS_TEST(RawProcessVersionsFromNodeTest, "test-process-ve
 DEFINE_RAW_NODE_IN_PROCESS_TEST(RawProcessWarningFromNodeTest, "test-process-warning.js")
 DEFINE_RAW_NODE_IN_PROCESS_TEST(RawProcessUncaughtExceptionMonitorFromNodeTest, "test-process-uncaught-exception-monitor.js")
 
+// Raw Node microtask / promise / next-tick / async-hooks tests
+// (Lever-B-critical coverage — see NOTES.md "Microtask checkpoint pump")
+//
+// These fixtures sit in test/parallel/ but were not previously wired
+// into the drop-in suite.  They exercise the queueing / ordering /
+// drain semantics that any restructuring of the wasm-vs-host-thread
+// boundary must preserve.
+DEFINE_RAW_NODE_TEST(RawMicrotaskQueueIntegrationFromNodeTest, "test-microtask-queue-integration.js")
+DEFINE_RAW_NODE_TEST(RawMicrotaskQueueRunFromNodeTest, "test-microtask-queue-run.js")
+DEFINE_RAW_NODE_TEST(RawMicrotaskQueueRunImmediateFromNodeTest, "test-microtask-queue-run-immediate.js")
+DEFINE_RAW_NODE_TEST(RawQueueMicrotaskFromNodeTest, "test-queue-microtask.js")
+DEFINE_RAW_NODE_TEST(RawQueueMicrotaskUncaughtAsynchooksFromNodeTest, "test-queue-microtask-uncaught-asynchooks.js")
+
+DEFINE_RAW_NODE_TEST(RawNextTickFromNodeTest, "test-next-tick.js")
+DEFINE_RAW_NODE_TEST(RawNextTickDoesntHangFromNodeTest, "test-next-tick-doesnt-hang.js")
+DEFINE_RAW_NODE_TEST(RawNextTickErrorsFromNodeTest, "test-next-tick-errors.js")
+DEFINE_RAW_NODE_TEST(RawNextTickFixedQueueRegressionFromNodeTest, "test-next-tick-fixed-queue-regression.js")
+DEFINE_RAW_NODE_TEST(RawNextTickIntentionalStarvationFromNodeTest, "test-next-tick-intentional-starvation.js")
+DEFINE_RAW_NODE_TEST(RawNextTickOrderingFromNodeTest, "test-next-tick-ordering.js")
+DEFINE_RAW_NODE_TEST(RawNextTickOrdering2FromNodeTest, "test-next-tick-ordering2.js")
+DEFINE_RAW_NODE_TEST(RawNextTickWhenExitingFromNodeTest, "test-next-tick-when-exiting.js")
+DEFINE_RAW_NODE_TEST(RawProcessNextTickFromNodeTest, "test-process-next-tick.js")
+
+DEFINE_RAW_NODE_TEST(RawPromiseHookCreateHookFromNodeTest, "test-promise-hook-create-hook.js")
+DEFINE_RAW_NODE_TEST(RawPromiseHookExceptionsFromNodeTest, "test-promise-hook-exceptions.js")
+DEFINE_RAW_NODE_TEST(RawPromiseHookOnInitFromNodeTest, "test-promise-hook-on-init.js")
+DEFINE_RAW_NODE_TEST(RawPromiseHookOnBeforeFromNodeTest, "test-promise-hook-on-before.js")
+DEFINE_RAW_NODE_TEST(RawPromiseHookOnAfterFromNodeTest, "test-promise-hook-on-after.js")
+DEFINE_RAW_NODE_TEST(RawPromiseHookOnResolveFromNodeTest, "test-promise-hook-on-resolve.js")
+
+DEFINE_RAW_NODE_TEST(RawPromiseHandledRejectionNoWarningFromNodeTest, "test-promise-handled-rejection-no-warning.js")
+DEFINE_RAW_NODE_TEST(RawPromiseRejectCallbackExceptionFromNodeTest, "test-promise-reject-callback-exception.js")
+DEFINE_RAW_NODE_TEST(RawPromiseSwallowedEventFromNodeTest, "test-promise-swallowed-event.js")
+DEFINE_RAW_NODE_TEST(RawPromiseUnhandledDefaultFromNodeTest, "test-promise-unhandled-default.js")
+DEFINE_RAW_NODE_TEST(RawPromiseUnhandledFlagFromNodeTest, "test-promise-unhandled-flag.js")
+DEFINE_RAW_NODE_TEST(RawPromiseUnhandledIssue43655FromNodeTest, "test-promise-unhandled-issue-43655.js")
+
+DEFINE_RAW_NODE_TEST(RawAsyncHooksPromiseFromNodeTest, "test-async-hooks-promise.js")
+DEFINE_RAW_NODE_TEST(RawAsyncHooksPromiseEnableDisableFromNodeTest, "test-async-hooks-promise-enable-disable.js")
+DEFINE_RAW_NODE_TEST(RawAsyncHooksPromiseTriggeridFromNodeTest, "test-async-hooks-promise-triggerid.js")
+
 // Raw Node util tests
 DEFINE_RAW_NODE_TEST(RawUtilFromNodeTest, "test-util.js")
 // DEFINE_RAW_NODE_TEST(RawUtilTypesFromNodeTest, "test-util-types.js")

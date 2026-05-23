@@ -1,0 +1,5 @@
+Open bug `microtasks-starved-by-pending-timer` (NOTES.md).  Neither
+`queueMicrotask` nor `Promise.resolve().then()` callbacks run before
+the trailing `setTimeout(0)` fires (stdout is empty).  Same root cause
+as `microtask-before-timer.skip`.  When fixed, also smokes
+FIFO-ordering across the two queueing APIs.

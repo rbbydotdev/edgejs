@@ -1,0 +1,6 @@
+Open bug `microtasks-starved-by-pending-timer` (NOTES.md).  The
+process.nextTick runs (it goes through edge's own tickInfo), but the
+Promise microtask never runs — same root cause as
+`microtask-before-timer.skip`.  Will un-skip when microtask drain is
+fixed; at that point this also smokes the nextTick-before-microtask
+ordering (NOTES.md "process.nextTick ordering inversion").
