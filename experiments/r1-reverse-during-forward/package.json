@@ -1,0 +1,8 @@
+{
+  "name": "r1-reverse-during-forward-experiment",
+  "version": "0.0.0",
+  "type": "module",
+  "private": true,
+  "description": "R1 spike: validate reverse RPC (host -> wasm) during in-flight forward RPC (wasm -> host) using single shared wake address.",
+  "scripts": { "probe": "node probe.mjs" }
+}

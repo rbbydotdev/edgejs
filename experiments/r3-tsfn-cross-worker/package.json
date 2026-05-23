@@ -1,0 +1,14 @@
+{
+  "name": "r3-tsfn-cross-worker-experiment",
+  "version": "0.0.0",
+  "type": "module",
+  "private": true,
+  "description": "Q3 empirical: actually fire a threadsafe-function from a worker thread that doesn't own the emnapi context, via SAB-RPC.",
+  "scripts": {
+    "probe": "node probe.mjs"
+  },
+  "dependencies": {
+    "@emnapi/runtime": "file:../../vendor/emnapi/packages/runtime",
+    "@emnapi/core": "file:../../vendor/emnapi/packages/core"
+  }
+}

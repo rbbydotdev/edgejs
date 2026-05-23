@@ -1,6 +1,7 @@
 # Open architectural questions — to resolve via isolated experiments
 
-**Updated 2026-05-23 — 6 of 13 resolved.  All Tier 1+2 (L5 blockers) closed.**
+**Updated 2026-05-23 — Lever B F-1..F-8 shipped + path-(a) full-cutover risks scoped.
+11 of 13 resolved; all path-(a) "tricky unknowns" retired or quantified.**
 
 ## Resolved
 
@@ -8,10 +9,20 @@
 |---|---|---|
 | Q1 | malloc deadlock | Pre-allocated pool, host-side bookkeeping.  `experiments/l5-malloc-deadlock/` |
 | Q2 | cross-worker napi roundtrip | 3 napi calls succeed end-to-end via SAB-RPC + shared memory.  `experiments/l5-real-roundtrip/` |
-| Q3 | threadsafe function dispatch | emnapi v2 main-mode is exactly what L5 needs; analytical.  `experiments/l5-threadsafe-fn/` |
+| Q3 | threadsafe function dispatch | emnapi v2 main-mode is what L5 needs; analytical → confirmed empirically by R3.  `experiments/l5-threadsafe-fn/`, `experiments/r3-tsfn-cross-worker/` |
 | Q4 | shared memory growth | No protocol needed; fresh views per call (emnapi already does this).  `experiments/memory-growth/` |
 | Q5 | sync RPC edges (worker crash) | Timeout + worker.exit event detects crashes.  Ring-full + reply-full documented.  `experiments/sync-rpc-edges/` |
 | Q8 | emnapi multi-context isolation | N contexts on same thread fully independent.  L9 has dual topologies.  `experiments/l9-multi-context/` |
+| R1 | reverse-channel during forward-wait | PASS.  Single-shared-wake address; wasm polls reverse before forward reply.  ~50 µs median in Node.  `experiments/r1-reverse-during-forward/` |
+| R2 | finalizer dispatch + ordering | PASS.  V8 GC fires registry callbacks LIFO, batched in 1 tick; buffer+drain at safe points.  `experiments/r2-finalizer-dispatch/` |
+| R3 | tsfn cross-worker (empirical) | PASS.  50/50 callbacks; tsfn handle is shared-memory u32 pointer, routes via SAB-RPC unchanged.  `experiments/r3-tsfn-cross-worker/` |
+| R5 | diff-test harness pattern | Validated; per-category file layout scales to 150 ops without codegen.  `experiments/r5-diff-test-harness/` |
+
+## Quantified (resolved as a number, not yes/no)
+
+| Q | Topic | Finding |
+|---|---|---|
+| R4 | all-via-RPC boot overhead | 13 µs p50 / 52 µs p99 per RPC in Node; ~20-25 µs projected in browser.  Acceptable up to ~30k boot napi calls (~450 ms); needs mitigation past 50k.  Two levers (inline well-known handles + batch op-codes) cut volume 2-3×.  `experiments/r4-rpc-boot-overhead/` |
 
 
 

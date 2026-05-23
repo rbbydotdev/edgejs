@@ -1,0 +1,8 @@
+{
+  "name": "r2-finalizer-dispatch",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "probe": "node --expose-gc probe.mjs"
+  }
+}

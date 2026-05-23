@@ -1,0 +1,14 @@
+{
+  "name": "r5-diff-test-harness-experiment",
+  "version": "0.0.0",
+  "type": "module",
+  "private": true,
+  "description": "Per-op diff-test harness pattern for the lever-b napi cutover. Each napi op is exercised both in-process and via (faked) host-RPC; outputs are diffed at the napi_status + result-bytes boundary, with normalization of handle IDs and pointers.",
+  "scripts": {
+    "probe": "node probe.mjs"
+  },
+  "dependencies": {
+    "@emnapi/runtime": "file:../../vendor/emnapi/packages/runtime",
+    "@emnapi/core": "file:../../vendor/emnapi/packages/core"
+  }
+}

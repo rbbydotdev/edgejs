@@ -1,0 +1,8 @@
+{
+  "name": "r4-rpc-boot-overhead-experiment",
+  "version": "0.0.0",
+  "type": "module",
+  "private": true,
+  "description": "R4: quantify boot-time inflation from routing every napi op via SAB-RPC (sync wait + reply).",
+  "scripts": { "probe": "node probe.mjs" }
+}
