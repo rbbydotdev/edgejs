@@ -1,0 +1,41 @@
+browser-target/src/host-worker/worker-pool.ts
+  s_7bec0ecbfcdcd0::t_460a4294cc58ce 25,30-36
+  s_7bec0ecbfcdcd0::t_90753f55d83295 49-52
+  s_7bec0ecbfcdcd0::t_1339e4a637131f 79-80,88-89
+browser-target/src/worker.ts
+  s_7bec0ecbfcdcd0::t_4635f521aab3b6 50-51,54-56
+  s_7bec0ecbfcdcd0::t_822bbccdea4fa5 69-87
+browser-target/scripts/probe-reverse-echo.mjs
+  s_7bec0ecbfcdcd0::t_c9fdab9f056d4b 1-53
+plans/lever-b-progress.md
+  ai_agent 1181-1215
+browser-target/src/host-worker/rpc-protocol.ts
+  s_7bec0ecbfcdcd0::t_cf2e819d3d1c09 45-49
+browser-target/src/host-worker/host-worker.ts
+  s_7bec0ecbfcdcd0::t_d033f7307a1fbc 97-121,123-127
+  s_7bec0ecbfcdcd0::t_92a9f6f954fa7a 47-48
+  s_7bec0ecbfcdcd0::t_e4f7e5ded709ac 134-135,141-142,149-152,157
+  s_7bec0ecbfcdcd0::t_46380d661373e7 27
+  s_7bec0ecbfcdcd0::t_d7f0705222197a 66-72
+  s_7bec0ecbfcdcd0::t_4a0a15de13ebcf 57-61
+browser-target/src/main.ts
+  s_7bec0ecbfcdcd0::t_260d2d1a11f3e2 168-169
+  s_7bec0ecbfcdcd0::t_ab3f9127f1ab52 279
+  s_7bec0ecbfcdcd0::t_1241db88dd3276 102-112
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "eb27e512ab6eefa415c470bc8aac427c91fd26ff",
+  "prompts": {},
+  "sessions": {
+    "s_7bec0ecbfcdcd0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d560d5ae-265f-44ae-89c4-d35659b3ab9e",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
