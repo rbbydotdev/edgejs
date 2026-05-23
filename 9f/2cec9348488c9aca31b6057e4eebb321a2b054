@@ -1,0 +1,25 @@
+experiments/l9-multi-context/package-lock.json
+  ai_agent 1-41
+experiments/l9-multi-context/package.json
+  s_7bec0ecbfcdcd0::t_38b528a7951594 1-12
+experiments/l9-multi-context/probe.mjs
+  s_7bec0ecbfcdcd0::t_d5e29ffec7b2b6 1-91
+experiments/l9-multi-context/FINDINGS.md
+  s_7bec0ecbfcdcd0::t_688a0557c59d3d 1-70
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "9f2cec9348488c9aca31b6057e4eebb321a2b054",
+  "prompts": {},
+  "sessions": {
+    "s_7bec0ecbfcdcd0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d560d5ae-265f-44ae-89c4-d35659b3ab9e",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
