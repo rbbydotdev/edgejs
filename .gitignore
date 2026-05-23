@@ -26,3 +26,8 @@ benchmarks/results/baselines/**/*.txt
 /AGENTS.md
 /claude.md
 /docs/superpowers/
+
+# Vendored emnapi for probing/dev (Lever B L0).
+# Clone with: git clone --depth 1 https://github.com/toyobayashi/emnapi.git vendor/emnapi
+# See NOTES.md "vendored-emnapi-flag" for usage.
+/vendor/

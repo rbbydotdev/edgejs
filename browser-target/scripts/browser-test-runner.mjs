@@ -37,23 +37,16 @@
 // on the worker's V8, and JSPI suspends the worker stack.
 
 import { readFileSync, readdirSync, existsSync } from "node:fs";
-import { resolve, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
-import { spawn } from "node:child_process";
+import { resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-
-const here = dirname(fileURLToPath(import.meta.url));
-const browserTarget = resolve(here, "..");
-const projectRoot = resolve(browserTarget, "..");
-const testsDir = resolve(projectRoot, "tests", "js");
-
-const TEST_TIMEOUT_MS = 30_000;
-const VITE_READY_TIMEOUT_MS = 30_000;
-const VITE_PORT = 5173; // vite's default; runner asserts and aborts if taken.
-
-// Lazy-import Playwright so the file at least parses without the dep
-// installed.  Real `test:browser` runs do require it.
-let playwright;
+import {
+  testsDir,
+  VITE_PORT,
+  TEST_TIMEOUT_MS,
+  startVite,
+  launchChromium,
+  killProc,
+} from "./_runner-common.mjs";
 
 function read(path) {
   try { return readFileSync(path, "utf8"); } catch { return ""; }
@@ -75,38 +68,8 @@ function collectTests(filter) {
     });
 }
 
-// Spawn `npm run dev` (vite) and wait until it answers on $VITE_PORT.
-async function startVite() {
-  const proc = spawn("npm", ["run", "dev", "--", "--port", String(VITE_PORT), "--strictPort"], {
-    cwd: browserTarget,
-    stdio: ["ignore", "pipe", "pipe"],
-    detached: false,
-  });
-  let resolved = false;
-  const deadline = Date.now() + VITE_READY_TIMEOUT_MS;
-  await new Promise((resolveReady, rejectReady) => {
-    const onData = (buf) => {
-      const s = buf.toString("utf8");
-      if (!resolved && /ready in|Local:.*:\d+/.test(s)) {
-        resolved = true;
-        resolveReady();
-      }
-    };
-    proc.stdout?.on("data", onData);
-    proc.stderr?.on("data", onData);
-    proc.once("error", rejectReady);
-    proc.once("exit", (code) => {
-      if (!resolved) rejectReady(new Error(`vite exited before ready (code=${code})`));
-    });
-    (async () => {
-      while (!resolved && Date.now() < deadline) {
-        await delay(200);
-      }
-      if (!resolved) rejectReady(new Error("vite ready timeout"));
-    })();
-  });
-  return proc;
-}
+// Vite + Playwright bootstrap factored out into _runner-common.mjs so
+// browser-perf-runner can share it.
 
 const SENTINEL_RE = /_start ran \d+ ms \((exit=(-?\d+)|THREW|returned)\)/;
 
@@ -238,17 +201,6 @@ async function main() {
     process.exit(2);
   }
 
-  try {
-    playwright = await import("playwright");
-  } catch (e) {
-    process.stderr.write(
-      "error: 'playwright' not installed in browser-target/node_modules.\n" +
-      "  Run: cd browser-target && npm install && npx playwright install chromium\n" +
-      `Underlying: ${(e && e.message) || e}\n`,
-    );
-    process.exit(2);
-  }
-
   process.stdout.write(`browser-test-runner: ${tests.length} test(s)\n`);
 
   // Vite first — fail fast if cross-origin isolation can't come up.
@@ -260,25 +212,12 @@ async function main() {
     process.exit(2);
   }
 
-  // Chromium with JSPI enabled.  Chrome 137+ ships JSPI unflagged
-  // (https://v8.dev/blog/jspi-ot) but Playwright's bundled Chromium
-  // may lag; the --enable-features flag is harmless on newer builds.
   let browser;
   try {
-    browser = await playwright.chromium.launch({
-      headless: true,
-      args: [
-        "--enable-features=WebAssemblyJavaScriptPromiseIntegration",
-        "--js-flags=--experimental-wasm-jspi --experimental-wasm-exnref",
-      ],
-    });
+    browser = await launchChromium();
   } catch (e) {
-    process.stderr.write(
-      "error: failed to launch Chromium.\n" +
-      `  Did you run \`npx playwright install chromium\` from browser-target?\n` +
-      `Underlying: ${(e && e.message) || e}\n`,
-    );
-    try { viteProc.kill("SIGTERM"); } catch { /* best effort */ }
+    process.stderr.write(`error: ${(e && e.message) || e}\n`);
+    killProc(viteProc);
     process.exit(2);
   }
 
@@ -301,7 +240,7 @@ async function main() {
     }
   } finally {
     await browser.close();
-    try { viteProc.kill("SIGTERM"); } catch { /* best effort */ }
+    killProc(viteProc);
   }
 
   process.stdout.write(`\n${pass} pass, ${fail} fail, ${err} err, ${skip} skip\n`);

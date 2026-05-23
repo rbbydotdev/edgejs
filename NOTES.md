@@ -178,6 +178,15 @@ the browser-target tree.
 
 ### Test infrastructure
 
+- `vendored-emnapi-flag` (L0 2026-05-23) — `EDGE_USE_VENDORED_EMNAPI=true`
+  swaps imports of `@emnapi/*` to `vendor/emnapi/packages/*/dist/*` via
+  Vite alias.  Default OFF; flag mechanism works (verified by running
+  test:browser under both states).  Vendored copy is v2.0.0-alpha.1
+  (npm is 1.10.0) — major version delta means flag-ON currently breaks
+  (15 fail).  Two fix paths when we need flag-ON to work (L5 cutover):
+  (a) downgrade vendored to 1.10.x to match call-site API, or (b)
+  upgrade `src/napi-host/*` to emnapi v2 API.  Defer until L5 forces
+  the choice.  Vendor at `vendor/emnapi/` (161MB; full clone, no .git).
 - `browser-runner-ignores-harness-args` — `browser-target/scripts/browser-test-runner.mjs`
   doesn't honor sibling `.harness-args` files the way the node-harness
   runner does. Tests that rely on per-test policy opt-in via CLI flags

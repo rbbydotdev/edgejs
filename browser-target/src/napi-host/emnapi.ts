@@ -31,8 +31,11 @@
 // CURRENT BACKING
 //
 // Imports from `@emnapi/runtime` and `@emnapi/core` in `node_modules`
-// (managed by npm).  Switching to a vendored copy is one line per
-// import statement below.
+// (managed by npm).  Switching to a vendored copy is done at the Vite
+// resolve-alias layer (`vite.config.ts`) when `EDGE_USE_VENDORED_EMNAPI=true`
+// is set in the environment — no source change here needed.  The
+// vendored tree lives at `vendor/emnapi/`.  See NOTES.md entry
+// `vendored-emnapi-flag` for current flag-ON status.
 
 export { createContext } from "@emnapi/runtime";
 export type { Context, Env } from "@emnapi/runtime";
