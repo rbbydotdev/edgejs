@@ -1,0 +1,8 @@
+{
+  "name": "e4-callback-realistic-experiment",
+  "version": "0.0.0",
+  "type": "module",
+  "private": true,
+  "description": "E4: end-to-end latency of one realistic napi callback fire (3-arg inspect) via reverse RPC, naive vs bundled-args.",
+  "scripts": { "probe": "node probe.mjs" }
+}

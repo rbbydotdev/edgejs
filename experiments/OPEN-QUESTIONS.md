@@ -18,6 +18,7 @@
 | R3 | tsfn cross-worker (empirical) | PASS.  50/50 callbacks; tsfn handle is shared-memory u32 pointer, routes via SAB-RPC unchanged.  `experiments/r3-tsfn-cross-worker/` |
 | R5 | diff-test harness pattern | Validated; per-category file layout scales to 150 ops without codegen.  `experiments/r5-diff-test-harness/` |
 | R6a | nested sync RPC during reverse callback | PASS at depth 16; wait loop intrinsically re-entrant via unique requestIds + reply-by-requestId + shared-wake.  Ring exhaustion did NOT occur (slot turnover faster than nesting).  R1's "must NOT issue forward sync RPC" punt is overcautious.  `experiments/r6-nested-sync-rpc/` |
+| E4 | realistic callback end-to-end perf | Bundled-args ~31 µs/fire (240× in-process); naive ~78 µs (580×).  Stream `_read`/parser callbacks (100s-1000s fires/event) NOT viable on RPC path.  Architectural shift: **two-tier dispatch** — RPC tier for cold callbacks (~90% of surface), co-located in-process for hot callbacks.  In-process `napi-host/` is now PERMANENT load-bearing infrastructure, not transitional.  `experiments/e4-callback-realistic/` |
 
 ## Quantified (resolved as a number, not yes/no)
 

@@ -1811,3 +1811,59 @@ by the two policy un-skips → -1 net).
 - override-inspector — needs `?override=` URL param wiring
 - unhandled-rejection-fires — lib defers `process.on('unhandledRejection')`
 - webserver — needs long-running test infrastructure
+
+---
+
+## F-9: full napi cutover (path-a) — partial + strategic shift (2026-05-23)
+
+**Coverage delivered:** 34 → 93 of 106 napi ops via host RPC (88%).
+Across 4 commits (foundation + 3 mechanical batches), 0 regressions.
+
+**Foundation commit (`a08b3341`):** R1's shared-wake pattern + R6a's
+re-entrant SyncRpcClient are now wired into production.
+`SyncRpcClient` accepts optional `sharedWake` + `drainReverseRequests`
+deps; backwards-compatible (existing call sites unchanged).  This
+unlocks the reverse-channel callback path that the remaining 13 ops
+need.
+
+**Strategic shift from E4 — two-tier dispatch:**
+
+E4 (`experiments/e4-callback-realistic/FINDINGS.md`) measured the
+end-to-end latency of a realistic 3-arg napi callback on the
+reverse-RPC path:
+- bundled-args: ~31 µs/fire (240× in-process)
+- naive: ~78 µs (580×)
+
+The cost is fundamental (R4 RPC RTT + R6a nesting cost) — no
+optimization gets us to within 10× of in-process.  For callbacks
+firing 100s of times per event (stream `_read`, llhttp parser hooks,
+high-frequency EventEmitter), the RPC path is **never viable**.
+
+**Architectural conclusion:** Lever B's end state is **dual-path**,
+not "full cutover":
+- **RPC tier (cold path):** ~90% of edge.js's callback surface —
+  setup, finalizers, error handlers, Promise resolution, cold
+  listeners — via reverse RPC with bundled args.
+- **Co-located tier (hot path):** stream/parser/hot-emitter
+  callbacks stay on the existing in-process `napi-host/` path.
+  Permanent infrastructure, not transitional.
+
+**Triage mechanism (deferred to next session):** at
+`napi_create_function` time, host inspects the binding identity.
+Hot-path callbacks (allow-list) get a co-located dispatch handle;
+others get the bundled-RPC wrapper.
+
+**This vindicates F-7's scope-adjusted reality** (kept both paths
+because tests still need in-process).  We now know that wasn't a
+compromise — it was the right end state.
+
+**Remaining work for a future session (not blocking; 88% suffices
+for the architecture proof):**
+- 13 callback ops via reverse RPC with bundled args (cold tier)
+- Triage allow-list for hot-path callbacks (co-located tier)
+- Exception marshalling format (analytical choice from existing
+  `REPLY_STATUS_HOST_ERROR` pattern)
+- Re-entrancy depth safety bound (analytical choice — R6a tested
+  to 16 clean, pick 32 for production)
+
+**Tests:** 25 pass / 0 fail / 5 skip — unchanged across all of F-9.
