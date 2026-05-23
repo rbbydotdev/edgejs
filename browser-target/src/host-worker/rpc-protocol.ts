@@ -224,6 +224,62 @@ export const OP_NAPI_REJECT_DEFERRED = OP_DOMAIN_NAPI_RO | 0x0074;
 export const OP_NAPI_THROW = OP_DOMAIN_NAPI_RO | 0x0075;
 // napi_throw(env, error)  — two args, no resultPtr; fits makeNoResult.
 
+// ── Lever B batch 3: string/property/error/int64 ops (0x0180–0x018E) ──
+// Allocated in range 0x0080–0x008E under OP_DOMAIN_NAPI_RO.
+//
+// String creation/extraction ops take C-string POINTERS into wasm linear
+// memory.  Since the host and wasm workers share that memory (F-2), the
+// host's emnapi JS impl can read/write those bytes directly through the
+// pointer; we pass the pointer as a plain u32 in the factory args, no
+// RPC payload encoding required.
+//
+// The THROW variants of error fns take C strings for code+msg; same
+// shared-memory trick — pointers go through as u32 args.
+//
+// The int64-taking ops (create_int64, create_bigint_uint64,
+// adjust_external_memory) receive their int64 as (low: int32, high: int32)
+// pairs in the emnapi v1 emscripten JS-side wrappers (verified in
+// vendor/emnapi/packages/emnapi/src/value/convert2napi.ts and
+// emscripten/memory.ts).  So they pack into makeFourU32 naturally.
+
+export const OP_NAPI_CREATE_STRING_UTF8 = OP_DOMAIN_NAPI_RO | 0x0080;
+// napi_create_string_utf8(env, str:char*, length:size_t, &result)  — four-u32.
+export const OP_NAPI_CREATE_STRING_LATIN1 = OP_DOMAIN_NAPI_RO | 0x0081;
+// napi_create_string_latin1(env, str:char*, length:size_t, &result)  — four-u32.
+export const OP_NAPI_CREATE_STRING_UTF16 = OP_DOMAIN_NAPI_RO | 0x0082;
+// napi_create_string_utf16(env, str:char16_t*, length:size_t, &result)  — four-u32.
+export const OP_NAPI_GET_VALUE_STRING_LATIN1 = OP_DOMAIN_NAPI_RO | 0x0083;
+// napi_get_value_string_latin1(env, value, buf, bufsize, &result_length)  — five-u32.
+export const OP_NAPI_GET_VALUE_STRING_UTF16 = OP_DOMAIN_NAPI_RO | 0x0084;
+// napi_get_value_string_utf16(env, value, buf, bufsize, &result_length)  — five-u32.
+export const OP_NAPI_THROW_ERROR = OP_DOMAIN_NAPI_RO | 0x0085;
+// napi_throw_error(env, code:char*, msg:char*)  — three args, no resultPtr.
+// Registered inline (no factory for "three-u32 no result").
+export const OP_NAPI_THROW_TYPE_ERROR = OP_DOMAIN_NAPI_RO | 0x0086;
+// napi_throw_type_error(env, code:char*, msg:char*)  — same shape.
+export const OP_NAPI_THROW_RANGE_ERROR = OP_DOMAIN_NAPI_RO | 0x0087;
+// napi_throw_range_error(env, code:char*, msg:char*)  — same shape.
+export const OP_NAPI_SET_NAMED_PROPERTY = OP_DOMAIN_NAPI_RO | 0x0088;
+// napi_set_named_property(env, object, name:char*, value)  — four-u32; the
+// 4th u32 is the assigned value handle (not a resultPtr).  Arity-shaped.
+export const OP_NAPI_DEFINE_PROPERTIES = OP_DOMAIN_NAPI_RO | 0x0089;
+// napi_define_properties(env, object, property_count, properties:descriptor*)
+// — four-u32, no resultPtr.  The descriptor array lives in shared wasm memory;
+// emnapi reads it through the pointer.  Arity-shaped (4 args to napi fn).
+// (0x008a reserved for parity with OP_NAPI_GET_VALUE_INT64 numbering; not used.)
+export const OP_NAPI_GET_TYPEDARRAY_INFO = OP_DOMAIN_NAPI_RO | 0x008b;
+// napi_get_typedarray_info(env, typedarray, &type, &length, &data,
+//                          &arraybuffer, &byte_offset)  — seven-u32.
+export const OP_NAPI_CREATE_INT64 = OP_DOMAIN_NAPI_RO | 0x008c;
+// napi_create_int64(env, low:int32, high:int32, &result)  — four-u32; emnapi
+// v1's JS wrapper splits int64 into (low,high) u32 pair.
+export const OP_NAPI_CREATE_BIGINT_UINT64 = OP_DOMAIN_NAPI_RO | 0x008d;
+// napi_create_bigint_uint64(env, low:int32, high:int32, &result)  — four-u32;
+// same (low,high) pair encoding.
+export const OP_NAPI_ADJUST_EXTERNAL_MEMORY = OP_DOMAIN_NAPI_RO | 0x008e;
+// napi_adjust_external_memory(env, low:int32, high:int32, &adjusted)  — four-u32;
+// same (low,high) pair encoding.
+
 // ── NAPI callback-taking ops (F-5) ─────────────────────────────────
 export const OP_NAPI_CALL_FUNCTION = OP_DOMAIN_NAPI_CB | 0x0001;
 // napi_call_function(env, recv, fn, argc, argv_ptr, &result)

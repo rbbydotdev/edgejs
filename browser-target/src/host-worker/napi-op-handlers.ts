@@ -68,6 +68,15 @@ import {
   OP_NAPI_CREATE_PROMISE, OP_NODE_API_CREATE_SHAREDARRAYBUFFER,
   OP_NODE_API_IS_SHAREDARRAYBUFFER, OP_NAPI_RUN_SCRIPT, OP_NAPI_GET_CB_INFO,
   OP_NAPI_CREATE_DOUBLE,
+  // Lever B batch 3 (0x0180–0x018E): string/property/error/int64 ops.
+  OP_NAPI_CREATE_STRING_UTF8, OP_NAPI_CREATE_STRING_LATIN1,
+  OP_NAPI_CREATE_STRING_UTF16,
+  OP_NAPI_GET_VALUE_STRING_LATIN1, OP_NAPI_GET_VALUE_STRING_UTF16,
+  OP_NAPI_THROW_ERROR, OP_NAPI_THROW_TYPE_ERROR, OP_NAPI_THROW_RANGE_ERROR,
+  OP_NAPI_SET_NAMED_PROPERTY, OP_NAPI_DEFINE_PROPERTIES,
+  OP_NAPI_GET_TYPEDARRAY_INFO,
+  OP_NAPI_CREATE_INT64, OP_NAPI_CREATE_BIGINT_UINT64,
+  OP_NAPI_ADJUST_EXTERNAL_MEMORY,
   REPLY_STATUS_INVALID_ARGS,
 } from "./rpc-protocol";
 
@@ -155,6 +164,29 @@ function makeSixU32(napiFn: NapiFn | undefined, opName: string) {
         dv.getUint32(12, true),
         dv.getUint32(16, true),
         dv.getUint32(20, true),
+      ),
+    };
+  };
+}
+
+/** Make a handler for seven-u32 ops (env, a, b, c, d, e, resultPtr).
+ *  Example: napi_get_typedarray_info(env, typedarray, &type, &length, &data,
+ *           &arraybuffer, &byte_offset). */
+function makeSevenU32(napiFn: NapiFn | undefined, opName: string) {
+  return async (_ctx: HandlerContext, args: Uint8Array) => {
+    if (typeof napiFn !== "function") return err(`napi handler: ${opName} not found`);
+    if (args.byteLength < 28) return err("napi handler: args too short for seven-u32");
+    const dv = new DataView(args.buffer, args.byteOffset, args.byteLength);
+    return {
+      payload: EMPTY,
+      status: napiFn(
+        dv.getUint32(0, true),
+        dv.getUint32(4, true),
+        dv.getUint32(8, true),
+        dv.getUint32(12, true),
+        dv.getUint32(16, true),
+        dv.getUint32(20, true),
+        dv.getUint32(24, true),
       ),
     };
   };
@@ -273,6 +305,27 @@ export function makeNapiOpRegistry(napi: Record<string, NapiFn>): NapiOpRegistry
     [OP_NAPI_CREATE_ARRAYBUFFER, "napi_create_arraybuffer"],
     [OP_NAPI_CREATE_BUFFER, "napi_create_buffer"],
     [OP_NODE_API_CREATE_SHAREDARRAYBUFFER, "node_api_create_sharedarraybuffer"],
+    // Lever B batch 3 (0x0180–0x0182): string-creation ops.  The `str` arg
+    // is a pointer into shared wasm memory; emnapi reads the bytes through
+    // it.  Arity-shaped factory: (env, str, length, &result).
+    [OP_NAPI_CREATE_STRING_UTF8, "napi_create_string_utf8"],
+    [OP_NAPI_CREATE_STRING_LATIN1, "napi_create_string_latin1"],
+    [OP_NAPI_CREATE_STRING_UTF16, "napi_create_string_utf16"],
+    // Lever B batch 3 (0x0188): set_named_property's 4th u32 is the assigned
+    // value handle, not a resultPtr; arity-shaped (4 args to napi fn).
+    [OP_NAPI_SET_NAMED_PROPERTY, "napi_set_named_property"],
+    // Lever B batch 3 (0x0189): define_properties has 4 args, no resultPtr;
+    // the property-descriptor array lives in shared wasm memory and emnapi
+    // reads it through the pointer.  Arity-shaped.
+    [OP_NAPI_DEFINE_PROPERTIES, "napi_define_properties"],
+    // Lever B batch 3 (0x018c–0x018e): int64-taking ops.  emnapi v1's JS-side
+    // wrappers receive int64 as (low: int32, high: int32) pairs, so the
+    // (env, low, high, &result) shape packs into four-u32 exactly.  See
+    // vendor/emnapi/packages/emnapi/src/value/convert2napi.ts and
+    // emscripten/memory.ts for the wrapper signatures.
+    [OP_NAPI_CREATE_INT64, "napi_create_int64"],
+    [OP_NAPI_CREATE_BIGINT_UINT64, "napi_create_bigint_uint64"],
+    [OP_NAPI_ADJUST_EXTERNAL_MEMORY, "napi_adjust_external_memory"],
   ];
 
   // napi_delete_reference is two-arg (env, ref_handle); no result_ptr.
@@ -301,7 +354,11 @@ export function makeNapiOpRegistry(napi: Record<string, NapiFn>): NapiOpRegistry
     // +1 napi_create_buffer_copy (batch 2 five-u32, inline),
     // +1 napi_create_typedarray (batch 2 six-u32, inline),
     // +1 napi_get_cb_info (batch 2 six-u32, inline).
-    count: TWO_U32.length + THREE_U32.length + FOUR_U32.length + 14,
+    // Lever B batch 3 inline registrations:
+    // +2 napi_get_value_string_latin1/utf16 (five-u32, inline),
+    // +3 napi_throw_error/type_error/range_error (three-u32 no-result, inline),
+    // +1 napi_get_typedarray_info (seven-u32, inline).
+    count: TWO_U32.length + THREE_U32.length + FOUR_U32.length + 14 + 6,
     register(server: RpcServer): void {
       for (const [op, name] of TWO_U32) {
         server.register(op, makeTwoU32(napi[name], name));
@@ -421,6 +478,47 @@ export function makeNapiOpRegistry(napi: Record<string, NapiFn>): NapiOpRegistry
         OP_NAPI_GET_CB_INFO,
         makeSixU32(napi["napi_get_cb_info"], "napi_get_cb_info"),
       );
+      // Lever B batch 3 (0x0183, 0x0184): get_value_string_latin1/utf16
+      // — (env, value, buf, bufsize, &result_length); five-u32.
+      server.register(
+        OP_NAPI_GET_VALUE_STRING_LATIN1,
+        makeFiveU32(napi["napi_get_value_string_latin1"], "napi_get_value_string_latin1"),
+      );
+      server.register(
+        OP_NAPI_GET_VALUE_STRING_UTF16,
+        makeFiveU32(napi["napi_get_value_string_utf16"], "napi_get_value_string_utf16"),
+      );
+      // Lever B batch 3 (0x018b): napi_get_typedarray_info(env, typedarray,
+      // &type, &length, &data, &arraybuffer, &byte_offset) — seven-u32.
+      server.register(
+        OP_NAPI_GET_TYPEDARRAY_INFO,
+        makeSevenU32(napi["napi_get_typedarray_info"], "napi_get_typedarray_info"),
+      );
+      // Lever B batch 3 (0x0185, 0x0186, 0x0187): napi_throw_{error,type_error,
+      // range_error}(env, code:char*, msg:char*) — three args, no resultPtr.
+      // code/msg are POINTERS into shared wasm memory; emnapi reads through
+      // them.  Same inline pattern as OP_NAPI_RESOLVE_DEFERRED.
+      for (const [op, name] of [
+        [OP_NAPI_THROW_ERROR, "napi_throw_error"],
+        [OP_NAPI_THROW_TYPE_ERROR, "napi_throw_type_error"],
+        [OP_NAPI_THROW_RANGE_ERROR, "napi_throw_range_error"],
+      ] as Array<[number, string]>) {
+        const fn = napi[name];
+        const opName = name;
+        server.register(op, async (_ctx, args) => {
+          if (typeof fn !== "function") return err(`napi handler: ${opName} not found`);
+          if (args.byteLength < 12) return err("napi handler: args too short for three-u32-no-result");
+          const dv = new DataView(args.buffer, args.byteOffset, args.byteLength);
+          return {
+            payload: EMPTY,
+            status: fn(
+              dv.getUint32(0, true),
+              dv.getUint32(4, true),
+              dv.getUint32(8, true),
+            ),
+          };
+        });
+      }
     },
   };
 }
