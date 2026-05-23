@@ -1,0 +1,31 @@
+plans/lever-b-progress.md
+  s_7bec0ecbfcdcd0::t_6253d495c23bf1 1814-1869
+experiments/e4-callback-realistic/package.json
+  s_7bec0ecbfcdcd0::t_9ccd50cb7a4d23 1-8
+experiments/e4-callback-realistic/probe.mjs
+  s_7bec0ecbfcdcd0::t_a74045ff4b5662 97-99
+  s_7bec0ecbfcdcd0::t_d38512c3d942bc 205-208
+  s_7bec0ecbfcdcd0::t_c0de282217ba49 397-412,416-418
+  s_7bec0ecbfcdcd0::t_02176620844eba 315-317,319-329,331,333-345,348-350
+  s_7bec0ecbfcdcd0::t_1924c93b9af639 1-96,100-204,209-314,318,330,332,346-347,351-396,413-415,419-469
+experiments/OPEN-QUESTIONS.md
+  s_7bec0ecbfcdcd0::t_020c012b865ba4 21
+experiments/e4-callback-realistic/FINDINGS.md
+  s_7bec0ecbfcdcd0::t_c1522c77ed6547 1-105
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "80a4dc56e6f5ac747a7741f7e6ba3ff22356b3f3",
+  "prompts": {},
+  "sessions": {
+    "s_7bec0ecbfcdcd0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d560d5ae-265f-44ae-89c4-d35659b3ab9e",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
