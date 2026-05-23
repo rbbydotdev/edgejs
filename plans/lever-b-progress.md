@@ -1752,3 +1752,62 @@ behavior, the first question is "does this go via host?" — and the
 answer is documented.
 
 **Tests:** 21 pass / 0 fail / 6 skip — unchanged from F-6.
+
+---
+
+## F-8: test corpus + polish (2026-05-23)
+
+**Original plan:** "Run subset of wasmerio/node-test; add Rolldown-shape
+(WebAssembly.compile().then()), crypto.createHash, fs.readFile,
+http.createServer smoke tests; perf comparison vs pre-Lever-B."
+
+**Scope-adjusted:** added the four smoke tests called out (crypto.createHash
+already covered by existing `crypto-sha256`); upstreamed the runner's
+harness-args CLI-flag parsing while at it (un-skipped 2 more).  Skipped
+the wasmerio/node-test corpus pull (external dep, large scope, deserves
+its own day) and the perf comparison (no pre-Lever-B baseline JSON
+captured to compare against; perf-runner exists but the meaningful
+delta is napi-RPC throughput which F-3 already measured).
+
+**New tests:**
+- `wasm-compile-then.js` — Rolldown-shape `WebAssembly.compile(bytes).then(...)`.
+  Tests microtask continuation off a host async op.  PASSES via the
+  wasm/edge path; that path's microtask drain works for THIS shape
+  because the .then resolves on JSPI resume, not via a poll_oneoff
+  wait.  Distinct from the regression class F-6 un-skipped.
+- `http-server-listen.js` — sibling of https-server-listen without
+  TLS.  Verifies the plain-http server stack's `listen()` callback
+  fires.  PASSES.
+- `fs-readfile-self.js` — uncovered a real FS-layer bug:
+  `writeFileSync` to `/tmp/*` succeeds and `existsSync` confirms, but
+  `readFileSync` / `readFile` both return ENOENT.  Writable layer
+  isn't consulted by read paths.  Logged as
+  `fs-write-not-visible-to-read` in NOTES.md.  Test kept as a
+  reproducer (.skip with the finding).
+
+**Polish: harness-args parser upgrade.**  F-6's parser only understood
+`k=v` lines.  The existing sidecars use the node-harness CLI syntax
+(`--policies foo,bar`, `--override inspector:null`).  Extended the
+parser to accept both forms, making sidecars shareable between
+node-harness and browser runner.  Un-skipped:
+- `policy-crypto-host-random`
+- `policy-outbound-fetch-tunnel`
+
+Could not un-skip `override-inspector` — needs a new `?override=` URL
+param + main.ts handler.  Defer.
+
+**Tests:** 25 pass / 0 fail / 5 skip (was 21/0/6 at F-7).  Net +4
+passing tests, -1 skip (fs-readfile-self is a new test, new skip; offset
+by the two policy un-skips → -1 net).
+
+**Baseline shift across F-1..F-8:**
+- F-5 baseline: 14 pass / 0 fail / 13 skip (27 tests)
+- F-8 final:    25 pass / 0 fail /  5 skip (30 tests, +3 new)
+- Net: +11 passing tests, -8 skips, +3 new tests
+
+**Remaining skips (5):**
+- finalization-registry-runs — `WeakRef/ClearKeptObjects` (not microtask)
+- fs-readfile-self — F-8 finding, FS adapter layering bug
+- override-inspector — needs `?override=` URL param wiring
+- unhandled-rejection-fires — lib defers `process.on('unhandledRejection')`
+- webserver — needs long-running test infrastructure

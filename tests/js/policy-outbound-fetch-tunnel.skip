@@ -1,4 +1,0 @@
-Browser runner gap: `policy-outbound-fetch-tunnel.harness-args` is
-currently ignored when the test runs through `browser-test-runner.mjs`
-(see NOTES.md `browser-runner-ignores-harness-args`).  Unskip when the
-browser runner maps harness-args to URL params.

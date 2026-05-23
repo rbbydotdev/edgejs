@@ -1,6 +1,0 @@
-Browser runner gap: `policy-crypto-host-random.harness-args` is
-currently ignored when the test runs through `browser-test-runner.mjs`
-(see NOTES.md `browser-runner-ignores-harness-args`).  The runner
-currently outputs the no-policy state.  Unskip when the browser runner
-maps harness-args to URL params (e.g. via the existing `?policies=`
-opt-in mechanism).

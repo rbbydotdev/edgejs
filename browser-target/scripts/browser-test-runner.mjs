@@ -80,18 +80,38 @@ async function runOne(browser, t) {
   }
   const script = readFileSync(t.jsPath, "utf8");
   const expectedOut = existsSync(t.stdoutPath) ? read(t.stdoutPath) : "";
-  // .harness-args sidecar: lines like `host=1` or `policies=foo,bar`
-  // appended as URL query params.  Blank lines and # comments ignored.
+  // .harness-args sidecar: appended as URL query params.  Two accepted
+  // syntaxes (mix is fine, one per line OR multiple per line):
+  //   key=value                  →  ?key=value
+  //   --key value                →  ?key=value
+  //   --key                      →  ?key=1
+  // Blank lines and # comments ignored.  The `--k v` form matches the
+  // existing node-harness harness-args convention so sidecars are
+  // shareable between the two runners.
   let extraParams = "";
   if (existsSync(t.harnessArgsPath)) {
-    const lines = read(t.harnessArgsPath).split("\n");
-    for (const raw of lines) {
-      const line = raw.trim();
-      if (!line || line.startsWith("#")) continue;
-      const eq = line.indexOf("=");
-      const k = eq < 0 ? line : line.slice(0, eq);
-      const v = eq < 0 ? "" : line.slice(eq + 1);
-      extraParams += `&${encodeURIComponent(k)}=${encodeURIComponent(v)}`;
+    const tokens = read(t.harnessArgsPath)
+      .split("\n")
+      .map((l) => l.trim())
+      .filter((l) => l && !l.startsWith("#"))
+      .flatMap((l) => l.split(/\s+/));
+    for (let i = 0; i < tokens.length; i++) {
+      const t = tokens[i];
+      if (t.startsWith("--")) {
+        const k = t.slice(2);
+        const next = tokens[i + 1];
+        if (next !== undefined && !next.startsWith("--") && next.indexOf("=") < 0) {
+          extraParams += `&${encodeURIComponent(k)}=${encodeURIComponent(next)}`;
+          i++;
+        } else {
+          extraParams += `&${encodeURIComponent(k)}=1`;
+        }
+      } else if (t.includes("=")) {
+        const eq = t.indexOf("=");
+        const k = t.slice(0, eq);
+        const v = t.slice(eq + 1);
+        extraParams += `&${encodeURIComponent(k)}=${encodeURIComponent(v)}`;
+      }
     }
   }
   const url = `http://localhost:${VITE_PORT}/?script=${encodeURIComponent(script)}${extraParams}`;

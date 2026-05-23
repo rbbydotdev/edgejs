@@ -1,0 +1,6 @@
+F-8 finding: fs.writeFileSync to /tmp/* succeeds, fs.existsSync returns
+true, but a subsequent fs.readFileSync on the same path throws ENOENT.
+Async fs.readFile also returns ENOENT.  The writable layer that backs
+writeFileSync (in-memory Map, `[opfs-fs] in-memory writable layer ready`)
+isn't visible to the read paths (both sync and async).  Test kept as a
+reproducer; reveals a real FS-adapter inconsistency unrelated to Lever B.

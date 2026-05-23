@@ -169,6 +169,14 @@ the browser-target tree.
   any worker is visible to subsequent reads from any worker via the
   shared SAB, but contents are lost on tab reload.  Real persistence
   needs the OPFS layer wired as a back-store for snapshot writes.
+- `fs-write-not-visible-to-read` (2026-05-23, F-8) — `fs.writeFileSync`
+  to `/tmp/*` returns successfully and `fs.existsSync` confirms the
+  file, but a subsequent `fs.readFileSync` / `fs.readFile` on the
+  same path returns ENOENT.  The writable layer that backs the write
+  isn't consulted by the read paths.  Reproducer at
+  `tests/js/fs-readfile-self.{js,skip}`.  Suggests adapter-layering
+  bug between the in-memory writable layer (opfs.ts) and the read
+  adapters; unrelated to Lever B.
 
 ### napi / Buffer
 
