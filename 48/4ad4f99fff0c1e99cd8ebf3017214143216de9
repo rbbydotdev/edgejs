@@ -1,0 +1,37 @@
+browser-target/src/host-worker/worker-pool.ts
+  s_7bec0ecbfcdcd0::t_c209239c8e9c7c 39-42
+  s_7bec0ecbfcdcd0::t_ecdee8d7c74f9e 62-70,73,75
+  s_7bec0ecbfcdcd0::t_16965ff599d2c2 97-98
+browser-target/src/host-worker/host-worker.ts
+  s_7bec0ecbfcdcd0::t_c5ea6e7ca9f184 251
+  s_7bec0ecbfcdcd0::t_d30f3e4402e45c 315-319
+  s_7bec0ecbfcdcd0::t_6e29b5696292b0 65-67
+  s_7bec0ecbfcdcd0::t_b345ed5b46388d 206-240,245-250
+  s_7bec0ecbfcdcd0::t_9e44cc9275b8c4 33-35,38,40-43
+  s_7bec0ecbfcdcd0::t_cb450edc2dcbdf 87-136
+browser-target/scripts/probe-f1-napi.mjs
+  s_7bec0ecbfcdcd0::t_e16e331c6c2127 1-44
+browser-target/src/main.ts
+  s_7bec0ecbfcdcd0::t_f3f3e6b4da6acf 404
+  s_7bec0ecbfcdcd0::t_416fa220f6d09d 125-175
+plans/lever-b-progress.md
+  ai_agent 1432-1470
+browser-target/package.json
+  s_7bec0ecbfcdcd0::t_f8735f6b5e94bd 12-13
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "484ad4f99fff0c1e99cd8ebf3017214143216de9",
+  "prompts": {},
+  "sessions": {
+    "s_7bec0ecbfcdcd0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d560d5ae-265f-44ae-89c4-d35659b3ab9e",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
