@@ -1,0 +1,27 @@
+experiments/l5-real-roundtrip/probe.mjs
+  s_7bec0ecbfcdcd0::t_586b3e27072c51 1-184
+experiments/l5-real-roundtrip/package.json
+  s_7bec0ecbfcdcd0::t_743730fcb490ba 1-14
+experiments/memory-growth/probe.mjs
+  s_7bec0ecbfcdcd0::t_4c8b12062a476a 1-86
+experiments/memory-growth/FINDINGS.md
+  s_7bec0ecbfcdcd0::t_5555b738c0a185 1-61
+experiments/l5-real-roundtrip/package-lock.json
+  ai_agent 1-41
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "53d067c35336ab3f126c0891be55fc577f552422",
+  "prompts": {},
+  "sessions": {
+    "s_7bec0ecbfcdcd0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d560d5ae-265f-44ae-89c4-d35659b3ab9e",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
