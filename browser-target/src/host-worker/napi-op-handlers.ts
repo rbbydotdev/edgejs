@@ -81,7 +81,7 @@ import {
   OP_NAPI_ADD_ENV_CLEANUP_HOOK, OP_NAPI_REMOVE_ENV_CLEANUP_HOOK,
   REPLY_STATUS_INVALID_ARGS,
 } from "./rpc-protocol";
-import { makeHostSideCallbackClosure } from "./callback-dispatch";
+import { makeHostSideCallbackClosure, CALLBACK_SHAPE_CLEANUP_HOOK } from "./callback-dispatch";
 import { getHostSideReverseSyncClient } from "./host-worker";
 
 const EMPTY = new Uint8Array(0);
@@ -597,6 +597,7 @@ export function makeNapiOpRegistry(napi: Record<string, NapiFn>): NapiOpRegistry
               cbPtr,
               dataPtr,
               env,
+              shape: CALLBACK_SHAPE_CLEANUP_HOOK,
             });
             // CleanupHookCallbackFunction is `(arg: number) => void` on
             // the JS-callable branch.  Our closure returns the wasm

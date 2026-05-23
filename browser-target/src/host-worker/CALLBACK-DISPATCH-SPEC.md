@@ -13,15 +13,21 @@ empty by design; see that module's header for policy).
 ### Host-side: build a JS closure that round-trips to wasm
 
 ```ts
-import { makeHostSideCallbackClosure } from "./callback-dispatch";
+import {
+  makeHostSideCallbackClosure,
+  CALLBACK_SHAPE_NAPI_CALLBACK,
+  CALLBACK_SHAPE_CLEANUP_HOOK,
+  CALLBACK_SHAPE_FINALIZER,
+} from "./callback-dispatch";
 import type { SyncRpcClient } from "./rpc-client-sync";
 
 const closure = makeHostSideCallbackClosure({
   reverseClient,   // SyncRpcClient over the REVERSE rings (host → wasm)
-  cbPtr,           // funcref index (3rd arg to napi_create_function)
-  dataPtr,         // opaque data (4th arg to napi_create_function)
-  env,             // napi_env handle
-  hostWorkerId,    // optional; default 0 (single host worker today)
+  cbPtr,           // funcref index
+  dataPtr,         // opaque data (also `arg` for CLEANUP_HOOK)
+  env,             // napi_env handle (unused for CLEANUP_HOOK)
+  shape,           // ABI shape — see "Callback ABI shapes" below
+  hostWorkerId,    // optional; default 0
   contextId,       // optional; default 0
 });
 
@@ -29,6 +35,28 @@ const closure = makeHostSideCallbackClosure({
 // returns the wasm callback's napi_value return.  Throws if the wasm
 // callback threw.
 ```
+
+## Callback ABI shapes
+
+The 11 callback-bound ops span THREE distinct wasm-side ABIs.  Per-op
+handlers MUST pass the correct `shape` so the wasm-side invoker calls
+the funcref with the right arg count (otherwise the
+`__indirect_function_table` type check traps).
+
+| Shape | C signature | Used by |
+|---|---|---|
+| `CALLBACK_SHAPE_NAPI_CALLBACK` (0) | `(env, cbinfo) → napi_value` | `napi_create_function`, `napi_define_class` |
+| `CALLBACK_SHAPE_CLEANUP_HOOK` (1) | `(arg) → void` | `napi_add_env_cleanup_hook`, `napi_remove_env_cleanup_hook` |
+| `CALLBACK_SHAPE_FINALIZER` (2) | `(env, data, hint) → void` | `napi_wrap`, `napi_add_finalizer`, `napi_create_external{,_arraybuffer,_buffer}` |
+
+For `CALLBACK_SHAPE_FINALIZER`, the host-side closure should be
+invoked with `(data, hint)` as args — the dispatcher passes them
+through as the 2nd and 3rd args to the funcref (the env comes from
+the closure's captured `env`).
+
+For `CALLBACK_SHAPE_CLEANUP_HOOK`, the host-side closure can be
+invoked with any args; the dispatcher passes `dataPtr` (the captured
+data, which is also the cleanup hook's `arg`) to the funcref.
 
 Returned function signature: `(...args: unknown[]) => unknown`.
 

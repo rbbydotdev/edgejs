@@ -73,53 +73,76 @@ import {
 const utf8Encoder = new TextEncoder();
 const utf8Decoder = new TextDecoder("utf-8");
 
+// ─── Callback ABI shapes ────────────────────────────────────────────
+//
+// The 11 callback-bound napi ops span THREE distinct wasm-side ABIs.
+// The wasm-side invoker dispatches by shape so the indirect_function_table
+// type check matches the funcref's actual signature:
+//
+//   NAPI_CALLBACK   `(env, cbinfo) → napi_value`        2 i32 in,  1 i32 out
+//     Used by: napi_create_function, napi_define_class
+//
+//   CLEANUP_HOOK    `(arg) → void`                      1 i32 in,  0 out
+//     Used by: napi_add_env_cleanup_hook, napi_remove_env_cleanup_hook
+//
+//   FINALIZER       `(env, data, hint) → void`           3 i32 in,  0 out
+//     Used by: napi_wrap, napi_add_finalizer,
+//              napi_create_external{,_arraybuffer,_buffer}
+//
+// Without per-shape dispatch, all callbacks were invoked as
+// `fn(env, 0)` (the NAPI_CALLBACK shape), which traps the wasm
+// indirect-call type check for the other two shapes — silent until
+// the callback actually fires.  Per-shape dispatch fixes that.
+export const CALLBACK_SHAPE_NAPI_CALLBACK = 0;
+export const CALLBACK_SHAPE_CLEANUP_HOOK = 1;
+export const CALLBACK_SHAPE_FINALIZER = 2;
+
+export type CallbackShape =
+  | typeof CALLBACK_SHAPE_NAPI_CALLBACK
+  | typeof CALLBACK_SHAPE_CLEANUP_HOOK
+  | typeof CALLBACK_SHAPE_FINALIZER;
+
 // ─── Reverse-RPC payload layout ────────────────────────────────────
 //
 // Request (host → wasm) for OP_INVOKE_WASM_CALLBACK:
-//   [u32 cbPtr]            : funcref index into the wasm __indirect_function_table
-//   [u32 dataPtr]           : opaque data pointer (3rd capture from napi_create_function)
-//   [u32 env]               : napi_env handle (host's view; wasm uses its own env in practice)
-//   [u32 argc]              : number of napi_value args bundled below
-//   [u32 × argc] : args     : napi_value handles (host's value-space ids)
+//   [u32 shape]             : CallbackShape — drives wasm-side ABI dispatch
+//   [u32 cbPtr]             : funcref index into the wasm __indirect_function_table
+//   [u32 dataPtr]           : opaque data pointer (3rd capture from napi_create_function;
+//                            also doubles as the `arg` for CLEANUP_HOOK)
+//   [u32 env]               : napi_env handle (host's view)
+//   [u32 argc]              : number of u32 args bundled below
+//   [u32 × argc] : args     : raw u32s — interpretation depends on shape:
+//                              NAPI_CALLBACK: napi_value handles (passed via cbinfo)
+//                              CLEANUP_HOOK : ignored (arg comes from dataPtr)
+//                              FINALIZER    : argv[0]=data, argv[1]=hint
 //
 // Reply (wasm → host) for OP_INVOKE_WASM_CALLBACK:
 //   [u32 status]            : 0 = ok, nonzero = wasm callback threw
-//   [u32 returnHandle]      : napi_value returned by the wasm callback
-//                            (zero / ignored when status != 0)
+//   [u32 returnHandle]      : napi_value returned (NAPI_CALLBACK only); else 0
 //   [N bytes utf8 message]  : present iff status != 0
-//
-// The host-side closure shifts `argc` into a u8 prefix so the payload
-// is always: `[cbPtr|dataPtr|env|argc| argv... ]`.
-const REQ_HEADER_U32_COUNT = 4; // cbPtr, dataPtr, env, argc
+const REQ_HEADER_U32_COUNT = 5; // shape, cbPtr, dataPtr, env, argc
 const REPLY_HEADER_U32_COUNT = 2; // status, returnHandle
 
 // ─── Public types ──────────────────────────────────────────────────
 
 export interface MakeHostSideCallbackClosureOpts {
-  /** SyncRpcClient over the REVERSE channel (host → wasm).
-   *
-   *  In practice this lives on the host worker and was constructed
-   *  against the reverse-request + reverse-reply rings.  Sync because
-   *  the host-side emnapi caller (e.g. JS user code invoking the
-   *  callback) expects a synchronous return — emnapi's withScope
-   *  wrapper does NOT await.
-   *
-   *  IMPORTANT: today the host worker constructs its host→wasm
-   *  reverse client as an `RpcClient` (async).  For Lever B batch 4
-   *  the host side gets a NEW SyncRpcClient bound to the same
-   *  reverse rings — see CALLBACK-DISPATCH-SPEC.md for wiring. */
+  /** SyncRpcClient over the REVERSE channel (host → wasm). */
   reverseClient: SyncRpcClient;
-  /** Funcref index into the wasm __indirect_function_table — the
-   *  3rd arg to napi_create_function (the `cb` parameter). */
+  /** Funcref index into the wasm __indirect_function_table. */
   cbPtr: number;
-  /** Opaque data pointer — the 4th arg to napi_create_function. */
+  /** Opaque data pointer.  For CLEANUP_HOOK this is also the `arg`
+   *  passed to the cleanup callback at env destroy. */
   dataPtr: number;
-  /** napi_env handle as seen by the host. */
+  /** napi_env handle as seen by the host.  Unused for CLEANUP_HOOK
+   *  shape. */
   env: number;
-  /** hostWorkerId for the reverse RPC.  Currently always 0
-   *  (single host worker).  Pass through from the calling op. */
+  /** ABI shape of the wasm-side funcref.  Drives which arg count +
+   *  return-value contract the wasm-side invoker uses.  Defaults to
+   *  NAPI_CALLBACK (the most common). */
+  shape?: CallbackShape;
+  /** hostWorkerId for the reverse RPC.  Currently always 0. */
   hostWorkerId?: number;
-  /** contextId for the reverse RPC.  Currently 0 (no per-call ctx). */
+  /** contextId for the reverse RPC.  Currently 0. */
   contextId?: number;
 }
 
@@ -138,31 +161,24 @@ export function makeHostSideCallbackClosure(
   opts: MakeHostSideCallbackClosureOpts,
 ): (...args: unknown[]) => unknown {
   const { reverseClient, cbPtr, dataPtr, env } = opts;
+  const shape: CallbackShape = opts.shape ?? CALLBACK_SHAPE_NAPI_CALLBACK;
   const hostWorkerId = opts.hostWorkerId ?? 0;
   const contextId = opts.contextId ?? 0;
 
   return function hostSideCallbackClosure(...args: unknown[]): unknown {
-    // Bundle the call.  Args are expected to be napi_value handles
-    // (u32).  emnapi's withScope passes them in raw — they come from
-    // emnapiCtx.napiValueFromJsValue (see Context.ts:280-327) and are
-    // small ints.  We coerce defensively and let nonsense args surface
-    // as RangeError on the encode path rather than poisoning the wire.
     const argc = args.length;
     const totalU32 = REQ_HEADER_U32_COUNT + argc;
     const payload = new Uint8Array(totalU32 * 4);
     const dv = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
-    dv.setUint32(0, cbPtr >>> 0, true);
-    dv.setUint32(4, dataPtr >>> 0, true);
-    dv.setUint32(8, env >>> 0, true);
-    dv.setUint32(12, argc >>> 0, true);
+    dv.setUint32(0,  shape >>> 0, true);
+    dv.setUint32(4,  cbPtr >>> 0, true);
+    dv.setUint32(8,  dataPtr >>> 0, true);
+    dv.setUint32(12, env >>> 0, true);
+    dv.setUint32(16, argc >>> 0, true);
     for (let i = 0; i < argc; i++) {
-      // Treat each arg as a napi_value (u32).  Numbers from emnapi are
-      // already in this range; for anything else we coerce via Number()
-      // and let `>>> 0` enforce u32.  emnapi never passes non-numeric
-      // args here in normal operation.
       const a = args[i];
       const u32 = (typeof a === "number" ? a : Number(a)) >>> 0;
-      dv.setUint32(16 + i * 4, u32, true);
+      dv.setUint32(20 + i * 4, u32, true);
     }
 
     const reply = reverseClient.callSync(
@@ -238,15 +254,16 @@ export function registerWasmCallbackInvoker(
   const maxDepth = options.maxDepth ?? CALLBACK_REENTRANCY_MAX_DEPTH;
 
   server.register(OP_INVOKE_WASM_CALLBACK, (_ctx: HandlerContext, args: Uint8Array) => {
-    // ── 1. Decode request header.
+    // ── 1. Decode request header (5 u32: shape, cbPtr, dataPtr, env, argc).
     if (args.byteLength < REQ_HEADER_U32_COUNT * 4) {
       return makeErrorReply("invoke-wasm-callback: request too short");
     }
     const dv = new DataView(args.buffer, args.byteOffset, args.byteLength);
-    const cbPtr = dv.getUint32(0, true);
-    const dataPtr = dv.getUint32(4, true);
-    const env = dv.getUint32(8, true);
-    const argc = dv.getUint32(12, true);
+    const shape = dv.getUint32(0,  true) as CallbackShape;
+    const cbPtr   = dv.getUint32(4,  true);
+    const dataPtr = dv.getUint32(8,  true);
+    const env     = dv.getUint32(12, true);
+    const argc    = dv.getUint32(16, true);
     const argsNeeded = (REQ_HEADER_U32_COUNT + argc) * 4;
     if (args.byteLength < argsNeeded) {
       return makeErrorReply(
@@ -274,65 +291,59 @@ export function registerWasmCallbackInvoker(
       return makeErrorReply(`wasm table entry at ${cbPtr} is not a function`);
     }
 
-    // ── 4. Build cbinfo on the wasm side.
-    //
-    // emnapi's wasm callback ABI is `(env, callback_info) → napi_value`
-    // (from vendor/emnapi/packages/runtime/src/Context.ts: createFunction).
-    // The C-side napi_callback signature is the same — the wasm function
-    // imports `napi_get_cb_info` to unpack thiz/args/data from the
-    // callback_info handle.
-    //
-    // For the RPC path, the host has bundled the args into the request
-    // payload, but the wasm side STILL needs an opaque callback_info
-    // handle so its emnapi can call napi_get_cb_info on it.  We can't
-    // synthesize one from this handler alone — that requires hooking
-    // into the wasm-side emnapi context to allocate a CallbackInfo
-    // and stash (thiz=undefined, args=[handles…], data=dataPtr) in it.
-    //
-    // This handler delegates THAT step to a per-runtime hook the host
-    // worker installs at boot.  The hook signature is:
-    //
-    //   (env: number, args: number[], dataPtr: number)
-    //     => { cbinfo: number; finish: () => void }
-    //
-    // where `cbinfo` is the napi_callback_info handle to pass to the
-    // funcref and `finish` is a teardown the dispatcher calls after
-    // the funcref returns (to release the synthetic CallbackInfo).
-    //
-    // Today the hook isn't installed — `registerWasmCallbackInvoker`
-    // is only the SCAFFOLDING.  Per-op agents wire the hook from
-    // their op handlers once they're known to need it.  In the
-    // meantime, we use a degraded `(env, dataPtr)` invocation that
-    // matches the emnapi v1 funcref's nominal signature; wasm callbacks
-    // that call napi_get_cb_info before the hook is wired will see
-    // an invalid cbinfo and fail cleanly.
-    //
-    // #!~debt — synthetic CallbackInfo hook not yet wired; per-op
-    // agents add it when napi_create_function / napi_add_finalizer
-    // come online.  See NOTES.md.
-
+    // ── 4. Decode argv (interpretation per shape).
     const argv: number[] = [];
     for (let i = 0; i < argc; i++) {
-      argv.push(dv.getUint32(16 + i * 4, true));
+      argv.push(dv.getUint32(20 + i * 4, true));
     }
 
-    // ── 5. Invoke with re-entrancy tracking.
+    // ── 5. Invoke with re-entrancy tracking + per-shape ABI dispatch.
     depthCounter.depth += 1;
     let returnHandle = 0;
     let threwMessage: string | null = null;
     try {
-      // Degraded ABI: pass env + dataPtr.  Per-op agents replace this
-      // with the synthetic-cbinfo path described above.
-      void dataPtr; // suppress unused-warning while hook isn't wired
-      const ret = (fn as (env: number, info: number) => number).call(
-        undefined,
-        env,
-        // cbinfo placeholder = 0; wasm will see invalid cbinfo if it
-        // calls napi_get_cb_info.  This is the scaffolding state.
-        0,
-      );
-      returnHandle = (typeof ret === "number" ? ret : 0) >>> 0;
-      void argv;
+      switch (shape) {
+        case CALLBACK_SHAPE_NAPI_CALLBACK: {
+          // `(env, cbinfo) → napi_value`.
+          //
+          // #!~debt — synthetic CallbackInfo hook not yet wired.  We
+          // pass cbinfo=0; wasm callbacks that call napi_get_cb_info
+          // before the hook is installed see an invalid cbinfo and
+          // fail cleanly.  The bundled argv is reserved for the hook
+          // to consume once it lands (NAPI_CB ops aren't shipped yet —
+          // cluster B work — so this is not yet a regression path).
+          void argv;
+          const ret = (fn as (env: number, info: number) => number).call(
+            undefined,
+            env,
+            0,
+          );
+          returnHandle = (typeof ret === "number" ? ret : 0) >>> 0;
+          break;
+        }
+        case CALLBACK_SHAPE_CLEANUP_HOOK: {
+          // `void(*)(void* arg)` — one i32.  arg comes from dataPtr
+          // (which is what host's emnapi stored for this cleanup hook).
+          (fn as (arg: number) => void).call(undefined, dataPtr);
+          break;
+        }
+        case CALLBACK_SHAPE_FINALIZER: {
+          // `void(*)(env, finalize_data, finalize_hint)` — three i32.
+          // argv[0] = finalize_data, argv[1] = finalize_hint (per the
+          // host-side wrapper's bundling convention).
+          const finalizeData = argv.length > 0 ? argv[0] : 0;
+          const finalizeHint = argv.length > 1 ? argv[1] : 0;
+          (fn as (env: number, data: number, hint: number) => void).call(
+            undefined,
+            env,
+            finalizeData,
+            finalizeHint,
+          );
+          break;
+        }
+        default:
+          threwMessage = `invoke-wasm-callback: unknown shape ${shape}`;
+      }
     } catch (e) {
       threwMessage = (e instanceof Error ? e.message : String(e)) || "wasm callback threw";
     } finally {
