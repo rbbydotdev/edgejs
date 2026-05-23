@@ -403,6 +403,22 @@ export const OP_NAPI_CREATE_REFERENCE = OP_DOMAIN_NAPI_CB | 0x0003;
 // napi_create_reference(env, value, initial_refcount, &result_ref)
 // 4 u32 args.
 
+// ── F-9 batch 4 cluster D: napi_callback-shape ops ──────────────────
+//
+// These mint host-side JS closures via makeHostSideCallbackClosure
+// (shape=NAPI_CALLBACK) and bind them to napi_values returned to the
+// wasm caller.  Invocation goes through the reverse channel back to
+// wasm via OP_INVOKE_WASM_CALLBACK.
+export const OP_NAPI_CREATE_FUNCTION = OP_DOMAIN_NAPI_CB | 0x0004;
+// napi_create_function(env, utf8name, length, cb_funcref, data, &result)
+// 6 u32 args; utf8name/length name the function (best-effort decode).
+
+export const OP_NAPI_DEFINE_CLASS = OP_DOMAIN_NAPI_CB | 0x0005;
+// napi_define_class(env, utf8name, length, constructor_funcref,
+//                   data, property_count, properties_ptr, &result)
+// 8 u32 args.  properties_ptr points to an array of napi_property_descriptor
+// structs in shared memory; each descriptor may carry its own funcref(s).
+
 // ── Reverse-channel ops (host → wasm; for callback invocation) ─────
 //
 // F-5: when host's emnapi calls a napi_callback (e.g., a JS function

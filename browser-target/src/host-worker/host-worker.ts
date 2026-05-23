@@ -126,6 +126,20 @@ export function getHostSideReverseSyncClient(): SyncRpcClient | null {
 let napiCtx: ReturnType<typeof createContext> | null = null;
 let napiModuleHost: ReturnType<typeof createNapiModule> | null = null;
 let napiHostMemory: WebAssembly.Memory | null = null;
+/** Exposed so callback-arg op handlers (registered via napi-op-handlers.ts)
+ *  can mint napi_values for host-side JS closures via
+ *  `napiCtx.addToCurrentScope(closure).id`.  F-9 batch 4: napi_create_function
+ *  + napi_define_class substitute the wasm-side funcref with a JS closure
+ *  built by makeHostSideCallbackClosure; that closure needs a stable
+ *  napi_value the wasm caller can later napi_call_function against. */
+export function getNapiContext(): ReturnType<typeof createContext> | null {
+  return napiCtx;
+}
+/** Exposed for callback-arg op handlers that need to write result handles
+ *  to wasm memory at the caller-supplied resultPtr. */
+export function getNapiHostMemory(): WebAssembly.Memory | null {
+  return napiHostMemory;
+}
 function ensureNapiContext(): void {
   if (napiCtx) return;
   napiCtx = createContext();

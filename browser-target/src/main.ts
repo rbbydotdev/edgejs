@@ -239,7 +239,9 @@ async function runF9SweepProbe(): Promise<void> {
     const reply = await client.call(op, 0, 0, encodeArgs(argv));
     const outs: Record<string, number> = {};
     for (const ptr of outPtrs) outs[`@${ptr}`] = memU32[ptr / 4];
-    return { name, status: reply.status, outs };
+    const errMsg = (reply.status !== 0 && reply.payload.byteLength > 0)
+      ? new TextDecoder().decode(reply.payload) : "";
+    return { name, status: reply.status, outs, errMsg };
   }
 
   const results: { name: string; status: number; ok: boolean; detail: string }[] = [];
@@ -466,6 +468,33 @@ async function runF9SweepProbe(): Promise<void> {
     } else {
       results.push({ name: "wrap", status: cr.status, ok: false, detail: "couldn't create object to wrap" });
     }
+  }
+
+  // ── Cluster D — napi_callback-shape ops (0x0204-0x0205) ──
+  // create_function(env, utf8name, length, cbPtr, dataPtr, &result) — SixU32.
+  // The probe verifies the handler mints a non-zero napi_value handle.
+  // We don't trigger the closure (no live wasm worker to dispatch to),
+  // so dormant registration is the assertion.
+  {
+    const fnNameBytes = new TextEncoder().encode("probeFn");
+    const fnNamePtr = allocPtr(fnNameBytes.byteLength + 4);
+    memU8.set(fnNameBytes, fnNamePtr);
+    const out = allocPtr();
+    const r = await callOp(proto.OP_NAPI_CREATE_FUNCTION, "create_function",
+      [1, fnNamePtr, fnNameBytes.byteLength, 0xfeed0100, 0xbeef0100, out]);
+    const handle = memU32[out / 4];
+    results.push({ name: "create_function", status: r.status, ok: r.status === 0 && handle !== 0, detail: `status=${r.status} handle=${handle} ${r.errMsg ? `err=${r.errMsg}` : ""}` });
+  }
+  // define_class(env, name, length, ctorPtr, dataPtr, propCount=0, propsPtr=0, &result) — 8 u32.
+  {
+    const clsNameBytes = new TextEncoder().encode("ProbeCls");
+    const clsNamePtr = allocPtr(clsNameBytes.byteLength + 4);
+    memU8.set(clsNameBytes, clsNamePtr);
+    const out = allocPtr();
+    const r = await callOp(proto.OP_NAPI_DEFINE_CLASS, "define_class",
+      [1, clsNamePtr, clsNameBytes.byteLength, 0xfeed0200, 0xbeef0200, 0, 0, out]);
+    const handle = memU32[out / 4];
+    results.push({ name: "define_class(empty)", status: r.status, ok: r.status === 0 && handle !== 0, detail: `status=${r.status} handle=${handle} ${r.errMsg ? `err=${r.errMsg}` : ""}` });
   }
 
   // Emit per-op result + summary.

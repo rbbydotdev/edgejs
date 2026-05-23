@@ -1,10 +1,10 @@
 // Callback dispatch — the Lever B reverse-channel layer for napi callbacks.
 //
 // Context (Lever B / F-9 batch 4):
-//   - 93/106 napi ops live on the host worker via SAB-RPC.  The 13 holdouts
-//     are callback-bound (napi_create_function, napi_add_finalizer, …):
-//     they need to invoke a wasm-side function pointer when the JS code on
-//     the host side fires the callback.
+//   - Callback-bound napi ops (napi_create_function, napi_add_finalizer,
+//     napi_define_class, napi_wrap, napi_add_env_cleanup_hook, …) need
+//     to invoke a wasm-side function pointer when JS code on the host
+//     side fires the callback.
 //   - The host has no direct access to the wasm function table.  Instead
 //     we use the reverse channel: host sends OP_INVOKE_WASM_CALLBACK
 //     downstream into the wasm runtime worker; wasm looks up the funcref
@@ -65,17 +65,17 @@ import type { SyncRpcClient } from "./rpc-client-sync";
 import type { RpcClient } from "./rpc-client";
 import type { RpcServer, HandlerContext } from "./rpc-server";
 import type { Context, Env } from "../napi-host";
+import { IdentityMap, packValue, unpackValue } from "./cross-context-marshal";
 import {
   OP_INVOKE_WASM_CALLBACK,
   REPLY_STATUS_OK,
   REPLY_STATUS_HOST_ERROR,
 } from "./rpc-protocol";
 
-// Type narrowings for emnapi runtime methods/fields missing from the
-// published `.d.ts`.  The two-method runtime-access surface is shared
-// with cross-context-marshal.ts via the facade.
-import type { ContextRuntimeAccess, ContextEnvLookup } from "../napi-host/emnapi";
-type ContextR7 = Context & ContextRuntimeAccess & ContextEnvLookup;
+// Type narrowing for the `callbackInfo` field on HandleScope.  All
+// other emnapi runtime methods we touch (openScope/closeScope) exist
+// in the published `.d.ts`; the marshaling helpers live in
+// cross-context-marshal.ts and don't need any Context internals here.
 interface CallbackInfoR7 {
   thiz: unknown;
   data: number | bigint;
@@ -156,6 +156,11 @@ export interface MakeHostSideCallbackClosureOpts {
    *  return-value contract the wasm-side invoker uses.  Defaults to
    *  NAPI_CALLBACK (the most common). */
   shape?: CallbackShape;
+  /** For NAPI_CALLBACK shape only: IdentityMap shared with the wasm-
+   *  side invoker for object marshaling.  Not yet effective across
+   *  worker boundaries (separate JS heaps) — primitives work fine,
+   *  object args throw with a clear message.  See R8 FINDINGS. */
+  idMap?: IdentityMap;
   /** hostWorkerId for the reverse RPC.  Currently always 0. */
   hostWorkerId?: number;
   /** contextId for the reverse RPC.  Currently 0. */
@@ -178,23 +183,52 @@ export function makeHostSideCallbackClosure(
 ): (...args: unknown[]) => unknown {
   const { reverseClient, cbPtr, dataPtr, env } = opts;
   const shape: CallbackShape = opts.shape ?? CALLBACK_SHAPE_NAPI_CALLBACK;
+  const idMap = opts.idMap ?? new IdentityMap();
   const hostWorkerId = opts.hostWorkerId ?? 0;
   const contextId = opts.contextId ?? 0;
 
   return function hostSideCallbackClosure(...args: unknown[]): unknown {
-    const argc = args.length;
-    const totalU32 = REQ_HEADER_U32_COUNT + argc;
-    const payload = new Uint8Array(totalU32 * 4);
-    const dv = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
-    dv.setUint32(0,  shape >>> 0, true);
-    dv.setUint32(4,  cbPtr >>> 0, true);
-    dv.setUint32(8,  dataPtr >>> 0, true);
-    dv.setUint32(12, env >>> 0, true);
-    dv.setUint32(16, argc >>> 0, true);
-    for (let i = 0; i < argc; i++) {
-      const a = args[i];
-      const u32 = (typeof a === "number" ? a : Number(a)) >>> 0;
-      dv.setUint32(20 + i * 4, u32, true);
+    let payload: Uint8Array;
+    if (shape === CALLBACK_SHAPE_NAPI_CALLBACK) {
+      // R7+R8 path: args are JS values; marshal via packValue.
+      // Wire format: [u32 shape][u32 cbPtr][u32 dataPtr][u32 env]
+      //              [u32 argc][packed values concatenated]
+      const packedArgs: Uint8Array[] = [];
+      let packedLen = 0;
+      for (const a of args) {
+        const p = packValue(a, "host", idMap);
+        packedArgs.push(p);
+        packedLen += p.byteLength;
+      }
+      payload = new Uint8Array(REQ_HEADER_U32_COUNT * 4 + packedLen);
+      const dv = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
+      dv.setUint32(0,  shape >>> 0, true);
+      dv.setUint32(4,  cbPtr >>> 0, true);
+      dv.setUint32(8,  dataPtr >>> 0, true);
+      dv.setUint32(12, env >>> 0, true);
+      dv.setUint32(16, args.length >>> 0, true);
+      let off = REQ_HEADER_U32_COUNT * 4;
+      for (const p of packedArgs) {
+        payload.set(p, off);
+        off += p.byteLength;
+      }
+    } else {
+      // CLEANUP_HOOK / FINALIZER: args are raw u32s (pointers etc.),
+      // not napi_values; keep the original raw encoding.
+      const argc = args.length;
+      const totalU32 = REQ_HEADER_U32_COUNT + argc;
+      payload = new Uint8Array(totalU32 * 4);
+      const dv = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
+      dv.setUint32(0,  shape >>> 0, true);
+      dv.setUint32(4,  cbPtr >>> 0, true);
+      dv.setUint32(8,  dataPtr >>> 0, true);
+      dv.setUint32(12, env >>> 0, true);
+      dv.setUint32(16, argc >>> 0, true);
+      for (let i = 0; i < argc; i++) {
+        const a = args[i];
+        const u32 = (typeof a === "number" ? a : Number(a)) >>> 0;
+        dv.setUint32(20 + i * 4, u32, true);
+      }
     }
 
     const reply = reverseClient.callSync(
@@ -263,6 +297,14 @@ export interface RegisterWasmCallbackInvokerOptions {
    *  accessor that resolves lazily at dispatch.  See
    *  `getWasmEnv` in `napi-host/index.ts`. */
   wasmEnv: Env | (() => Env | undefined);
+  /** R8 IdentityMap for NAPI_CALLBACK arg unmarshaling.  In a
+   *  single-heap deployment (dev: page+worker via vite) this is the
+   *  same instance used by host-side closures, so object identity is
+   *  preserved.  In a true split-worker topology objects throw
+   *  "marshal: identity reference collected" (separate JS heaps), which
+   *  is the correct failure mode until cross-heap object marshaling is
+   *  implemented.  Primitives work in both deployments. */
+  idMap?: IdentityMap;
   /** Optional: max re-entrancy depth.  Defaults to 32 per the brief
    *  (R6a measured to 16 cleanly; 32 is production safety). */
   maxDepth?: number;
@@ -279,13 +321,11 @@ export function registerWasmCallbackInvoker(
   server: RpcServer,
   options: RegisterWasmCallbackInvokerOptions,
 ): void {
-  const { wasmTable, depthCounter } = options;
-  // Cast through ContextR7 for emnapi internals not exposed by the
-  // published @emnapi/runtime .d.ts (see ContextR7 declaration above).
-  const wasmCtx = options.wasmCtx as ContextR7;
+  const { wasmTable, depthCounter, wasmCtx } = options;
   const wasmEnvOpt = options.wasmEnv;
   const resolveWasmEnv = (): Env | undefined =>
     typeof wasmEnvOpt === "function" ? wasmEnvOpt() : wasmEnvOpt;
+  const idMap = options.idMap ?? new IdentityMap();
   const maxDepth = options.maxDepth ?? CALLBACK_REENTRANCY_MAX_DEPTH;
 
   server.register(OP_INVOKE_WASM_CALLBACK, (_ctx: HandlerContext, args: Uint8Array) => {
@@ -299,12 +339,6 @@ export function registerWasmCallbackInvoker(
     const dataPtr = dv.getUint32(8,  true);
     const env     = dv.getUint32(12, true);
     const argc    = dv.getUint32(16, true);
-    const argsNeeded = (REQ_HEADER_U32_COUNT + argc) * 4;
-    if (args.byteLength < argsNeeded) {
-      return makeErrorReply(
-        `invoke-wasm-callback: short argv (argc=${argc} need=${argsNeeded} got=${args.byteLength})`,
-      );
-    }
 
     // ── 2. Depth-bound check.
     if (depthCounter.depth >= maxDepth) {
@@ -326,41 +360,38 @@ export function registerWasmCallbackInvoker(
       return makeErrorReply(`wasm table entry at ${cbPtr} is not a function`);
     }
 
-    // ── 4. Decode argv (interpretation per shape).
-    const argv: number[] = [];
-    for (let i = 0; i < argc; i++) {
-      argv.push(dv.getUint32(20 + i * 4, true));
-    }
-
-    // ── 5. Invoke with re-entrancy tracking + per-shape ABI dispatch.
+    // ── 4. Per-shape decode + invoke (argv layout depends on shape).
     depthCounter.depth += 1;
     let returnHandle = 0;
     let threwMessage: string | null = null;
     try {
       switch (shape) {
         case CALLBACK_SHAPE_NAPI_CALLBACK: {
-          // `(env, cbinfo) → napi_value`.
+          // `(env, cbinfo) → napi_value`.  Args are R8-packed JS
+          // values starting at the end of the header (offset 20).
           //
-          // R7 synthesis (experiments/r7-cbinfo-synthesis/FINDINGS.md):
-          // open a wasm-side emnapi scope, mutate `scope.callbackInfo`
-          // fields, pass `scope.id` as cbinfo.  Funcref's
+          // R7 synthesis: open a wasm-side emnapi scope, mutate
+          // `scope.callbackInfo`, pass `scope.id` as cbinfo.  Funcref's
           // `napi_get_cb_info` resolves cbinfo via
           // `_scopeStore.deref(cbinfo).callbackInfo`, hitting our
-          // synthesized values.  ~1 µs per call.
-          //
-          // Note: argv handles are wasm-side napi_value u32s that we
-          // deref via `wasmCtx.jsValueFromNapiValue` — this assumes
-          // the handles are valid in `wasmCtx`.  The cross-context
-          // marshaling story (host→wasm handle translation) is R8's
-          // problem; for now this branch trusts the caller.
+          // synthesized args.  emnapi internally calls
+          // `napiValueFromJsValue` on each element of cbi.args at
+          // get_cb_info time, so no manual handle minting needed here.
           const wasmEnv = resolveWasmEnv();
           if (!wasmEnv) {
             threwMessage = "invoke-wasm-callback: wasm-side env not yet created (NAPI_CALLBACK)";
             break;
           }
+          const unpackedArgs: unknown[] = new Array(argc);
+          let cursor = REQ_HEADER_U32_COUNT * 4;
+          for (let i = 0; i < argc; i++) {
+            const { value, byteLength } = unpackValue(args, cursor, idMap);
+            unpackedArgs[i] = value;
+            cursor += byteLength;
+          }
           const scope = wasmCtx.openScope(wasmEnv);
           const cbi = scope.callbackInfo as CallbackInfoR7;
-          cbi.args = argv.map((h) => wasmCtx.jsValueFromNapiValue(h));
+          cbi.args = unpackedArgs;
           cbi.thiz = undefined;    // R8 will replace with marshaled thisArg
           cbi.data = dataPtr;
           cbi.fn = fn;
@@ -381,10 +412,15 @@ export function registerWasmCallbackInvoker(
         }
         case CALLBACK_SHAPE_FINALIZER: {
           // `void(*)(env, finalize_data, finalize_hint)` — three i32.
-          // argv[0] = finalize_data, argv[1] = finalize_hint (per the
-          // host-side wrapper's bundling convention).
-          const finalizeData = argv.length > 0 ? argv[0] : 0;
-          const finalizeHint = argv.length > 1 ? argv[1] : 0;
+          // Raw u32 argv layout: argv[0] = finalize_data,
+          // argv[1] = finalize_hint.
+          const argsNeeded = (REQ_HEADER_U32_COUNT + argc) * 4;
+          if (args.byteLength < argsNeeded) {
+            threwMessage = `invoke-wasm-callback: short argv (argc=${argc} need=${argsNeeded} got=${args.byteLength})`;
+            break;
+          }
+          const finalizeData = argc > 0 ? dv.getUint32(20, true) : 0;
+          const finalizeHint = argc > 1 ? dv.getUint32(24, true) : 0;
           (fn as (env: number, data: number, hint: number) => void).call(
             undefined,
             env,

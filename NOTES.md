@@ -219,6 +219,32 @@ the browser-target tree.
   funcref is never resolved against any table.  Net behavior matches
   cluster B + guest-side native edge.  Same future-resolution paths
   apply.
+- `cluster-d-define-class-properties` (2026-05-24, F-9 batch 4 cluster
+  D) — `napi_define_class` currently rejects calls with
+  `property_count != 0` (returns host-error "not yet supported").  The
+  napi_property_descriptor struct (32B: utf8name, name, method, getter,
+  setter, value, attributes, data) carries per-property funcrefs that
+  each need to be wrapped via `makeHostSideCallbackClosure` (shape =
+  NAPI_CALLBACK) and bound via Object.defineProperty on the class /
+  prototype.  Common constructor-only classes (e.g. native wrappers
+  exposing state through `napi_wrap`) work today.  Resolution: decode
+  the descriptor array from shared memory, branch on
+  method/getter/setter presence, build closures, install with the
+  attribute bits.  See `browser-target/src/host-worker/napi-op-handlers.ts`
+  cluster-D block + `napi/include/js_native_api_types.h` for the C
+  struct layout.
+- `cluster-d-cross-context-objects` (2026-05-24, F-9 batch 4 cluster D
+  + R8 marshal) — `callback-dispatch.ts` marshals NAPI_CALLBACK args
+  via R8's tag-based encoding (`cross-context-marshal.ts`).  Primitives
+  (undefined/null/bool/int32/double/string) round-trip cleanly across
+  the host↔wasm boundary.  Objects/arrays serialize as an
+  IdentityMap-id reference, but the IdentityMap is per-instance and
+  cannot share state across separate worker JS heaps — receiver throws
+  "marshal: identity reference collected".  This is the documented
+  failure mode for now; cross-heap object marshaling requires either
+  (a) structured-clone over postMessage as a side channel for objects,
+  (b) deep-copy serialization (loses identity), or (c) a shared object
+  graph maintained out-of-band.  Today's scope: primitive args only.
 
 ### Cross-worker primitives
 

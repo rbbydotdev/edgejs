@@ -84,14 +84,21 @@ import {
   OP_NAPI_CREATE_EXTERNAL_BUFFER,
   // Lever B batch 4 cluster C (0x01C0–0x01C3): object wrap lifecycle.
   OP_NAPI_WRAP, OP_NAPI_UNWRAP, OP_NAPI_REMOVE_WRAP, OP_NAPI_ADD_FINALIZER,
+  // Lever B batch 4 cluster D (0x0204–0x0205): napi_callback-shape ops.
+  OP_NAPI_CREATE_FUNCTION, OP_NAPI_DEFINE_CLASS,
   REPLY_STATUS_INVALID_ARGS,
 } from "./rpc-protocol";
 import {
   makeHostSideCallbackClosure,
+  CALLBACK_SHAPE_NAPI_CALLBACK,
   CALLBACK_SHAPE_CLEANUP_HOOK,
   CALLBACK_SHAPE_FINALIZER,
 } from "./callback-dispatch";
-import { getHostSideReverseSyncClient } from "./host-worker";
+import {
+  getHostSideReverseSyncClient,
+  getNapiContext,
+  getNapiHostMemory,
+} from "./host-worker";
 
 const EMPTY = new Uint8Array(0);
 const enc = new TextEncoder();
@@ -892,6 +899,152 @@ export function makeNapiOpRegistry(napi: Record<string, NapiFn>): NapiOpRegistry
           // because of cluster-c-finalizers-noop.
           const status = addFinFn(env, jsObject, finalizeData, cbPtr, finalizeHint, resultPtr);
           return { payload: EMPTY, status };
+        });
+      }
+
+      // ── Lever B batch 4 cluster D (napi_callback-shape ops) ─────────
+      //
+      //   OP_NAPI_CREATE_FUNCTION  (env, utf8name, length, cbPtr, dataPtr, &result)
+      //   OP_NAPI_DEFINE_CLASS     (env, utf8name, length, ctorPtr, dataPtr,
+      //                             property_count, properties_ptr, &result)
+      //
+      // emnapi's `napi_create_function` looks up `cb` in the host's
+      // wasmTable (emnapi-core.cjs.js:3550 — `wasmTable.get(cb)`).  On
+      // the host worker that table is a single-entry stub, so we cannot
+      // delegate to emnapi.  Instead we mint a host-side JS closure via
+      // `makeHostSideCallbackClosure` (shape=NAPI_CALLBACK), register it
+      // as a napi_value via `napiCtx.addToCurrentScope`, and write the
+      // resulting handle id to the result pointer.  Invocations of the
+      // returned napi_value flow back to the wasm runtime worker via
+      // OP_INVOKE_WASM_CALLBACK with R7+R8 cbinfo + arg marshaling.
+      //
+      // #!~debt cluster-d-define-class-properties: napi_define_class
+      // currently supports only property_count=0 (no methods/getters
+      // on the class).  Decoding the napi_property_descriptor array
+      // and wrapping per-property funcrefs is left for follow-up; the
+      // common case (constructor-only classes wrapping native state)
+      // works today.  Tracked in NOTES.md.
+      {
+        const decodeUtf8Name = (
+          mem: WebAssembly.Memory,
+          ptr: number,
+          length: number,
+        ): string => {
+          if (!ptr) return "";
+          // emnapi treats NAPI_AUTO_LENGTH (-1 cast to size_t = 0xFFFFFFFF)
+          // as "look for nul terminator".  We mirror that.
+          const memU8 = new Uint8Array(mem.buffer);
+          let end: number;
+          if (length === 0xFFFFFFFF) {
+            end = ptr;
+            while (end < memU8.byteLength && memU8[end] !== 0) end++;
+          } else {
+            end = ptr + length;
+          }
+          // memU8 is SAB-backed; TextDecoder rejects shared views, so
+          // copy to a regular Uint8Array first.
+          const copy = new Uint8Array(end - ptr);
+          copy.set(memU8.subarray(ptr, end));
+          return new TextDecoder("utf-8").decode(copy);
+        };
+
+        server.register(OP_NAPI_CREATE_FUNCTION, async (_ctx, args) => {
+          if (args.byteLength < 24) return err("napi handler: args too short for napi_create_function");
+          const dv = new DataView(args.buffer, args.byteOffset, args.byteLength);
+          const env       = dv.getUint32(0,  true);
+          const utf8name  = dv.getUint32(4,  true);
+          const length    = dv.getUint32(8,  true);
+          const cbPtr     = dv.getUint32(12, true);
+          const dataPtr   = dv.getUint32(16, true);
+          const resultPtr = dv.getUint32(20, true);
+
+          const napiCtx = getNapiContext();
+          const memory = getNapiHostMemory();
+          if (!napiCtx || !memory) {
+            return err("napi handler: host emnapi context not ready for create_function");
+          }
+          if (!cbPtr) {
+            // Match emnapi: missing cb → napi_invalid_arg (1).
+            return { payload: EMPTY, status: 1 };
+          }
+          if (!resultPtr) {
+            return { payload: EMPTY, status: 1 };
+          }
+          const reverseClient = getHostSideReverseSyncClient();
+          if (!reverseClient) {
+            return err("napi handler: reverse sync client not ready for create_function");
+          }
+
+          const closure = makeHostSideCallbackClosure({
+            reverseClient,
+            cbPtr,
+            dataPtr,
+            env,
+            shape: CALLBACK_SHAPE_NAPI_CALLBACK,
+          });
+          const name = decodeUtf8Name(memory, utf8name, length);
+          if (name) {
+            try { Object.defineProperty(closure, "name", { value: name }); }
+            catch { /* non-fatal: name is debugging-only */ }
+          }
+          const handle = napiCtx.addToCurrentScope(closure);
+          new DataView(memory.buffer).setUint32(resultPtr, handle.id >>> 0, true);
+          return { payload: EMPTY, status: 0 };
+        });
+
+        server.register(OP_NAPI_DEFINE_CLASS, async (_ctx, args) => {
+          if (args.byteLength < 32) return err("napi handler: args too short for napi_define_class");
+          const dv = new DataView(args.buffer, args.byteOffset, args.byteLength);
+          const env           = dv.getUint32(0,  true);
+          const utf8name      = dv.getUint32(4,  true);
+          const length        = dv.getUint32(8,  true);
+          const ctorPtr       = dv.getUint32(12, true);
+          const dataPtr       = dv.getUint32(16, true);
+          const propertyCount = dv.getUint32(20, true);
+          // const propertiesPtr = dv.getUint32(24, true);
+          const resultPtr     = dv.getUint32(28, true);
+
+          const napiCtx = getNapiContext();
+          const memory = getNapiHostMemory();
+          if (!napiCtx || !memory) {
+            return err("napi handler: host emnapi context not ready for define_class");
+          }
+          if (!ctorPtr || !resultPtr) {
+            return { payload: EMPTY, status: 1 };
+          }
+          const reverseClient = getHostSideReverseSyncClient();
+          if (!reverseClient) {
+            return err("napi handler: reverse sync client not ready for define_class");
+          }
+          if (propertyCount !== 0) {
+            // See cluster-d-define-class-properties debt above.
+            return err(
+              `napi handler: napi_define_class with property_count=${propertyCount} not yet supported (debt: cluster-d-define-class-properties)`,
+            );
+          }
+
+          const ctorClosure = makeHostSideCallbackClosure({
+            reverseClient,
+            cbPtr: ctorPtr,
+            dataPtr,
+            env,
+            shape: CALLBACK_SHAPE_NAPI_CALLBACK,
+          });
+          const name = decodeUtf8Name(memory, utf8name, length);
+          // Wrap the closure in a constructor-shaped function so `new
+          // Klass()` invokes it.  Object.defineProperty for .name is
+          // best-effort; primary purpose is for `Klass.name` lookups
+          // from JS code (debugging) and Node API parity.
+          const Klass = function (this: unknown, ...callArgs: unknown[]) {
+            return ctorClosure.apply(this, callArgs);
+          } as unknown as { new (...a: unknown[]): unknown };
+          if (name) {
+            try { Object.defineProperty(Klass, "name", { value: name }); }
+            catch { /* non-fatal */ }
+          }
+          const handle = napiCtx.addToCurrentScope(Klass);
+          new DataView(memory.buffer).setUint32(resultPtr, handle.id >>> 0, true);
+          return { payload: EMPTY, status: 0 };
         });
       }
     },
