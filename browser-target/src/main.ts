@@ -122,6 +122,57 @@ async function spawnHostThenRuntime(): Promise<void> {
   if (l9MultiHost) {
     await runL9MultiHostSpike();
   }
+  // F-1 probe: call napi_get_undefined via RPC and verify the handle
+  // is written into host's napi memory.  This is the first end-to-end
+  // proof that the host emnapi context + RPC server work in main project.
+  if (f1NapiProbe) {
+    await runF1NapiProbe();
+  }
+}
+
+async function runF1NapiProbe(): Promise<void> {
+  if (!hostHandle) {
+    append("f1-napi-probe: hostHandle not ready", "err");
+    return;
+  }
+  if (!hostHandle.napiMemorySab) {
+    append("f1-napi-probe: host didn't post napiMemorySab", "err");
+    return;
+  }
+  const { attachRing } = await import("./wasi-shim/sab-ring");
+  const { RpcClient } = await import("./host-worker/rpc-client");
+  const { OP_NAPI_GET_UNDEFINED, OP_NAPI_GET_NULL, OP_NAPI_GET_GLOBAL } = await import("./host-worker/rpc-protocol");
+  const ringConfig = { numSlots: 32, slotSize: 4 * 1024 };
+  const reqRing = attachRing(hostHandle.requestSab, ringConfig);
+  const replyRing = attachRing(hostHandle.replySab, ringConfig);
+  const client = new RpcClient(reqRing, replyRing);
+  const napiMemU32 = new Uint32Array(hostHandle.napiMemorySab);
+
+  async function callTwoArg(op: number, name: string, resultPtr: number) {
+    const args = new Uint8Array(8);
+    const dv = new DataView(args.buffer);
+    dv.setUint32(0, 1, true); // envHandle = 1 (matches host's stub)
+    dv.setUint32(4, resultPtr, true);
+    const reply = await client.call(op, 0, 0, args);
+    const handle = napiMemU32[resultPtr / 4];
+    return { name, status: reply.status, handle };
+  }
+
+  const r1 = await callTwoArg(OP_NAPI_GET_UNDEFINED, "napi_get_undefined", 256);
+  const r2 = await callTwoArg(OP_NAPI_GET_NULL,      "napi_get_null",      260);
+  const r3 = await callTwoArg(OP_NAPI_GET_GLOBAL,    "napi_get_global",    264);
+
+  append(
+    `f1-napi-probe: ${r1.name}->status=${r1.status} handle=${r1.handle}; ` +
+    `${r2.name}->status=${r2.status} handle=${r2.handle}; ` +
+    `${r3.name}->status=${r3.status} handle=${r3.handle}`,
+    "info",
+  );
+
+  const ok = r1.status === 0 && r2.status === 0 && r3.status === 0
+    && r1.handle !== 0 && r2.handle !== 0 && r3.handle !== 0
+    && r1.handle !== r2.handle;
+  append(`f1-napi-probe: ${ok ? "OK" : "FAIL"}`, ok ? "info" : "err");
 }
 
 async function runL9MultiHostSpike(): Promise<void> {
@@ -350,6 +401,7 @@ const benchEcho = params.get("bench") === "echo"
 const probeReverseEcho = params.get("probe") === "reverse-echo";
 const l5UserScript = params.get("l5script"); // L5 spike
 const l9MultiHost = params.get("probe") === "l9-multi-host"; // L9 spike
+const f1NapiProbe = params.get("probe") === "f1-napi";        // F-1 first napi op via RPC
 
 append("page bootstrap ok. crossOriginIsolated=" + crossOriginIsolated, "info");
 if (memSnapshotSymbols.length > 0) {

@@ -30,9 +30,17 @@ import {
   OP_HOST_READY,
   OP_HOST_ECHO,
   OP_RUN_USER_SCRIPT,
+  OP_NAPI_GET_UNDEFINED,
+  OP_NAPI_GET_NULL,
+  OP_NAPI_GET_GLOBAL,
   REPLY_STATUS_OK,
   REPLY_STATUS_HOST_ERROR,
+  REPLY_STATUS_INVALID_ARGS,
 } from "./rpc-protocol";
+// F-1: emnapi context on host worker.  Imports via the project facade
+// (single swap point for v1 vs v2 — see plans/lever-b-l5-options.md
+// "v1 vs v2" finding).
+import { createContext, createNapiModule } from "../napi-host/emnapi";
 
 declare const self: DedicatedWorkerGlobalScope;
 
@@ -54,6 +62,9 @@ interface InitMessage {
 interface ReadyMessage {
   kind: "ready";
   hostWorkerId: number;
+  /** F-1: SAB backing the host's napi memory.  Probe code can use
+   *  this to verify napi handlers wrote handles at the expected ptr. */
+  napiMemorySab?: SharedArrayBuffer;
 }
 
 interface ReverseEchoMessage {
@@ -72,6 +83,56 @@ let reverseReplyRing: RingView | null = null;
 let reverseClient: RpcClient | null = null;
 /** Exposed for L4 bench script and future L5 callers. */
 export function getReverseClient(): RpcClient | null { return reverseClient; }
+
+// F-1: emnapi state.  Initialized lazily on first napi op so we don't
+// pay the cost when only ping/echo are used.  Memory is the SAB shared
+// with the wasm worker — wired in F-2.  For F-1 we use a host-local
+// memory so we can probe the napi handlers end-to-end without needing
+// the real wasm bridging.
+let napiCtx: ReturnType<typeof createContext> | null = null;
+let napiModuleHost: ReturnType<typeof createNapiModule> | null = null;
+let napiHostMemory: WebAssembly.Memory | null = null;
+function ensureNapiContext(): void {
+  if (napiCtx) return;
+  napiCtx = createContext();
+  // F-1: stub instance.  F-2 replaces with the real shared memory.
+  napiHostMemory = new WebAssembly.Memory({ initial: 1, maximum: 16, shared: true });
+  const wasmModule = new WebAssembly.Module(new Uint8Array([
+    0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
+  ]));
+  const table = new WebAssembly.Table({ initial: 1, element: "anyfunc" });
+  let poolNext = 16384; // 16KB; below this is "reserved" for napi result writes
+  const stubInstance = {
+    exports: {
+      memory: napiHostMemory,
+      malloc: (size: number) => {
+        // Q1 resolution: host-side bump allocator
+        const ptr = poolNext;
+        poolNext += (size + 7) & ~7;
+        return ptr;
+      },
+      free: () => {},
+      __indirect_function_table: table,
+      emnapi_create_env: () => 1, // env id 1
+      emnapi_delete_env: () => 0,
+      emnapi_runtime_init: () => {},
+      emnapi_runtime_finalize: () => {},
+      napi_register_wasm_v1: () => 0,
+    },
+  };
+  napiModuleHost = createNapiModule({
+    context: napiCtx,
+    childThread: false,
+    asyncWorkPoolSize: 0,
+  });
+  napiModuleHost.init({
+    instance: stubInstance as unknown as WebAssembly.Instance,
+    module: wasmModule,
+    memory: napiHostMemory,
+    table,
+  });
+  log(`napi context ready; ${Object.keys(napiModuleHost.imports.napi ?? {}).length} napi fns available`);
+}
 
 function log(text: string, level: "info" | "warn" | "err" = "info"): void {
   self.postMessage({ kind: "host-log", text: `[host-worker:${hostWorkerId}] ${text}`, level });
@@ -142,8 +203,52 @@ function registerHandlers(srv: RpcServer): void {
     }
   });
 
+  // F-1: NAPI handlers.  Each one delegates to host's emnapi context.
+  //
+  // Request payload layout: 8 bytes = (envHandle u32, resultPtr u32).
+  // Reply payload: empty (the handle id is written to memory at
+  // resultPtr by the napi function itself).  Status code is the
+  // napi_status — 0 on success.
+  //
+  // F-1 limitation: memory is host-local (not yet shared with wasm).
+  // The probe in main.ts uses a JS-only test that doesn't need real
+  // wasm to verify the plumbing works.  F-2 swaps in shared memory.
+  function makeNapiTwoArgHandler(napiOpName: string) {
+    return async (_ctx: unknown, args: Uint8Array) => {
+      if (args.byteLength < 8) {
+        const msg = new TextEncoder().encode("napi handler: args too short");
+        return { payload: msg, status: REPLY_STATUS_INVALID_ARGS };
+      }
+      ensureNapiContext();
+      const view = new DataView(args.buffer, args.byteOffset, args.byteLength);
+      const envHandle = view.getUint32(0, true);
+      const resultPtr = view.getUint32(4, true);
+      const fn = napiModuleHost!.imports.napi?.[napiOpName] as ((env: number, ptr: number) => number) | undefined;
+      if (typeof fn !== "function") {
+        const msg = new TextEncoder().encode(`napi handler: ${napiOpName} not found`);
+        return { payload: msg, status: REPLY_STATUS_INVALID_ARGS };
+      }
+      const napiStatus = fn(envHandle, resultPtr);
+      // Reply carries the napi_status as the RPC status field.
+      return { payload: new Uint8Array(0), status: napiStatus };
+    };
+  }
+
+  srv.register(OP_NAPI_GET_UNDEFINED, makeNapiTwoArgHandler("napi_get_undefined"));
+  srv.register(OP_NAPI_GET_NULL,      makeNapiTwoArgHandler("napi_get_null"));
+  srv.register(OP_NAPI_GET_GLOBAL,    makeNapiTwoArgHandler("napi_get_global"));
+
   // OP_HOST_READY is host→wasm; host doesn't receive it.  No handler.
   void OP_HOST_READY;
+}
+
+/** F-1 probe support: expose the napi memory so the page-side probe
+ *  can verify what the handlers wrote.  Sent in the ready message. */
+function getNapiMemorySab(): SharedArrayBuffer | null {
+  // ensureNapiContext is called lazily on first napi op; force it now
+  // so the SAB exists when the probe wants to read.
+  ensureNapiContext();
+  return napiHostMemory!.buffer as unknown as SharedArrayBuffer;
 }
 
 async function runReverseEcho(bytes: number): Promise<void> {
@@ -207,6 +312,10 @@ self.addEventListener("message", (e: MessageEvent) => {
     log(`rpc-server crashed: ${(err as Error).stack ?? err}`, "err");
   });
   log("ready (forward + reverse channels both attached)");
-  const ready: ReadyMessage = { kind: "ready", hostWorkerId };
+  const ready: ReadyMessage = {
+    kind: "ready",
+    hostWorkerId,
+    napiMemorySab: getNapiMemorySab() ?? undefined,
+  };
   self.postMessage(ready);
 });

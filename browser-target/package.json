@@ -9,7 +9,8 @@
     "gen:napi-stubs": "node scripts/gen-napi-stubs.mjs",
     "test:browser": "node scripts/browser-test-runner.mjs",
     "perf:browser": "node scripts/browser-perf-runner.mjs",
-    "probe:host-ping": "node scripts/probe-host-ping.mjs"
+    "probe:host-ping": "node scripts/probe-host-ping.mjs",
+    "probe:f1-napi": "node scripts/probe-f1-napi.mjs"
   },
   "dependencies": {
     "@emnapi/core": "^1.10.0",

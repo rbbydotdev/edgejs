@@ -36,6 +36,10 @@ export interface HostWorkerHandle {
   reverseReplySab: SharedArrayBuffer;
   /** Resolves when the host worker has posted `ready`. */
   ready: Promise<void>;
+  /** F-1: SAB backing the host's napi memory.  Lets probes verify the
+   *  napi handlers wrote handles correctly.  Set after `ready` resolves.
+   *  In F-2 this becomes the SHARED wasm linear memory. */
+  napiMemorySab?: SharedArrayBuffer;
 }
 
 let nextId = 0;
@@ -55,10 +59,20 @@ export function spawnHostWorker(): HostWorkerHandle {
     new URL("./host-worker.ts", import.meta.url),
     { type: "module", name: "edge-host" },
   );
+  const handle: HostWorkerHandle = {
+    id,
+    worker,
+    requestSab: requestRing.sab,
+    replySab: replyRing.sab,
+    reverseRequestSab: reverseRequestRing.sab,
+    reverseReplySab: reverseReplyRing.sab,
+    ready: undefined as unknown as Promise<void>,
+  };
   const ready = new Promise<void>((resolve, reject) => {
     const onMsg = (e: MessageEvent) => {
-      const data = e.data as { kind?: string; hostWorkerId?: number };
+      const data = e.data as { kind?: string; hostWorkerId?: number; napiMemorySab?: SharedArrayBuffer };
       if (data?.kind === "ready" && data.hostWorkerId === id) {
+        if (data.napiMemorySab) handle.napiMemorySab = data.napiMemorySab;
         worker.removeEventListener("message", onMsg);
         resolve();
       }
@@ -80,13 +94,6 @@ export function spawnHostWorker(): HostWorkerHandle {
     reverseReplySab: reverseReplyRing.sab,
     hostWorkerId: id,
   });
-  return {
-    id,
-    worker,
-    requestSab: requestRing.sab,
-    replySab: replyRing.sab,
-    reverseRequestSab: reverseRequestRing.sab,
-    reverseReplySab: reverseReplyRing.sab,
-    ready,
-  };
+  handle.ready = ready;
+  return handle;
 }

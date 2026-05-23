@@ -1429,3 +1429,42 @@ host-V8-user-JS + multi-host + virtual ESM modules all work.
 
 The remaining work to ship is integration engineering on top of these
 proven primitives — not architectural exploration.
+
+---
+
+## F-1 complete (2026-05-23)
+
+**Goal:** real napi op crosses worker boundary in main project.
+
+**Deliverables landed:**
+- `browser-target/src/host-worker/host-worker.ts`:
+  - emnapi context + napiModule created lazily on first napi op
+  - Stub instance + host-local memory (F-2 will swap to shared with wasm)
+  - Pool allocator (Q1 resolution) wired as stub `exports.malloc`
+- napi op handlers registered: `napi_get_undefined`, `napi_get_null`, `napi_get_global`
+- Handler protocol: 8-byte request payload `(envHandle u32, resultPtr u32)`;
+  reply payload empty; status carries napi_status
+- `worker-pool.ts`: forwards host's `napiMemorySab` from ready message
+- `main.ts`: `?probe=f1-napi` URL param + page-side RPC client probe
+- `scripts/probe-f1-napi.mjs`: Playwright probe, `npm run probe:f1-napi`
+
+**Probe result:**
+```
+napi_get_undefined -> status=0 handle=1
+napi_get_null      -> status=0 handle=2
+napi_get_global    -> status=0 handle=5
+f1-napi-probe: OK
+```
+
+**Tests:** 14 pass / 13 skip / 0 fail unchanged.
+
+Real cross-worker napi RPC works in main project.  The handle id is
+written by host's emnapi into a SAB the probe page can read.  No
+serialize/deserialize between host and wasm side; just an `ArrayBuffer`
+view they both share.
+
+**F-1 scope: host-side wiring + JS-level probe.** F-2 brings the real
+shared wasm memory + lets edge.js's actual wasm worker call these
+napi ops via the same RPC.
+
+Next: F-2 — share the wasm worker's real memory with host emnapi.
