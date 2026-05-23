@@ -1138,3 +1138,43 @@ This means: wasm worker calls `rpcClient.call(OP_PING, ...)`. SAB ring carries r
 **Tests:** 14 pass / 13 skip / 0 fail — unchanged (host worker is currently only used by the ping probe; wasm still does its work the same way as L1).
 
 **Next:** L3 — migrate read-only napi ops to host RPC.
+
+---
+
+## L3 complete (2026-05-23)
+
+**Deliverables:**
+- `OP_HOST_ECHO` op in protocol
+- Echo handler on host worker
+- 24 NAPI read-only op codes defined (wired in L5)
+- `browser-target/scripts/bench-host-rpc.mjs` — throughput benchmark
+- `?bench=echo&iters=N&payload=K` URL param in main.ts to trigger the bench
+
+**Throughput results (Chromium 1223, macOS, dev machine, 1 host worker):**
+
+| Payload | Iters | Mean | Median | p99 | Throughput |
+|---|---|---|---|---|---|
+| 32 B | 1000 | 22 μs | 20 μs | 95 μs | 45,362 ops/sec |
+| 1 KB | 500 | 24 μs | 20 μs | 80 μs | 40,866 ops/sec |
+| 3 KB | 500 | 23 μs | 20 μs | 75 μs | 42,900 ops/sec |
+
+**Implications for L5 viability:**
+
+- Typical script: 14,648 napi calls (per L0 baseline)
+- Worst case (every call through RPC): 14,648 × 22μs = **322 ms**
+- Realistic (cheap ops in-process via vendored emnapi, ~60% routing avoided): ~130 ms
+- Per-request overhead in production: with batching for sequential ops, can come down further
+
+The primitive scales adequately for L5.  Per-call latency is ~22 μs which
+is significantly higher than my original ~5 μs estimate but is still
+within budget for non-pathological workloads.
+
+The 22 μs floor appears to be dominated by Promise round-trip + microtask
+boundaries on each side (not the SAB itself).  Future optimization:
+batch sequential calls into one round-trip (the same pattern Pyodide's
+`run_sync` uses).
+
+**Tests:** 14 pass / 13 skip / 0 fail unchanged.
+
+**Next:** L4 — reverse RPC channel (host → wasm) for finalizers and
+threadsafe function dispatch.

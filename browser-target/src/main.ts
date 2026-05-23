@@ -92,7 +92,55 @@ async function spawnHostThenRuntime(): Promise<void> {
     append(`host worker spawn failed: ${(err as Error).message}`, "err");
     return;
   }
+  // L3 echo benchmark: if URL has ?bench=echo&iters=N, run the bench
+  // BEFORE spawning the runtime worker so we have an idle host worker
+  // and don't compete with edge.js boot traffic.
+  if (benchEcho) {
+    await runEchoBench(benchEcho.iters, benchEcho.payload);
+  }
   spawnRuntimeWorker();
+}
+
+async function runEchoBench(iters: number, payloadBytes: number): Promise<void> {
+  if (!hostHandle) {
+    append("bench-host-echo: host worker not ready", "err");
+    return;
+  }
+  // Page-side RPC client over the same SABs.  Need a separate client
+  // instance — the runtime worker will get its own when it boots.
+  const { attachRing } = await import("./wasi-shim/sab-ring");
+  const { RpcClient } = await import("./host-worker/rpc-client");
+  const { OP_HOST_ECHO } = await import("./host-worker/rpc-protocol");
+  const ringConfig = { numSlots: 32, slotSize: 4 * 1024 };
+  const reqRing = attachRing(hostHandle.requestSab, ringConfig);
+  const replyRing = attachRing(hostHandle.replySab, ringConfig);
+  const client = new RpcClient(reqRing, replyRing);
+  const payload = new Uint8Array(payloadBytes);
+  for (let i = 0; i < payloadBytes; i++) payload[i] = i & 0xff;
+  // Warm-up.
+  for (let i = 0; i < 50; i++) await client.call(OP_HOST_ECHO, 0, 0, payload);
+  // Timed run.
+  const latencies = new Float64Array(iters);
+  const tStart = performance.now();
+  for (let i = 0; i < iters; i++) {
+    const t0 = performance.now();
+    const r = await client.call(OP_HOST_ECHO, 0, 0, payload);
+    latencies[i] = performance.now() - t0;
+    if (r.status !== 0 || r.payload.byteLength !== payloadBytes) {
+      append(`bench-host-echo: bad reply at iter ${i} status=${r.status} bytes=${r.payload.byteLength}`, "err");
+      return;
+    }
+  }
+  const totalMs = performance.now() - tStart;
+  const sorted = Float64Array.from(latencies).sort();
+  const median = sorted[Math.floor(iters / 2)];
+  const p99 = sorted[Math.floor(iters * 0.99)];
+  const mean = totalMs / iters;
+  const rps = (iters / totalMs) * 1000;
+  append(
+    `bench-host-echo: iters=${iters} payload=${payloadBytes}B totalMs=${totalMs.toFixed(1)} mean=${mean.toFixed(3)}ms median=${median.toFixed(3)}ms p99=${p99.toFixed(3)}ms throughput=${rps.toFixed(0)} ops/sec`,
+    "info",
+  );
 }
 
 function spawnRuntimeWorker() {
@@ -206,6 +254,15 @@ const watchByteLength = params.get("diag") === "bytelen";
 // URLSearchParams.get() already decodes percent-escaping, so the script
 // is plain JS source by the time it gets here.
 const userScript = params.get("script");
+
+// L3 RPC throughput bench.  Triggered via ?bench=echo&iters=N[&payload=K].
+// The wasm runtime worker doesn't need to participate — we run the bench
+// here on the page using the same SAB rings the wasm worker would use.
+// (For per-call RTT this is representative; postMessage hop from page to
+// worker is roughly equivalent to the wasm worker's own dispatch.)
+const benchEcho = params.get("bench") === "echo"
+  ? { iters: parseInt(params.get("iters") ?? "1000", 10), payload: parseInt(params.get("payload") ?? "32", 10) }
+  : null;
 
 append("page bootstrap ok. crossOriginIsolated=" + crossOriginIsolated, "info");
 if (memSnapshotSymbols.length > 0) {

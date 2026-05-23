@@ -27,6 +27,7 @@ import { RpcServer } from "./rpc-server";
 import {
   OP_PING,
   OP_HOST_READY,
+  OP_HOST_ECHO,
   REPLY_STATUS_OK,
 } from "./rpc-protocol";
 
@@ -65,6 +66,14 @@ function registerHandlers(srv: RpcServer): void {
     payload: new Uint8Array(0),
     status: REPLY_STATUS_OK,
   }));
+
+  // echo: round-trip a payload.  Used by L3 throughput bench.
+  srv.register(OP_HOST_ECHO, async (_ctx, args) => {
+    // Copy the args (they alias SAB; caller may free before reply lands).
+    const copy = new Uint8Array(args.byteLength);
+    copy.set(args);
+    return { payload: copy, status: REPLY_STATUS_OK };
+  });
 
   // OP_HOST_READY is host→wasm; host doesn't receive it.  No handler.
   void OP_HOST_READY;

@@ -37,6 +37,42 @@ export const OP_HOST_READY = OP_DOMAIN_CONTROL | 0x0002;
 export const OP_SHUTDOWN = OP_DOMAIN_CONTROL | 0x0003;
 // Sent by wasm → host to request graceful shutdown.
 
+export const OP_HOST_ECHO = OP_DOMAIN_CONTROL | 0x0004;
+// Request: arbitrary bytes.  Reply: same bytes.
+// Used by L3 to benchmark RPC throughput and validate that the primitive
+// scales to larger payloads (napi ops will need 100s of bytes per call).
+
+// ── NAPI read-only ops (defined here; wired in L5) ──────────────────
+//
+// These are the ops L5 will route to the host worker once emnapi context
+// lives there.  Op codes assigned here so the wire format is stable
+// across L3 (echo bench) → L4 (callback channel) → L5 (real wiring).
+
+export const OP_NAPI_TYPEOF = OP_DOMAIN_NAPI_RO | 0x0001;
+export const OP_NAPI_GET_NAMED_PROPERTY = OP_DOMAIN_NAPI_RO | 0x0002;
+export const OP_NAPI_GET_PROPERTY = OP_DOMAIN_NAPI_RO | 0x0003;
+export const OP_NAPI_HAS_PROPERTY = OP_DOMAIN_NAPI_RO | 0x0004;
+export const OP_NAPI_HAS_NAMED_PROPERTY = OP_DOMAIN_NAPI_RO | 0x0005;
+export const OP_NAPI_STRICT_EQUALS = OP_DOMAIN_NAPI_RO | 0x0006;
+export const OP_NAPI_GET_ARRAY_LENGTH = OP_DOMAIN_NAPI_RO | 0x0007;
+export const OP_NAPI_IS_ARRAY = OP_DOMAIN_NAPI_RO | 0x0008;
+export const OP_NAPI_IS_TYPEDARRAY = OP_DOMAIN_NAPI_RO | 0x0009;
+export const OP_NAPI_IS_BUFFER = OP_DOMAIN_NAPI_RO | 0x000a;
+export const OP_NAPI_IS_EXCEPTION_PENDING = OP_DOMAIN_NAPI_RO | 0x000b;
+export const OP_NAPI_GET_VALUE_STRING_UTF8 = OP_DOMAIN_NAPI_RO | 0x000c;
+export const OP_NAPI_GET_VALUE_INT32 = OP_DOMAIN_NAPI_RO | 0x000d;
+export const OP_NAPI_GET_VALUE_UINT32 = OP_DOMAIN_NAPI_RO | 0x000e;
+export const OP_NAPI_GET_VALUE_DOUBLE = OP_DOMAIN_NAPI_RO | 0x000f;
+export const OP_NAPI_GET_VALUE_BOOL = OP_DOMAIN_NAPI_RO | 0x0010;
+export const OP_NAPI_GET_UNDEFINED = OP_DOMAIN_NAPI_RO | 0x0011;
+export const OP_NAPI_GET_NULL = OP_DOMAIN_NAPI_RO | 0x0012;
+export const OP_NAPI_GET_GLOBAL = OP_DOMAIN_NAPI_RO | 0x0013;
+export const OP_NAPI_GET_BOOLEAN = OP_DOMAIN_NAPI_RO | 0x0014;
+export const OP_NAPI_GET_PROTOTYPE = OP_DOMAIN_NAPI_RO | 0x0015;
+export const OP_NAPI_GET_PROPERTY_NAMES = OP_DOMAIN_NAPI_RO | 0x0016;
+export const OP_NAPI_DELETE_REFERENCE = OP_DOMAIN_NAPI_RO | 0x0017;
+export const OP_NAPI_GET_REFERENCE_VALUE = OP_DOMAIN_NAPI_RO | 0x0018;
+
 // ── Status codes for replies ────────────────────────────────────────
 
 export const REPLY_STATUS_OK = 0;
