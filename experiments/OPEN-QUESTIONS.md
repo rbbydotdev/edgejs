@@ -17,6 +17,7 @@
 | R2 | finalizer dispatch + ordering | PASS.  V8 GC fires registry callbacks LIFO, batched in 1 tick; buffer+drain at safe points.  `experiments/r2-finalizer-dispatch/` |
 | R3 | tsfn cross-worker (empirical) | PASS.  50/50 callbacks; tsfn handle is shared-memory u32 pointer, routes via SAB-RPC unchanged.  `experiments/r3-tsfn-cross-worker/` |
 | R5 | diff-test harness pattern | Validated; per-category file layout scales to 150 ops without codegen.  `experiments/r5-diff-test-harness/` |
+| R6a | nested sync RPC during reverse callback | PASS at depth 16; wait loop intrinsically re-entrant via unique requestIds + reply-by-requestId + shared-wake.  Ring exhaustion did NOT occur (slot turnover faster than nesting).  R1's "must NOT issue forward sync RPC" punt is overcautious.  `experiments/r6-nested-sync-rpc/` |
 
 ## Quantified (resolved as a number, not yes/no)
 

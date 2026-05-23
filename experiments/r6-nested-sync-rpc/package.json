@@ -1,0 +1,8 @@
+{
+  "name": "r6-nested-sync-rpc-experiment",
+  "version": "0.0.0",
+  "type": "module",
+  "private": true,
+  "description": "R6a spike: validate nested re-entrant sync RPC — reverse handler issues another forward sync call. Probes depth 2/3 and ring exhaustion.",
+  "scripts": { "probe": "node probe.mjs" }
+}
