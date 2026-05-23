@@ -1,0 +1,28 @@
+experiments/r8-cross-context-marshaling/package.json
+  s_7bec0ecbfcdcd0::t_201dd2643c868d 1-14
+experiments/r8-cross-context-marshaling/FINDINGS.md
+  s_7bec0ecbfcdcd0::t_e75b1e51d9c5d0 1-225
+experiments/OPEN-QUESTIONS.md
+  s_7bec0ecbfcdcd0::t_82f68511f29027 23-24
+  s_7bec0ecbfcdcd0::t_a19dd3b14c6177 3-4
+experiments/r8-cross-context-marshaling/probe.mjs
+  s_7bec0ecbfcdcd0::t_4fbfffbdd273c1 1-550
+experiments/r8-cross-context-marshaling/package-lock.json
+  ai_agent 1-41
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "ddd3d18c4754a6dafef14989de332791952c565c",
+  "prompts": {},
+  "sessions": {
+    "s_7bec0ecbfcdcd0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d560d5ae-265f-44ae-89c4-d35659b3ab9e",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
