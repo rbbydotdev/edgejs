@@ -1,0 +1,25 @@
+experiments/l5-sync-rpc/probe.mjs
+  s_7bec0ecbfcdcd0::t_eb3cf195a03369 1-152
+browser-target/src/host-worker/rpc-client-sync.ts
+  s_7bec0ecbfcdcd0::t_9a0c40b0fdf767 1-147
+experiments/l5-sync-rpc/package.json
+  s_7bec0ecbfcdcd0::t_24830f53b59a53 1-8
+plans/lever-b-progress.md
+  ai_agent 1505-1545
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "7ce13437e1146722fc4647a44d133e844cebe505",
+  "prompts": {},
+  "sessions": {
+    "s_7bec0ecbfcdcd0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d560d5ae-265f-44ae-89c4-d35659b3ab9e",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
