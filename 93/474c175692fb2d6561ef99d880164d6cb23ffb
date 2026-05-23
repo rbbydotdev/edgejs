@@ -1,0 +1,38 @@
+browser-target/src/host-worker/napi-op-handlers.ts
+  s_7bec0ecbfcdcd0::t_6acc2aec0d81e6 56-60
+  s_7bec0ecbfcdcd0::t_07e1fc25dbaa19 265-268
+  s_7bec0ecbfcdcd0::t_17400010ab2366 49-55
+  s_7bec0ecbfcdcd0::t_0ab447872036c9 173-174
+  s_7bec0ecbfcdcd0::t_09d7cf8fbcd6b2 284-287
+  s_7bec0ecbfcdcd0::t_b8f62e255483aa 61,312
+  s_7bec0ecbfcdcd0::t_28cca72a68f843 293-298
+  s_7bec0ecbfcdcd0::t_a8cfa7c5942a1a 202,230-239
+  s_7bec0ecbfcdcd0::t_82fe6adf0f593f 175-176
+  s_7bec0ecbfcdcd0::t_1ccb07cea7d329 299-311,313-325
+  s_7bec0ecbfcdcd0::t_11f35143cd9d82 217-221
+  s_7bec0ecbfcdcd0::t_ef88c2195538f1 264
+  s_7bec0ecbfcdcd0::t_6058831094329c 240-244
+  s_7bec0ecbfcdcd0::t_afbf59c88ea689 203-216
+  s_7bec0ecbfcdcd0::t_a1feab8566cc59 43-48
+browser-target/src/host-worker/rpc-protocol.ts
+  s_7bec0ecbfcdcd0::t_2f825b36d72ccd 100-117
+  s_7bec0ecbfcdcd0::t_4bc827816a6f71 144-166,168-171
+  s_7bec0ecbfcdcd0::t_7d655a091166f4 167
+  s_7bec0ecbfcdcd0::t_1f35519b0bdbb7 118-143
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "93474c175692fb2d6561ef99d880164d6cb23ffb",
+  "prompts": {},
+  "sessions": {
+    "s_7bec0ecbfcdcd0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d560d5ae-265f-44ae-89c4-d35659b3ab9e",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
