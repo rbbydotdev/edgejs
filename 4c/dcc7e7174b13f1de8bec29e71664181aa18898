@@ -1,0 +1,27 @@
+experiments/r6-nested-sync-rpc/probe.mjs
+  s_7bec0ecbfcdcd0::t_9d9e699ebf28a5 1-37,39-269,284,300-452
+  s_7bec0ecbfcdcd0::t_994e895d83543b 270-283,285-299
+  s_7bec0ecbfcdcd0::t_6add95882c8793 38
+experiments/r6-nested-sync-rpc/FINDINGS.md
+  s_7bec0ecbfcdcd0::t_728db727666cd7 1-146
+experiments/OPEN-QUESTIONS.md
+  s_7bec0ecbfcdcd0::t_da2e600c461f66 20
+experiments/r6-nested-sync-rpc/package.json
+  s_7bec0ecbfcdcd0::t_e500415b8710ee 1-8
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "4cdcc7e7174b13f1de8bec29e71664181aa18898",
+  "prompts": {},
+  "sessions": {
+    "s_7bec0ecbfcdcd0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d560d5ae-265f-44ae-89c4-d35659b3ab9e",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
