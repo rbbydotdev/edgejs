@@ -1502,3 +1502,44 @@ drainer.  Building `SyncRpcClient` is F-3's first deliverable.
 
 **Pool allocator deferred to F-3** — it's needed once real napi ops
 fire from wasm, not before.
+
+---
+
+## F-3 partial: SyncRpcClient + sync pattern validated (2026-05-23)
+
+**Goal:** wasm-side napi stubs can block synchronously for RPC reply.
+
+**Deliverables:**
+- `browser-target/src/host-worker/rpc-client-sync.ts` — `SyncRpcClient`
+  using direct `Atomics.wait` on reply ring (no async drainer)
+- `experiments/l5-sync-rpc/probe.mjs` — Node-side validation: 100
+  sync RPC calls round-trip correctly through worker_threads
+
+**Result:**
+```
+[worker] 100 sync RPC calls all returned correct sums
+[main] sync RPC probe: OK
+```
+
+**Pattern that works for wasm-side callers:**
+- Caller is JS code running INSIDE a wasm import (called by wasm)
+- Caller writes request to SAB, publishes
+- Caller calls `Atomics.wait` on reply ring's wake counter
+- Host processes (async), writes reply, notifies
+- Caller's wait returns, scans reply slots for matching requestId
+- Reads result, returns napi_status
+
+**Re-entrancy note:** while caller blocks, host cannot RPC BACK to wasm
+(would deadlock).  Q1's pool allocator avoids this for malloc.  Other
+ops where host might re-enter wasm (e.g. finalizers) must be designed
+not to require wasm response during the call.
+
+**Remaining F-3 work (deferred to integration):**
+- Wasm-side bootstrap calling `napi_register_wasm_v1` via this client
+  requires modifying edgejs.wasm's napi import bindings — needs a
+  rebuild of edge.js from C source.  Not achievable in this session.
+
+For session-scope F-3: the host-side SyncRpcClient is built + tested.
+F-4 will use it from JS-level napi op stubs (simulating wasm).
+
+**Tests:** 14/0/0/13 unchanged.

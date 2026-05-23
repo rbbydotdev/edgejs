@@ -1,0 +1,8 @@
+{
+  "name": "l5-sync-rpc-experiment",
+  "version": "0.0.0",
+  "type": "module",
+  "private": true,
+  "description": "F-3 spike: SyncRpcClient validates sync wasm-side RPC pattern in Node worker_threads.",
+  "scripts": { "probe": "node probe.mjs" }
+}
