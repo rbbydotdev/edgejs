@@ -1,0 +1,30 @@
+plans/lever-b-progress.md
+  ai_agent 1546-1585
+browser-target/src/host-worker/host-worker.ts
+  s_7bec0ecbfcdcd0::t_05d0054965105e 44-45
+  s_7bec0ecbfcdcd0::t_3948a5b4f9aee1 243-249
+browser-target/src/host-worker/napi-op-handlers.ts
+  s_7bec0ecbfcdcd0::t_3d9c10bcf87b24 1-180
+browser-target/scripts/probe-f1-napi.mjs
+  s_7bec0ecbfcdcd0::t_a4848cd3ba2927 34
+browser-target/src/main.ts
+  s_7bec0ecbfcdcd0::t_485598f409472d 144,154,157,159-172,174-178,180-186,188,192-199
+browser-target/src/host-worker/rpc-protocol.ts
+  s_7bec0ecbfcdcd0::t_5ef683ef644769 89-98
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "90a4f29f865e25d406de68da984b29a653e92088",
+  "prompts": {},
+  "sessions": {
+    "s_7bec0ecbfcdcd0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d560d5ae-265f-44ae-89c4-d35659b3ab9e",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
