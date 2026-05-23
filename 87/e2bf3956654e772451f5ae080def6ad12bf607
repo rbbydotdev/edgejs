@@ -1,0 +1,47 @@
+browser-target/src/host-worker/callback-dispatch.ts
+  s_7bec0ecbfcdcd0::t_66549c6a8f1b04 253-265
+  s_7bec0ecbfcdcd0::t_72c1de5c0670ed 79-88
+  s_7bec0ecbfcdcd0::t_37f954d01bbbd8 362
+  s_7bec0ecbfcdcd0::t_4a1b4916dfb690 74-78
+  s_7bec0ecbfcdcd0::t_852fa22021ec58 344-361,363-373
+  s_7bec0ecbfcdcd0::t_be7faf1ea7c62d 67
+  s_7bec0ecbfcdcd0::t_eb14704b635ae5 286-288
+  s_7bec0ecbfcdcd0::t_547ffb2464dddd 283-285
+browser-target/src/worker.ts
+  s_7bec0ecbfcdcd0::t_3ceb2e46ad7c86 625-630,636-644
+browser-target/src/host-worker/cross-context-marshal.ts
+  s_7bec0ecbfcdcd0::t_e231ec71c4bc86 72-73
+  s_7bec0ecbfcdcd0::t_ca11728badc202 93-98
+  s_7bec0ecbfcdcd0::t_a33425a80f863c 263
+  s_7bec0ecbfcdcd0::t_074e233de8a02c 1-71,74-92,99-262,264-291,293-309
+  s_7bec0ecbfcdcd0::t_b38aaea08d40e0 292
+browser-target/src/napi-host/emnapi.ts
+  s_7bec0ecbfcdcd0::t_cf8cbd849cac52 46-62
+browser-target/src/main.ts
+  s_7bec0ecbfcdcd0::t_9d2144641325c3 311-401,406-411,415-430
+  s_7bec0ecbfcdcd0::t_1abf8d03958e20 402-405,412-414
+browser-target/src/napi-host/index.ts
+  s_7bec0ecbfcdcd0::t_010fb37c38f711 429-439,441-457
+  s_7bec0ecbfcdcd0::t_a0105b40120ea7 26
+  s_7bec0ecbfcdcd0::t_b386c37c079561 650-651
+  s_7bec0ecbfcdcd0::t_76f01657206c4f 440
+  s_7bec0ecbfcdcd0::t_f608e07ecde9f7 587
+NOTES.md
+  s_7bec0ecbfcdcd0::t_ef11be1ded2235 324-330
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "87e2bf3956654e772451f5ae080def6ad12bf607",
+  "prompts": {},
+  "sessions": {
+    "s_7bec0ecbfcdcd0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d560d5ae-265f-44ae-89c4-d35659b3ab9e",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
