@@ -1,0 +1,19 @@
+experiments/OPEN-QUESTIONS.md
+  s_7bec0ecbfcdcd0::t_fa46df95404265 1-166
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "19c8d3d1aca63dadb05310e2b8c4b0fcd0f1a593",
+  "prompts": {},
+  "sessions": {
+    "s_7bec0ecbfcdcd0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d560d5ae-265f-44ae-89c4-d35659b3ab9e",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
