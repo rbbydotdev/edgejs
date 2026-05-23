@@ -116,6 +116,51 @@ async function spawnHostThenRuntime(): Promise<void> {
   if (l5UserScript && hostHandle) {
     await runL5UserScript(l5UserScript);
   }
+  // L9 spike: spawn a second host worker, ping both, verify replies
+  // come back to the right one.  Validates the multi-host topology
+  // and the contextId/hostWorkerId routing we baked in from L1.
+  if (l9MultiHost) {
+    await runL9MultiHostSpike();
+  }
+}
+
+async function runL9MultiHostSpike(): Promise<void> {
+  const { spawnHostWorker } = await import("./host-worker/worker-pool");
+  const { attachRing } = await import("./wasi-shim/sab-ring");
+  const { RpcClient } = await import("./host-worker/rpc-client");
+  const { OP_PING, OP_HOST_ECHO } = await import("./host-worker/rpc-protocol");
+  const ringConfig = { numSlots: 32, slotSize: 4 * 1024 };
+  // We already have hostHandle (id=0).  Spawn a second.
+  const h1 = spawnHostWorker();
+  await h1.ready;
+  if (h1.id !== 1) {
+    append(`l9-multi-host: FAIL expected id=1 got id=${h1.id}`, "err");
+    return;
+  }
+  // Confirm SAB rings are distinct objects.
+  if (h1.requestSab === hostHandle?.requestSab) {
+    append("l9-multi-host: FAIL h1 SAB aliases hostHandle SAB", "err");
+    return;
+  }
+  // Ping both hosts; each should get back exactly one reply.
+  const c0 = new RpcClient(attachRing(hostHandle!.requestSab, ringConfig), attachRing(hostHandle!.replySab, ringConfig));
+  const c1 = new RpcClient(attachRing(h1.requestSab, ringConfig), attachRing(h1.replySab, ringConfig));
+  const tag0 = new TextEncoder().encode("hello-h0");
+  const tag1 = new TextEncoder().encode("hello-h1");
+  const [p0, p1] = await Promise.all([
+    c0.call(OP_HOST_ECHO, 0, 0, tag0),
+    c1.call(OP_HOST_ECHO, 1, 0, tag1),
+  ]);
+  const r0 = new TextDecoder().decode(p0.payload);
+  const r1 = new TextDecoder().decode(p1.payload);
+  if (r0 === "hello-h0" && r1 === "hello-h1") {
+    append(`l9-multi-host: OK h0="${r0}" h1="${r1}"`, "info");
+  } else {
+    append(`l9-multi-host: FAIL h0="${r0}" h1="${r1}"`, "err");
+  }
+  // Also ping just for good measure.
+  void c0.call(OP_PING, 0, 0, null);
+  void c1.call(OP_PING, 1, 0, null);
 }
 
 async function runL5UserScript(source: string): Promise<void> {
@@ -304,6 +349,7 @@ const benchEcho = params.get("bench") === "echo"
   : null;
 const probeReverseEcho = params.get("probe") === "reverse-echo";
 const l5UserScript = params.get("l5script"); // L5 spike
+const l9MultiHost = params.get("probe") === "l9-multi-host"; // L9 spike
 
 append("page bootstrap ok. crossOriginIsolated=" + crossOriginIsolated, "info");
 if (memSnapshotSymbols.length > 0) {
