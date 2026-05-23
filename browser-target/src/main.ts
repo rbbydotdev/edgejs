@@ -245,7 +245,10 @@ async function runF9SweepProbe(): Promise<void> {
   const results: { name: string; status: number; ok: boolean; detail: string }[] = [];
   // Reserve memory layout for out-pointers (256+ to avoid F-1 probe's 256-312 range).
   let ptr = 400;
-  const allocPtr = (n = 4) => { const p = ptr; ptr += n; return p; };
+  const allocPtr = (n = 4) => {
+    ptr = (ptr + 3) & ~3; // 4-byte align
+    const p = ptr; ptr += n; return p;
+  };
 
   // ── Batch 1 — object/array/property (0x0130-0x0139) ──
   // create_object(env, &result) — TwoU32
