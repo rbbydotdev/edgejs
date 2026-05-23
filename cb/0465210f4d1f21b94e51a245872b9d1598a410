@@ -1,0 +1,30 @@
+experiments/r9-host-emnapi-init/package.json
+  s_7bec0ecbfcdcd0::t_99f94d9dd6ccde 1-14
+experiments/r9-host-emnapi-init/probe.mjs
+  s_7bec0ecbfcdcd0::t_c1622a3702748f 265,273
+  s_7bec0ecbfcdcd0::t_1b1c00c69b01c7 1-97,107,109,112-113,115,117-121,123,125-126,128,130-182,192,195-196,199-200,203-264,266-272,274
+  s_7bec0ecbfcdcd0::t_25efd2e77b2ce7 183-191,193-194,197-198,201-202
+  s_7bec0ecbfcdcd0::t_aa0db58871b71d 98-106,108,110-111,114,116,122,124,127,129
+browser-target/scripts/probe-f9-sweep.mjs
+  s_7bec0ecbfcdcd0::t_6345d1e1e37a76 22
+experiments/r9-host-emnapi-init/package-lock.json
+  ai_agent 1-39
+experiments/r9-host-emnapi-init/FINDINGS.md
+  s_7bec0ecbfcdcd0::t_890688a9b090ea 1-140
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "cb0465210f4d1f21b94e51a245872b9d1598a410",
+  "prompts": {},
+  "sessions": {
+    "s_7bec0ecbfcdcd0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d560d5ae-265f-44ae-89c4-d35659b3ab9e",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
