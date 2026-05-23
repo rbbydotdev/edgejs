@@ -1,0 +1,28 @@
+browser-target/src/worker.ts
+  s_7bec0ecbfcdcd0::t_2249370cc6791f 107-113
+  s_7bec0ecbfcdcd0::t_5d91b1de928bf8 58-64
+  s_7bec0ecbfcdcd0::t_5a5309efe94ac0 76-81
+browser-target/scripts/probe-f2-mem-bridge.mjs
+  s_7bec0ecbfcdcd0::t_f42a92ac4b49b7 34,36,38-39
+  s_7bec0ecbfcdcd0::t_2a2fcc42c67349 1-33,35,37,40-46
+plans/lever-b-progress.md
+  ai_agent 1471-1504
+browser-target/src/main.ts
+  s_7bec0ecbfcdcd0::t_89ba2a307e4991 292-297
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "c0e2f00be67886fda76ac3067db70b23614034c7",
+  "prompts": {},
+  "sessions": {
+    "s_7bec0ecbfcdcd0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d560d5ae-265f-44ae-89c4-d35659b3ab9e",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
