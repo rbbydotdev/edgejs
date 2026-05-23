@@ -280,6 +280,28 @@ export const OP_NAPI_ADJUST_EXTERNAL_MEMORY = OP_DOMAIN_NAPI_RO | 0x008e;
 // napi_adjust_external_memory(env, low:int32, high:int32, &adjusted)  — four-u32;
 // same (low,high) pair encoding.
 
+// ── Lever B batch 4 cluster A: env cleanup hooks (0x01A0–0x01A1) ────
+// Allocated in range 0x00A0–0x00A1 under OP_DOMAIN_NAPI_RO.
+//
+// These are callback-taking ops but in the SIMPLEST cluster: no GC,
+// no cbinfo, callback fires once at env destroy.  The wasm-side `fun`
+// is a funcref index that we substitute with a host-side JS closure
+// (built via makeHostSideCallbackClosure) before handing to emnapi —
+// emnapi's CleanupQueue accepts a JS callable directly.
+//
+// `arg` is opaque data passed to the callback at env destroy.
+// Both ops are three args, no resultPtr.
+
+export const OP_NAPI_ADD_ENV_CLEANUP_HOOK = OP_DOMAIN_NAPI_RO | 0x00A0;
+// napi_add_env_cleanup_hook(env, fun: funcref-idx, arg: void*)
+//   — three args, no resultPtr.  We replace `fun` with a JS closure
+//   that round-trips to wasm via the reverse channel.
+export const OP_NAPI_REMOVE_ENV_CLEANUP_HOOK = OP_DOMAIN_NAPI_RO | 0x00A1;
+// napi_remove_env_cleanup_hook(env, fun: funcref-idx, arg: void*)
+//   — three args, no resultPtr.  Looks up the previously-registered
+//   closure by (env, cbPtr, dataPtr) and passes that to emnapi so its
+//   reference-equality match in CleanupQueue.remove succeeds.
+
 // ── NAPI callback-taking ops (F-5) ─────────────────────────────────
 export const OP_NAPI_CALL_FUNCTION = OP_DOMAIN_NAPI_CB | 0x0001;
 // napi_call_function(env, recv, fn, argc, argv_ptr, &result)

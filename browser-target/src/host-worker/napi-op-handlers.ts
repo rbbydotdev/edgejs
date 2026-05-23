@@ -77,8 +77,12 @@ import {
   OP_NAPI_GET_TYPEDARRAY_INFO,
   OP_NAPI_CREATE_INT64, OP_NAPI_CREATE_BIGINT_UINT64,
   OP_NAPI_ADJUST_EXTERNAL_MEMORY,
+  // Lever B batch 4 cluster A (0x01A0–0x01A1): env cleanup hooks.
+  OP_NAPI_ADD_ENV_CLEANUP_HOOK, OP_NAPI_REMOVE_ENV_CLEANUP_HOOK,
   REPLY_STATUS_INVALID_ARGS,
 } from "./rpc-protocol";
+import { makeHostSideCallbackClosure } from "./callback-dispatch";
+import { getHostSideReverseSyncClient } from "./host-worker";
 
 const EMPTY = new Uint8Array(0);
 const enc = new TextEncoder();
@@ -358,7 +362,10 @@ export function makeNapiOpRegistry(napi: Record<string, NapiFn>): NapiOpRegistry
     // +2 napi_get_value_string_latin1/utf16 (five-u32, inline),
     // +3 napi_throw_error/type_error/range_error (three-u32 no-result, inline),
     // +1 napi_get_typedarray_info (seven-u32, inline).
-    count: TWO_U32.length + THREE_U32.length + FOUR_U32.length + 14 + 6,
+    // Lever B batch 4 cluster A inline registrations:
+    // +2 napi_add_env_cleanup_hook / napi_remove_env_cleanup_hook
+    //    (three-u32 no-result, JS-closure substitution via callback-dispatch).
+    count: TWO_U32.length + THREE_U32.length + FOUR_U32.length + 14 + 6 + 2,
     register(server: RpcServer): void {
       for (const [op, name] of TWO_U32) {
         server.register(op, makeTwoU32(napi[name], name));
@@ -517,6 +524,126 @@ export function makeNapiOpRegistry(napi: Record<string, NapiFn>): NapiOpRegistry
               dv.getUint32(8, true),
             ),
           };
+        });
+      }
+
+      // ── Lever B batch 4 cluster A (env cleanup hooks) ──
+      //
+      // 0x01A0 napi_add_env_cleanup_hook(env, fun, arg)
+      // 0x01A1 napi_remove_env_cleanup_hook(env, fun, arg)
+      //
+      // `fun` is a wasm-table funcref index; `arg` is opaque data passed
+      // to the callback at env destroy.  We substitute `fun` with a JS
+      // closure that round-trips back to wasm via the reverse channel,
+      // built by makeHostSideCallbackClosure.  emnapi's CleanupQueue
+      // accepts a JS callable (CleanupHookCallbackFunction = number |
+      // ((arg: number) => void), see vendor/emnapi/packages/runtime/
+      // src/Context.ts:22) and stores it for invocation at runCleanup.
+      //
+      // CleanupQueue.{add,remove} match by reference equality on
+      // (envObject, fn, arg) — so for remove() to find the entry we
+      // added, we must produce the SAME closure reference.  We keep
+      // a Map<key, closure> keyed by `${env}:${cbPtr}:${dataPtr}` so
+      // remove can look it up.  add() rejects duplicates (emnapi
+      // throws "Can not add same fn and arg twice") so the keying
+      // matches emnapi's own dedup semantics.
+      //
+      // Known dispatcher debt (NOT this batch's problem): the wasm-side
+      // dispatcher in callback-dispatch.ts invokes the funcref with
+      // `(env, 0)` per the napi_callback ABI.  Cleanup-hook funcrefs
+      // have signature `void(*)(void* arg)` (single i32 arg) — calling
+      // them with two args traps under WebAssembly's indirect-call
+      // type-check.  Since cleanup hooks fire only at env destroy
+      // (shutdown), this is non-blocking for normal operation; the
+      // dispatcher will need a per-call-shape hook before the closure
+      // is actually invoked.  See callback-dispatch.ts:#!~debt.
+      {
+        const cleanupClosures = new Map<string, (arg: number) => void>();
+        const addFn = napi["napi_add_env_cleanup_hook"];
+        const removeFn = napi["napi_remove_env_cleanup_hook"];
+
+        const decodeThreeU32 = (args: Uint8Array): { env: number; cbPtr: number; dataPtr: number } | null => {
+          if (args.byteLength < 12) return null;
+          const dv = new DataView(args.buffer, args.byteOffset, args.byteLength);
+          return {
+            env: dv.getUint32(0, true),
+            cbPtr: dv.getUint32(4, true),
+            dataPtr: dv.getUint32(8, true),
+          };
+        };
+
+        const keyOf = (env: number, cbPtr: number, dataPtr: number): string =>
+          `${env >>> 0}:${cbPtr >>> 0}:${dataPtr >>> 0}`;
+
+        server.register(OP_NAPI_ADD_ENV_CLEANUP_HOOK, async (_ctx, args) => {
+          if (typeof addFn !== "function") return err("napi handler: napi_add_env_cleanup_hook not found");
+          const decoded = decodeThreeU32(args);
+          if (!decoded) return err("napi handler: args too short for three-u32-no-result");
+          const { env, cbPtr, dataPtr } = decoded;
+
+          const reverseClient = getHostSideReverseSyncClient();
+          if (!reverseClient) {
+            return err("napi handler: reverse sync client not ready for add_env_cleanup_hook");
+          }
+
+          const key = keyOf(env, cbPtr, dataPtr);
+          // emnapi rejects duplicate (env, fn, arg) — keep the existing
+          // closure mapping aligned so a re-add reuses the same closure
+          // reference and emnapi's own throw fires deterministically.
+          let closure = cleanupClosures.get(key);
+          if (!closure) {
+            const hostClosure = makeHostSideCallbackClosure({
+              reverseClient,
+              cbPtr,
+              dataPtr,
+              env,
+            });
+            // CleanupHookCallbackFunction is `(arg: number) => void` on
+            // the JS-callable branch.  Our closure returns the wasm
+            // return handle (unknown), which we discard.
+            closure = (arg: number) => { void hostClosure(arg); };
+            cleanupClosures.set(key, closure);
+          }
+
+          // emnapi's napi_add_env_cleanup_hook is typed as
+          // (env, fun: number, arg: number) → status, but its body just
+          // forwards `fun` into addCleanupHook which accepts a JS
+          // callable too.  Cast through unknown to bypass the int-typed
+          // signature.
+          const status = (addFn as unknown as (
+            env: number,
+            fun: (arg: number) => void,
+            arg: number,
+          ) => number)(env, closure, dataPtr);
+          return { payload: EMPTY, status };
+        });
+
+        server.register(OP_NAPI_REMOVE_ENV_CLEANUP_HOOK, async (_ctx, args) => {
+          if (typeof removeFn !== "function") return err("napi handler: napi_remove_env_cleanup_hook not found");
+          const decoded = decodeThreeU32(args);
+          if (!decoded) return err("napi handler: args too short for three-u32-no-result");
+          const { env, cbPtr, dataPtr } = decoded;
+
+          const key = keyOf(env, cbPtr, dataPtr);
+          const closure = cleanupClosures.get(key);
+          if (!closure) {
+            // No matching add() — emnapi's remove is a no-op in that
+            // case (silent for-loop fall-through in CleanupQueue.remove).
+            // Mirror that by reporting napi_ok without calling emnapi
+            // (we can't anyway — we don't have the original closure to
+            // satisfy emnapi's reference-equality match).
+            return { payload: EMPTY, status: 0 };
+          }
+
+          const status = (removeFn as unknown as (
+            env: number,
+            fun: (arg: number) => void,
+            arg: number,
+          ) => number)(env, closure, dataPtr);
+          // Drop the mapping once removed so re-add gets a fresh closure
+          // (and the wire matches emnapi's own dedup invariant).
+          cleanupClosures.delete(key);
+          return { payload: EMPTY, status };
         });
       }
     },
