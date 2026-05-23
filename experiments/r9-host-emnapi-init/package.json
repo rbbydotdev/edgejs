@@ -1,0 +1,14 @@
+{
+  "name": "r9-host-emnapi-init-experiment",
+  "version": "0.0.0",
+  "type": "module",
+  "private": true,
+  "description": "R9: reproduce and root-cause the host-worker emnapi init bug (null=0, create_object/string failures) flagged by F-9 sweep.",
+  "scripts": {
+    "probe": "node probe.mjs"
+  },
+  "dependencies": {
+    "@emnapi/runtime": "file:../../browser-target/node_modules/@emnapi/runtime",
+    "@emnapi/core": "file:../../browser-target/node_modules/@emnapi/core"
+  }
+}

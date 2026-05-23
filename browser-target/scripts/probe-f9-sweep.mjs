@@ -19,7 +19,7 @@ async function main() {
     await page.goto(`http://localhost:${VITE_PORT}/?probe=f9-sweep`, {
       waitUntil: "domcontentloaded", timeout: 10_000,
     });
-    const deadline = Date.now() + 20_000;
+    const deadline = Date.now() + 40_000;
     let summary = null;
     while (Date.now() < deadline && !summary) {
       summary = await page.evaluate(() => {
