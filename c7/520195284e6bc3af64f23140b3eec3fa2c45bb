@@ -1,0 +1,21 @@
+browser-target/src/host-worker/host-worker.ts
+  s_7bec0ecbfcdcd0::t_555bc86cc4198a 154-171,174
+  s_7bec0ecbfcdcd0::t_41a3e6dc1e9946 172-173
+  s_7bec0ecbfcdcd0::t_1bd8d12993f6ea 102-105
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "c7520195284e6bc3af64f23140b3eec3fa2c45bb",
+  "prompts": {},
+  "sessions": {
+    "s_7bec0ecbfcdcd0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d560d5ae-265f-44ae-89c4-d35659b3ab9e",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
