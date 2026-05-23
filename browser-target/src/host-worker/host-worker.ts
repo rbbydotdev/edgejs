@@ -47,6 +47,24 @@ import { makeNapiOpRegistry } from "./napi-op-handlers";
 
 declare const self: DedicatedWorkerGlobalScope;
 
+// R10 multi-context hypothesis verification — one-line module-load
+// counter.  If this logs ">1", host-worker.ts is being instantiated
+// multiple times (Vite HMR, bridge-ready re-fire, worker spawn race).
+// That would mean multiple emnapi contexts exist, and the factory's
+// captured napiFn reference may be bound to a stale wasmMemory while
+// our SAB-based reads target the current one — explaining the silent
+// write bug for create_array_with_length / create_string_utf8.  See
+// experiments/r10-emnapi-silent-write/FINDINGS.md.
+{
+  const g = globalThis as { __edgeHostModuleLoadCount?: number };
+  g.__edgeHostModuleLoadCount = (g.__edgeHostModuleLoadCount ?? 0) + 1;
+  self.postMessage({
+    kind: "host-log",
+    text: `[host-worker:?] MODULE LOAD #${g.__edgeHostModuleLoadCount}`,
+    level: "info",
+  });
+}
+
 // Must match the producer's config (in worker-pool.ts).
 const RING_CONFIG: RingConfig = {
   numSlots: 32,
@@ -387,6 +405,40 @@ async function runReverseEcho(bytes: number): Promise<void> {
   log(`reverse-echo: ok ${bytes}B in ${dt.toFixed(3)}ms`);
 }
 
+// R10 fix: module-level idempotency guard.  host-worker.ts loads
+// TWICE in production (confirmed by MODULE LOAD instrumentation —
+// likely Vite dev-mode quirk).  Without this guard, the second load
+// attaches a SECOND message listener which creates a SECOND RpcServer
+// + napi context on the SAME SAB rings.  Requests then race between
+// two servers, each with its own napiHostMemory.  Writes from
+// server-B's emnapi land in memory-B, but we send memory-A's SAB to
+// the page → some ops appear to "succeed but write nothing".
+//
+// Fix: only the FIRST module load attaches the listener / runs the
+// init handler.  Subsequent loads are inert.  This works because
+// only ONE handler running prevents the dual-RpcServer race.
+//
+// See experiments/r10-emnapi-silent-write/FINDINGS.md.
+{
+  const g = globalThis as { __edgeHostListenerAttached?: boolean };
+  if (g.__edgeHostListenerAttached) {
+    self.postMessage({
+      kind: "host-log",
+      text: `[host-worker:?] MODULE LOAD #${(globalThis as { __edgeHostModuleLoadCount?: number }).__edgeHostModuleLoadCount} — skipping listener (already attached)`,
+      level: "warn",
+    });
+  } else {
+    g.__edgeHostListenerAttached = true;
+    self.postMessage({
+      kind: "host-log",
+      text: `[host-worker:?] MODULE LOAD: attaching listener`,
+      level: "info",
+    });
+    attachMessageListener();
+  }
+}
+
+function attachMessageListener(): void {
 self.addEventListener("message", (e: MessageEvent) => {
   const data = e.data as (Partial<InitMessage> | ReverseEchoMessage) | null;
   if (data?.kind === "reverse-echo") {
@@ -451,3 +503,4 @@ self.addEventListener("message", (e: MessageEvent) => {
   };
   self.postMessage(ready);
 });
+}

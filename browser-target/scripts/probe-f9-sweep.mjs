@@ -35,7 +35,7 @@ async function main() {
       const log = document.getElementById("log");
       return log ? (log.innerText || "").slice(-3000) : "";
     });
-    const sweepLines = tail.split("\n").filter((l) => l.startsWith("f9-sweep")).join("\n");
+    const sweepLines = tail.split("\n").filter((l) => l.startsWith("f9-sweep") || l.includes("DIAG") || l.includes("MODULE LOAD") || l.includes("napi context ready")).join("\n");
     if (summary && summary.verdict === "OK") {
       process.stdout.write(`probe-f9-sweep: OK  (${summary.pass}/${summary.total} ops)\n---\n${sweepLines}\n`);
       process.exit(0);
