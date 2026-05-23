@@ -43,6 +43,23 @@ export type { Context, Env } from "@emnapi/runtime";
 export { createNapiModule } from "@emnapi/core";
 export type { NapiModule } from "@emnapi/core";
 
+/** Runtime methods on `@emnapi/runtime` `Context` that exist in the
+ *  shipped JS but are missing from the published `.d.ts`.  Cast a
+ *  Context instance to `Context & ContextRuntimeAccess` when calling
+ *  these.  Verified against `vendor/emnapi/packages/runtime/src/Context.ts`
+ *  (lines 369-375 for the napi-value bridges; line 353 for getEnv).
+ *
+ *  Consumers: callback-dispatch.ts (R7 cbinfo synthesis) and
+ *  cross-context-marshal.ts (R8 pack/unpack).  Centralized here per
+ *  the project's "vendored deps behind facades" rule. */
+export interface ContextRuntimeAccess {
+  jsValueFromNapiValue<T = unknown>(napiValue: number | bigint): T | undefined;
+  napiValueFromJsValue(value: unknown): number | bigint;
+}
+export interface ContextEnvLookup {
+  getEnv<T = unknown>(envId: number | bigint): T | undefined;
+}
+
 // wasi-threads — implements the wasi-threads spec's host side, so the wasm's
 // `wasi.thread-spawn` import is backed by a real Worker pool with per-thread
 // TLS state (via __wasm_init_tls + wasi_thread_start).  Without this, every

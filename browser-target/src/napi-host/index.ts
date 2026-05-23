@@ -23,6 +23,7 @@ import { createUnofficialNapi } from "./unofficial";
 import { buildMicrotaskOpsImports, createMicrotaskOpsState, installHostPromiseRejectListeners, type MicrotaskOpsState } from "./microtask-ops";
 import type { ModuleOverride } from "../policies";
 export type { ModuleOverride };
+export type { Context, Env } from "./emnapi";
 
 export interface NapiHostOptions {
   memory: WebAssembly.Memory;
@@ -425,6 +426,35 @@ function patchEmnapiToUseWasmBackedBuffers(
   }
 }
 
+// ─── Module-level accessors for the active wasm-side napi context ───
+//
+// R7 wiring (see experiments/r7-cbinfo-synthesis/FINDINGS.md): the
+// reverse-RPC callback dispatcher in host-worker/callback-dispatch.ts
+// needs access to the live wasm-side emnapi Context (to openScope /
+// closeScope around the funcref invocation) and an Env (to pass to
+// openScope).  These accessors let the dispatcher resolve both lazily
+// at dispatch time — necessary because the dispatcher is registered
+// BEFORE _start runs and any env is created.
+//
+// One NapiHost per worker is the invariant; the most-recently created
+// host wins.
+let activeNapiHost: NapiHost | null = null;
+/** Returns the most-recently created NapiHost in this worker, or null
+ *  if `createNapiHost` has not yet run. */
+export function getActiveNapiHost(): NapiHost | null { return activeNapiHost; }
+/** Returns the live wasm-side Context, or null if no NapiHost yet. */
+export function getWasmCtx(): Context | null { return activeNapiHost?.context ?? null; }
+/** Returns the first/active wasm-side Env, or undefined if no env has
+ *  been created yet (envs are created by user code via
+ *  `unofficial_napi_create_env` during _start). */
+export function getWasmEnv(): Env | undefined {
+  if (!activeNapiHost) return undefined;
+  // Single-env is the common case; first-in-insertion-order Map iteration
+  // matches what edge.js's bootstrap creates.
+  const it = activeNapiHost.envs.values().next();
+  return it.done ? undefined : it.value;
+}
+
 export function createNapiHost(opts: NapiHostOptions): NapiHost {
   const context = createContext();
   const envs = new Map<number, Env>();
@@ -554,7 +584,7 @@ export function createNapiHost(opts: NapiHostOptions): NapiHost {
   // `imports.env.memory` during instantiate if provided.
   (napiModule.imports.env as Record<string, unknown>).memory = opts.memory;
 
-  return {
+  const host: NapiHost = {
     imports: napiModule.imports as Record<string, Record<string, Function | WebAssembly.Memory>>,
     context,
     envs,
@@ -617,4 +647,6 @@ export function createNapiHost(opts: NapiHostOptions): NapiHost {
       });
     },
   };
+  activeNapiHost = host;
+  return host;
 }

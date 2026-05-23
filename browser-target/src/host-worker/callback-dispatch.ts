@@ -64,11 +64,27 @@
 import type { SyncRpcClient } from "./rpc-client-sync";
 import type { RpcClient } from "./rpc-client";
 import type { RpcServer, HandlerContext } from "./rpc-server";
+import type { Context, Env } from "../napi-host";
 import {
   OP_INVOKE_WASM_CALLBACK,
   REPLY_STATUS_OK,
   REPLY_STATUS_HOST_ERROR,
 } from "./rpc-protocol";
+
+// Type narrowings for emnapi runtime methods/fields missing from the
+// published `.d.ts`.  The two-method runtime-access surface is shared
+// with cross-context-marshal.ts via the facade.
+import type { ContextRuntimeAccess, ContextEnvLookup } from "../napi-host/emnapi";
+type ContextR7 = Context & ContextRuntimeAccess & ContextEnvLookup;
+interface CallbackInfoR7 {
+  thiz: unknown;
+  data: number | bigint;
+  args: ArrayLike<unknown>;
+  fn: Function;
+  /** Present in vendor source (HandleScope.ts:7); absent from
+   *  published .d.ts.  Cleared by HandleScope.dispose. */
+  holder: unknown;
+}
 
 const utf8Encoder = new TextEncoder();
 const utf8Decoder = new TextDecoder("utf-8");
@@ -234,6 +250,19 @@ export interface RegisterWasmCallbackInvokerOptions {
    *  it.  We use a `{ depth: number }` holder (vs. a closure cell)
    *  so a future tracing layer can inspect it. */
   depthCounter: { depth: number };
+  /** Wasm-side emnapi Context.  Used by the NAPI_CALLBACK shape to
+   *  synthesize a `napi_callback_info` per R7
+   *  (experiments/r7-cbinfo-synthesis/FINDINGS.md): we openScope on the
+   *  wasm-side context, mutate `scope.callbackInfo`, pass `scope.id` to
+   *  the funcref as cbinfo, then closeScope on return. */
+  wasmCtx: Context;
+  /** Wasm-side emnapi Env.  Accepts either a stable `Env` reference OR
+   *  an accessor function — at registration time the wasm-side env may
+   *  not yet exist (envs are created during `_start` by
+   *  `unofficial_napi_create_env`), so callers typically pass an
+   *  accessor that resolves lazily at dispatch.  See
+   *  `getWasmEnv` in `napi-host/index.ts`. */
+  wasmEnv: Env | (() => Env | undefined);
   /** Optional: max re-entrancy depth.  Defaults to 32 per the brief
    *  (R6a measured to 16 cleanly; 32 is production safety). */
   maxDepth?: number;
@@ -251,6 +280,12 @@ export function registerWasmCallbackInvoker(
   options: RegisterWasmCallbackInvokerOptions,
 ): void {
   const { wasmTable, depthCounter } = options;
+  // Cast through ContextR7 for emnapi internals not exposed by the
+  // published @emnapi/runtime .d.ts (see ContextR7 declaration above).
+  const wasmCtx = options.wasmCtx as ContextR7;
+  const wasmEnvOpt = options.wasmEnv;
+  const resolveWasmEnv = (): Env | undefined =>
+    typeof wasmEnvOpt === "function" ? wasmEnvOpt() : wasmEnvOpt;
   const maxDepth = options.maxDepth ?? CALLBACK_REENTRANCY_MAX_DEPTH;
 
   server.register(OP_INVOKE_WASM_CALLBACK, (_ctx: HandlerContext, args: Uint8Array) => {
@@ -306,19 +341,36 @@ export function registerWasmCallbackInvoker(
         case CALLBACK_SHAPE_NAPI_CALLBACK: {
           // `(env, cbinfo) → napi_value`.
           //
-          // #!~debt — synthetic CallbackInfo hook not yet wired.  We
-          // pass cbinfo=0; wasm callbacks that call napi_get_cb_info
-          // before the hook is installed see an invalid cbinfo and
-          // fail cleanly.  The bundled argv is reserved for the hook
-          // to consume once it lands (NAPI_CB ops aren't shipped yet —
-          // cluster B work — so this is not yet a regression path).
-          void argv;
-          const ret = (fn as (env: number, info: number) => number).call(
-            undefined,
-            env,
-            0,
-          );
-          returnHandle = (typeof ret === "number" ? ret : 0) >>> 0;
+          // R7 synthesis (experiments/r7-cbinfo-synthesis/FINDINGS.md):
+          // open a wasm-side emnapi scope, mutate `scope.callbackInfo`
+          // fields, pass `scope.id` as cbinfo.  Funcref's
+          // `napi_get_cb_info` resolves cbinfo via
+          // `_scopeStore.deref(cbinfo).callbackInfo`, hitting our
+          // synthesized values.  ~1 µs per call.
+          //
+          // Note: argv handles are wasm-side napi_value u32s that we
+          // deref via `wasmCtx.jsValueFromNapiValue` — this assumes
+          // the handles are valid in `wasmCtx`.  The cross-context
+          // marshaling story (host→wasm handle translation) is R8's
+          // problem; for now this branch trusts the caller.
+          const wasmEnv = resolveWasmEnv();
+          if (!wasmEnv) {
+            threwMessage = "invoke-wasm-callback: wasm-side env not yet created (NAPI_CALLBACK)";
+            break;
+          }
+          const scope = wasmCtx.openScope(wasmEnv);
+          const cbi = scope.callbackInfo as CallbackInfoR7;
+          cbi.args = argv.map((h) => wasmCtx.jsValueFromNapiValue(h));
+          cbi.thiz = undefined;    // R8 will replace with marshaled thisArg
+          cbi.data = dataPtr;
+          cbi.fn = fn;
+          cbi.holder = undefined;
+          try {
+            const ret = (fn as (env: number, info: number) => number).call(undefined, env, scope.id);
+            returnHandle = (typeof ret === "number" ? ret : 0) >>> 0;
+          } finally {
+            wasmCtx.closeScope(wasmEnv, scope);
+          }
           break;
         }
         case CALLBACK_SHAPE_CLEANUP_HOOK: {

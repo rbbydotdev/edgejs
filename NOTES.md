@@ -321,16 +321,13 @@ or splitting the wasm runtime off the JS thread.
 - ~~`microtasks-starved-by-pending-timer`~~ — **RESOLVED** by Lever B
   F-6 for the host-V8 user-script path; still present in the in-process
   wasm path (which retains JSPI suspension on `poll_oneoff` waits).
-- **`synthetic-callback-info-hook-not-wired`** — the F-9 batch-4
-  callback dispatcher (`browser-target/src/host-worker/callback-dispatch.ts`,
-  `registerWasmCallbackInvoker`) currently invokes the funcref with
-  `(env, cbinfo=0)`.  Wasm callbacks that call `napi_get_cb_info` will
-  see an invalid handle.  The first per-op agent that needs args
-  delivered to a callback must wire a "build synthetic CallbackInfo
-  from (env, args[], dataPtr)" hook into the dispatcher (see the
-  `#!~debt` block inline at the invocation site).  Scaffolding state
-  is intentional — proves the plumbing on callbacks that don't
-  introspect their args.
+- ~~`synthetic-callback-info-hook-not-wired`~~ — **RESOLVED** by R7
+  cbinfo synthesis (experiments/r7-cbinfo-synthesis/FINDINGS.md).  The
+  `NAPI_CALLBACK` case in `registerWasmCallbackInvoker` now openScopes
+  on the wasm-side emnapi context, mutates `scope.callbackInfo`, and
+  passes `scope.id` as cbinfo.  Cross-context handle marshaling (R8)
+  is the remaining piece needed before `napi_create_function` /
+  `napi_define_class` can ship as host-RPC ops.
 
 ---
 

@@ -308,6 +308,126 @@ async function runF9SweepProbe(): Promise<void> {
     results.push({ name: "create_string_utf8", status: r.status, ok: r.status === 0 && handle !== 0, detail: `status=${r.status} handle=${handle}` });
   }
 
+  // ── EXTENDED SWEEP — additional ops across all batches ──
+  // Goal: one representative per factory shape per batch, beyond the
+  // 10 ops above, to confirm the entire 100-op surface works (not just
+  // the sampled 10).  Stops once we hit ~24 ops total.
+
+  // Batch 2 numeric — create_uint32 (ThreeU32)
+  {
+    const out = allocPtr();
+    const r = await callOp(proto.OP_NAPI_CREATE_UINT32, "create_uint32", [1, 0xfeedface, out]);
+    const handle = memU32[out / 4];
+    results.push({ name: "create_uint32", status: r.status, ok: r.status === 0 && handle !== 0, detail: `status=${r.status} handle=${handle}` });
+  }
+  // Batch 2 predicate — is_arraybuffer on global (not an ArrayBuffer → result=false=0)
+  {
+    // need a value: use int32Handle from earlier
+    const out = allocPtr();
+    const r = await callOp(proto.OP_NAPI_IS_ARRAYBUFFER, "is_arraybuffer", [1, int32Handle, out]);
+    const result = memU32[out / 4];
+    results.push({ name: "is_arraybuffer(int32)", status: r.status, ok: r.status === 0 && result === 0, detail: `status=${r.status} result=${result}` });
+  }
+  // Batch 2 coerce — coerce_to_string on int32 (ThreeU32)
+  {
+    const out = allocPtr();
+    const r = await callOp(proto.OP_NAPI_COERCE_TO_STRING, "coerce_to_string(int32)", [1, int32Handle, out]);
+    const handle = memU32[out / 4];
+    results.push({ name: "coerce_to_string", status: r.status, ok: r.status === 0 && handle !== 0, detail: `status=${r.status} handle=${handle}` });
+  }
+  // Batch 2 — create_symbol (ThreeU32 — description handle or 0 for anonymous)
+  {
+    const out = allocPtr();
+    const r = await callOp(proto.OP_NAPI_CREATE_SYMBOL, "create_symbol", [1, 0, out]);
+    const handle = memU32[out / 4];
+    results.push({ name: "create_symbol", status: r.status, ok: r.status === 0 && handle !== 0, detail: `status=${r.status} handle=${handle}` });
+  }
+  // Batch 2 — create_promise (env, &deferred, &promise) — ThreeU32, BOTH are out-ptrs
+  {
+    const deferredOut = allocPtr();
+    const promiseOut = allocPtr();
+    const r = await callOp(proto.OP_NAPI_CREATE_PROMISE, "create_promise", [1, deferredOut, promiseOut]);
+    const deferred = memU32[deferredOut / 4];
+    const promise = memU32[promiseOut / 4];
+    results.push({ name: "create_promise", status: r.status, ok: r.status === 0 && deferred !== 0 && promise !== 0, detail: `status=${r.status} deferred=${deferred} promise=${promise}` });
+  }
+  // Batch 2 — create_error(env, code_handle, msg_handle, &result) — FourU32.
+  // Use the create_string_utf8 result handle (from earlier) as the message.
+  // Get its handle from results array — but we need a sure-thing handle.
+  // Create a fresh string here.
+  {
+    const msgBytes = new TextEncoder().encode("err-msg");
+    const msgPtr = allocPtr(msgBytes.byteLength + 4);
+    memU8.set(msgBytes, msgPtr);
+    const strOut = allocPtr();
+    const sr = await callOp(proto.OP_NAPI_CREATE_STRING_UTF8, "create_string_utf8(for_error)",
+      [1, msgPtr, msgBytes.byteLength, strOut]);
+    const msgHandle = memU32[strOut / 4];
+    if (sr.status === 0 && msgHandle !== 0) {
+      const errOut = allocPtr();
+      const r = await callOp(proto.OP_NAPI_CREATE_ERROR, "create_error", [1, 0, msgHandle, errOut]);
+      const handle = memU32[errOut / 4];
+      results.push({ name: "create_error", status: r.status, ok: r.status === 0 && handle !== 0, detail: `status=${r.status} handle=${handle}` });
+    } else {
+      results.push({ name: "create_error", status: sr.status, ok: false, detail: "couldn't create message string" });
+    }
+  }
+  // Batch 3 — create_string_latin1 (FourU32) — same shape as utf8
+  {
+    const strBytes = new TextEncoder().encode("latin1-test");
+    const strPtr = allocPtr(strBytes.byteLength + 4);
+    memU8.set(strBytes, strPtr);
+    const out = allocPtr();
+    const r = await callOp(proto.OP_NAPI_CREATE_STRING_LATIN1, "create_string_latin1",
+      [1, strPtr, strBytes.byteLength, out]);
+    const handle = memU32[out / 4];
+    results.push({ name: "create_string_latin1", status: r.status, ok: r.status === 0 && handle !== 0, detail: `status=${r.status} handle=${handle}` });
+  }
+  // Batch 3 — set_named_property(env, obj, name_ptr, value) — FourU32, name is C string in memory
+  {
+    // need a fresh object + a value to set + a name string in memory
+    const objOut = allocPtr();
+    const cor = await callOp(proto.OP_NAPI_CREATE_OBJECT, "create_object(for_set_named)", [1, objOut]);
+    const objH = memU32[objOut / 4];
+    if (cor.status === 0 && objH !== 0) {
+      const nameBytes = new TextEncoder().encode("k\0"); // null-terminated
+      const namePtr = allocPtr(nameBytes.byteLength + 4);
+      memU8.set(nameBytes, namePtr);
+      const r = await callOp(proto.OP_NAPI_SET_NAMED_PROPERTY, "set_named_property", [1, objH, namePtr, int32Handle]);
+      results.push({ name: "set_named_property", status: r.status, ok: r.status === 0, detail: `status=${r.status}` });
+    } else {
+      results.push({ name: "set_named_property", status: cor.status, ok: false, detail: "couldn't create owner object" });
+    }
+  }
+  // Cluster B — create_external_arraybuffer.  Note: this op interacts
+  // with emnapi state in a way that can leave a pending exception.  We
+  // clear it after so subsequent sweep ops aren't poisoned.
+  // SixU32: (env, ext_data, byte_length, finalize_cb, finalize_hint, &result)
+  {
+    const out = allocPtr();
+    const r = await callOp(proto.OP_NAPI_CREATE_EXTERNAL_ARRAYBUFFER, "create_external_arraybuffer",
+      [1, 0xfeed1234, 256, 0xdead1234, 0xbeef1234, out]);
+    const handle = memU32[out / 4];
+    results.push({ name: "create_external_arraybuffer", status: r.status, ok: r.status === 0 && handle !== 0, detail: `status=${r.status} handle=${handle}` });
+    // Drain any pending exception so downstream ops aren't poisoned.
+    const excOut = allocPtr();
+    await callOp(proto.OP_NAPI_GET_AND_CLEAR_LAST_EXCEPTION, "(internal: clear last exception)", [1, excOut]);
+  }
+  // Cluster C — add_finalizer(env, value, finalize_data, finalize_cb, finalize_hint, &result_opt) — SixU32
+  {
+    const objOut = allocPtr();
+    const cor = await callOp(proto.OP_NAPI_CREATE_OBJECT, "create_object(for_add_finalizer)", [1, objOut]);
+    const objH = memU32[objOut / 4];
+    if (cor.status === 0 && objH !== 0) {
+      const refOut = allocPtr();
+      const r = await callOp(proto.OP_NAPI_ADD_FINALIZER, "add_finalizer",
+        [1, objH, 0xfeed5678, 0xdead5678, 0xbeef5678, refOut]);
+      results.push({ name: "add_finalizer", status: r.status, ok: r.status === 0, detail: `status=${r.status} refOut=@${refOut}=${memU32[refOut/4]}` });
+    } else {
+      results.push({ name: "add_finalizer", status: cor.status, ok: false, detail: "couldn't create owner object" });
+    }
+  }
+
   // ── Cluster A — env cleanup hook (0x01A0-0x01A1) ──
   // add_env_cleanup_hook(env, cbPtr, dataPtr) — three-u32 no-result, custom inline.
   // Verifies the handler runs + closure is registered (we never trigger the cleanup,

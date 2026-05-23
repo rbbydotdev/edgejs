@@ -622,12 +622,26 @@ async function runEdgeWithEmnapi() {
   // OP_INVOKE_WASM_CALLBACK back to this worker via the reverse
   // channel; we look up the funcref in __indirect_function_table and
   // invoke it.  See callback-dispatch.ts + CALLBACK-DISPATCH-SPEC.md.
+  //
+  // R7 wiring (cbinfo synthesis): pass the wasm-side emnapi Context
+  // + an accessor for the active Env.  The dispatcher uses these
+  // to synthesize `napi_callback_info` per the NAPI_CALLBACK shape.
+  // The env accessor is lazy because envs are created during _start
+  // (after this registration point) by `unofficial_napi_create_env`.
   if (reverseRpcServer) {
     try {
       const wasmTable = instance.exports.__indirect_function_table as WebAssembly.Table | undefined;
       if (wasmTable) {
         const depthCounter = createCallbackDepthCounter();
-        registerWasmCallbackInvoker(reverseRpcServer, { wasmTable, depthCounter });
+        registerWasmCallbackInvoker(reverseRpcServer, {
+          wasmTable,
+          depthCounter,
+          wasmCtx: napi.context,
+          wasmEnv: () => {
+            const it = napi.envs.values().next();
+            return it.done ? undefined : it.value;
+          },
+        });
         post("log", { text: "[runtime] OP_INVOKE_WASM_CALLBACK handler registered", level: "info" });
       } else {
         post("log", { text: "[runtime] no __indirect_function_table on wasm instance; callback invoker not registered", level: "warn" });
