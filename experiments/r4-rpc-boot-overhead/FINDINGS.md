@@ -89,3 +89,61 @@ the comfortable zone.
 boot call count. Next step before full cutover: instrument a boot
 profile to count napi ops. Mitigations are well-defined if the count
 exceeds budget.
+
+## Follow-up B1 (2026-05-23): real boot call counts measured
+
+Used the existing `browser-target/src/trace.ts` per-op histogram
+(already wired; no code changes needed) to count napi calls during
+3 boot scenarios via `browser-test-runner.mjs`:
+
+| Scenario | Test | Total napi calls | Projected RPC @ 14 µs |
+|---|---|---|---|
+| Minimum | `tests/js/log.js` | **14,648** | 205 ms |
+| Realistic | `tests/js/crypto-sha256.js` | **15,645** | 219 ms |
+| Heavy | `tests/js/response-body-consume.js` | **17,479** | 245 ms |
+
+All three land **comfortably under the 30k threshold** ("acceptable"
+bucket from the R4 table above). Heavy boot adds only ~2.8k calls
+over minimum — meaning **~14.6k of the total is fixed Node-runtime
+bootstrap** independent of user code.
+
+### Top-10 ops (heavy boot, representative shape across all 3)
+
+| Rank | Op | Count | % | Inline-able? |
+|---|---|---|---|---|
+| 1 | `napi_create_string_utf8` | 3,693 | 21.1% | No (TIER D — alloc) |
+| 2 | `napi_set_element` | 2,889 | 16.5% | No (TIER D — side-effect) |
+| 3 | `napi_set_named_property` | 1,974 | 11.3% | No (TIER D — side-effect) |
+| 4 | `napi_typeof` | 1,137 | 6.5% | Partial (TIER B for reserved handles only) |
+| 5 | `napi_define_properties` | 958 | 5.5% | No (TIER D) |
+| 6 | `napi_create_int32` | 688 | 3.9% | No (TIER D — alloc) |
+| 7 | `napi_get_value_string_utf8` | 686 | 3.9% | No (TIER D) |
+| 8 | `napi_has_named_property` | 632 | 3.6% | No (TIER D) |
+| 9 | `napi_get_named_property` | 616 | 3.5% | Partial (TIER C if cached) |
+| 10 | `napi_create_function` | 459 | 2.6% | No (TIER D — reverse channel) |
+
+Top-3 = 49% of calls; top-10 = 78%. **None of the top-3 are inline-able.**
+
+### Inline-candidate audit (B2 vs B1)
+
+A parallel static-analysis pass (B2) estimated TIER-A inlining
+(`get_undefined`, `get_null`, `get_boolean`, `get_global`) would save
+"25-35%" of boot RPCs, based on static call-site density in edge.js's
+C source.  **B1's dynamic histogram contradicts that:** TIER-A ops are
+only ~2% of actual calls (e.g. `napi_get_undefined` ranks #13 at
+1.8%).  The static count overestimated because many call-sites are in
+error-return paths that don't fire during a successful boot.
+
+The real high-impact lever, if ever needed, is **batching** at the
+protocol level: the `set_element` / `set_named_property` /
+`define_properties` ops account for ~33% of boot calls and are
+typically issued in tight loops during table setup.  Batching those
+into a single RPC would cut volume meaningfully — but **at 17k calls
+per heavy boot, batching is not currently warranted.**
+
+## Final verdict for path (a)
+
+**Boot RPC overhead is NOT a blocker.** No mitigations needed before
+beginning the full napi cutover.  If the count ever creeps past 30k
+(e.g. a larger lib surface), the well-defined lever is op-batching on
+the top-3 property-setup ops.

@@ -22,7 +22,7 @@
 
 | Q | Topic | Finding |
 |---|---|---|
-| R4 | all-via-RPC boot overhead | 13 µs p50 / 52 µs p99 per RPC in Node; ~20-25 µs projected in browser.  Acceptable up to ~30k boot napi calls (~450 ms); needs mitigation past 50k.  Two levers (inline well-known handles + batch op-codes) cut volume 2-3×.  `experiments/r4-rpc-boot-overhead/` |
+| R4 | all-via-RPC boot overhead | 13 µs p50 per RPC + actual boot histogram measured (B1).  Min/realistic/heavy boots = 14.6k / 15.6k / 17.5k napi calls = **205-245 ms RPC inflation**.  All well under 30k threshold.  **No mitigations needed.**  Top-3 ops (`create_string_utf8`, `set_element`, `set_named_property`) = 49% of calls and are all TIER D (not inline-able); batching is the lever if ever needed.  `experiments/r4-rpc-boot-overhead/` |
 
 
 
