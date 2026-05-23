@@ -337,6 +337,59 @@ export const OP_NAPI_CREATE_EXTERNAL_BUFFER = OP_DOMAIN_NAPI_RO | 0x00B2;
 //                              finalize_cb: funcref-idx,
 //                              finalize_hint, &result) — six args.
 
+// ── Lever B batch 4 cluster C: object wrap lifecycle (0x01C0–0x01C3) ──
+// Allocated in range 0x00C0–0x00C3 under OP_DOMAIN_NAPI_RO.
+//
+// Object-wrap (napi_wrap / napi_unwrap / napi_remove_wrap) attaches an
+// opaque native pointer to a JS object and can run a finalizer when the
+// JS object is collected.  napi_add_finalizer is the same machinery but
+// without a wrapped data slot.
+//
+// napi_unwrap and napi_remove_wrap take no callback — pure object-binding
+// reads/clears, dispatched via the THREE_U32 factory.
+//
+// napi_wrap and napi_add_finalizer carry a finalize_cb funcref index.
+// Like cluster B, emnapi's Finalizer dispatches finalize_cb through
+// `bridge.makeDynCall_vppp(fini)`, which on the host-worker is wired to
+// a silent no-op factory (see napi-host/unofficial.ts dyncall-before-table-ready
+// debt).  So storing the funcref index does no harm at finalize-time —
+// the dispatcher swallows the call.
+//
+// #!~debt cluster-c-finalizers-noop: we build a host-side closure via
+// makeHostSideCallbackClosure(shape=FINALIZER) and cache it in a Map,
+// but emnapi receives only the integer funcref index — never the JS
+// closure.  This mirrors cluster B's mitigation: the plumbing is in
+// place for a future emnapi patch (or host-side FinalizationRegistry)
+// to wire the cached closure to actual GC events.  Until then the
+// finalizer is dormant; matches the guest-side native edge behavior
+// (napi/src/guest/napi.rs drops _finalize_cb) so no net regression.
+//
+// napi_add_finalizer's emnapi impl rejects finalize_cb=0 with
+// napi_invalid_arg ($CHECK_ARG! at wrap.ts:187).  So unlike cluster B
+// (which can pass 0 freely), cluster C passes the original cbPtr
+// through to emnapi for both napi_wrap (when caller supplied non-zero)
+// and napi_add_finalizer (always).  Safe because makeDynCall_vppp is
+// a noop factory.
+
+export const OP_NAPI_WRAP = OP_DOMAIN_NAPI_RO | 0x00C0;
+// napi_wrap(env, js_object, native_obj, finalize_cb: funcref-idx,
+//           finalize_hint, &result_optional) — six args.
+// result is optional (0 means "no userland ref returned").  emnapi
+// requires non-zero finalize_cb iff result is non-zero (else returns
+// napi_invalid_arg via internal.ts:118).
+
+export const OP_NAPI_UNWRAP = OP_DOMAIN_NAPI_RO | 0x00C1;
+// napi_unwrap(env, js_object, &result) — three args; THREE_U32 factory.
+
+export const OP_NAPI_REMOVE_WRAP = OP_DOMAIN_NAPI_RO | 0x00C2;
+// napi_remove_wrap(env, js_object, &result) — three args; THREE_U32 factory.
+
+export const OP_NAPI_ADD_FINALIZER = OP_DOMAIN_NAPI_RO | 0x00C3;
+// napi_add_finalizer(env, js_object, finalize_data,
+//                    finalize_cb: funcref-idx,
+//                    finalize_hint, &result_optional) — six args.
+// emnapi requires finalize_cb != 0 always (wrap.ts:187).
+
 // ── NAPI callback-taking ops (F-5) ─────────────────────────────────
 export const OP_NAPI_CALL_FUNCTION = OP_DOMAIN_NAPI_CB | 0x0001;
 // napi_call_function(env, recv, fn, argc, argv_ptr, &result)

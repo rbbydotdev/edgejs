@@ -82,6 +82,8 @@ import {
   // Lever B batch 4 cluster B (0x01B0–0x01B2): external-data with finalizers.
   OP_NAPI_CREATE_EXTERNAL, OP_NAPI_CREATE_EXTERNAL_ARRAYBUFFER,
   OP_NAPI_CREATE_EXTERNAL_BUFFER,
+  // Lever B batch 4 cluster C (0x01C0–0x01C3): object wrap lifecycle.
+  OP_NAPI_WRAP, OP_NAPI_UNWRAP, OP_NAPI_REMOVE_WRAP, OP_NAPI_ADD_FINALIZER,
   REPLY_STATUS_INVALID_ARGS,
 } from "./rpc-protocol";
 import {
@@ -282,6 +284,10 @@ export function makeNapiOpRegistry(napi: Record<string, NapiFn>): NapiOpRegistry
     [OP_NODE_API_IS_SHAREDARRAYBUFFER, "node_api_is_sharedarraybuffer"],
     [OP_NAPI_RUN_SCRIPT, "napi_run_script"],
     [OP_NAPI_CREATE_DOUBLE, "napi_create_double"],
+    // Lever B batch 4 cluster C (0x01C1, 0x01C2): napi_unwrap / napi_remove_wrap
+    // — (env, js_object, &result); pure THREE_U32 shape, no callback.
+    [OP_NAPI_UNWRAP, "napi_unwrap"],
+    [OP_NAPI_REMOVE_WRAP, "napi_remove_wrap"],
   ];
 
   const FOUR_U32: Array<[number, string]> = [
@@ -372,7 +378,10 @@ export function makeNapiOpRegistry(napi: Record<string, NapiFn>): NapiOpRegistry
     // Lever B batch 4 cluster A inline registrations:
     // +2 napi_add_env_cleanup_hook / napi_remove_env_cleanup_hook
     //    (three-u32 no-result, JS-closure substitution via callback-dispatch).
-    count: TWO_U32.length + THREE_U32.length + FOUR_U32.length + 14 + 6 + 2,
+    // Lever B batch 4 cluster C inline registrations:
+    // +2 napi_wrap / napi_add_finalizer (FINALIZER-shape).
+    //    napi_unwrap and napi_remove_wrap are counted in THREE_U32.length.
+    count: TWO_U32.length + THREE_U32.length + FOUR_U32.length + 14 + 6 + 2 + 2,
     register(server: RpcServer): void {
       for (const [op, name] of TWO_U32) {
         server.register(op, makeTwoU32(napi[name], name));
@@ -772,6 +781,109 @@ export function makeNapiOpRegistry(napi: Record<string, NapiFn>): NapiOpRegistry
           ensureClosure(env, cbPtr, finalizeHint);
           // See cluster-b-finalizers-noop debt above.
           const status = createExtBufFn(env, length, data, 0, 0, resultPtr);
+          return { payload: EMPTY, status };
+        });
+      }
+
+      // ── Lever B batch 4 cluster C (object wrap lifecycle) ────────────
+      //
+      // Two FINALIZER-shape ops in this block:
+      //   OP_NAPI_WRAP            (env, value, native_obj, cb, hint, &result_optional)
+      //   OP_NAPI_ADD_FINALIZER   (env, value, data, cb, hint, &result_optional)
+      //
+      // napi_unwrap and napi_remove_wrap are 3-u32 reads (no callback)
+      // wired via the THREE_U32 factory table at the top of this function.
+      //
+      // #!~debt cluster-c-finalizers-noop — emnapi's Finalizer dispatches
+      // finalize_cb through `bridge.makeDynCall_vppp(fini)`, which on the
+      // host-worker is wired to a noop factory (`(() => () => undefined)`
+      // — see napi-host/unofficial.ts dyncall-before-table-ready).  So
+      // the funcref index we pass to emnapi is never actually invoked
+      // at finalize-time; the finalizer is dormant.  We still build a
+      // host-side closure via makeHostSideCallbackClosure and cache it
+      // in a Map keyed by `(env, cbPtr, finalizeHint)` so a future
+      // FinalizationRegistry-based wiring (or emnapi patch) can pick
+      // it up without re-allocating closures.
+      //
+      // Unlike cluster B (which passes 0 to emnapi for finalize_cb),
+      // cluster C passes the ORIGINAL cbPtr through:
+      //   - napi_wrap with non-zero result requires non-zero finalize_cb
+      //     (internal.ts:118 returns napi_invalid_arg otherwise).
+      //   - napi_add_finalizer always requires non-zero finalize_cb
+      //     ($CHECK_ARG at wrap.ts:187).
+      // Pass-through is safe precisely because makeDynCall_vppp is a noop
+      // — no funcref resolution is ever attempted on the host worker.
+      // This matches guest-side native edge (drops _finalize_cb), so no
+      // net regression.
+      {
+        const wrapFinalizerClosures = new Map<string, (env: number, data: number, hint: number) => void>();
+        const wrapFn = napi["napi_wrap"];
+        const addFinFn = napi["napi_add_finalizer"];
+
+        const keyOf = (env: number, cbPtr: number, hintPtr: number): string =>
+          `${env >>> 0}:${cbPtr >>> 0}:${hintPtr >>> 0}`;
+
+        const ensureClosure = (
+          env: number,
+          cbPtr: number,
+          finalizeHint: number,
+        ): void => {
+          // Cache a FINALIZER-shape closure for the (env, cbPtr, hint)
+          // tuple.  cbPtr=0 means "no finalizer" — nothing to cache.
+          if (cbPtr === 0) return;
+          const key = keyOf(env, cbPtr, finalizeHint);
+          if (wrapFinalizerClosures.has(key)) return;
+          const reverseClient = getHostSideReverseSyncClient();
+          if (!reverseClient) return;
+          const hostClosure = makeHostSideCallbackClosure({
+            reverseClient,
+            cbPtr,
+            dataPtr: finalizeHint,
+            env,
+            shape: CALLBACK_SHAPE_FINALIZER,
+          });
+          const finalizer = (envArg: number, data: number, hint: number) => {
+            void hostClosure(data, hint);
+            void envArg;
+          };
+          wrapFinalizerClosures.set(key, finalizer);
+        };
+
+        server.register(OP_NAPI_WRAP, async (_ctx, args) => {
+          if (typeof wrapFn !== "function") return err("napi handler: napi_wrap not found");
+          if (args.byteLength < 24) return err("napi handler: args too short for napi_wrap");
+          const dv = new DataView(args.buffer, args.byteOffset, args.byteLength);
+          const env          = dv.getUint32(0,  true);
+          const jsObject     = dv.getUint32(4,  true);
+          const nativeObj    = dv.getUint32(8,  true);
+          const cbPtr        = dv.getUint32(12, true);
+          const finalizeHint = dv.getUint32(16, true);
+          const resultPtr    = dv.getUint32(20, true);
+          ensureClosure(env, cbPtr, finalizeHint);
+          // Pass cbPtr through (see cluster-c-finalizers-noop): emnapi's
+          // makeDynCall_vppp is a noop on the host-worker so the funcref
+          // index is never resolved at finalize-time.  Passing 0 instead
+          // would break the (result != 0 && finalize_cb == 0) → invalid_arg
+          // branch in internal.ts:118.
+          const status = wrapFn(env, jsObject, nativeObj, cbPtr, finalizeHint, resultPtr);
+          return { payload: EMPTY, status };
+        });
+
+        server.register(OP_NAPI_ADD_FINALIZER, async (_ctx, args) => {
+          if (typeof addFinFn !== "function") return err("napi handler: napi_add_finalizer not found");
+          if (args.byteLength < 24) return err("napi handler: args too short for napi_add_finalizer");
+          const dv = new DataView(args.buffer, args.byteOffset, args.byteLength);
+          const env           = dv.getUint32(0,  true);
+          const jsObject      = dv.getUint32(4,  true);
+          const finalizeData  = dv.getUint32(8,  true);
+          const cbPtr         = dv.getUint32(12, true);
+          const finalizeHint  = dv.getUint32(16, true);
+          const resultPtr     = dv.getUint32(20, true);
+          ensureClosure(env, cbPtr, finalizeHint);
+          // emnapi $CHECK_ARG! rejects finalize_cb=0 unconditionally for
+          // napi_add_finalizer (wrap.ts:187).  Pass cbPtr through — safe
+          // because of cluster-c-finalizers-noop.
+          const status = addFinFn(env, jsObject, finalizeData, cbPtr, finalizeHint, resultPtr);
           return { payload: EMPTY, status };
         });
       }
