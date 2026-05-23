@@ -97,6 +97,33 @@ export const OP_NAPI_REFERENCE_UNREF = OP_DOMAIN_NAPI_RO | 0x0020;
 export const OP_NAPI_TYPE_TAG_OBJECT = OP_DOMAIN_NAPI_RO | 0x0021;
 export const OP_NAPI_CHECK_OBJECT_TYPE_TAG = OP_DOMAIN_NAPI_RO | 0x0022;
 
+// ── NAPI callback-taking ops (F-5) ─────────────────────────────────
+export const OP_NAPI_CALL_FUNCTION = OP_DOMAIN_NAPI_CB | 0x0001;
+// napi_call_function(env, recv, fn, argc, argv_ptr, &result)
+// 6 u32 args; emnapi reads argv array from shared memory at argv_ptr.
+
+export const OP_NAPI_NEW_INSTANCE = OP_DOMAIN_NAPI_CB | 0x0002;
+// napi_new_instance(env, constructor, argc, argv_ptr, &result)
+// 5 u32 args.
+
+export const OP_NAPI_CREATE_REFERENCE = OP_DOMAIN_NAPI_CB | 0x0003;
+// napi_create_reference(env, value, initial_refcount, &result_ref)
+// 4 u32 args.
+
+// ── Reverse-channel ops (host → wasm; for callback invocation) ─────
+//
+// F-5: when host's emnapi calls a napi_callback (e.g., a JS function
+// created via napi_create_function), the underlying wasm function
+// pointer can't be invoked directly from host.  We use the L4 reverse
+// channel: host sends OP_INVOKE_WASM_CALLBACK to wasm worker; wasm
+// looks up the function in its table and calls it.
+//
+// Full wiring of this requires wasm-side cooperation (the wasm runs
+// the callback against its emnapi state and returns a result).  L5
+// F-7 cutover replaces edge.js's in-process napi-host with the RPC
+// path, at which point this reverse channel becomes load-bearing.
+export const OP_INVOKE_WASM_CALLBACK = OP_DOMAIN_NAPI_CB | 0x0100;
+
 // ── Status codes for replies ────────────────────────────────────────
 
 export const REPLY_STATUS_OK = 0;

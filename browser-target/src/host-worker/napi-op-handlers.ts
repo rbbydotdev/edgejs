@@ -22,6 +22,9 @@
 
 import type { RpcServer, HandlerContext } from "./rpc-server";
 import {
+  OP_NAPI_CALL_FUNCTION,
+  OP_NAPI_NEW_INSTANCE,
+  OP_NAPI_CREATE_REFERENCE,
   OP_NAPI_GET_BOOLEAN,
   OP_NAPI_TYPEOF, OP_NAPI_GET_ARRAY_LENGTH,
   OP_NAPI_IS_ARRAY, OP_NAPI_IS_TYPEDARRAY, OP_NAPI_IS_BUFFER,
@@ -85,6 +88,47 @@ function makeFourU32(napiFn: NapiFn | undefined, opName: string) {
     const b = dv.getUint32(8, true);
     const ptr = dv.getUint32(12, true);
     return { payload: EMPTY, status: napiFn(env, a, b, ptr) };
+  };
+}
+
+/** Make a handler for five-u32 ops (env, a, b, c, resultPtr).
+ *  Example: napi_new_instance(env, constructor, argc, argv_ptr, result). */
+function makeFiveU32(napiFn: NapiFn | undefined, opName: string) {
+  return async (_ctx: HandlerContext, args: Uint8Array) => {
+    if (typeof napiFn !== "function") return err(`napi handler: ${opName} not found`);
+    if (args.byteLength < 20) return err("napi handler: args too short for five-u32");
+    const dv = new DataView(args.buffer, args.byteOffset, args.byteLength);
+    return {
+      payload: EMPTY,
+      status: napiFn(
+        dv.getUint32(0, true),
+        dv.getUint32(4, true),
+        dv.getUint32(8, true),
+        dv.getUint32(12, true),
+        dv.getUint32(16, true),
+      ),
+    };
+  };
+}
+
+/** Make a handler for six-u32 ops (env, a, b, c, d, resultPtr).
+ *  Example: napi_call_function(env, recv, fn, argc, argv_ptr, result). */
+function makeSixU32(napiFn: NapiFn | undefined, opName: string) {
+  return async (_ctx: HandlerContext, args: Uint8Array) => {
+    if (typeof napiFn !== "function") return err(`napi handler: ${opName} not found`);
+    if (args.byteLength < 24) return err("napi handler: args too short for six-u32");
+    const dv = new DataView(args.buffer, args.byteOffset, args.byteLength);
+    return {
+      payload: EMPTY,
+      status: napiFn(
+        dv.getUint32(0, true),
+        dv.getUint32(4, true),
+        dv.getUint32(8, true),
+        dv.getUint32(12, true),
+        dv.getUint32(16, true),
+        dv.getUint32(20, true),
+      ),
+    };
   };
 }
 
@@ -175,6 +219,10 @@ export function makeNapiOpRegistry(napi: Record<string, NapiFn>): NapiOpRegistry
         OP_NAPI_DELETE_REFERENCE,
         makeNoResult(napi["napi_delete_reference"], "napi_delete_reference"),
       );
+      // F-5 callback ops.
+      server.register(OP_NAPI_CALL_FUNCTION, makeSixU32(napi["napi_call_function"], "napi_call_function"));
+      server.register(OP_NAPI_NEW_INSTANCE, makeFiveU32(napi["napi_new_instance"], "napi_new_instance"));
+      server.register(OP_NAPI_CREATE_REFERENCE, makeFourU32(napi["napi_create_reference"], "napi_create_reference"));
     },
   };
 }

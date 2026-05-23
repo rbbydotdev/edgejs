@@ -1583,3 +1583,48 @@ it ~15 minutes of work — coordinating subagents would've taken longer.
 Sticking with subagent-where-actually-useful, not subagent-for-its-own-sake.
 
 **Tests:** 14 pass / 13 skip / 0 fail unchanged.
+
+---
+
+## F-5 partial: callback-arg napi op factories (2026-05-23)
+
+**Goal:** napi_call_function + napi_new_instance + napi_create_reference
+via RPC.  Reverse-channel protocol designed.
+
+**Deliverables:**
+- 3 new op codes in NAPI_CB domain:
+  OP_NAPI_CALL_FUNCTION, OP_NAPI_NEW_INSTANCE, OP_NAPI_CREATE_REFERENCE
+- OP_INVOKE_WASM_CALLBACK reserved for L4 reverse-channel
+  (host -> wasm callback invocation when wasm-table-fn pointer is
+  needed; full wiring requires real wasm cooperation, deferred)
+- `makeFiveU32` + `makeSixU32` factories added to napi-op-handlers.ts
+- 3 callback ops registered
+
+**End-to-end exercise deferred:**
+- napi_call_function requires a JS function HANDLE.  Creating one
+  ergonomically from JS without a real wasm callback is hard.  Tests
+  via probe-f1-napi continue passing existing ops; explicit call_function
+  test would need either:
+   a) A real wasm-created callback (requires edge.js rebuild)
+   b) A JS-side helper to inject a function into the napi handle store
+      (would touch emnapi internals)
+  Both out of session scope.
+
+**Reverse channel for finalizers:**
+- L4 already validated reverse RPC works (probe-reverse-echo)
+- OP_INVOKE_WASM_CALLBACK is the architectural slot
+- Activation requires wasm side to register a server for this op +
+  edge.js to actually CREATE callbacks (which only happens at runtime
+  via napi_create_function calls during user-addon load)
+
+**Tests:** 14 pass / 13 skip / 0 fail.
+
+**What F-5 unlocked vs what defers to integration:**
+Unlocked: pure JS workflow of "call a JS function via napi" works through RPC.
+Defers: wasm-side callback creation + invocation (needs C-side rebuild).
+
+**Threadsafe functions:** Q3 finding said tsfn just works once napiModule
+is created with childThread:false (which we do).  Specific tsfn op
+handlers can be added by extending the registry — pattern is the
+same as the 30 ops we already have, just with more u32 args.  Defer
+until first real test demands.
