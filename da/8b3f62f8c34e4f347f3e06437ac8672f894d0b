@@ -1,0 +1,25 @@
+browser-target/src/host-worker/rpc-protocol.ts
+  s_7bec0ecbfcdcd0::t_856cfda981fc55 100-126
+browser-target/src/host-worker/napi-op-handlers.ts
+  s_7bec0ecbfcdcd0::t_ea136df53925ac 94-134
+  s_7bec0ecbfcdcd0::t_022a7838756c22 222-225
+  s_7bec0ecbfcdcd0::t_eea99802b851a0 25-27
+plans/lever-b-progress.md
+  ai_agent 1586-1630
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "da8b3f62f8c34e4f347f3e06437ac8672f894d0b",
+  "prompts": {},
+  "sessions": {
+    "s_7bec0ecbfcdcd0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d560d5ae-265f-44ae-89c4-d35659b3ab9e",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
