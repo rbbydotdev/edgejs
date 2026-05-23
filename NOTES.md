@@ -188,6 +188,26 @@ the browser-target tree.
   public Buffer JS API.
 - Multiple `#!~debt` in `unofficial.ts` — most no-op stubs writing
   sensible defaults to out-params. Promote when a workload lights them up.
+- `cluster-b-finalizers-noop` (2026-05-23, F-9 batch 4 cluster B) —
+  `napi_create_external{,_arraybuffer,_buffer}` register host-side
+  finalizer closures in a `finalizerClosures` Map but pass
+  `finalize_cb=0` to emnapi.  Root cause: emnapi v1's `Finalizer`
+  machinery (`vendor/emnapi/packages/runtime/src/Finalizer.ts:52-66`)
+  only accepts wasm funcref indices, NOT JS callables — unlike
+  `CleanupQueue` which DOES branch on `typeof`.  Net behavior matches
+  guest-side native edge (which also drops `_finalize_cb`).  Future
+  resolution: patch emnapi's `Finalizer.callFinalizer` to recognize
+  JS-callable branch, OR wire host-side `FinalizationRegistry` keyed
+  on the external handle.
+- `cluster-c-finalizers-noop` (2026-05-23, F-9 batch 4 cluster C) —
+  `napi_wrap` and `napi_add_finalizer` pass the wasm funcref through
+  to emnapi (rather than 0; emnapi rejects 0 for these via
+  `napi_invalid_arg`).  Same Finalizer constraint as cluster B; the
+  funcref-passthrough is safe because `makeDynCall_vppp` is wired to
+  a no-op (existing `dynCall-before-table-ready` debt), so the
+  funcref is never resolved against any table.  Net behavior matches
+  cluster B + guest-side native edge.  Same future-resolution paths
+  apply.
 
 ### Cross-worker primitives
 
