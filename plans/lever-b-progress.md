@@ -1628,3 +1628,65 @@ is created with childThread:false (which we do).  Specific tsfn op
 handlers can be added by extending the registry — pattern is the
 same as the 30 ops we already have, just with more u32 args.  Defer
 until first real test demands.
+
+---
+
+## F-6: user-script execution on host worker (2026-05-23)
+
+**Goal:** route `unofficial_napi_contextify_run_script`-class user code
+to host V8 via OP_RUN_USER_SCRIPT, drain microtasks on the host event
+loop instead of the JSPI-suspended wasm worker.  Unblock the 6
+microtask-ordering regression tests + the await-resumes test (7 total).
+
+**Deliverables:**
+- `runHostScriptForTestRunner()` in `browser-target/src/main.ts`:
+  emits the same DOM signals the test runner expects — section marker,
+  `[stdout] <line>` spans, `_start ran <ms> ms (exit=N|returned|THREW)`
+  sentinel.
+- `?host=1` URL param routes the user script through host worker
+  instead of spawning the wasm runtime worker (saves boot time too).
+- Test runner reads `.harness-args` sidecars (newline-separated
+  `k=v`, blank/`#` lines ignored) and appends to URL.  Closes the
+  long-standing `#!~debt browser-runner-ignores-harness-args` (the
+  comment that called it out is now updated to describe the feature).
+- Host handler `OP_RUN_USER_SCRIPT` settle semantics rewritten:
+  - source runs SYNCHRONOUSLY (no async IIFE wrapper) so
+    `process.nextTick` can drain BEFORE V8's first microtask
+    checkpoint — that gives the nextTick-before-Promise ordering
+    real Node has.  Trade-off: source can't use top-level await.
+  - process.exit no longer throws (uncaught error inside a
+    setTimeout callback became `[pageerror] exit`); it just sets
+    exited+exitCode and silences further console.
+  - 250ms grace window after the IIFE settles to let queued
+    setTimeout-based exits fire (cut short by exitPromise).  Covers
+    `setTimeout(...,50)` patterns; lazy-load test (no timer)
+    returns after the microtask drain.
+- Added 7 `.harness-args` files with `host=1`, deleted 7 `.skip`
+  files for these tests.
+
+**Tests:** 21 pass / 6 skip / 0 fail (up from 14/13/0 at F-5).
+
+**Remaining skips:** finalization-registry-runs (WeakRef/ClearKeptObjects),
+override-inspector + policy-crypto-host-random + policy-outbound-fetch-tunnel
+(other harness gaps unrelated to F-6), unhandled-rejection-fires (lib
+deferred), webserver (needs request driver).  F-8 will sweep these.
+
+**What F-6 does NOT do (intentionally deferred to F-7):**
+- Does NOT touch the default `?script=` (no-`host=1`) path.  That
+  still goes through edge.js inside the wasm runtime worker.  F-7's
+  "default flip + cleanup" is the broader lock-in: make host-V8 the
+  default user-script path and archive the wasm-eval path.
+- Does NOT route edge.js's full lib/*.js machinery through host —
+  the host handler uses minimal `console`/`process` stubs.  Tests
+  that need edge's lib (response-body-consume, https-server-listen,
+  etc.) keep going through wasm/edge.  Those continue to pass.
+
+**Pattern notes:**
+- The "drain nextTick before yielding microtasks" trick only works
+  because source runs synchronously.  Wrapping in `async () => { ... }`
+  defeats it (Promise.then queues a microtask, our drainNextTicks
+  runs after).  Source-direct execution is the load-bearing detail.
+- Per-test harness-args is the natural extension point for F-7+
+  config-driven routing.  When defaults flip, the 7 sidecars get
+  removed and the runner reads `host=0` if a test wants the legacy
+  path.

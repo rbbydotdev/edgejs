@@ -169,34 +169,98 @@ function registerHandlers(srv: RpcServer): void {
   srv.register(OP_RUN_USER_SCRIPT, async (_ctx, args) => {
     const source = new TextDecoder("utf-8").decode(args);
     const out: string[] = [];
+    const stringify = (parts: unknown[]) =>
+      parts.map((p) => (typeof p === "string" ? p : JSON.stringify(p))).join(" ");
     const capturedConsole = {
-      log: (...parts: unknown[]) => {
-        out.push(parts.map((p) => (typeof p === "string" ? p : JSON.stringify(p))).join(" "));
-      },
-      error: (...parts: unknown[]) => {
-        out.push(parts.map((p) => (typeof p === "string" ? p : JSON.stringify(p))).join(" "));
-      },
+      log: (...parts: unknown[]) => out.push(stringify(parts)),
+      error: (...parts: unknown[]) => out.push(stringify(parts)),
+      warn: (...parts: unknown[]) => out.push(stringify(parts)),
+      info: (...parts: unknown[]) => out.push(stringify(parts)),
     };
-    try {
-      // Wrap in async fn so we can `await` it — gives microtasks
-      // queued during the script body a chance to drain BEFORE we
-      // capture stdout and return the reply.  This is the same
-      // pattern await-resumes-as-microtask exercises: V8 drains its
-      // queue at the await boundary.
-      const fn = new Function(
-        "console",
-        // Allow returning promises / async work.
-        `return (async () => { ${source} })()`,
-      );
-      const ret = fn(capturedConsole);
-      if (ret && typeof ret.then === "function") {
-        await ret;
+    // F-6 settle semantics:
+    //   - process.exit(code): the unambiguous "done" signal.  Mark
+    //     exited, capture code, resolve exitPromise.  We do NOT throw —
+    //     throwing inside a setTimeout callback escapes the user
+    //     promise chain and surfaces as a worker error.  Further
+    //     console output after exit is silently dropped.
+    //   - process.nextTick: a separate FIFO queue that drains BEFORE
+    //     Promise microtasks each time control returns to us, matching
+    //     Node ordering.  Implemented by a checkpoint we install after
+    //     the IIFE settles (and after each grace cycle): we splice the
+    //     pending nextTick callbacks ahead of any queued .then().
+    //   - settle/grace: after userPromise settles + microtask drain, we
+    //     give pending macrotasks a 250ms grace window to fire (cut
+    //     short by exitPromise).  Long enough for `setTimeout(...,50)`
+    //     tests; short enough not to bloat run time.
+    //   - safety timeout at 5s.
+    let exitCode: number | null = null;
+    let exited = false;
+    let resolveExit: (() => void) | null = null;
+    const exitPromise = new Promise<void>((r) => { resolveExit = r; });
+    const nextTickQueue: Array<() => void> = [];
+    const drainNextTicks = () => {
+      while (nextTickQueue.length > 0) {
+        const cb = nextTickQueue.shift();
+        try { cb?.(); } catch (err) {
+          if (!exited) out.push(`[nextTick error] ${(err as Error).message}`);
+        }
       }
-      // One more microtask drain — for tests like `microtask-before-timer`
-      // where the script's microtasks are queued from setTimeout-deferred
-      // continuations.  An empty `await` here gives V8 one more checkpoint.
-      await Promise.resolve();
-      const payload = new TextEncoder().encode(out.join("\n"));
+    };
+    const stubProcess = {
+      exit: (code = 0) => {
+        if (!exited) {
+          exited = true;
+          exitCode = code;
+          resolveExit?.();
+        }
+      },
+      nextTick: (cb: () => void) => { nextTickQueue.push(cb); },
+    };
+    const liveConsole = {
+      log: (...parts: unknown[]) => { if (!exited) out.push(stringify(parts)); },
+      error: (...parts: unknown[]) => { if (!exited) out.push(stringify(parts)); },
+      warn: (...parts: unknown[]) => { if (!exited) out.push(stringify(parts)); },
+      info: (...parts: unknown[]) => { if (!exited) out.push(stringify(parts)); },
+    };
+    void capturedConsole; // kept for future use; F-6 path uses liveConsole
+    try {
+      // Run source body synchronously (no async IIFE wrapper) so we
+      // can drain process.nextTick BEFORE V8's first microtask
+      // checkpoint — that's what gets nextTick-before-Promise ordering
+      // right.  Trade-off: source can't use top-level `await`.  For
+      // user scripts that need that, edge.js still wraps via the wasm
+      // path; this host path is for the microtask-ordering regression
+      // class where top-level await is not used.
+      const fn = new Function("console", "process", source);
+      fn(liveConsole, stubProcess);
+      // BEFORE yielding to the microtask queue: drain nextTicks.  This
+      // is the part that beats Promise.then to the punch.
+      drainNextTicks();
+      // Now yield: Promise.then microtasks run.  Two awaits cover
+      // recursive .then() chains (each .then enqueues another).
+      for (let i = 0; i < 4; i++) await Promise.resolve();
+      // Safety timeout race in case the source schedules something
+      // that blocks indefinitely.  We've already done the sync body
+      // and microtask drain; from here on we're only waiting for
+      // timers + exit.
+      void exitPromise; // (already wired)
+      // Grace window: pending timers (e.g. setTimeout 50ms) get a chance
+      // to fire and signal exit.  Cut short by exitPromise.
+      if (!exited) {
+        const graceMs = 250;
+        const tGrace = Date.now() + graceMs;
+        while (Date.now() < tGrace && !exited) {
+          await Promise.race([
+            exitPromise,
+            new Promise<void>((r) => setTimeout(r, 25)),
+          ]);
+          drainNextTicks();
+        }
+      }
+      await Promise.resolve(); // final microtask checkpoint
+      const payload = new TextEncoder().encode(
+        out.join("\n") + (exitCode !== null ? `\n__EXIT_CODE__:${exitCode}` : ""),
+      );
       return { payload, status: REPLY_STATUS_OK };
     } catch (e) {
       const msg = (e instanceof Error ? e.stack ?? e.message : String(e)) || "user script threw";

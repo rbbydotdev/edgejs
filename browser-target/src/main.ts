@@ -98,6 +98,13 @@ async function spawnHostThenRuntime(): Promise<void> {
   if (benchEcho) {
     await runEchoBench(benchEcho.iters, benchEcho.payload);
   }
+  // F-6: in host-script mode, skip the wasm runtime worker entirely —
+  // the user script runs directly on host V8 via OP_RUN_USER_SCRIPT and
+  // we emit the test-runner-compatible sentinel from main.ts itself.
+  if (scriptViaHost && userScript !== null) {
+    await runHostScriptForTestRunner(userScript);
+    return;
+  }
   spawnRuntimeWorker();
   // L4 reverse-echo probe: after runtime worker spawns and attaches its
   // reverse-channel server, the host worker can echo via that channel.
@@ -256,6 +263,51 @@ async function runL5UserScript(source: string): Promise<void> {
   } catch (e) {
     append(`l5-script-error: ${(e as Error).message}`, "err");
   }
+}
+
+// F-6: run a user script via the host worker and emit the same DOM
+// signals the browser-test-runner expects (section marker, per-line
+// `[stdout] ...` spans, `_start ran ... ms (exit=N)` sentinel).  Used
+// when ?host=1 is set; lets microtask-ordering regressions exercise the
+// host V8 event loop instead of the JSPI-suspending wasm worker.
+async function runHostScriptForTestRunner(source: string): Promise<void> {
+  if (!hostHandle) {
+    append("host-script: host worker not ready", "err");
+    return;
+  }
+  const { attachRing } = await import("./wasi-shim/sab-ring");
+  const { RpcClient } = await import("./host-worker/rpc-client");
+  const { OP_RUN_USER_SCRIPT } = await import("./host-worker/rpc-protocol");
+  const ringConfig = { numSlots: 32, slotSize: 4 * 1024 };
+  const reqRing = attachRing(hostHandle.requestSab, ringConfig);
+  const replyRing = attachRing(hostHandle.replySab, ringConfig);
+  const client = new RpcClient(reqRing, replyRing);
+  const payload = new TextEncoder().encode(source);
+
+  append("", "info");
+  append("── edgejs.wasm (emnapi + WASI host) ──", "info");
+  const tStart = performance.now();
+  let exitCode: number | null = null;
+  let threw = false;
+  try {
+    const reply = await client.call(OP_RUN_USER_SCRIPT, 0, 0, payload);
+    const text = new TextDecoder().decode(reply.payload);
+    threw = reply.status !== 0;
+    const exitMatch = text.match(/\n?__EXIT_CODE__:(-?\d+)\s*$/u);
+    const body = exitMatch ? text.slice(0, text.length - exitMatch[0].length) : text;
+    if (exitMatch) exitCode = Number(exitMatch[1]);
+    if (body.length > 0) {
+      for (const line of body.split("\n")) {
+        append(`[stdout] ${line}`, "out");
+      }
+    }
+  } catch (e) {
+    append(`host-script error: ${(e as Error).message}`, "err");
+    threw = true;
+  }
+  const runMs = performance.now() - tStart;
+  const tail = exitCode !== null ? `(exit=${exitCode})` : threw ? "(THREW)" : "(returned)";
+  append(`_start ran ${runMs.toFixed(0)} ms ${tail}`, exitCode === 0 || exitCode === null ? "info" : "err");
 }
 
 async function runEchoBench(iters: number, payloadBytes: number): Promise<void> {
@@ -419,6 +471,12 @@ const watchByteLength = params.get("diag") === "bytelen";
 // URLSearchParams.get() already decodes percent-escaping, so the script
 // is plain JS source by the time it gets here.
 const userScript = params.get("script");
+// F-6: ?host=1 routes the user script to host worker's V8 (via
+// OP_RUN_USER_SCRIPT) instead of through edge.js inside the wasm
+// runtime worker.  Unblocks the microtask-ordering regressions whose
+// expected semantics are host V8's natural microtask drain; JSPI
+// suspension in the wasm worker starves those microtasks.
+const scriptViaHost = userScript !== null && params.get("host") === "1";
 
 // L3 RPC throughput bench.  Triggered via ?bench=echo&iters=N[&payload=K].
 // The wasm runtime worker doesn't need to participate — we run the bench

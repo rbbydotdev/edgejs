@@ -25,10 +25,10 @@
 //   foo.js              — test (mandatory)
 //   foo.stdout          — expected stdout (default: empty)
 //   foo.skip            — presence skips; body is the reason
-//   foo.harness-args    — currently IGNORED in browser runner (TODO: map
-//                          to URL params if/when policies need per-test
-//                          opt-in via the browser harness).  #!~debt
-//                          browser-runner-ignores-harness-args
+//   foo.harness-args    — newline-separated `key=value` pairs appended
+//                          as URL query params.  Blank lines and #
+//                          comments ignored.  Used e.g. for `host=1` to
+//                          route a test through OP_RUN_USER_SCRIPT (F-6).
 //
 // Why this exists separately from node-harness: node-harness runs the
 // same wasi-shim/napi-host code but against Node's V8, not the browser's
@@ -64,6 +64,7 @@ function collectTests(filter) {
         jsPath: resolve(testsDir, f),
         stdoutPath: resolve(testsDir, `${stem}.stdout`),
         skipPath: resolve(testsDir, `${stem}.skip`),
+        harnessArgsPath: resolve(testsDir, `${stem}.harness-args`),
       };
     });
 }
@@ -79,7 +80,21 @@ async function runOne(browser, t) {
   }
   const script = readFileSync(t.jsPath, "utf8");
   const expectedOut = existsSync(t.stdoutPath) ? read(t.stdoutPath) : "";
-  const url = `http://localhost:${VITE_PORT}/?script=${encodeURIComponent(script)}`;
+  // .harness-args sidecar: lines like `host=1` or `policies=foo,bar`
+  // appended as URL query params.  Blank lines and # comments ignored.
+  let extraParams = "";
+  if (existsSync(t.harnessArgsPath)) {
+    const lines = read(t.harnessArgsPath).split("\n");
+    for (const raw of lines) {
+      const line = raw.trim();
+      if (!line || line.startsWith("#")) continue;
+      const eq = line.indexOf("=");
+      const k = eq < 0 ? line : line.slice(0, eq);
+      const v = eq < 0 ? "" : line.slice(eq + 1);
+      extraParams += `&${encodeURIComponent(k)}=${encodeURIComponent(v)}`;
+    }
+  }
+  const url = `http://localhost:${VITE_PORT}/?script=${encodeURIComponent(script)}${extraParams}`;
 
   const context = await browser.newContext();
   const page = await context.newPage();
