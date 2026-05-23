@@ -1,0 +1,25 @@
+browser-target/src/host-worker/CALLBACK-DISPATCH-SPEC.md
+  s_7bec0ecbfcdcd0::t_795a3c46e38ec2 1-198
+NOTES.md
+  s_7bec0ecbfcdcd0::t_96609dd3b11df6 293-302
+browser-target/src/host-worker/callback-dispatch.ts
+  s_7bec0ecbfcdcd0::t_2a5480fb324a4f 1-389
+browser-target/src/host-worker/callback-triage.ts
+  s_7bec0ecbfcdcd0::t_d519ea3a60a595 1-57
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "6a74c6fa6fc96b7dc813ab8179668385c6c1e5ef",
+  "prompts": {},
+  "sessions": {
+    "s_7bec0ecbfcdcd0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d560d5ae-265f-44ae-89c4-d35659b3ab9e",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
