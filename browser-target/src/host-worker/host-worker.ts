@@ -99,6 +99,10 @@ let hostSideReverseSyncClient: SyncRpcClient | null = null;
 export function getHostSideReverseSyncClient(): SyncRpcClient | null {
   return hostSideReverseSyncClient;
 }
+/** DIAG accessor for napi-op-handlers to read back memory after RPC calls. */
+export function getHostNapiMemoryBuffer(): ArrayBuffer | SharedArrayBuffer | null {
+  return napiHostMemory?.buffer ?? null;
+}
 
 // F-1: emnapi state.  Initialized lazily on first napi op so we don't
 // pay the cost when only ping/echo are used.  Memory is the SAB shared
@@ -147,7 +151,27 @@ function ensureNapiContext(): void {
     memory: napiHostMemory,
     table,
   });
-  log(`napi context ready; ${Object.keys(napiModuleHost.imports.napi ?? {}).length} napi fns available`);
+  // R9 + DIAG-confirmed fix: napiModule.init() opens then closes its
+  // internal scope, leaving root scope with handleStore=null.  All
+  // handle-allocating napi ops then throw on `handleStore.push`.  Open
+  // a long-lived scope here so handle-allocating ops work.  See
+  // experiments/r9-host-emnapi-init/FINDINGS.md + the DIAG run in
+  // host-worker.ts history (5/10 ops pass after this; up from 1/9).
+  //
+  // #!~debt host-emnapi-root-scope-accumulates: scope never closed.
+  // Production-clean version opens/closes per-RPC via factory wrappers.
+  const napi = napiModuleHost.imports.napi as Record<string, (...a: number[]) => number>;
+  const napiOpenHandleScope = napi.napi_open_handle_scope;
+  if (typeof napiOpenHandleScope === "function") {
+    const SCOPE_OUT_PTR = 1020;
+    try {
+      const status = napiOpenHandleScope(1, SCOPE_OUT_PTR);
+      if (status !== 0) log(`napi_open_handle_scope status=${status}`, "warn");
+    } catch (e) {
+      log(`napi_open_handle_scope threw: ${(e as Error).message}`, "warn");
+    }
+  }
+  log(`napi context ready; ${Object.keys(napi).length} napi fns available`);
 }
 
 function log(text: string, level: "info" | "warn" | "err" = "info"): void {
