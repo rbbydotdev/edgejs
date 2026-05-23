@@ -41,6 +41,8 @@ import {
 // (single swap point for v1 vs v2 — see plans/lever-b-l5-options.md
 // "v1 vs v2" finding).
 import { createContext, createNapiModule } from "../napi-host/emnapi";
+// F-4: bulk-register read-only napi op handlers.
+import { makeNapiOpRegistry } from "./napi-op-handlers";
 
 declare const self: DedicatedWorkerGlobalScope;
 
@@ -237,6 +239,13 @@ function registerHandlers(srv: RpcServer): void {
   srv.register(OP_NAPI_GET_UNDEFINED, makeNapiTwoArgHandler("napi_get_undefined"));
   srv.register(OP_NAPI_GET_NULL,      makeNapiTwoArgHandler("napi_get_null"));
   srv.register(OP_NAPI_GET_GLOBAL,    makeNapiTwoArgHandler("napi_get_global"));
+
+  // F-4: bulk-register read-only napi ops (~28 more).
+  ensureNapiContext();
+  const napi = napiModuleHost!.imports.napi ?? {};
+  const registry = makeNapiOpRegistry(napi as Record<string, (...args: number[]) => number>);
+  registry.register(srv);
+  log(`F-4 napi op handlers registered: ${registry.count} additional ops`);
 
   // OP_HOST_READY is host→wasm; host doesn't receive it.  No handler.
   void OP_HOST_READY;

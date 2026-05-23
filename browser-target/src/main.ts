@@ -141,7 +141,7 @@ async function runF1NapiProbe(): Promise<void> {
   }
   const { attachRing } = await import("./wasi-shim/sab-ring");
   const { RpcClient } = await import("./host-worker/rpc-client");
-  const { OP_NAPI_GET_UNDEFINED, OP_NAPI_GET_NULL, OP_NAPI_GET_GLOBAL } = await import("./host-worker/rpc-protocol");
+  const proto = await import("./host-worker/rpc-protocol");
   const ringConfig = { numSlots: 32, slotSize: 4 * 1024 };
   const reqRing = attachRing(hostHandle.requestSab, ringConfig);
   const replyRing = attachRing(hostHandle.replySab, ringConfig);
@@ -151,28 +151,52 @@ async function runF1NapiProbe(): Promise<void> {
   async function callTwoArg(op: number, name: string, resultPtr: number) {
     const args = new Uint8Array(8);
     const dv = new DataView(args.buffer);
-    dv.setUint32(0, 1, true); // envHandle = 1 (matches host's stub)
+    dv.setUint32(0, 1, true);
     dv.setUint32(4, resultPtr, true);
     const reply = await client.call(op, 0, 0, args);
-    const handle = napiMemU32[resultPtr / 4];
-    return { name, status: reply.status, handle };
+    return { name, status: reply.status, handle: napiMemU32[resultPtr / 4] };
+  }
+  async function callThreeArg(op: number, name: string, valueHandle: number, resultPtr: number) {
+    const args = new Uint8Array(12);
+    const dv = new DataView(args.buffer);
+    dv.setUint32(0, 1, true);
+    dv.setUint32(4, valueHandle, true);
+    dv.setUint32(8, resultPtr, true);
+    const reply = await client.call(op, 0, 0, args);
+    return { name, status: reply.status, result: napiMemU32[resultPtr / 4] };
   }
 
-  const r1 = await callTwoArg(OP_NAPI_GET_UNDEFINED, "napi_get_undefined", 256);
-  const r2 = await callTwoArg(OP_NAPI_GET_NULL,      "napi_get_null",      260);
-  const r3 = await callTwoArg(OP_NAPI_GET_GLOBAL,    "napi_get_global",    264);
+  // F-1 originals.
+  const r1 = await callTwoArg(proto.OP_NAPI_GET_UNDEFINED, "napi_get_undefined", 256);
+  const r2 = await callTwoArg(proto.OP_NAPI_GET_NULL,      "napi_get_null",      260);
+  const r3 = await callTwoArg(proto.OP_NAPI_GET_GLOBAL,    "napi_get_global",    264);
+
+  // F-4: try a three-arg op against one of the F-1 handles.
+  // napi_typeof(env, value, &result) — writes a small int (0=undefined, 1=null, ...).
+  const t1 = await callThreeArg(proto.OP_NAPI_TYPEOF, "napi_typeof(undefined)", r1.handle, 300);
+  const t2 = await callThreeArg(proto.OP_NAPI_TYPEOF, "napi_typeof(null)",      r2.handle, 304);
+  const t3 = await callThreeArg(proto.OP_NAPI_TYPEOF, "napi_typeof(global)",    r3.handle, 308);
+
+  // napi_is_array(env, value, &result) against global (not an array → 0).
+  const ia = await callThreeArg(proto.OP_NAPI_IS_ARRAY, "napi_is_array(global)", r3.handle, 312);
 
   append(
-    `f1-napi-probe: ${r1.name}->status=${r1.status} handle=${r1.handle}; ` +
-    `${r2.name}->status=${r2.status} handle=${r2.handle}; ` +
-    `${r3.name}->status=${r3.status} handle=${r3.handle}`,
+    `f1-napi-probe: ${r1.name}=${r1.handle} ${r2.name}=${r2.handle} ${r3.name}=${r3.handle}`,
+    "info",
+  );
+  append(
+    `f4-napi-probe: ${t1.name}=>type${t1.result} ${t2.name}=>type${t2.result} ${t3.name}=>type${t3.result} ${ia.name}=>${ia.result}`,
     "info",
   );
 
-  const ok = r1.status === 0 && r2.status === 0 && r3.status === 0
-    && r1.handle !== 0 && r2.handle !== 0 && r3.handle !== 0
-    && r1.handle !== r2.handle;
-  append(`f1-napi-probe: ${ok ? "OK" : "FAIL"}`, ok ? "info" : "err");
+  // napi_valuetype: 0=undefined, 1=null, 2=boolean, 3=number, 4=string,
+  // 5=symbol, 6=object, 7=function, 8=external, 9=bigint
+  const allOk = r1.status === 0 && r2.status === 0 && r3.status === 0
+    && t1.status === 0 && t2.status === 0 && t3.status === 0
+    && r1.handle !== 0 && r1.handle !== r2.handle
+    && t1.result === 0 && t2.result === 1 && t3.result === 6
+    && ia.status === 0 && ia.result === 0;
+  append(`f1-napi-probe: ${allOk ? "OK" : "FAIL"}`, allOk ? "info" : "err");
 }
 
 async function runL9MultiHostSpike(): Promise<void> {

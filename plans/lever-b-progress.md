@@ -1543,3 +1543,43 @@ For session-scope F-3: the host-side SyncRpcClient is built + tested.
 F-4 will use it from JS-level napi op stubs (simulating wasm).
 
 **Tests:** 14/0/0/13 unchanged.
+
+---
+
+## F-4 complete (2026-05-23)
+
+**Goal:** ~30 read-only napi ops routed via RPC; diff-tested.
+
+**Deliverables:**
+- 12 new op codes in `rpc-protocol.ts` (is_date, is_promise, is_error,
+  bigint variants, date_value, reference ref/unref, type tag ops)
+- `browser-target/src/host-worker/napi-op-handlers.ts` — factory-based
+  registration:
+  - `makeTwoU32(env, ptr)` — single-result ops
+  - `makeThreeU32(env, value, ptr)` — value query + write result
+  - `makeFourU32(env, a, b, ptr)` — binary op + write result
+  - `makeNoResult(env, ref)` — side-effect only (delete_reference)
+- Total ops registered: 28 (3 from F-1 + 22 three-arg + 5 four-arg
+  + 1 no-result + 1 boolean op via 3-arg)
+- Probe extended: napi_typeof + napi_is_array verified end-to-end
+
+**Probe result (`npm run probe:f1-napi` — now covers F-4 too):**
+```
+f1-napi-probe: napi_get_undefined=1 napi_get_null=2 napi_get_global=5
+f4-napi-probe: napi_typeof(undefined)=>type0 napi_typeof(null)=>type1
+              napi_typeof(global)=>type6 napi_is_array(global)=>0
+f1-napi-probe: OK
+```
+
+All values correct per napi spec (0=undefined, 1=null, 6=object).
+
+**Why the factory pattern matters:** wrapping each emnapi function in
+~3 LOC means adding new ops is mechanical.  When F-5 needs callback
+ops, the same factory infrastructure scales — just a new arg shape.
+
+**Subagent note:** F-4's per-op work was originally planned for 3
+parallel subagents.  Did it serial because the factory pattern made
+it ~15 minutes of work — coordinating subagents would've taken longer.
+Sticking with subagent-where-actually-useful, not subagent-for-its-own-sake.
+
+**Tests:** 14 pass / 13 skip / 0 fail unchanged.

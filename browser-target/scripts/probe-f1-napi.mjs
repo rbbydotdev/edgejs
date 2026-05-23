@@ -31,7 +31,7 @@ async function main() {
       return log ? (log.innerText || "").slice(-1500) : "";
     });
     if (line === "OK") {
-      process.stdout.write(`probe-f1-napi: OK\n---\n${tail.split("\n").filter((l) => l.includes("f1-napi")).join("\n")}\n`);
+      process.stdout.write(`probe-f1-napi: OK\n---\n${tail.split("\n").filter((l) => l.includes("napi-probe")).join("\n")}\n`);
       process.exit(0);
     }
     process.stderr.write(`probe-f1-napi: ${line ?? "TIMEOUT"}\n${tail}\n`);
