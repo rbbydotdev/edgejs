@@ -1,0 +1,11 @@
+{
+  "name": "l5-malloc-deadlock-experiment",
+  "version": "0.0.0",
+  "type": "module",
+  "private": true,
+  "description": "Isolated probe: reproduce the malloc re-entrancy deadlock in the L5 split-worker topology, then test candidate resolutions.",
+  "scripts": {
+    "reproduce": "node probe-reproduce.mjs",
+    "pool": "node probe-pool.mjs"
+  }
+}
