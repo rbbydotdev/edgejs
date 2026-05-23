@@ -58,6 +58,7 @@ interface InitMessage {
   replySab: SharedArrayBuffer;
   reverseRequestSab: SharedArrayBuffer;
   reverseReplySab: SharedArrayBuffer;
+  sharedWakeSab: SharedArrayBuffer;
   hostWorkerId: number;
 }
 
@@ -365,6 +366,10 @@ self.addEventListener("message", (e: MessageEvent) => {
     log("init missing one of (request|reply|reverseRequest|reverseReply)Sab", "err");
     return;
   }
+  if (!data.sharedWakeSab) {
+    log("init missing sharedWakeSab", "err");
+    return;
+  }
   try {
     requestRing = attachRing(data.requestSab, RING_CONFIG);
     replyRing = attachRing(data.replySab, RING_CONFIG);
@@ -374,12 +379,18 @@ self.addEventListener("message", (e: MessageEvent) => {
     log(`attachRing failed: ${(err as Error).message}`, "err");
     return;
   }
-  server = new RpcServer(requestRing, replyRing);
+  // Shared-wake view (single i32 slot at idx 0).  Both the forward-reply
+  // publisher (RpcServer) and the reverse-request publisher (RpcClient)
+  // bump this so a wasm-side SyncRpcClient blocked on the shared address
+  // wakes for either event.  R6a / R1 findings.
+  const sharedWakeI32 = new Int32Array(data.sharedWakeSab);
+  const sharedWake = { i32: sharedWakeI32, idx: 0 };
+  server = new RpcServer(requestRing, replyRing, sharedWake);
   registerHandlers(server);
   // Reverse-channel client (host -> wasm).  Used by L5+ for finalizers
   // and threadsafe function dispatch.  No handlers needed on host's
   // side of this channel — replies route via requestId demux as usual.
-  reverseClient = new RpcClient(reverseRequestRing, reverseReplyRing);
+  reverseClient = new RpcClient(reverseRequestRing, reverseReplyRing, sharedWake);
   // Start drain loop (fire-and-forget).
   void server.start().catch((err) => {
     log(`rpc-server crashed: ${(err as Error).stack ?? err}`, "err");

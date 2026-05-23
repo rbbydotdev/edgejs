@@ -362,6 +362,10 @@ function spawnRuntimeWorker() {
       replySab: hostHandle.replySab,
       reverseRequestSab: hostHandle.reverseRequestSab,
       reverseReplySab: hostHandle.reverseReplySab,
+      // F-9 path-a: single-shared-wake SAB so the runtime worker's
+      // SyncRpcClient can Atomics.wait on an address the host's
+      // reply-publisher AND reverse-request-publisher both bump.
+      sharedWakeSab: hostHandle.sharedWakeSab,
       // F-2: forward host's napi memory SAB to the wasm runtime worker.
       // Wasm worker attaches a view so it can read what host's emnapi
       // wrote (e.g., napi result handles).  In F-7 this becomes the

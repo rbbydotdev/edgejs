@@ -49,14 +49,26 @@ export type Handler = (
 
 const EMPTY_BYTES = new Uint8Array(0);
 
+const NativeAtomics = Atomics;
+
 export class RpcServer {
   private handlers = new Map<number, Handler>();
   private running = false;
+  private readonly sharedWakeI32: Int32Array | null;
+  private readonly sharedWakeIdx: number;
 
   constructor(
     private readonly requestRing: RingView,
     private readonly replyRing: RingView,
-  ) {}
+    /** Optional single-shared-wake Int32Array view.  When provided, every
+     *  reply publish bumps this counter and notifies — used to wake a
+     *  wasm-side `SyncRpcClient` that's blocked on the shared address.
+     *  See experiments/r6-nested-sync-rpc/FINDINGS.md. */
+    sharedWake?: { i32: Int32Array; idx: number } | null,
+  ) {
+    this.sharedWakeI32 = sharedWake?.i32 ?? null;
+    this.sharedWakeIdx = sharedWake?.idx ?? 0;
+  }
 
   /** Register a handler for an op code.  Overwrites any prior. */
   register(opCode: number, handler: Handler): void {
@@ -159,6 +171,13 @@ export class RpcServer {
       buf.set(reply.payload, REPLY_HEADER_SIZE);
     }
     publishSlot(this.replyRing, slot, totalLen);
+    // Single-shared-wake bump.  Wasm-side SyncRpcClient may be blocked
+    // on this address waiting for ANY publish (forward reply or reverse
+    // request) to wake it.  See R6a findings.
+    if (this.sharedWakeI32) {
+      NativeAtomics.add(this.sharedWakeI32, this.sharedWakeIdx, 1);
+      NativeAtomics.notify(this.sharedWakeI32, this.sharedWakeIdx);
+    }
   }
 }
 

@@ -31,14 +31,26 @@ interface PendingReply {
   opCode: number;
 }
 
+const NativeAtomics = Atomics;
+
 export class RpcClient {
   private nextRequestId = 1;
   private pending = new Map<number, PendingReply>();
+  private readonly sharedWakeI32: Int32Array | null;
+  private readonly sharedWakeIdx: number;
 
   constructor(
     private readonly requestRing: RingView,
     private readonly replyRing: RingView,
+    /** Optional single-shared-wake Int32Array view.  When this RpcClient
+     *  is used on the HOST side to send REVERSE requests into the wasm
+     *  worker, every publish must also bump this counter — that's the
+     *  signal a SyncRpcClient blocked on the shared address watches for.
+     *  See experiments/r6-nested-sync-rpc/FINDINGS.md. */
+    sharedWake?: { i32: Int32Array; idx: number } | null,
   ) {
+    this.sharedWakeI32 = sharedWake?.i32 ?? null;
+    this.sharedWakeIdx = sharedWake?.idx ?? 0;
     // Background drainer; we don't hold the Promise — errors are
     // routed to all pending callers' .reject() inside the catch.
     void this.startReplyDrainer();
@@ -73,6 +85,15 @@ export class RpcClient {
       argsLen = args.byteLength;
     }
     publishSlot(this.requestRing, slot, REQUEST_HEADER_SIZE + argsLen);
+    // Single-shared-wake bump.  When this client is the host-side
+    // reverse-request publisher, the wasm worker may be blocked in a
+    // SyncRpcClient waiting on the shared address; bumping it here
+    // delivers the wake.  No-op when sharedWake wasn't passed in
+    // (page-side / async-only call sites).  See R6a.
+    if (this.sharedWakeI32) {
+      NativeAtomics.add(this.sharedWakeI32, this.sharedWakeIdx, 1);
+      NativeAtomics.notify(this.sharedWakeI32, this.sharedWakeIdx);
+    }
 
     return new Promise((resolve, reject) => {
       this.pending.set(requestId, {

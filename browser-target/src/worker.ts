@@ -63,6 +63,17 @@ function getHostNapiMemoryView(): Uint32Array | null { return hostNapiMemoryView
 // Re-exported indirectly via a global accessor so other modules can use it.
 (globalThis as { __edgeHostNapiMemView?: () => Uint32Array | null }).__edgeHostNapiMemView = getHostNapiMemoryView;
 
+/** F-9 path-a: single-shared-wake view.  The host bumps this counter on
+ *  every forward-reply publish AND reverse-request publish; a wasm-side
+ *  `SyncRpcClient` constructed with `sharedWake` blocks on it so a
+ *  reverse request arriving during a forward-blocked sync RPC reliably
+ *  wakes the wait loop.  See experiments/r6-nested-sync-rpc/FINDINGS.md.
+ *  Stored as `{ i32, idx }` to mirror the `SharedWakeView` shape the
+ *  RPC clients accept. */
+let sharedWake: { i32: Int32Array; idx: number } | null = null;
+function getSharedWake(): { i32: Int32Array; idx: number } | null { return sharedWake; }
+(globalThis as { __edgeHostSharedWake?: () => { i32: Int32Array; idx: number } | null }).__edgeHostSharedWake = getSharedWake;
+
 self.addEventListener("message", (e: MessageEvent) => {
   const data = e.data as { kind?: string; sab?: SharedArrayBuffer; requestSab?: SharedArrayBuffer; replySab?: SharedArrayBuffer; hostWorkerId?: number } | null;
   if (data?.kind === "edge-fs-snapshot-sab" && data.sab) {
@@ -78,6 +89,14 @@ self.addEventListener("message", (e: MessageEvent) => {
     if (napiMemSab) {
       hostNapiMemoryView = new Uint32Array(napiMemSab);
       post("log", { text: `[runtime] host napi memory attached (${napiMemSab.byteLength} bytes)`, level: "info" });
+    }
+    // F-9 path-a: attach shared-wake view.  Used by SyncRpcClient
+    // construction (callback-arg napi op factories) so the wait loop
+    // can be woken by host reverse-request publishes.
+    const sharedWakeSab = (data as { sharedWakeSab?: SharedArrayBuffer }).sharedWakeSab;
+    if (sharedWakeSab) {
+      sharedWake = { i32: new Int32Array(sharedWakeSab), idx: 0 };
+      post("log", { text: `[runtime] shared-wake SAB attached (${sharedWakeSab.byteLength} bytes)`, level: "info" });
     }
     // L4 reverse channel — host can send requests TO this worker.
     // Reverse-direction SABs come in the same message.

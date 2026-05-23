@@ -34,6 +34,16 @@ export interface HostWorkerHandle {
   reverseRequestSab: SharedArrayBuffer;
   /** SAB the host-side RpcClient reads replies from. */
   reverseReplySab: SharedArrayBuffer;
+  /** Shared-wake SAB — single Int32Array slot at index 0 that BOTH
+   *  channels (forward-reply publishes AND reverse-request publishes)
+   *  bump via `Atomics.add` + `Atomics.notify`.  The wasm-side
+   *  `SyncRpcClient` waits on this single address so a reverse-request
+   *  arriving while the wasm thread is blocked on its forward-reply
+   *  reliably wakes the wait loop.  Design rationale:
+   *  experiments/r6-nested-sync-rpc/FINDINGS.md (re-entrant wait loop)
+   *  and experiments/r1-reverse-during-forward/FINDINGS.md (race-free
+   *  single-shared-wake pattern). */
+  sharedWakeSab: SharedArrayBuffer;
   /** Resolves when the host worker has posted `ready`. */
   ready: Promise<void>;
   /** F-1: SAB backing the host's napi memory.  Lets probes verify the
@@ -54,6 +64,12 @@ export function spawnHostWorker(): HostWorkerHandle {
   // forward pair so wasm worker can attach to them at the same handoff.
   const reverseRequestRing = createRing(RING_CONFIG);
   const reverseReplyRing = createRing(RING_CONFIG);
+  // Single-shared-wake SAB.  4 bytes (one Int32 slot at index 0).
+  // Every host-side publish (forward reply OR reverse request) bumps
+  // this counter; wasm's SyncRpcClient `Atomics.wait`s on it so a
+  // reverse request arriving during a forward-blocked wait wakes the
+  // loop.  See experiments/r6-nested-sync-rpc/FINDINGS.md.
+  const sharedWakeSab = new SharedArrayBuffer(4);
   // Vite requires static worker options; can't template the name.
   const worker = new Worker(
     new URL("./host-worker.ts", import.meta.url),
@@ -66,6 +82,7 @@ export function spawnHostWorker(): HostWorkerHandle {
     replySab: replyRing.sab,
     reverseRequestSab: reverseRequestRing.sab,
     reverseReplySab: reverseReplyRing.sab,
+    sharedWakeSab,
     ready: undefined as unknown as Promise<void>,
   };
   const ready = new Promise<void>((resolve, reject) => {
@@ -92,6 +109,7 @@ export function spawnHostWorker(): HostWorkerHandle {
     replySab: replyRing.sab,
     reverseRequestSab: reverseRequestRing.sab,
     reverseReplySab: reverseReplyRing.sab,
+    sharedWakeSab,
     hostWorkerId: id,
   });
   handle.ready = ready;
