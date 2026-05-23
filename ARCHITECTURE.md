@@ -226,6 +226,49 @@ Policies queued for implementation, each as a swappable plug-in:
 - `wasm-compile-via-host` — route edge's `WebAssembly.compile` calls to
   the host's native one (fixes the foreground-task-pump deadlock).
 
+## Browser deployment topology (Lever B)
+
+Browser target runs four workers in a split topology, established by
+the Lever B F-1..F-7 work (`plans/lever-b.md`, `plans/lever-b-progress.md`):
+
+```
+  ┌──────────────────────────────────────────────────────────────────┐
+  │ Page (main.ts)                                                   │
+  │  ↳ spawns bridge, host, runtime workers; routes ?script= URLs    │
+  └────────┬───────────────────┬───────────────────────┬─────────────┘
+           │                   │                       │
+           ▼                   ▼                       ▼
+  ┌──────────────┐   ┌──────────────────┐   ┌────────────────────────┐
+  │ Bridge       │   │ Host worker      │   │ Runtime worker         │
+  │ (FS, SW)     │   │ (host V8 +       │   │ (wasm + edge.js +      │
+  │              │   │  emnapi context) │   │  JSPI scheduler)       │
+  └──────────────┘   └────────┬─────────┘   └─────────┬──────────────┘
+                              │                       │
+                              │   ◀────RPC (SAB)──▶  │
+                              │   ◀── shared mem ───▶ │
+                              └───────────────────────┘
+```
+
+- **RPC primitive**: SAB-backed ring (`src/host-worker/sab-ring.ts`,
+  `rpc-client.ts`, `rpc-client-sync.ts`).  Async client (page + host) +
+  sync client (wasm, for JSPI-suspended callers).  Request/reply rings
+  separate; routing via `(contextId, hostWorkerId)` in slot header.
+- **Op domains** (`rpc-protocol.ts`): control (0x0000), napi-RO (0x0100),
+  napi-CB (0x0200), microtask (0x0300), module (0x0400), policy (0x0500).
+- **Host emnapi context**: full napi state lives on host worker; ~30
+  read-only ops + 3 callback ops registered (F-4/F-5).  Reverse channel
+  (host → wasm) reserved for callback invocation (F-5).
+- **Memory bridge** (F-2): shared `WebAssembly.Memory` posted wasm → host;
+  emnapi result handles written by host visible to wasm without copy.
+  16 MB bump pool inside wasm linear memory bypasses the
+  malloc-during-`Atomics.wait` deadlock (Q1).
+- **User-script execution**: `?script=&host=1` URL routes user code
+  through `OP_RUN_USER_SCRIPT` on host V8 (F-6).  Host V8's event loop
+  is never JSPI-suspended, so microtasks drain natively — un-skips the
+  microtask-ordering regression class.  In-process wasm path (no
+  `host=1`) retains edge.js's full lib/*.js machinery for tests/code
+  that need `process`, `fs`, `require`, etc.
+
 ## L3 napi-host intercepts
 
 Beyond the policies layer, `src/napi-host/` patches emnapi directly

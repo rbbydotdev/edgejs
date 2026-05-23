@@ -102,7 +102,7 @@ async function spawnHostThenRuntime(): Promise<void> {
   // the user script runs directly on host V8 via OP_RUN_USER_SCRIPT and
   // we emit the test-runner-compatible sentinel from main.ts itself.
   if (scriptViaHost && userScript !== null) {
-    await runHostScriptForTestRunner(userScript);
+    await runUserScriptOnHost(userScript, "test-runner");
     return;
   }
   spawnRuntimeWorker();
@@ -117,11 +117,11 @@ async function spawnHostThenRuntime(): Promise<void> {
       hostHandle!.worker.postMessage({ kind: "reverse-echo", bytes: 64 });
     }, 500);
   }
-  // L5 spike: run a user script via host eval.  Bypasses edge.js
-  // entirely; useful for validating that microtasks drain correctly
-  // when user JS runs on host V8.
+  // L5 spike URL `?l5script=` — debug-format wrapper around the same
+  // host-worker path that `?script=&host=1` uses.  Kept for ad-hoc
+  // page-log inspection; programmatic callers should use the latter.
   if (l5UserScript && hostHandle) {
-    await runL5UserScript(l5UserScript);
+    await runUserScriptOnHost(l5UserScript, "debug");
   }
   // L9 spike: spawn a second host worker, ping both, verify replies
   // come back to the right one.  Validates the multi-host topology
@@ -245,32 +245,19 @@ async function runL9MultiHostSpike(): Promise<void> {
   void c1.call(OP_PING, 1, 0, null);
 }
 
-async function runL5UserScript(source: string): Promise<void> {
-  if (!hostHandle) return;
-  const { attachRing } = await import("./wasi-shim/sab-ring");
-  const { RpcClient } = await import("./host-worker/rpc-client");
-  const { OP_RUN_USER_SCRIPT } = await import("./host-worker/rpc-protocol");
-  const ringConfig = { numSlots: 32, slotSize: 4 * 1024 };
-  const reqRing = attachRing(hostHandle.requestSab, ringConfig);
-  const replyRing = attachRing(hostHandle.replySab, ringConfig);
-  const client = new RpcClient(reqRing, replyRing);
-  const payload = new TextEncoder().encode(source);
-  try {
-    const reply = await client.call(OP_RUN_USER_SCRIPT, 0, 0, payload);
-    const text = new TextDecoder().decode(reply.payload);
-    append(`l5-script-result: ${text}`, "info");
-    append(`l5-script-status: ${reply.status}`, reply.status === 0 ? "info" : "err");
-  } catch (e) {
-    append(`l5-script-error: ${(e as Error).message}`, "err");
-  }
-}
-
-// F-6: run a user script via the host worker and emit the same DOM
-// signals the browser-test-runner expects (section marker, per-line
-// `[stdout] ...` spans, `_start ran ... ms (exit=N)` sentinel).  Used
-// when ?host=1 is set; lets microtask-ordering regressions exercise the
-// host V8 event loop instead of the JSPI-suspending wasm worker.
-async function runHostScriptForTestRunner(source: string): Promise<void> {
+// Run a user script via the host worker's OP_RUN_USER_SCRIPT.
+//
+// `format` chooses the DOM output shape:
+//   "test-runner" (default for `?script=&host=1`): emits the
+//     section marker, per-stdout-line `[stdout] ...` spans, and the
+//     `_start ran <ms> ms (exit=N|returned|THREW)` sentinel — the
+//     same signals browser-test-runner.mjs scrapes.  This is the
+//     canonical user-script path for the regression net.
+//   "debug" (for the legacy `?l5script=` URL): emits a single
+//     `l5-script-result: <body>` + `l5-script-status: <N>` line
+//     pair.  Kept for ad-hoc debugging via the page log only;
+//     prefer `?script=&host=1` for anything programmatic.
+async function runUserScriptOnHost(source: string, format: "test-runner" | "debug"): Promise<void> {
   if (!hostHandle) {
     append("host-script: host worker not ready", "err");
     return;
@@ -284,30 +271,40 @@ async function runHostScriptForTestRunner(source: string): Promise<void> {
   const client = new RpcClient(reqRing, replyRing);
   const payload = new TextEncoder().encode(source);
 
-  append("", "info");
-  append("── edgejs.wasm (emnapi + WASI host) ──", "info");
+  if (format === "test-runner") {
+    append("", "info");
+    append("── edgejs.wasm (emnapi + WASI host) ──", "info");
+  }
   const tStart = performance.now();
   let exitCode: number | null = null;
   let threw = false;
+  let body = "";
+  let status = 0;
   try {
     const reply = await client.call(OP_RUN_USER_SCRIPT, 0, 0, payload);
+    status = reply.status;
     const text = new TextDecoder().decode(reply.payload);
     threw = reply.status !== 0;
     const exitMatch = text.match(/\n?__EXIT_CODE__:(-?\d+)\s*$/u);
-    const body = exitMatch ? text.slice(0, text.length - exitMatch[0].length) : text;
+    body = exitMatch ? text.slice(0, text.length - exitMatch[0].length) : text;
     if (exitMatch) exitCode = Number(exitMatch[1]);
+  } catch (e) {
+    append(`host-script error: ${(e as Error).message}`, "err");
+    threw = true;
+  }
+  if (format === "test-runner") {
     if (body.length > 0) {
       for (const line of body.split("\n")) {
         append(`[stdout] ${line}`, "out");
       }
     }
-  } catch (e) {
-    append(`host-script error: ${(e as Error).message}`, "err");
-    threw = true;
+    const runMs = performance.now() - tStart;
+    const tail = exitCode !== null ? `(exit=${exitCode})` : threw ? "(THREW)" : "(returned)";
+    append(`_start ran ${runMs.toFixed(0)} ms ${tail}`, exitCode === 0 || exitCode === null ? "info" : "err");
+  } else {
+    append(`l5-script-result: ${body}${exitCode !== null ? `\n__EXIT_CODE__:${exitCode}` : ""}`, "info");
+    append(`l5-script-status: ${status}`, status === 0 ? "info" : "err");
   }
-  const runMs = performance.now() - tStart;
-  const tail = exitCode !== null ? `(exit=${exitCode})` : threw ? "(THREW)" : "(returned)";
-  append(`_start ran ${runMs.toFixed(0)} ms ${tail}`, exitCode === 0 || exitCode === null ? "info" : "err");
 }
 
 async function runEchoBench(iters: number, payloadBytes: number): Promise<void> {

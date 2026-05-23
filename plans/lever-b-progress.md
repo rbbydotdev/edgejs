@@ -1690,3 +1690,65 @@ deferred), webserver (needs request driver).  F-8 will sweep these.
   config-driven routing.  When defaults flip, the 7 sidecars get
   removed and the runner reads `host=0` if a test wants the legacy
   path.
+
+---
+
+## F-7: lock-in + cleanup (2026-05-23)
+
+**Original plan vs reality:** F-7 brief said "Remove flag, archive
+in-process napi-host, drop __edgePromisingDepth, net LOC reduction".
+The plan assumed F-1..F-6 would route ALL napi through RPC such that
+the in-process path was dead code.  Actual F-1..F-6 wired RPC for ~30
+ops + the user-script path; the in-process napi-host (~2000 LOC) and
+`__edgePromisingDepth` are still load-bearing for tests that go through
+edge's lib/*.js running in the wasm runtime worker.  Wholesale archival
+would break ~13 currently-passing tests.
+
+**Scope-adjusted F-7 (the real lock-in):**
+
+1. Consolidate `runL5UserScript` (debug-format) + `runHostScriptForTestRunner`
+   (test-runner-format) into single `runUserScriptOnHost(source, format)`
+   in main.ts.  -50 LOC, -1 function.
+2. Deprecate `?l5script=` in commentary — same host path as
+   `?script=&host=1`, kept only for ad-hoc page-log debugging.
+3. NOTES.md: mark `microtasks-starved-by-pending-timer` **RESOLVED**
+   for the host-V8 user-script path (still present in wasm path);
+   nextTick-ordering-inversion note now flags that host path got it
+   right.
+4. ARCHITECTURE.md: new "Browser deployment topology (Lever B)" section
+   above "L3 napi-host intercepts" — diagrams the 4-worker layout,
+   names the RPC primitive + op domains, calls out the F-2 memory
+   bridge + pool, documents the `?host=1` user-script split.
+
+**Not done (and the reasons):**
+
+- **In-process napi-host NOT archived.**  Tests like response-body-consume,
+  https-server-listen, tls-info, finalization-registry-runs depend on
+  edge.js's full lib running inside wasm.  edge.js calls napi during
+  that execution; the napi imports come from `src/napi-host/` because
+  we haven't built RPC stubs for the other ~120 napi ops yet.
+  Archival is a multi-week project (F-8++).
+- **`__edgePromisingDepth` NOT dropped.**  Still used by:
+  - `wasi-shim.ts` (poll_oneoff sync/async branch)
+  - `worker.ts` (wraps `await startFn()` to mark promising frame)
+  - `napi-host/index.ts` (wasm-table proxy resets depth around JS re-entries)
+  All three remain load-bearing while the wasm path runs.
+- **No `EDGE_NAPI_VIA_HOST` flag flip** — flag was never added (F-1
+  decided the opt-in was the URL `?host=1`, not a runtime env var).
+  No flag to remove.
+- **No default flip** to make `host=1` implicit.  Most existing tests
+  need wasm/edge globals; flipping default would require 13 new
+  sidecars and break tests on first run.  Defer until either the wasm
+  path is fully RPC-routed or we discover most tests are host-compatible.
+
+**LOC delta:** main.ts -50 (consolidation), NOTES.md +6 net, ARCHITECTURE.md
++40 (new topology section).  Small net change; the value is in the
+commitment, not the byte count.
+
+**What "lock-in" means here:** the host-worker + RPC primitive
+infrastructure is now documented as the architectural target.  Future
+ops + cutovers extend this, not parallel paths.  When tests need new
+behavior, the first question is "does this go via host?" — and the
+answer is documented.
+
+**Tests:** 21 pass / 0 fail / 6 skip — unchanged from F-6.

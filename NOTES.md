@@ -98,16 +98,21 @@ the browser-target tree.
   `tests/js/regression-lazy-load-from-microtask.{js,skip}`. Hypothesis
   refined: root cause is in `napi_run_script` / `compileForInternalLoader`
   state, not microtask queueing.
-- `microtasks-starved-by-pending-timer` — when a `setTimeout(..., N)`
-  is pending, edge's wasm event loop blocks ALL microtasks until the
-  timer fires. Test code avoids setTimeout watchdogs; relies on the
-  test-runner's 30s subprocess timeout for genuine hangs. **Verified
-  still present** after Phase B — see
-  `tests/js/regression-microtask-not-starved.{js,skip}`. Hypothesis
-  refined: WASI `poll_oneoff` Atomics.wait blocks the JS thread that
-  would otherwise drain the host microtask queue. Fix requires either
-  (a) split wasm onto a worker so host can drain, or (b) periodic
-  microtask-checkpoint wakeups inside the wait loop.
+- ~~`microtasks-starved-by-pending-timer`~~ — **RESOLVED** by Lever B
+  F-6 (2026-05-23).  Root cause as predicted: wasm worker's JSPI
+  suspension (during `poll_oneoff` Atomics.wait) starved the worker's
+  microtask queue.  Fix took option (a): user scripts run on a
+  separate host worker whose V8 isn't JSPI-suspended.  See
+  `plans/lever-b-progress.md` "F-6: user-script execution on host
+  worker" + tests that un-skipped:
+  `microtask-before-timer`, `nexttick-before-microtask`,
+  `promise-chain-drains-fully`, `queuemicrotask-orders-with-promise`,
+  `regression-microtask-not-starved`,
+  `regression-lazy-load-from-microtask`,
+  `await-resumes-as-microtask` — all routed via `?host=1` (sidecar
+  `.harness-args` per test).  In-process wasm path retained for tests
+  that need edge's lib/*.js globals (`process`, `fs`, `require`...);
+  flipping that default is a future phase.
 - `task-queue-fallback-recursion` — **RESOLVED** by Phase B. Edge's
   C++ `TaskQueueEnqueueMicrotask` now calls
   `unofficial_napi_enqueue_microtask` (wasm import) which routes to
@@ -267,12 +272,16 @@ or splitting the wasm runtime off the JS thread.
 - **`process.nextTick` ordering inversion** — nextTicks go through
   edge's tickInfo/tickCallback; microtasks through host. Nested-await
   code may observe different interleaving than real Node.
+  (Host-worker user-script path implements correct ordering — see
+  `nexttick-before-microtask` test; in-process wasm path is the case
+  this entry still applies to.)
 - **`worker_threads.MessageChannel` would deadlock** — microtask-
   coordinated wakeups across workers need a single coordinated queue.
 - **`lazy-load-from-microtask`** — see debt entry above. Regression
   test at `tests/js/regression-lazy-load-from-microtask.js`.
-- **`microtasks-starved-by-pending-timer`** — see debt entry above.
-  Regression test at `tests/js/regression-microtask-not-starved.js`.
+- ~~`microtasks-starved-by-pending-timer`~~ — **RESOLVED** by Lever B
+  F-6 for the host-V8 user-script path; still present in the in-process
+  wasm path (which retains JSPI suspension on `poll_oneoff` waits).
 
 ---
 
