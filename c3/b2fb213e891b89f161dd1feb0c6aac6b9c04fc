@@ -1,0 +1,23 @@
+browser-target/scripts/probe-f9-sweep.mjs
+  s_7bec0ecbfcdcd0::t_e68e9f3c126269 38
+browser-target/src/host-worker/host-worker.ts
+  s_7bec0ecbfcdcd0::t_41d70b4ea6caa5 506
+  s_7bec0ecbfcdcd0::t_4be0301351f386 408-441
+  s_7bec0ecbfcdcd0::t_0e85aa1b1ad144 50-67
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "c3b2fb213e891b89f161dd1feb0c6aac6b9c04fc",
+  "prompts": {},
+  "sessions": {
+    "s_7bec0ecbfcdcd0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d560d5ae-265f-44ae-89c4-d35659b3ab9e",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
