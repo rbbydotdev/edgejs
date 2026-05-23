@@ -1,0 +1,29 @@
+browser-target/src/host-worker/rpc-protocol.ts
+  s_7bec0ecbfcdcd0::t_4c498215e053d9 45-75
+browser-target/scripts/bench-host-rpc.mjs
+  s_7bec0ecbfcdcd0::t_d40d99e4011f90 1-89
+browser-target/src/main.ts
+  s_7bec0ecbfcdcd0::t_80aee5b64eeacf 95-100,104-143
+  s_7bec0ecbfcdcd0::t_dcaebd281f01c1 258-266
+browser-target/src/host-worker/host-worker.ts
+  s_7bec0ecbfcdcd0::t_e8c03179092c63 70-77
+  s_7bec0ecbfcdcd0::t_91947181c26581 30
+plans/lever-b-progress.md
+  s_7bec0ecbfcdcd0::t_fabca59cc91a9a 1141-1180
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "fc88ee9d88f1676d3f8f604a84fa64de61af204a",
+  "prompts": {},
+  "sessions": {
+    "s_7bec0ecbfcdcd0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d560d5ae-265f-44ae-89c4-d35659b3ab9e",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
