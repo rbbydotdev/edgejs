@@ -1,0 +1,23 @@
+experiments/l5-threadsafe-fn/FINDINGS.md
+  s_7bec0ecbfcdcd0::t_84cb2271647e4d 1-100
+experiments/sync-rpc-edges/FINDINGS.md
+  s_7bec0ecbfcdcd0::t_d84bd7f47b57d5 1-114
+experiments/sync-rpc-edges/probe-worker-crash.mjs
+  s_7bec0ecbfcdcd0::t_0a342526d6aca2 1-67
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "9650a5f2734ecc3ca3816e945162f042cc94b0ac",
+  "prompts": {},
+  "sessions": {
+    "s_7bec0ecbfcdcd0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d560d5ae-265f-44ae-89c4-d35659b3ab9e",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
