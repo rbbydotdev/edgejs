@@ -79,9 +79,16 @@ import {
   OP_NAPI_ADJUST_EXTERNAL_MEMORY,
   // Lever B batch 4 cluster A (0x01A0–0x01A1): env cleanup hooks.
   OP_NAPI_ADD_ENV_CLEANUP_HOOK, OP_NAPI_REMOVE_ENV_CLEANUP_HOOK,
+  // Lever B batch 4 cluster B (0x01B0–0x01B2): external-data with finalizers.
+  OP_NAPI_CREATE_EXTERNAL, OP_NAPI_CREATE_EXTERNAL_ARRAYBUFFER,
+  OP_NAPI_CREATE_EXTERNAL_BUFFER,
   REPLY_STATUS_INVALID_ARGS,
 } from "./rpc-protocol";
-import { makeHostSideCallbackClosure, CALLBACK_SHAPE_CLEANUP_HOOK } from "./callback-dispatch";
+import {
+  makeHostSideCallbackClosure,
+  CALLBACK_SHAPE_CLEANUP_HOOK,
+  CALLBACK_SHAPE_FINALIZER,
+} from "./callback-dispatch";
 import { getHostSideReverseSyncClient } from "./host-worker";
 
 const EMPTY = new Uint8Array(0);
@@ -644,6 +651,127 @@ export function makeNapiOpRegistry(napi: Record<string, NapiFn>): NapiOpRegistry
           // Drop the mapping once removed so re-add gets a fresh closure
           // (and the wire matches emnapi's own dedup invariant).
           cleanupClosures.delete(key);
+          return { payload: EMPTY, status };
+        });
+      }
+
+      // ── Lever B batch 4 cluster B (external-data with finalizers) ────
+      //
+      // Three FINALIZER-shape ops:
+      //   OP_NAPI_CREATE_EXTERNAL              (env, data, cb, hint, &result)
+      //   OP_NAPI_CREATE_EXTERNAL_ARRAYBUFFER  (env, ext_data, len, cb, hint, &result)
+      //   OP_NAPI_CREATE_EXTERNAL_BUFFER       (env, len, data, cb, hint, &result)
+      //
+      // Each builds a host-side JS closure via `makeHostSideCallbackClosure`
+      // with shape=FINALIZER, keyed in a Map so the same `(env, cbPtr,
+      // dataPtr=finalize_hint)` tuple reuses the same closure reference.
+      //
+      // #!~debt cluster-b-finalizers-noop — emnapi's Finalizer.callFinalizer
+      // (vendor/emnapi/packages/runtime/src/Finalizer.ts:52-66) coerces
+      // `finalize_callback` via `Number(cb)` and dispatches through
+      // `bridge.makeDynCall_vppp(fini)` with NO `typeof === 'function'`
+      // branch (cf. CleanupQueue.drain at Context.ts:86-90 which DOES
+      // branch).  So even if we pass a JS closure to emnapi's
+      // `napi_create_external{,_arraybuffer,_buffer}`, the closure will
+      // never be invoked at finalize time — the host-worker stub table
+      // also can't resolve any non-zero funcref index.
+      //
+      // The handlers therefore pass `finalize_cb=0` to emnapi (creating
+      // the external/arraybuffer/buffer cleanly with no finalize hook)
+      // while still building and caching the closure for the day the
+      // host bridge can dispatch it.  This matches the guest-side
+      // behavior (napi/src/guest/napi.rs:2246 also drops _finalize_cb),
+      // so there's no net regression vs. native edge.
+      //
+      // Long-term fix paths (NOT this batch's work):
+      //   (a) Patch emnapi's Finalizer to mirror CleanupQueue's
+      //       JS-callable branch.
+      //   (b) Wire a host-side FinalizationRegistry keyed on the
+      //       external handle that calls the cached closure on GC.
+      {
+        const finalizerClosures = new Map<string, (env: number, data: number, hint: number) => void>();
+        const createExtFn = napi["napi_create_external"];
+        const createExtABFn = napi["napi_create_external_arraybuffer"];
+        const createExtBufFn = napi["napi_create_external_buffer"];
+
+        const keyOf = (env: number, cbPtr: number, hintPtr: number): string =>
+          `${env >>> 0}:${cbPtr >>> 0}:${hintPtr >>> 0}`;
+
+        const ensureClosure = (
+          env: number,
+          cbPtr: number,
+          finalizeHint: number,
+        ): boolean => {
+          // Returns true iff a closure was built (or already cached) for
+          // a non-zero cbPtr.  cbPtr=0 means "no finalizer", skip.
+          if (cbPtr === 0) return false;
+          const key = keyOf(env, cbPtr, finalizeHint);
+          if (finalizerClosures.has(key)) return true;
+          const reverseClient = getHostSideReverseSyncClient();
+          if (!reverseClient) return false;
+          const hostClosure = makeHostSideCallbackClosure({
+            reverseClient,
+            cbPtr,
+            dataPtr: finalizeHint,
+            env,
+            shape: CALLBACK_SHAPE_FINALIZER,
+          });
+          const finalizer = (envArg: number, data: number, hint: number) => {
+            void hostClosure(data, hint);
+            void envArg;
+          };
+          finalizerClosures.set(key, finalizer);
+          return true;
+        };
+
+        server.register(OP_NAPI_CREATE_EXTERNAL, async (_ctx, args) => {
+          if (typeof createExtFn !== "function") return err("napi handler: napi_create_external not found");
+          if (args.byteLength < 20) return err("napi handler: args too short for napi_create_external");
+          const dv = new DataView(args.buffer, args.byteOffset, args.byteLength);
+          const env       = dv.getUint32(0,  true);
+          const data      = dv.getUint32(4,  true);
+          const cbPtr     = dv.getUint32(8,  true);
+          const finalizeHint = dv.getUint32(12, true);
+          const resultPtr = dv.getUint32(16, true);
+          ensureClosure(env, cbPtr, finalizeHint);
+          // See cluster-b-finalizers-noop debt above: pass 0 for
+          // finalize_cb so emnapi doesn't try to resolve a wasm funcref
+          // index against the host-worker's stub table.  The cached
+          // closure is dormant until a future host-side finalization
+          // path picks it up.
+          const status = createExtFn(env, data, 0, 0, resultPtr);
+          return { payload: EMPTY, status };
+        });
+
+        server.register(OP_NAPI_CREATE_EXTERNAL_ARRAYBUFFER, async (_ctx, args) => {
+          if (typeof createExtABFn !== "function") return err("napi handler: napi_create_external_arraybuffer not found");
+          if (args.byteLength < 24) return err("napi handler: args too short for napi_create_external_arraybuffer");
+          const dv = new DataView(args.buffer, args.byteOffset, args.byteLength);
+          const env          = dv.getUint32(0,  true);
+          const externalData = dv.getUint32(4,  true);
+          const byteLength   = dv.getUint32(8,  true);
+          const cbPtr        = dv.getUint32(12, true);
+          const finalizeHint = dv.getUint32(16, true);
+          const resultPtr    = dv.getUint32(20, true);
+          ensureClosure(env, cbPtr, finalizeHint);
+          // See cluster-b-finalizers-noop debt above.
+          const status = createExtABFn(env, externalData, byteLength, 0, 0, resultPtr);
+          return { payload: EMPTY, status };
+        });
+
+        server.register(OP_NAPI_CREATE_EXTERNAL_BUFFER, async (_ctx, args) => {
+          if (typeof createExtBufFn !== "function") return err("napi handler: napi_create_external_buffer not found");
+          if (args.byteLength < 24) return err("napi handler: args too short for napi_create_external_buffer");
+          const dv = new DataView(args.buffer, args.byteOffset, args.byteLength);
+          const env          = dv.getUint32(0,  true);
+          const length       = dv.getUint32(4,  true);
+          const data         = dv.getUint32(8,  true);
+          const cbPtr        = dv.getUint32(12, true);
+          const finalizeHint = dv.getUint32(16, true);
+          const resultPtr    = dv.getUint32(20, true);
+          ensureClosure(env, cbPtr, finalizeHint);
+          // See cluster-b-finalizers-noop debt above.
+          const status = createExtBufFn(env, length, data, 0, 0, resultPtr);
           return { payload: EMPTY, status };
         });
       }

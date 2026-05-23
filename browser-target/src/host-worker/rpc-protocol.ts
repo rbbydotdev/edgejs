@@ -302,6 +302,41 @@ export const OP_NAPI_REMOVE_ENV_CLEANUP_HOOK = OP_DOMAIN_NAPI_RO | 0x00A1;
 //   closure by (env, cbPtr, dataPtr) and passes that to emnapi so its
 //   reference-equality match in CleanupQueue.remove succeeds.
 
+// ── Lever B batch 4 cluster B: external-data with finalizers (0x01B0–0x01B2) ──
+// Allocated in range 0x00B0–0x00B2 under OP_DOMAIN_NAPI_RO.
+//
+// FINALIZER-shape callback ops.  Unlike cluster A's cleanup hooks,
+// emnapi's Finalizer machinery (vendor/emnapi/packages/runtime/src/
+// Finalizer.ts:52-66) does NOT branch on `typeof cb === 'function'` —
+// it always coerces via `Number(finalize_callback)` and dispatches
+// through `bridge.makeDynCall_vppp(fini)`, which on the host-worker
+// stub table cannot resolve a host-side JS closure.
+//
+// #!~debt cluster-b-finalizers-noop: these ops therefore create the
+// external/arraybuffer/buffer successfully but the registered
+// finalize_cb is NEVER invoked — emnapi sees finalize_cb=0.  This
+// matches the guest-side native edge behavior today (napi/src/guest/
+// napi.rs:2246 also ignores _finalize_cb), so no semantic regression.
+// Long-term fix: extend emnapi's Finalizer with a JS-callable branch
+// (mirroring CleanupQueue.drain at runtime/src/Context.ts:86-90) OR
+// route finalization through a host-side FinalizationRegistry that
+// invokes makeHostSideCallbackClosure on GC.
+
+export const OP_NAPI_CREATE_EXTERNAL = OP_DOMAIN_NAPI_RO | 0x00B0;
+// napi_create_external(env, data, finalize_cb: funcref-idx,
+//                      finalize_hint, &result) — five args.
+// finalize_cb currently dropped (see cluster-b-finalizers-noop debt).
+
+export const OP_NAPI_CREATE_EXTERNAL_ARRAYBUFFER = OP_DOMAIN_NAPI_RO | 0x00B1;
+// napi_create_external_arraybuffer(env, external_data, byte_length,
+//                                   finalize_cb: funcref-idx,
+//                                   finalize_hint, &result) — six args.
+
+export const OP_NAPI_CREATE_EXTERNAL_BUFFER = OP_DOMAIN_NAPI_RO | 0x00B2;
+// napi_create_external_buffer(env, length, data,
+//                              finalize_cb: funcref-idx,
+//                              finalize_hint, &result) — six args.
+
 // ── NAPI callback-taking ops (F-5) ─────────────────────────────────
 export const OP_NAPI_CALL_FUNCTION = OP_DOMAIN_NAPI_CB | 0x0001;
 // napi_call_function(env, recv, fn, argc, argv_ptr, &result)
