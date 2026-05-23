@@ -1,0 +1,14 @@
+{
+  "name": "r7-cbinfo-synthesis-experiment",
+  "version": "0.0.0",
+  "type": "module",
+  "private": true,
+  "description": "R7: synthesize napi_callback_info on the wasm runtime worker so reverse-RPC'd NAPI_CALLBACK funcrefs can call napi_get_cb_info successfully.",
+  "scripts": {
+    "probe": "node probe.mjs"
+  },
+  "dependencies": {
+    "@emnapi/runtime": "file:../../vendor/emnapi/packages/runtime",
+    "@emnapi/core": "file:../../vendor/emnapi/packages/core"
+  }
+}

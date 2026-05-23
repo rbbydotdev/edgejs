@@ -1,7 +1,14 @@
 # Open architectural questions — to resolve via isolated experiments
 
-**Updated 2026-05-23 — Lever B F-1..F-8 shipped + path-(a) full-cutover risks scoped.
-11 of 13 resolved; all path-(a) "tricky unknowns" retired or quantified.**
+**Updated 2026-05-23 — Lever B F-1..F-9 batch 4 shipped + path-(a) cutover risks scoped.
+13 of 14 resolved (R7 closed; surfaced new R8 — cross-context value marshaling).**
+
+## Newly open (surfaced by R7)
+
+| Q | Topic | Notes |
+|---|---|---|
+| R8 | cross-context value marshaling | Host emnapi and wasm emnapi have INDEPENDENT handle ID spaces.  Handle 14 means different JS values in each.  Need a serializer for argv handles + return value at the reverse-RPC boundary.  Probably primitives directly, objects via shared identity map.  Empirical validation needed before integration of the last 2 ops (`napi_create_function`, `napi_define_class`). |
+
 
 ## Resolved
 
@@ -19,6 +26,7 @@
 | R5 | diff-test harness pattern | Validated; per-category file layout scales to 150 ops without codegen.  `experiments/r5-diff-test-harness/` |
 | R6a | nested sync RPC during reverse callback | PASS at depth 16; wait loop intrinsically re-entrant via unique requestIds + reply-by-requestId + shared-wake.  Ring exhaustion did NOT occur (slot turnover faster than nesting).  R1's "must NOT issue forward sync RPC" punt is overcautious.  `experiments/r6-nested-sync-rpc/` |
 | E4 | realistic callback end-to-end perf | Bundled-args ~31 µs/fire (240× in-process); naive ~78 µs (580×).  Stream `_read`/parser callbacks (100s-1000s fires/event) NOT viable on RPC path.  Architectural shift: **two-tier dispatch** — RPC tier for cold callbacks (~90% of surface), co-located in-process for hot callbacks.  In-process `napi-host/` is now PERMANENT load-bearing infrastructure, not transitional.  `experiments/e4-callback-realistic/` |
+| R7 | synthetic napi_callback_info | PASS — Strategy C (open emnapi scope, mutate `scope.callbackInfo` fields, pass `scope.id` as cbinfo).  Mirrors emnapi's own private `withScope` helper.  ~1.02 µs/call, re-entrant to depth 8, no scope leaks.  Surfaced **R8** as a separate unknown (cross-context value marshaling — handle IDs differ between host emnapi and wasm emnapi).  `experiments/r7-cbinfo-synthesis/` |
 
 ## Quantified (resolved as a number, not yes/no)
 
