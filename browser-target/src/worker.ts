@@ -39,10 +39,35 @@ function post(kind: string, payload: Record<string, unknown> = {}) {
 // keeps draining the snapshot's request ring while our wasm runs —
 // this is the core of the runtime-on-separate-worker split.
 let fsSnapshotSab: SharedArrayBuffer | null = null;
+
+// L2 host worker RPC plumbing.  main.ts spawns the host worker
+// alongside us and hands us its request+reply SAB rings via an
+// "edge-host-rpc-sab" message before boot.  We attach an RpcClient
+// once both SABs arrive — used today only for the L2 ping smoke test;
+// L3+ wires this into napi-host.
+import { attachRing as attachHostRing, type RingConfig as HostRingConfig } from "./wasi-shim/sab-ring";
+import { RpcClient } from "./host-worker/rpc-client";
+import { OP_PING } from "./host-worker/rpc-protocol";
+const HOST_RPC_RING_CONFIG: HostRingConfig = { numSlots: 32, slotSize: 4 * 1024 };
+let hostRpcClient: RpcClient | null = null;
+let hostWorkerId = -1;
+
 self.addEventListener("message", (e: MessageEvent) => {
-  const data = e.data as { kind?: string; sab?: SharedArrayBuffer } | null;
+  const data = e.data as { kind?: string; sab?: SharedArrayBuffer; requestSab?: SharedArrayBuffer; replySab?: SharedArrayBuffer; hostWorkerId?: number } | null;
   if (data?.kind === "edge-fs-snapshot-sab" && data.sab) {
     fsSnapshotSab = data.sab;
+  } else if (data?.kind === "edge-host-rpc-sab" && data.requestSab && data.replySab) {
+    hostWorkerId = data.hostWorkerId ?? 0;
+    const requestRing = attachHostRing(data.requestSab, HOST_RPC_RING_CONFIG);
+    const replyRing = attachHostRing(data.replySab, HOST_RPC_RING_CONFIG);
+    hostRpcClient = new RpcClient(requestRing, replyRing);
+    post("log", { text: `[runtime] host RPC client attached (hostWorkerId=${hostWorkerId})`, level: "info" });
+    // L2 proof-of-life: ping the host worker once at attach time.
+    void hostRpcClient.call(OP_PING, hostWorkerId, 0, null).then((res) => {
+      post("log", { text: `[runtime] host ping ok status=${res.status} replyBytes=${res.payload.byteLength}`, level: "info" });
+    }).catch((err) => {
+      post("log", { text: `[runtime] host ping FAILED: ${(err as Error).message}`, level: "err" });
+    });
   }
 });
 

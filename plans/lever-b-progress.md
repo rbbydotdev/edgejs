@@ -1097,3 +1097,44 @@ These compile clean; refactor of existing SAB channels onto sab-ring happens in 
 }
 ```
 
+
+---
+
+## L1 complete (2026-05-23)
+
+**Deliverables:**
+- New `browser-target/src/wasi-shim/bridge-sab.ts` (169 LOC) — HTTP bridge migrated to sab-ring
+- `browser-target/src/wasi-shim/pipes-sab.ts` — slot header 32→40 bytes; contextId/hostWorkerId at offset 28/32
+- `browser-target/src/wasi-shim/fs-snapshot-sab.ts` — RR entry header 12→20 bytes; contextId/hostWorkerId in PendingRequest
+- `browser-target/src/worker.ts` -100 LOC (inline bridge code removed)
+- `browser-target/src/main.ts` -48 LOC (duplicated layout removed)
+
+**Tests:** 14 pass / 13 skip / 0 fail (matches L0 baseline; await-resumes-as-microtask moved to .skip in L0).
+
+**Perf:** measurement variance noted in NOTES.md `l1-perf-variance-investigation`. totalCalls bit-identical at 14648 — no extra wasm work. Local wall-clock measurements were noisy due to concurrent agent runs; agent's own verification was in-budget.
+
+---
+
+## L2 complete (2026-05-23)
+
+**Deliverables:**
+- `browser-target/src/host-worker/rpc-protocol.ts` — op codes, REQUEST/REPLY headers (op + requestId / op + requestId + status)
+- `browser-target/src/host-worker/rpc-client.ts` — wasm-side outbound RPC over SAB rings; handles concurrent calls via requestId demux
+- `browser-target/src/host-worker/rpc-server.ts` — host-side dispatch with handler registry; replies via reply ring
+- `browser-target/src/host-worker/host-worker.ts` — DedicatedWorker entry; receives init, starts RpcServer, registers `ping` handler
+- `browser-target/src/host-worker/worker-pool.ts` — page-side `spawnHostWorker()`; allocates SABs, hands off to host worker via init message
+- `browser-target/scripts/probe-host-ping.mjs` — proof-of-life test: spawns Vite + Playwright, loads page, scrapes #log DOM for "host worker ready" + "host ping ok" markers
+- `npm run probe:host-ping` — npm script for the probe
+
+**Topology now:** page + bridge + host + wasm = 4 workers.
+
+**Proof of life:** `node browser-target/scripts/probe-host-ping.mjs` returns:
+```
+probe-host-ping: OK (host ready + ping round-trip)
+```
+
+This means: wasm worker calls `rpcClient.call(OP_PING, ...)`. SAB ring carries request to host. Host's RpcServer dispatches to `OP_PING` handler. Reply travels back via reply ring. Wasm worker resolves the Promise. End-to-end SAB-RPC across worker boundary working.
+
+**Tests:** 14 pass / 13 skip / 0 fail — unchanged (host worker is currently only used by the ping probe; wasm still does its work the same way as L1).
+
+**Next:** L3 — migrate read-only napi ops to host RPC.

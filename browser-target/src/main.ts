@@ -60,15 +60,54 @@ bridgeWorker.onmessage = (e) => {
     append(e.data.text, e.data.level ?? "info");
   } else if (kind === "bridge-ready") {
     fsSnapshotSab = e.data.fsSnapshotSab as SharedArrayBuffer;
-    append("bridge worker ready; spawning runtime worker", "info");
-    spawnRuntimeWorker();
+    append("bridge worker ready; spawning host + runtime workers", "info");
+    spawnHostThenRuntime();
   }
 };
+
+// L2 host worker.  Spawned alongside the runtime worker so napi RPC can
+// flow between them via the SAB rings handed to both at boot.
+//
+// L5 cutover will route user JS + Node lib/*.js execution here; today
+// the host worker only handles a `ping` op (proof of life).
+import { spawnHostWorker, type HostWorkerHandle } from "./host-worker/worker-pool";
+
+let hostHandle: HostWorkerHandle | null = null;
+
+async function spawnHostThenRuntime(): Promise<void> {
+  // Spawn host worker first so its SABs are ready when the runtime
+  // worker boots — runtime needs them at instantiate time to wire
+  // the RPC client into the wasi-shim.
+  try {
+    hostHandle = spawnHostWorker();
+    hostHandle.worker.addEventListener("message", (ev: MessageEvent) => {
+      const data = ev.data as { kind?: string; text?: string; level?: string };
+      if (data?.kind === "host-log") {
+        append(data.text ?? "", (data.level as "info" | "warn" | "err") ?? "info");
+      }
+    });
+    await hostHandle.ready;
+    append("host worker ready", "info");
+  } catch (err) {
+    append(`host worker spawn failed: ${(err as Error).message}`, "err");
+    return;
+  }
+  spawnRuntimeWorker();
+}
 
 function spawnRuntimeWorker() {
   worker = new Worker(new URL("./worker.ts", import.meta.url), { type: "module" });
   // Hand the FS snapshot SAB to runtime before any other message.
   worker.postMessage({ kind: "edge-fs-snapshot-sab", sab: fsSnapshotSab });
+  // Hand the host worker's RPC SABs so the runtime can talk to it.
+  if (hostHandle) {
+    worker.postMessage({
+      kind: "edge-host-rpc-sab",
+      hostWorkerId: hostHandle.id,
+      requestSab: hostHandle.requestSab,
+      replySab: hostHandle.replySab,
+    });
+  }
   worker.onmessage = onWorkerMessage;
   worker.onerror = (e) => {
     append(`WORKER ERROR: ${e.message} (${e.filename}:${e.lineno})`, "err");
