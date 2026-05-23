@@ -1,0 +1,42 @@
+browser-target/src/wasi-shim/fs-snapshot-sab.ts
+  s_7bec0ecbfcdcd0::t_7c218ad46c1139 518-519,526
+  s_7bec0ecbfcdcd0::t_0c44e227502b9a 158-162
+  s_7bec0ecbfcdcd0::t_ed4359d1f1d425 96-111,447,480-481
+NOTES.md
+  s_7bec0ecbfcdcd0::t_ed4359d1f1d425 179-180
+  s_7bec0ecbfcdcd0::t_586cc0bd17e1d9 181-208
+browser-target/src/wasi-shim/bridge-sab.ts
+  s_7bec0ecbfcdcd0::t_f44612b0af6e86 1-169
+browser-target/src/worker.ts
+  s_7bec0ecbfcdcd0::t_b60316973daa05 333-336
+  s_7bec0ecbfcdcd0::t_ed4359d1f1d425 7,10,332,345,701,707-708,710-711
+browser-target/src/wasi-shim/pipes-sab.ts
+  s_7bec0ecbfcdcd0::t_ed4359d1f1d425 3-12,31,39-41,43-46,65,78-79,153-158,169-170,180-187
+  s_7bec0ecbfcdcd0::t_69188d1a0c618c 42
+plans/lever-b-progress.md
+  s_7bec0ecbfcdcd0::t_4fcf1d518322b0 437-553
+  s_7bec0ecbfcdcd0::t_ff897e61d66ed3 554-698
+  s_7bec0ecbfcdcd0::t_e28c4b4605e1bc 961-1099
+  s_7bec0ecbfcdcd0::t_ed4359d1f1d425 320-436
+  s_7bec0ecbfcdcd0::t_a48e6142c76ce9 699-815
+browser-target/src/main.ts
+  s_7bec0ecbfcdcd0::t_ed4359d1f1d425 1-2,87-89,105,130,134-137
+tests/js/await-resumes-as-microtask.skip
+  s_7bec0ecbfcdcd0::t_6b03b9f8b99e46 1-5
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "bfcbb052f25835bc9be23e322135d05c6352e7e7",
+  "prompts": {},
+  "sessions": {
+    "s_7bec0ecbfcdcd0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d560d5ae-265f-44ae-89c4-d35659b3ab9e",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
