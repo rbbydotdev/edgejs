@@ -1,5 +1,20 @@
 # Open architectural questions — to resolve via isolated experiments
 
+**Updated 2026-05-23 — 6 of 13 resolved.  All Tier 1+2 (L5 blockers) closed.**
+
+## Resolved
+
+| Q | Topic | Resolution |
+|---|---|---|
+| Q1 | malloc deadlock | Pre-allocated pool, host-side bookkeeping.  `experiments/l5-malloc-deadlock/` |
+| Q2 | cross-worker napi roundtrip | 3 napi calls succeed end-to-end via SAB-RPC + shared memory.  `experiments/l5-real-roundtrip/` |
+| Q3 | threadsafe function dispatch | emnapi v2 main-mode is exactly what L5 needs; analytical.  `experiments/l5-threadsafe-fn/` |
+| Q4 | shared memory growth | No protocol needed; fresh views per call (emnapi already does this).  `experiments/memory-growth/` |
+| Q5 | sync RPC edges (worker crash) | Timeout + worker.exit event detects crashes.  Ring-full + reply-full documented.  `experiments/sync-rpc-edges/` |
+| Q8 | emnapi multi-context isolation | N contexts on same thread fully independent.  L9 has dual topologies.  `experiments/l9-multi-context/` |
+
+
+
 The L5 emnapi v2 experiment (`experiments/l5-emnapi-v2/`) proved the
 isolated-probe pattern works.  This file catalogs every architectural
 unknown that should get the same treatment.
