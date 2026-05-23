@@ -1,0 +1,32 @@
+experiments/l5-emnapi-v2/FINDINGS.md
+  s_7bec0ecbfcdcd0::t_8edf1a26acc433 1-176
+experiments/l5-emnapi-v2/package.json
+  s_7bec0ecbfcdcd0::t_9730f7e3f580bd 1-15
+experiments/l5-emnapi-v2/probe.mjs
+  s_7bec0ecbfcdcd0::t_67af2f0e1eb7c8 1-59
+experiments/l5-emnapi-v2/package-lock.json
+  ai_agent 1-41
+experiments/l5-emnapi-v2/probe-with-memory.mjs
+  s_7bec0ecbfcdcd0::t_4948976687ceef 71-78
+  s_7bec0ecbfcdcd0::t_9d28c7f671e12b 1-19,28-70,79-96,98-144
+  s_7bec0ecbfcdcd0::t_0e5edeff9c87d4 97
+  s_7bec0ecbfcdcd0::t_40aa9840861e9e 20-27
+experiments/l5-emnapi-v2/probe-rpc-wrap.mjs
+  s_7bec0ecbfcdcd0::t_cb451f813c25d8 1-116
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "174837ed5d9854ad2797df8ee7f081c4b6645ec6",
+  "prompts": {},
+  "sessions": {
+    "s_7bec0ecbfcdcd0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d560d5ae-265f-44ae-89c4-d35659b3ab9e",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
