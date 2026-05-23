@@ -1468,3 +1468,37 @@ shared wasm memory + lets edge.js's actual wasm worker call these
 napi ops via the same RPC.
 
 Next: F-2 — share the wasm worker's real memory with host emnapi.
+
+---
+
+## F-2 complete (2026-05-23)
+
+**Goal:** wasm runtime worker can read what host's emnapi writes.
+
+**Deliverables:**
+- main.ts forwards host's napi memory SAB to runtime worker
+  alongside the RPC ring SABs
+- worker.ts attaches `Uint32Array` view onto the shared memory
+- Exposed via `globalThis.__edgeHostNapiMemView` for future modules
+  to read after host writes
+
+**Validation:** "host napi memory attached (65536 bytes)" log line at
+runtime worker boot confirms cross-worker SAB sharing. The page-side
+F-1 probe already verified host can write to this memory; the
+runtime worker NOW shares that SAB.
+
+**Critical insight surfaced during integration:**
+The current `RpcClient` uses async drainer (`await waitForReadyAsync`).
+This works on page + host worker (responsive event loops) but DOESN'T
+work on the wasm runtime worker once it enters JSPI suspend — the
+suspend pauses the JS event loop.
+
+**Implication for F-3:** the wasm-side napi RPC stubs (which run
+inside wasm execution and need to BLOCK until reply) must use a
+**sync** RpcClient variant with direct `Atomics.wait`, not async
+drainer.  Building `SyncRpcClient` is F-3's first deliverable.
+
+**Tests:** 14 pass / 13 skip / 0 fail.
+
+**Pool allocator deferred to F-3** — it's needed once real napi ops
+fire from wasm, not before.

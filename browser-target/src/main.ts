@@ -289,6 +289,12 @@ function spawnRuntimeWorker() {
       replySab: hostHandle.replySab,
       reverseRequestSab: hostHandle.reverseRequestSab,
       reverseReplySab: hostHandle.reverseReplySab,
+      // F-2: forward host's napi memory SAB to the wasm runtime worker.
+      // Wasm worker attaches a view so it can read what host's emnapi
+      // wrote (e.g., napi result handles).  In F-7 this becomes the
+      // PRIMARY memory edge.js's wasm sees; for F-2 it's a parallel
+      // memory used only by host RPC napi ops.
+      napiMemorySab: hostHandle.napiMemorySab,
     });
   }
   worker.onmessage = onWorkerMessage;

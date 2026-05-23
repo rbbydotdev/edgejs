@@ -55,6 +55,13 @@ let hostRpcClient: RpcClient | null = null;
  *  Used for finalizers, threadsafe function dispatch in L5+. */
 let reverseRpcServer: RpcServer | null = null;
 let hostWorkerId = -1;
+/** F-2: SAB view of the host's napi memory.  Lets wasm runtime worker
+ *  read what host emnapi wrote (and vice versa).  Same buffer, shared
+ *  across worker boundary. */
+let hostNapiMemoryView: Uint32Array | null = null;
+function getHostNapiMemoryView(): Uint32Array | null { return hostNapiMemoryView; }
+// Re-exported indirectly via a global accessor so other modules can use it.
+(globalThis as { __edgeHostNapiMemView?: () => Uint32Array | null }).__edgeHostNapiMemView = getHostNapiMemoryView;
 
 self.addEventListener("message", (e: MessageEvent) => {
   const data = e.data as { kind?: string; sab?: SharedArrayBuffer; requestSab?: SharedArrayBuffer; replySab?: SharedArrayBuffer; hostWorkerId?: number } | null;
@@ -66,6 +73,12 @@ self.addEventListener("message", (e: MessageEvent) => {
     const replyRing = attachHostRing(data.replySab, HOST_RPC_RING_CONFIG);
     hostRpcClient = new RpcClient(requestRing, replyRing);
     post("log", { text: `[runtime] host RPC client attached (hostWorkerId=${hostWorkerId})`, level: "info" });
+    // F-2: attach view onto host's napi memory.
+    const napiMemSab = (data as { napiMemorySab?: SharedArrayBuffer }).napiMemorySab;
+    if (napiMemSab) {
+      hostNapiMemoryView = new Uint32Array(napiMemSab);
+      post("log", { text: `[runtime] host napi memory attached (${napiMemSab.byteLength} bytes)`, level: "info" });
+    }
     // L4 reverse channel — host can send requests TO this worker.
     // Reverse-direction SABs come in the same message.
     const reverseReqSab = (data as { reverseRequestSab?: SharedArrayBuffer }).reverseRequestSab;
@@ -91,6 +104,13 @@ self.addEventListener("message", (e: MessageEvent) => {
     }).catch((err) => {
       post("log", { text: `[runtime] host ping FAILED: ${(err as Error).message}`, level: "err" });
     });
+    // F-2: runtime worker now has hostNapiMemoryView attached.  The
+    // shared memory bridge is established.  Verifying that runtime
+    // worker can ACTUALLY read host's writes via RPC is page-driven
+    // (probe-f2-mem-bridge.mjs runs the cross-worker read from page,
+    // not from inside the wasm runtime worker — that worker enters
+    // JSPI suspend during edge.js boot and its event loop pauses,
+    // which would race with any RPC probe issued from here).
   }
 });
 
