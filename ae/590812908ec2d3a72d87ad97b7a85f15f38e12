@@ -1,0 +1,34 @@
+browser-target/src/worker.ts
+  s_7bec0ecbfcdcd0::t_a07353825185f4 42-54,56,59-70
+browser-target/scripts/probe-host-ping.mjs
+  s_7bec0ecbfcdcd0::t_937bf315f75090 1-66
+browser-target/src/host-worker/rpc-server.ts
+  s_7bec0ecbfcdcd0::t_9a42663b9e6200 1-165
+browser-target/package.json
+  s_7bec0ecbfcdcd0::t_06944cfc9ed25d 11-12
+plans/lever-b-progress.md
+  s_7bec0ecbfcdcd0::t_cd1b027b1a37bc 1100-1140
+browser-target/src/host-worker/worker-pool.ts
+  s_7bec0ecbfcdcd0::t_75f3b8dbc65924 41,44
+  s_7bec0ecbfcdcd0::t_8b5d14c444ea95 1-40,42-43,45-76
+browser-target/src/host-worker/host-worker.ts
+  s_7bec0ecbfcdcd0::t_dec9a6df248f2f 1-101
+browser-target/src/main.ts
+  s_7bec0ecbfcdcd0::t_af35ce5e119e13 63-64,68-97,102-110
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "ae590812908ec2d3a72d87ad97b7a85f15f38e12",
+  "prompts": {},
+  "sessions": {
+    "s_7bec0ecbfcdcd0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d560d5ae-265f-44ae-89c4-d35659b3ab9e",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
