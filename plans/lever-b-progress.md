@@ -1301,3 +1301,63 @@ implementation + testing per op.
 
 Per project goal directive (3-attempt rule), L5 full is shelved with
 the above detailed roadmap.  Foundation (L0-L4 + L5 spike) is solid.
+
+---
+
+## L8 spike validated (2026-05-23)
+
+**Spike scope:** prove the import-map + virtual module approach works
+in Chromium 1223 for runtime ESM resolution of bare specifiers.
+
+**Implementation:**
+- Static HTML at `browser-target/public/l8-test.html`
+  (in /public/ so Vite serves it verbatim, no module transform)
+- `<script type="importmap">` maps `virtual-fs` → `/virtual-fs.mjs`
+- `browser-target/public/virtual-fs.mjs` is the virtual module body
+- Plain (non-module) `<script>` uses `new Function('s','return import(s)')`
+  to dynamically import — Vite can't statically analyze + reject
+
+**Result:**
+```
+$ node browser-target/scripts/probe-l8-importmap.mjs
+probe-l8-importmap: OK
+imported virtual-fs keys=default,readFileSync
+typeof readFileSync=function
+readFileSync(/etc/passwd) -> [virtual fs] /etc/passwd
+```
+
+Both named (`m.readFileSync`) and default (`m.default`) exports work.
+
+**Vite dev-server gotcha:** the `<script type="module">` inline scripts
+in non-public/ HTML are transformed by Vite's import-analysis plugin
+which resolves imports statically and FAILS for bare specifiers it
+doesn't know.  Workarounds:
+1. Put HTML in /public/ (bypasses HTML transform — what the spike does)
+2. Use `new Function('s','return import(s)')` to hide specifier from
+   static analysis (also what the spike does — belt + suspenders)
+3. Vite production build doesn't run import-analysis on output, so this
+   only affects dev
+
+**Vite's own externalization of `node:*`:** Vite has built-in
+handling that intercepts `node:*` and replaces them with stubs that
+throw on property access — independent of our import map.  L8 full
+needs either a Vite plugin to opt out, OR use a non-`node:` prefix
+(per Deno-style `npm:` or our own `@node/*` namespace), OR rely on a
+Service Worker that intercepts the request before Vite sees it.
+
+**What full L8 still requires:**
+1. Service Worker that intercepts requests for our virtual specifiers
+   (rather than serving them from /public/ as static files)
+2. `@jspm/generator` integration to build the import map at boot from
+   the user's package.json / node_modules
+3. Vite plugin (or config) to disable `node:*` externalization so our
+   map takes precedence
+4. node-builtin shim modules (~40 of them — fs, path, http, etc.) that
+   bridge to L5's host-side napi
+5. Full L5 (so the bridges have somewhere to call)
+
+**Estimated effort for full L8: 1-2 weeks** per the original plan,
+contingent on full L5 being done.
+
+The mechanism is proven.  Production deployment is engineering.
+

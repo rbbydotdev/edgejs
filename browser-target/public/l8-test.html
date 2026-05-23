@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>L8 spike (static, no-Vite-transform)</title>
+  <script type="importmap">
+  {
+    "imports": {
+      "virtual-fs": "/virtual-fs.mjs"
+    }
+  }
+  </script>
+</head>
+<body>
+  <pre id="out"></pre>
+  <script>
+    // Plain (non-module) script — Vite doesn't statically analyze
+    // dynamic imports here.  We use `new Function` to construct an
+    // async function that does the import; the import string is a
+    // runtime value, never seen by any static analyzer.
+    (async () => {
+      const log = (s) => { const el = document.getElementById('out'); if (el) el.textContent += s + '\n'; };
+      try {
+        const importer = new Function('s', 'return import(s)');
+        const m = await importer('virtual-fs');
+        log('imported virtual-fs keys=' + Object.keys(m).sort().join(','));
+        log('typeof readFileSync=' + typeof m.readFileSync);
+        if (typeof m.readFileSync === 'function') {
+          log('readFileSync(/etc/passwd) -> ' + m.readFileSync('/etc/passwd'));
+        }
+        log('l8-spike-result: OK');
+      } catch (e) {
+        log('l8-spike-result: FAIL ' + (e && e.message));
+      }
+    })();
+  </script>
+</body>
+</html>

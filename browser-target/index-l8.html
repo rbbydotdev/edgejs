@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>L8 spike: static import-map + virtual node module</title>
+  <!-- A static import map.  This MUST come before any module scripts
+       that depend on it.  Spec requires per-document at most one
+       (until multiple-import-maps lands universally, which Firefox
+       just shipped in 147 — but for the spike, one is fine). -->
+  <script type="importmap">
+  {
+    "imports": {
+      "virtual-fs": "/virtual-fs.mjs"
+    }
+  }
+  </script>
+</head>
+<body>
+  <pre id="out"></pre>
+  <script type="module">
+    function log(s) {
+      const el = document.getElementById('out');
+      if (el) el.textContent += s + '\n';
+    }
+    try {
+      const m = await import(/* @vite-ignore */ 'virtual-fs');
+      log('imported virtual-fs keys=' + Object.keys(m).sort().join(','));
+      log('typeof readFileSync=' + typeof m.readFileSync);
+      if (typeof m.readFileSync === 'function') {
+        log('readFileSync(/etc/passwd) -> ' + m.readFileSync('/etc/passwd'));
+      }
+      log('l8-spike-result: OK');
+    } catch (e) {
+      log('l8-spike-result: FAIL ' + (e && e.message));
+    }
+  </script>
+</body>
+</html>
