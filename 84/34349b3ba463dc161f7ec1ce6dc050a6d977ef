@@ -1,0 +1,46 @@
+tests/js/microtask-before-timer.harness-args
+  s_7bec0ecbfcdcd0::t_4a78fbd0741b0a 1
+tests/js/await-resumes-as-microtask.harness-args
+  s_7bec0ecbfcdcd0::t_a91fabc016a8ff 1
+plans/lever-b-progress.md
+  s_7bec0ecbfcdcd0::t_db05bb770bf660 1631-1692
+tests/js/regression-microtask-not-starved.harness-args
+  s_7bec0ecbfcdcd0::t_cca23892c12ad7 1
+browser-target/src/main.ts
+  s_7bec0ecbfcdcd0::t_0a872c1dcf9cea 268-312
+  s_7bec0ecbfcdcd0::t_04ae9ed98a5c31 101-107
+  s_7bec0ecbfcdcd0::t_decf856338c0d2 474-479
+browser-target/scripts/browser-test-runner.mjs
+  s_7bec0ecbfcdcd0::t_cfc83519154633 67
+  s_7bec0ecbfcdcd0::t_6c70921decbbbc 28-31
+  s_7bec0ecbfcdcd0::t_f770671a939ece 83-97
+tests/js/nexttick-before-microtask.harness-args
+  s_7bec0ecbfcdcd0::t_cca23892c12ad7 1
+tests/js/promise-chain-drains-fully.harness-args
+  s_7bec0ecbfcdcd0::t_cca23892c12ad7 1
+tests/js/queuemicrotask-orders-with-promise.harness-args
+  s_7bec0ecbfcdcd0::t_cca23892c12ad7 1
+browser-target/src/host-worker/host-worker.ts
+  s_7bec0ecbfcdcd0::t_35e3576da10023 180,195,197,211-212,219-225,260
+  s_7bec0ecbfcdcd0::t_223f4b8bfc6d4a 172-173,175-179,196,198-199,209-210,213-215,261-263
+  s_7bec0ecbfcdcd0::t_4ad84dd1da7426 181-194,200-208,217,238,247-258
+  s_7bec0ecbfcdcd0::t_1eab3aad3aeaf1 227-237,239-246
+tests/js/regression-lazy-load-from-microtask.harness-args
+  s_7bec0ecbfcdcd0::t_cca23892c12ad7 1
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "8434349b3ba463dc161f7ec1ce6dc050a6d977ef",
+  "prompts": {},
+  "sessions": {
+    "s_7bec0ecbfcdcd0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d560d5ae-265f-44ae-89c4-d35659b3ab9e",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
