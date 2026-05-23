@@ -117,10 +117,6 @@ let hostSideReverseSyncClient: SyncRpcClient | null = null;
 export function getHostSideReverseSyncClient(): SyncRpcClient | null {
   return hostSideReverseSyncClient;
 }
-/** DIAG accessor for napi-op-handlers to read back memory after RPC calls. */
-export function getHostNapiMemoryBuffer(): ArrayBuffer | SharedArrayBuffer | null {
-  return napiHostMemory?.buffer ?? null;
-}
 
 // F-1: emnapi state.  Initialized lazily on first napi op so we don't
 // pay the cost when only ping/echo are used.  Memory is the SAB shared

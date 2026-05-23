@@ -102,44 +102,13 @@ function err(msg: string, status = REPLY_STATUS_INVALID_ARGS) {
 
 type NapiFn = (...args: number[]) => number;
 
-/** Lazy-init a long-lived emnapi handle scope on first handle-allocating
- *  call.  Diagnosed in R9 (`experiments/r9-host-emnapi-init/FINDINGS.md`):
- *  `napiModule.init()` opens then closes its own scope, leaving the root
- *  scope's handleStore=null.  Handle-allocating ops (napi_create_*,
- *  napi_coerce_*, etc.) throw on `handleStore.push`.
- *
- *  Earlier attempt: open at init time inside `ensureNapiContext()`.  That
- *  caused F-9 sweep to hang in production — likely some host-worker boot
- *  ordering interaction.  Lazy approach: open on first handler entry,
- *  once.  Each factory calls this at the top of its handler.
- *
- *  #!~debt host-emnapi-root-scope-accumulates: opened scope is never
- *  closed.  Handles accumulate for host worker lifetime.  Production-
- *  clean refactor: per-RPC open/close in each factory.  Minimum-viable
- *  patch first. */
-let cachedNapiFns: Record<string, NapiFn> | null = null;
-let outerScopeOpened = false;
-function ensureOuterScope(): void {
-  if (outerScopeOpened) return;
-  if (!cachedNapiFns) return;
-  const openHandleScope = cachedNapiFns["napi_open_handle_scope"];
-  if (typeof openHandleScope !== "function") return;
-  const SCOPE_OUT_PTR = 1020; // reserved below the 16K malloc pool
-  try {
-    openHandleScope(1, SCOPE_OUT_PTR);
-    outerScopeOpened = true;
-  } catch {
-    // First call failed; don't lock out future attempts in case this
-    // is a transient init-order issue.
-  }
-}
 
 /** Make a handler for two-u32 ops (env, resultPtr). */
 function makeTwoU32(napiFn: NapiFn | undefined, opName: string) {
   return async (_ctx: HandlerContext, args: Uint8Array) => {
     if (typeof napiFn !== "function") return err(`napi handler: ${opName} not found`);
     if (args.byteLength < 8) return err("napi handler: args too short for two-u32");
-    ensureOuterScope();
+
     const dv = new DataView(args.buffer, args.byteOffset, args.byteLength);
     const env = dv.getUint32(0, true);
     const ptr = dv.getUint32(4, true);
@@ -152,7 +121,7 @@ function makeThreeU32(napiFn: NapiFn | undefined, opName: string) {
   return async (_ctx: HandlerContext, args: Uint8Array) => {
     if (typeof napiFn !== "function") return err(`napi handler: ${opName} not found`);
     if (args.byteLength < 12) return err("napi handler: args too short for three-u32");
-    ensureOuterScope();
+
     const dv = new DataView(args.buffer, args.byteOffset, args.byteLength);
     const env = dv.getUint32(0, true);
     const a = dv.getUint32(4, true);
@@ -166,7 +135,7 @@ function makeFourU32(napiFn: NapiFn | undefined, opName: string) {
   return async (_ctx: HandlerContext, args: Uint8Array) => {
     if (typeof napiFn !== "function") return err(`napi handler: ${opName} not found`);
     if (args.byteLength < 16) return err("napi handler: args too short for four-u32");
-    ensureOuterScope();
+
     const dv = new DataView(args.buffer, args.byteOffset, args.byteLength);
     const env = dv.getUint32(0, true);
     const a = dv.getUint32(4, true);
@@ -182,7 +151,7 @@ function makeFiveU32(napiFn: NapiFn | undefined, opName: string) {
   return async (_ctx: HandlerContext, args: Uint8Array) => {
     if (typeof napiFn !== "function") return err(`napi handler: ${opName} not found`);
     if (args.byteLength < 20) return err("napi handler: args too short for five-u32");
-    ensureOuterScope();
+
     const dv = new DataView(args.buffer, args.byteOffset, args.byteLength);
     return {
       payload: EMPTY,
@@ -203,7 +172,7 @@ function makeSixU32(napiFn: NapiFn | undefined, opName: string) {
   return async (_ctx: HandlerContext, args: Uint8Array) => {
     if (typeof napiFn !== "function") return err(`napi handler: ${opName} not found`);
     if (args.byteLength < 24) return err("napi handler: args too short for six-u32");
-    ensureOuterScope();
+
     const dv = new DataView(args.buffer, args.byteOffset, args.byteLength);
     return {
       payload: EMPTY,
@@ -226,7 +195,7 @@ function makeSevenU32(napiFn: NapiFn | undefined, opName: string) {
   return async (_ctx: HandlerContext, args: Uint8Array) => {
     if (typeof napiFn !== "function") return err(`napi handler: ${opName} not found`);
     if (args.byteLength < 28) return err("napi handler: args too short for seven-u32");
-    ensureOuterScope();
+
     const dv = new DataView(args.buffer, args.byteOffset, args.byteLength);
     return {
       payload: EMPTY,
@@ -255,9 +224,6 @@ export interface NapiOpRegistry {
 /** Register all F-4 read-only napi op handlers against the given server.
  *  `napi` is the populated `napiModule.imports.napi` object. */
 export function makeNapiOpRegistry(napi: Record<string, NapiFn>): NapiOpRegistry {
-  // Cache the napi fns object so `ensureOuterScope` (called lazily on
-  // first handle-allocating op) can reach `napi_open_handle_scope`.
-  cachedNapiFns = napi;
   // Op → (factory, namespace-name) table.
   // Most ops follow predictable shapes from napi.h.
   const TWO_U32: Array<[number, string]> = [

@@ -188,6 +188,17 @@ the browser-target tree.
   public Buffer JS API.
 - Multiple `#!~debt` in `unofficial.ts` — most no-op stubs writing
   sensible defaults to out-params. Promote when a workload lights them up.
+- `host-emnapi-root-scope-accumulates` (2026-05-24, F-9 R9 fix) —
+  host-worker.ts opens one long-lived emnapi handle scope at init via
+  `napi_open_handle_scope`, never closes it.  Required because emnapi
+  v1.10's `napiModule.init()` opens then closes its internal scope,
+  leaving the root scope with `handleStore=null` — handle-allocating
+  napi ops would throw on `handleStore.push`.  Side effect: handles
+  allocated by host-RPC ops accumulate for the host worker's lifetime.
+  Production-clean refactor: open/close a scope per RPC call inside
+  each factory in napi-op-handlers.ts.  Minimum-viable patch shipped
+  first; memory pressure not observed in tests.
+  See experiments/r9-host-emnapi-init/FINDINGS.md.
 - `cluster-b-finalizers-noop` (2026-05-23, F-9 batch 4 cluster B) —
   `napi_create_external{,_arraybuffer,_buffer}` register host-side
   finalizer closures in a `finalizerClosures` Map but pass
