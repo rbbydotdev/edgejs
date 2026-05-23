@@ -25,6 +25,7 @@ import {
 } from "../wasi-shim/sab-ring";
 import { RpcServer } from "./rpc-server";
 import { RpcClient } from "./rpc-client";
+import { SyncRpcClient } from "./rpc-client-sync";
 import {
   OP_PING,
   OP_HOST_READY,
@@ -86,6 +87,18 @@ let reverseReplyRing: RingView | null = null;
 let reverseClient: RpcClient | null = null;
 /** Exposed for L4 bench script and future L5 callers. */
 export function getReverseClient(): RpcClient | null { return reverseClient; }
+
+// F-9 path-a: sync variant of the reverse-channel client.  Used by
+// callback-arg napi op handlers (napi_create_function etc.) — their
+// closures need to invoke wasm funcrefs synchronously because emnapi's
+// `withScope` wrapper does NOT await.  Lives alongside the async
+// `reverseClient` on the same rings; only the wait strategy differs.
+let hostSideReverseSyncClient: SyncRpcClient | null = null;
+/** Exposed so callback-arg op handlers (registered in F-9 batch 4)
+ *  can construct host-side closures via makeHostSideCallbackClosure. */
+export function getHostSideReverseSyncClient(): SyncRpcClient | null {
+  return hostSideReverseSyncClient;
+}
 
 // F-1: emnapi state.  Initialized lazily on first napi op so we don't
 // pay the cost when only ping/echo are used.  Memory is the SAB shared
@@ -391,6 +404,17 @@ self.addEventListener("message", (e: MessageEvent) => {
   // and threadsafe function dispatch.  No handlers needed on host's
   // side of this channel — replies route via requestId demux as usual.
   reverseClient = new RpcClient(reverseRequestRing, reverseReplyRing, sharedWake);
+  // F-9 path-a: sync variant on the same rings.  Callback-arg op
+  // handlers consume this via getHostSideReverseSyncClient() to build
+  // synchronous closures (emnapi's withScope does not await).
+  hostSideReverseSyncClient = new SyncRpcClient(
+    reverseRequestRing,
+    reverseReplyRing,
+    sharedWake,
+    // No drainReverseRequests — the host is the SENDER on this channel;
+    // there is no further reverse direction from here.
+    null,
+  );
   // Start drain loop (fire-and-forget).
   void server.start().catch((err) => {
     log(`rpc-server crashed: ${(err as Error).stack ?? err}`, "err");

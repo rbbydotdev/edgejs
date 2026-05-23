@@ -49,6 +49,7 @@ import { attachRing as attachHostRing, type RingConfig as HostRingConfig } from 
 import { RpcClient } from "./host-worker/rpc-client";
 import { RpcServer } from "./host-worker/rpc-server";
 import { OP_PING, OP_WASM_ECHO, REPLY_STATUS_OK } from "./host-worker/rpc-protocol";
+import { registerWasmCallbackInvoker, createCallbackDepthCounter } from "./host-worker/callback-dispatch";
 const HOST_RPC_RING_CONFIG: HostRingConfig = { numSlots: 32, slotSize: 4 * 1024 };
 let hostRpcClient: RpcClient | null = null;
 /** Reverse-channel server: host can request things FROM wasm worker.
@@ -613,6 +614,27 @@ async function runEdgeWithEmnapi() {
   } catch (e) {
     post("log", { text: `emnapi.bindInstance threw: ${(e as Error).message}`, level: "err" });
     // Continue anyway — see what _start does with whatever state we have.
+  }
+
+  // F-9 path-a: register the reverse-RPC callback invoker.  When the
+  // host's emnapi creates a JS function from a wasm-side funcref
+  // (napi_create_function etc.), the JS function's body sends
+  // OP_INVOKE_WASM_CALLBACK back to this worker via the reverse
+  // channel; we look up the funcref in __indirect_function_table and
+  // invoke it.  See callback-dispatch.ts + CALLBACK-DISPATCH-SPEC.md.
+  if (reverseRpcServer) {
+    try {
+      const wasmTable = instance.exports.__indirect_function_table as WebAssembly.Table | undefined;
+      if (wasmTable) {
+        const depthCounter = createCallbackDepthCounter();
+        registerWasmCallbackInvoker(reverseRpcServer, { wasmTable, depthCounter });
+        post("log", { text: "[runtime] OP_INVOKE_WASM_CALLBACK handler registered", level: "info" });
+      } else {
+        post("log", { text: "[runtime] no __indirect_function_table on wasm instance; callback invoker not registered", level: "warn" });
+      }
+    } catch (e) {
+      post("log", { text: `[runtime] registerWasmCallbackInvoker failed: ${(e as Error).message}`, level: "err" });
+    }
   }
 
   // wasi-threads setup.  ThreadManager reads `instance.exports.malloc`
