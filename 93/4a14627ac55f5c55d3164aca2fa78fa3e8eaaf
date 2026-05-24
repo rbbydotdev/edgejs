@@ -1,0 +1,39 @@
+tests/js/crypto-hash-via-host-worker.harness-args
+  s_7bec0ecbfcdcd0::t_79dff2ae5b4d0b 1
+NOTES.md
+  s_7bec0ecbfcdcd0::t_c2ad69bc8f80b9 336-346
+tests/js/crypto-hash-via-host-worker.stdout
+  s_7bec0ecbfcdcd0::t_79dff2ae5b4d0b 1
+tests/js/crypto-hash-via-host-worker.js
+  s_7bec0ecbfcdcd0::t_79dff2ae5b4d0b 1-41
+browser-target/src/policies/index.ts
+  s_7bec0ecbfcdcd0::t_0957acbda31b3c 214
+  s_7bec0ecbfcdcd0::t_483269a83f792a 122
+  s_7bec0ecbfcdcd0::t_203ceabb5b9c33 137
+experiments/e18-createhash-host-rpc/FINDINGS.md
+  s_7bec0ecbfcdcd0::t_158b8d9992383a 1-138
+browser-target/src/host-worker/rpc-protocol.ts
+  s_7bec0ecbfcdcd0::t_c52450b2bff0b2 27-29,439-462
+browser-target/src/host-worker/host-worker.ts
+  s_7bec0ecbfcdcd0::t_640ee44f6dc526 37,339-397
+browser-target/src/policies/crypto-hash-via-host-worker.ts
+  s_7bec0ecbfcdcd0::t_79dff2ae5b4d0b 1-194
+browser-target/src/worker.ts
+  s_7bec0ecbfcdcd0::t_79dff2ae5b4d0b 51-52,56-62,86-134,145-148,163-179
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "934a14627ac55f5c55d3164aca2fa78fa3e8eaaf",
+  "prompts": {},
+  "sessions": {
+    "s_7bec0ecbfcdcd0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d560d5ae-265f-44ae-89c4-d35659b3ab9e",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
