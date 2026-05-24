@@ -1845,6 +1845,32 @@ int RunEventLoopUntilQuiescent(napi_env env, std::string* error_out) {
         return 1;
       }
     }
+    // Drain V8 microtasks BEFORE uv_run fires any timers/callbacks.
+    // Matches Node's checkpoint ordering: microtasks queued by the
+    // synchronous bootstrap (or by a prior libuv callback) must drain
+    // before the next macrotask (timer / I/O) runs.
+    //
+    // On the browser target, this maps to a Suspending wasm import
+    // that yields control to V8 — V8's kAuto microtasks policy then
+    // checkpoints at the suspend boundary.  The call site MUST be
+    // wasm-only stack (no JS frames between the promising entry and
+    // this import) — JSPI v2 throws SuspendError otherwise.  This
+    // site qualifies: only _start → RunEventLoopUntilQuiescent →
+    // import.  See experiments/e23-redo-microtask-drain/FINDINGS.md.
+    //
+    // On the node-harness path, this maps to a sync no-op (the host
+    // doesn't need it — Node's own microtask checkpoint runs at
+    // C++/JS boundaries via MicrotasksScope).
+    {
+      const napi_status yield_status = unofficial_napi_yield_for_microtasks(env);
+      if (yield_status != napi_ok) {
+        if (error_out != nullptr) {
+          *error_out = "Failed to yield for microtasks";
+        }
+        return 1;
+      }
+    }
+
     const bool use_polling_loop = loop_timeout_ms > 0;
     if (use_polling_loop) {
       uv_run(loop, UV_RUN_NOWAIT);

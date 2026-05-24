@@ -79,7 +79,7 @@ export function buildMicrotaskOpsImports(
     return context.handleStore.get(handleId)?.value;
   }
 
-  return {
+  const imports: Record<string, Function> = {
     /**
      * Enqueue a JS function onto the microtask queue.  Replaces the V8
      * `Isolate::EnqueueMicrotask` path — we route to the host's V8
@@ -153,6 +153,40 @@ export function buildMicrotaskOpsImports(
     },
 
     /**
+     * Yield for microtask drain.  E23-redo follow-up.  Wraps as a
+     * Suspending import at registration time (see
+     * `napi-host/index.ts:wrapMicrotaskYield`); when wasm calls this,
+     * V8 suspends the JSPI frame, drains microtasks under the kAuto
+     * checkpoint policy, then resumes wasm.
+     *
+     * Called exclusively from `RunEventLoopUntilQuiescent`'s loop body
+     * BEFORE `uv_run` — a wasm-only stack site that satisfies JSPI v2's
+     * "no JS frames between promising entry and Suspending import"
+     * constraint.  Other call sites would throw SuspendError; this is
+     * why we ship a SEPARATE import rather than wrapping the existing
+     * `process_microtasks`.
+     *
+     * Returns a Promise that resolves after a queueMicrotask checkpoint
+     * — sufficient to give V8 a microtask drain opportunity at the
+     * suspend boundary.
+     */
+    unofficial_napi_yield_for_microtasks(_env: number): Promise<number> {
+      // Empirically: a single queueMicrotask gives V8 ONE checkpoint pass
+      // before unwinding the JSPI Suspender — that drains shallow chains
+      // (microtask-before-timer at depth 1) but NOT deeper ones
+      // (promise-chain-drains-fully at depth 5 sees only p1,p2 drain).
+      //
+      // Each `await Promise.resolve()` is one microtask checkpoint pass;
+      // 16 iterations covers any realistic Node lib promise chain depth
+      // (Node's own task-queues internals top out around 8).  Cost is
+      // ~16 microtask hops per loop iteration — negligible (sub-µs).
+      return (async () => {
+        for (let i = 0; i < 16; i++) await Promise.resolve();
+        return NAPI_OK;
+      })();
+    },
+
+    /**
      * Register lib's PromiseReject handler.  Replaces edge's V8
      * `SetPromiseRejectCallback` path — we capture the JS callback into
      * `state.promiseRejectCallback`, and the host-side
@@ -202,6 +236,28 @@ export function buildMicrotaskOpsImports(
       return NAPI_OK;
     },
   };
+
+  // E23-redo follow-up: wrap `unofficial_napi_yield_for_microtasks` as
+  // a `WebAssembly.Suspending` import.  When wasm calls this from
+  // RunEventLoopUntilQuiescent (wasm-only stack), V8 suspends the JSPI
+  // frame, drains microtasks under the kAuto checkpoint policy, then
+  // resumes wasm.  This is the only mechanism that forces a microtask
+  // checkpoint on a browser worker (DedicatedWorkers don't expose
+  // PerformMicrotaskCheckpoint to JS).
+  //
+  // SUSPENDING is gated on engine support — older browsers without
+  // JSPI fall through to the plain Promise-returning impl, which wasm
+  // can't await (it'll get back a JS Promise as the napi_status,
+  // probably-non-zero, and continue).  That's a soft degrade rather
+  // than a crash.
+  const SuspendingCtor = (
+    globalThis as { WebAssembly?: { Suspending?: new (fn: Function) => Function } }
+  ).WebAssembly?.Suspending;
+  if (typeof SuspendingCtor === "function") {
+    const orig = imports["unofficial_napi_yield_for_microtasks"] as (env: number) => Promise<number>;
+    imports["unofficial_napi_yield_for_microtasks"] = new SuspendingCtor(orig) as Function;
+  }
+  return imports;
 }
 
 /**

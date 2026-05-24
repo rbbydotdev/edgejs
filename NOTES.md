@@ -513,32 +513,22 @@ on specific ordering semantics.  Keep `host=1` for those.
    `unofficial_napi_terminate_execution`).
 2. ~~`unhandledRejection` event timing~~ — **RESOLVED** by E10
    (host event-handler drains `process._tickCallback`).
-3. **The 3 flaky `host=1` ordering tests** — E23-redo
-   (`experiments/e23-redo-microtask-drain/FINDINGS.md`) drilled
-   through.  Root cause: `uv_run` fires due timers BEFORE
-   `poll_oneoff` in the same iteration; edge's timer-callback path
-   (`edge_timers_host.cc:115`) uses `kEdgeMakeCallbackSkipTaskQueues`
-   so no microtask checkpoint runs between user-script-end and
-   timer-fire.  Attempted fix (Suspending-wrap on
-   `unofficial_napi_process_microtasks`) FAILS with
-   `SuspendError: trying to suspend JS frames` because JSPI v2
-   requires only-wasm-frames between the promising entry and any
-   Suspending import — most call sites have JS frames in between.
+3. ~~The 3 flaky `host=1` ordering tests~~ — **RESOLVED** (E23-redo
+   follow-up, 2026-05-24).  Shipped fix paths (i) + (ii) combined:
+   added new `unofficial_napi_yield_for_microtasks` import declared
+   in `napi/include/unofficial_napi.h`; called from a wasm-only
+   stack site at the top of `RunEventLoopUntilQuiescent`'s loop
+   body BEFORE `uv_run` (drains microtasks BEFORE the next timer
+   fires); JS-side handler wrapped via `WebAssembly.Suspending` so
+   V8 drains microtasks at the JSPI suspend boundary.  The handler
+   does 16 `await Promise.resolve()` iterations to drain deep
+   promise chains.
 
-   **Concrete fix paths (all require wasm rebuild):**
-   (i) Add a separate `unofficial_napi_yield_for_microtasks` import
-       used ONLY at the safe call site (`edge_runtime.cc:1870`,
-       wasm-only stack between uv_run iterations).  ONLY that import
-       gets the Suspending wrap.  Existing `process_microtasks` stays
-       sync no-op for the unsafe sites.  **Smallest concrete fix.**
-   (ii) Insert a microtask-drain call at the top of
-        `RunEventLoopUntilQuiescent`'s loop body, BEFORE `uv_run`
-        (wasm-only stack).
-   (iii) Asyncify / emnapi multithreaded — larger work.
-
-   `host=1` remains the workaround for the 3 affected tests
+   Suite: 36/0/3 maintained.  **All 5 microtask-ordering tests
    (microtask-before-timer, nexttick-before-microtask,
-   promise-chain-drains-fully).
+   promise-chain-drains-fully, await-resumes-as-microtask,
+   queuemicrotask-orders-with-promise) now pass on the wasm path
+   without `host=1`.**  Verified 3/3 stable runs each.
 
 **Strategic implication:** the "microtask drain bug" was a stronger
 argument for moving user JS to the host worker (Lever B) than the

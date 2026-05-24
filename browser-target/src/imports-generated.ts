@@ -149,7 +149,7 @@ export function buildImports(
   ns_napi["node_api_set_prototype"] = (overrides["napi"]?.["node_api_set_prototype"] ? wrapImpl("napi", "node_api_set_prototype", overrides["napi"]!["node_api_set_prototype"]!) : makeStub("napi", "node_api_set_prototype", 0)) as never;
   imports["napi"] = ns_napi;
 
-  // napi_extension_wasmer_v0: 83 functions (default ret = 0)
+  // napi_extension_wasmer_v0: 84 functions (default ret = 0)
   const ns_napi_extension_wasmer_v0: WebAssembly.ModuleImports = {};
   ns_napi_extension_wasmer_v0["unofficial_napi_arraybuffer_view_has_buffer"] = (overrides["napi_extension_wasmer_v0"]?.["unofficial_napi_arraybuffer_view_has_buffer"] ? wrapImpl("napi_extension_wasmer_v0", "unofficial_napi_arraybuffer_view_has_buffer", overrides["napi_extension_wasmer_v0"]!["unofficial_napi_arraybuffer_view_has_buffer"]!) : makeStub("napi_extension_wasmer_v0", "unofficial_napi_arraybuffer_view_has_buffer", 0)) as never;
   ns_napi_extension_wasmer_v0["unofficial_napi_cancel_terminate_execution"] = (overrides["napi_extension_wasmer_v0"]?.["unofficial_napi_cancel_terminate_execution"] ? wrapImpl("napi_extension_wasmer_v0", "unofficial_napi_cancel_terminate_execution", overrides["napi_extension_wasmer_v0"]!["unofficial_napi_cancel_terminate_execution"]!) : makeStub("napi_extension_wasmer_v0", "unofficial_napi_cancel_terminate_execution", 0)) as never;
@@ -234,6 +234,7 @@ export function buildImports(
   ns_napi_extension_wasmer_v0["unofficial_napi_take_heap_snapshot"] = (overrides["napi_extension_wasmer_v0"]?.["unofficial_napi_take_heap_snapshot"] ? wrapImpl("napi_extension_wasmer_v0", "unofficial_napi_take_heap_snapshot", overrides["napi_extension_wasmer_v0"]!["unofficial_napi_take_heap_snapshot"]!) : makeStub("napi_extension_wasmer_v0", "unofficial_napi_take_heap_snapshot", 0)) as never;
   ns_napi_extension_wasmer_v0["unofficial_napi_take_preserved_error_formatting"] = (overrides["napi_extension_wasmer_v0"]?.["unofficial_napi_take_preserved_error_formatting"] ? wrapImpl("napi_extension_wasmer_v0", "unofficial_napi_take_preserved_error_formatting", overrides["napi_extension_wasmer_v0"]!["unofficial_napi_take_preserved_error_formatting"]!) : makeStub("napi_extension_wasmer_v0", "unofficial_napi_take_preserved_error_formatting", 0)) as never;
   ns_napi_extension_wasmer_v0["unofficial_napi_terminate_execution"] = (overrides["napi_extension_wasmer_v0"]?.["unofficial_napi_terminate_execution"] ? wrapImpl("napi_extension_wasmer_v0", "unofficial_napi_terminate_execution", overrides["napi_extension_wasmer_v0"]!["unofficial_napi_terminate_execution"]!) : makeStub("napi_extension_wasmer_v0", "unofficial_napi_terminate_execution", 0)) as never;
+  ns_napi_extension_wasmer_v0["unofficial_napi_yield_for_microtasks"] = (overrides["napi_extension_wasmer_v0"]?.["unofficial_napi_yield_for_microtasks"] ? wrapImpl("napi_extension_wasmer_v0", "unofficial_napi_yield_for_microtasks", overrides["napi_extension_wasmer_v0"]!["unofficial_napi_yield_for_microtasks"]!) : makeStub("napi_extension_wasmer_v0", "unofficial_napi_yield_for_microtasks", 0)) as never;
   imports["napi_extension_wasmer_v0"] = ns_napi_extension_wasmer_v0;
 
   // wasi_snapshot_preview1: 37 functions (default ret = 52)
