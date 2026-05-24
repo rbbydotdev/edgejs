@@ -506,16 +506,39 @@ promise-chain-drains-fully, queuemicrotask-orders-with-promise)
 have mixed results on the wasm path — 2/5 pass, 3/5 fail or flake
 on specific ordering semantics.  Keep `host=1` for those.
 
-**Real remaining issues** (downgraded from "needs novel solution"
-to "ordinary bug investigations"):
+**Real remaining issues:**
 
-1. `process.exit` from a `FinalizationRegistry` callback doesn't
-   prevent surviving timers — likely the exit throws in a microtask
-   frame after `_start` already returned.
-2. `unhandledRejection` event timing — lib defers via
-   `process.nextTick`; that chain doesn't drive between
-   `poll_oneoff` iterations on the wasm path.
-3. The 3 flaky `host=1` ordering tests — investigate one at a time.
+1. ~~`process.exit` from a `FinalizationRegistry` callback~~ —
+   **RESOLVED** by E9 (sleepSab wake from
+   `unofficial_napi_terminate_execution`).
+2. ~~`unhandledRejection` event timing~~ — **RESOLVED** by E10
+   (host event-handler drains `process._tickCallback`).
+3. **The 3 flaky `host=1` ordering tests** — E23-redo
+   (`experiments/e23-redo-microtask-drain/FINDINGS.md`) drilled
+   through.  Root cause: `uv_run` fires due timers BEFORE
+   `poll_oneoff` in the same iteration; edge's timer-callback path
+   (`edge_timers_host.cc:115`) uses `kEdgeMakeCallbackSkipTaskQueues`
+   so no microtask checkpoint runs between user-script-end and
+   timer-fire.  Attempted fix (Suspending-wrap on
+   `unofficial_napi_process_microtasks`) FAILS with
+   `SuspendError: trying to suspend JS frames` because JSPI v2
+   requires only-wasm-frames between the promising entry and any
+   Suspending import — most call sites have JS frames in between.
+
+   **Concrete fix paths (all require wasm rebuild):**
+   (i) Add a separate `unofficial_napi_yield_for_microtasks` import
+       used ONLY at the safe call site (`edge_runtime.cc:1870`,
+       wasm-only stack between uv_run iterations).  ONLY that import
+       gets the Suspending wrap.  Existing `process_microtasks` stays
+       sync no-op for the unsafe sites.  **Smallest concrete fix.**
+   (ii) Insert a microtask-drain call at the top of
+        `RunEventLoopUntilQuiescent`'s loop body, BEFORE `uv_run`
+        (wasm-only stack).
+   (iii) Asyncify / emnapi multithreaded — larger work.
+
+   `host=1` remains the workaround for the 3 affected tests
+   (microtask-before-timer, nexttick-before-microtask,
+   promise-chain-drains-fully).
 
 **Strategic implication:** the "microtask drain bug" was a stronger
 argument for moving user JS to the host worker (Lever B) than the

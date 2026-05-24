@@ -117,6 +117,31 @@ export function buildMicrotaskOpsImports(
      * InternalCallbackScope), so this is best-effort.  The two
      * regression bugs (lazy-load-from-microtask,
      * microtasks-starved-by-pending-timer) only close under JSPI.
+     *
+     * E23-redo: wrapping this op as `WebAssembly.Suspending` to force
+     * a microtask checkpoint (the obvious fix for the
+     * microtask-before-timer ordering bug) does NOT work — the engine
+     * throws SuspendError when JS frames sit between the promising
+     * entry (`_start`) and this Suspending import, which is the case
+     * at most of the call sites (`edge_runtime.cc:3034` via
+     * `napi_call_function`, `edge_task_queue.cc:94` via task_queue's
+     * `runMicrotasks` binding called from lib's
+     * `processTicksAndRejections`).  Suspending wrap is all-or-nothing
+     * once installed; can't gate dynamically.
+     *
+     * Fixes that WOULD work all require a wasm rebuild:
+     *   1. New separate import (e.g. `unofficial_napi_yield_for_microtasks`)
+     *      used ONLY at the safe call site (`edge_runtime.cc:1870`,
+     *      wasm-only stack between uv_run iterations).  Only that
+     *      import gets the Suspending wrap.
+     *   2. Insert microtask-drain BEFORE timers fire at the top of
+     *      `RunEventLoopUntilQuiescent`'s loop body (wasm-only stack).
+     *   3. Asyncify / emnapi multithreaded — NOTES followup #1.
+     *
+     * For now: `host=1` is the workaround for the 3 affected tests
+     * (microtask-before-timer, nexttick-before-microtask,
+     * promise-chain-drains-fully).  See
+     * `experiments/e23-redo-microtask-drain/FINDINGS.md`.
      */
     unofficial_napi_process_microtasks(_env: number): number {
       const tickCb = (globalThis as { __edgeHostTickCallback?: (() => void) | null }).__edgeHostTickCallback;
