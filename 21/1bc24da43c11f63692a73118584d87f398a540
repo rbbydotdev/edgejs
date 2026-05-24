@@ -1,0 +1,25 @@
+docs/worker-threads-design.md
+  s_7bec0ecbfcdcd0::t_799b4361d8c997 1-207
+experiments/r21-webcontainer-arch/FINDINGS.md
+  s_7bec0ecbfcdcd0::t_331733e0cc51ea 1-163
+experiments/r20-emnapi-multithreaded/FINDINGS.md
+  s_7bec0ecbfcdcd0::t_1b33f0ec8b7701 1-145
+experiments/r22-wasm-worker-patterns/FINDINGS.md
+  s_7bec0ecbfcdcd0::t_fb48451235da4d 1-130
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "211bc24da43c11f63692a73118584d87f398a540",
+  "prompts": {},
+  "sessions": {
+    "s_7bec0ecbfcdcd0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d560d5ae-265f-44ae-89c4-d35659b3ab9e",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
