@@ -80,12 +80,11 @@ async function spawnHostThenRuntime(): Promise<void> {
   // the RPC client into the wasi-shim.
   try {
     hostHandle = spawnHostWorker();
-    hostHandle.worker.addEventListener("message", (ev: MessageEvent) => {
-      const data = ev.data as { kind?: string; text?: string; level?: string };
-      if (data?.kind === "host-log") {
-        append(data.text ?? "", (data.level as "info" | "warn" | "err") ?? "info");
-      }
-    });
+    // Install full message handler: host-log + spawn-user-worker (for
+    // user code in primary host that calls `new Worker()`) +
+    // user-worker-exit (forwarded from a child host).  Same handler
+    // installed on every user-spawned host worker too.
+    attachHostWorkerMessageHandlers(hostHandle);
     await hostHandle.ready;
     append("host worker ready", "info");
   } catch (err) {
@@ -1008,6 +1007,206 @@ function dispatchEdgeReq(reqId: number, method: string, path: string, headers: R
   }
 }
 // (worker.onerror is set inside spawnRuntimeWorker so we don't deref a null worker)
+
+// ── Worker_threads phase 1: user-worker pair registry + spawner ─────
+//
+// Path B (see docs/worker-threads-design.md): a sync RPC arrives at the
+// parent's host worker (OP_SPAWN_USER_WORKER), which postMessages us
+// asking for a new (host+wasm) pair.  Main owns the user-workers
+// registry, the cap, and the shared compiled WebAssembly.Module (E24
+// mandate: compile once, postMessage to each child runtime).
+
+interface UserWorkerEntry {
+  workerId: number;
+  parentHostWorkerId: number;
+  childHostHandle: HostWorkerHandle;
+  childWasmWorker: Worker;
+  exited: boolean;
+}
+
+const MAX_USER_WORKERS = 16;
+const userWorkers = new Map<number, UserWorkerEntry>();
+let nextUserWorkerId = 1;
+// E24-mandated shared compiled wasm Module.  Lazy-fetched and compiled
+// on first spawn; postMessage'd to every child runtime worker so they
+// skip the ~22 ms compile step (verified perfectly cloneable per E24).
+let cachedWasmModulePromise: Promise<WebAssembly.Module> | null = null;
+
+function getOrCompileSharedWasmModule(): Promise<WebAssembly.Module> {
+  if (!cachedWasmModulePromise) {
+    cachedWasmModulePromise = (async () => {
+      const resp = await fetch("/edgejs.wasm");
+      const bytes = await resp.arrayBuffer();
+      const mod = await WebAssembly.compile(bytes);
+      append(`worker-threads: shared wasm Module compiled (${(bytes.byteLength / 1_000_000).toFixed(1)} MB)`, "info");
+      return mod;
+    })();
+  }
+  return cachedWasmModulePromise;
+}
+
+async function spawnUserWorker(
+  parentHostWorkerId: number,
+  bootstrapScript: string,
+  workerData: Uint8Array,
+): Promise<number> {
+  if (userWorkers.size >= MAX_USER_WORKERS) {
+    throw new Error(`spawnUserWorker: cap reached (${MAX_USER_WORKERS}). Per E24, default cap protects against tab OOM.`);
+  }
+  const workerId = nextUserWorkerId++;
+  const sharedModule = await getOrCompileSharedWasmModule();
+  // Spawn child host worker — same primitive as the primary host.
+  const childHostHandle = spawnHostWorker();
+  attachHostWorkerMessageHandlers(childHostHandle);
+  await childHostHandle.ready;
+  // Spawn child wasm runtime worker.  It must boot in user-worker mode
+  // (init message carries the srcPath + preCompiledWasmModule).
+  const childWasmWorker = new Worker(new URL("./worker.ts", import.meta.url), { type: "module" });
+  // Forward FS snapshot SAB (shared across all runtimes per R21 / WC
+  // pattern).
+  childWasmWorker.postMessage({ kind: "edge-fs-snapshot-sab", sab: fsSnapshotSab });
+  // Forward RPC SABs paired with the child host worker.
+  childWasmWorker.postMessage({
+    kind: "edge-host-rpc-sab",
+    hostWorkerId: childHostHandle.id,
+    requestSab: childHostHandle.requestSab,
+    replySab: childHostHandle.replySab,
+    reverseRequestSab: childHostHandle.reverseRequestSab,
+    reverseReplySab: childHostHandle.reverseReplySab,
+    sharedWakeSab: childHostHandle.sharedWakeSab,
+    napiMemorySab: childHostHandle.napiMemorySab,
+  });
+  // Phase 1: tell the child wasm runtime it's a user worker; carries the
+  // pre-compiled Module (skip compile, E24) and the bootstrap script
+  // to run as edge.js's `-e` user script after boot.  Per E25, this
+  // message is queued on the child Worker's mailbox before its event
+  // loop turns, so it's processed in order.
+  childWasmWorker.postMessage({
+    kind: "edge-user-worker-bootstrap",
+    workerId,
+    bootstrapScript,
+    workerData,
+    sharedWasmModule: sharedModule,
+  });
+  // Forward log + exit messages from the child wasm runtime.  When the
+  // child catches ExitSignal in _start it posts `user-worker-exit` to
+  // its parent (us); we route to the child's host worker so the host
+  // forwards it through the chain to the parent's wasm.
+  childWasmWorker.addEventListener("message", (ev: MessageEvent) => {
+    const d = ev.data as { kind?: string; text?: string; level?: string; workerId?: number; exitCode?: number };
+    if (d?.kind === "log" && typeof d.text === "string") {
+      // Mangle the child's `_start ran X ms (exit=N)` sentinel so the
+      // browser-test-runner's SENTINEL_RE doesn't match it (it would
+      // otherwise pick up the child's exit code instead of the
+      // parent's).  Also force level to "info" so child stdout doesn't
+      // pollute parent's stdout — the test-runner only scrapes
+      // `.lvl-out` for stdout comparison.
+      const mangled = d.text.replace(/_start ran/g, "_start.ran");
+      append(`[user-worker:${workerId}] ${mangled}`, "info");
+      return;
+    }
+    if (d?.kind === "user-worker-exit") {
+      if (typeof d.workerId !== "number" || typeof d.exitCode !== "number") return;
+      handleUserWorkerExit(d.workerId, d.exitCode);
+    }
+  });
+  const entry: UserWorkerEntry = {
+    workerId,
+    parentHostWorkerId,
+    childHostHandle,
+    childWasmWorker,
+    exited: false,
+  };
+  userWorkers.set(workerId, entry);
+  const preview = bootstrapScript.length > 60 ? bootstrapScript.slice(0, 60) + "..." : bootstrapScript;
+  append(`worker-threads: spawned user worker #${workerId} (parent host #${parentHostWorkerId}, bootstrap=${JSON.stringify(preview)})`, "info");
+  return workerId;
+}
+
+function attachHostWorkerMessageHandlers(handle: HostWorkerHandle): void {
+  handle.worker.addEventListener("message", (ev: MessageEvent) => {
+    const data = ev.data as {
+      kind?: string;
+      text?: string;
+      level?: string;
+      requestId?: number;
+      parentHostWorkerId?: number;
+      bootstrapScript?: string;
+      workerData?: Uint8Array;
+      workerId?: number;
+      exitCode?: number;
+    };
+    if (data?.kind === "host-log") {
+      append(data.text ?? "", (data.level as "info" | "warn" | "err") ?? "info");
+      return;
+    }
+    if (data?.kind === "spawn-user-worker") {
+      const { requestId, parentHostWorkerId, bootstrapScript, workerData } = data as typeof data & { bootstrapScript?: string };
+      if (typeof requestId !== "number" || typeof parentHostWorkerId !== "number" || typeof bootstrapScript !== "string") {
+        handle.worker.postMessage({
+          kind: "spawn-user-worker-reply",
+          requestId,
+          error: "spawn-user-worker: missing fields",
+        });
+        return;
+      }
+      const wd = workerData ?? new Uint8Array(0);
+      spawnUserWorker(parentHostWorkerId, bootstrapScript, wd).then((workerId) => {
+        handle.worker.postMessage({
+          kind: "spawn-user-worker-reply",
+          requestId,
+          workerId,
+        });
+      }).catch((err: Error) => {
+        handle.worker.postMessage({
+          kind: "spawn-user-worker-reply",
+          requestId,
+          error: err.message,
+        });
+      });
+      return;
+    }
+  });
+}
+
+// Called when a child user-worker's wasm runtime exits.  The wasm
+// posts `user-worker-exit` directly to main (us — its Worker spawner);
+// we look up the parent host worker, forward via postMessage, and
+// terminate the child's pair.
+function handleUserWorkerExit(workerId: number, exitCode: number): void {
+  const entry = userWorkers.get(workerId);
+  if (!entry) return;
+  if (entry.exited) return;
+  entry.exited = true;
+  // Find the parent's host worker by id.  Primary host (id=0) is
+  // hostHandle; user-spawned hosts are entries in userWorkers
+  // (indexed by workerId, not hostWorkerId — need to scan).
+  let parentHostWorker: Worker | null = null;
+  if (hostHandle && hostHandle.id === entry.parentHostWorkerId) {
+    parentHostWorker = hostHandle.worker;
+  } else {
+    for (const e of userWorkers.values()) {
+      if (e.childHostHandle.id === entry.parentHostWorkerId) {
+        parentHostWorker = e.childHostHandle.worker;
+        break;
+      }
+    }
+  }
+  if (!parentHostWorker) {
+    append(`worker-threads: user-worker-exit #${workerId} but parent host #${entry.parentHostWorkerId} not found`, "warn");
+    return;
+  }
+  parentHostWorker.postMessage({
+    kind: "deliver-user-worker-exit",
+    workerId,
+    exitCode,
+  });
+  // Terminate the child workers — they've exited from user code's POV.
+  entry.childWasmWorker.terminate();
+  entry.childHostHandle.worker.terminate();
+  userWorkers.delete(workerId);
+  append(`worker-threads: user worker #${workerId} exited (code=${exitCode}), forwarded to parent host #${entry.parentHostWorkerId}`, "info");
+}
 
 function installDownload(payload: string, format: "json" | "jsonl") {
   const mime = format === "json" ? "application/json" : "application/x-ndjson";

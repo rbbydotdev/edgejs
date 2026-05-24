@@ -87,10 +87,55 @@ pair, plus one shared bridge worker.
 **Patch `lib/internal/worker.js` via a policy** (`worker-threads-
 per-thread.ts`).  R20 found that `binding_worker.cc` is V8/libuv glue
 with no napi surface; intercepting at the binding layer isn't an
-option.  The lib-side patch calls a new wasm primitive
-`unofficial_napi_spawn_node_worker(srcPath, options)` whose handler
-spawns the (host+wasm) pair via the existing `spawnHostWorker()`
-pattern.
+option.
+
+### How the lib patch reaches the host (Path B chosen 2026-05-24)
+
+Two integration mechanisms were considered.  Phase 1 ships **Path B**.
+
+- **Path A (wasm primitive)**: add `unofficial_napi_spawn_node_worker`
+  as a napi extern (declared in `napi/include/unofficial_napi.h`, stub
+  in `napi/v8/src/unofficial_napi.cc`), expose it to JS via a new
+  `internalBinding('worker')` binding (~100 LOC C++ scaffolding), wasm
+  imports it and routes to a JS handler in
+  `browser-target/src/napi-host/`.  Thematically aligned with the
+  isolate-lifecycle primitives (`unofficial_napi_create_env` /
+  `unofficial_napi_release_env`).  Slots cleanly into a hypothetical
+  future v-table mode (NOTES followup #4).
+
+- **Path B (globalThis-sync, CHOSEN)**: bootstrap registers a
+  `globalThis.__edgeSpawnNodeWorker(srcPath, workerData) → workerId`
+  function in the wasm runtime worker's V8 realm (same pattern as
+  `installHostDigestSyncGlobal` for E18, `installHostHmacSyncGlobal`
+  for E21).  The function does a sync RPC via `hostRpcSyncClient.
+  callSync(OP_SPAWN_USER_WORKER, ...)` which parks the wasm thread on
+  Atomics.wait until the host returns the assigned workerId.  Lib's
+  patched `worker.js` calls this global directly.
+
+Rationale for Path B:
+- Matches the established offload pattern (E18/E21/E22): one less
+  thing for future developers to learn.
+- ~300-400 LOC lighter across phases 1-5 (no C++ binding scaffolding
+  per new primitive).
+- Memory and performance equivalent (sub-µs / sub-KB differences).
+- v-table mode is hypothetical (followup #4, uncommitted); paying
+  Path A scaffolding cost now would be premature.
+
+Switch to Path A if:
+- We commit to v-table mode (followup #4).
+- We need spawn to be callable from C++ paths inside edge.js (not just
+  from lib's JS).
+- The cumulative phases-1-5 globalThis surface grows uncomfortably
+  large (currently ~5-7 functions; not a concern yet).
+- Cross-engine work surfaces a JS-realm peculiarity that makes the
+  globalThis approach fragile.
+
+**Gotcha to remember for Path B**: globalThis must be registered in
+EVERY wasm runtime worker, including child workers (so user code in a
+child can `new Worker()` to spawn a grandchild).  The
+`installSpawnNodeWorkerGlobal()` call lives in `worker.ts`, which is
+the same code each wasm runtime runs, so it propagates automatically
+— but the property has to be consciously preserved.
 
 ### How to fake Node's synchronous `new Worker()` API
 

@@ -563,6 +563,66 @@ export const OP_SUBTLE_HMAC_VIA_NAPI_MEM = OP_DOMAIN_HOST_API | 0x0004;
 //   - Combined region capped by napi memory size (4 pages = 256 KiB
 //     initial → 128 KiB available; max 16 pages = 1 MiB).
 
+export const OP_SPAWN_USER_WORKER = OP_DOMAIN_HOST_API | 0x0005;
+// Worker_threads phase 1: spawn a new (host+wasm) pair to back a Node
+// `new Worker(filename)` call.  Sync RPC from the parent wasm runtime
+// (which got the call from lib's patched worker.js → globalThis.
+// __edgeSpawnNodeWorker) to its host worker, which forwards to the
+// main page via postMessage; main spawns the pair, returns a workerId.
+//
+// Request payload layout (LE u32 lengths, contiguous bytes):
+//   [u32 src_path_len][utf-8 src_path]
+//   [u32 worker_data_len][worker_data bytes — structured-clone-marshaled
+//                         per cross-context-marshal.ts; empty if none]
+// Reply payload: [u32 workerId] (little-endian).
+// Status: REPLY_STATUS_OK on successful spawn; HOST_ERROR if the
+//   spawn cap (16) is exceeded or main-side spawn throws.
+//
+// The actual Web Worker construction is asynchronous on main but the
+// RPC is sync from wasm's view: lib's `new Worker()` returns the
+// workerId before main has finished bootstrapping the child wasm.
+// Per E25, pre-queued bootstrap messages survive the parent's next
+// blocking call (JSPI suspend) so the child has time to wake up.
+
+export const OP_DELIVER_USER_WORKER_EXIT = OP_DOMAIN_HOST_API | 0x0006;
+// Reverse-channel op (host → wasm).  When a spawned user-worker's wasm
+// runtime catches an ExitSignal, it posts {kind:'user-worker-exit',
+// workerId, code} to its host; the child host posts to main; main
+// forwards to the parent's host; parent's host fires this reverse RPC
+// into parent's wasm runtime.  Parent's wasm handler invokes the JS
+// callback that lib's `worker.on('exit', cb)` registered.
+//
+// Request payload layout (LE u32):
+//   [u32 workerId][u32 exit_code]
+// Reply payload: empty.
+// Status: REPLY_STATUS_OK once the parent-side callback has been
+//   queued (not necessarily invoked — invocation happens on parent's
+//   event loop turn).
+// E22-C: same semantics as OP_SUBTLE_HMAC, but the key AND data bytes
+// travel through the shared napi-host-memory SAB.  Lets us HMAC inputs
+// whose combined (key + data) size exceeds the ~4 KiB single-slot
+// framing budget E21 inherited from E18.
+//
+// Request payload layout (LE u32, contiguous bytes):
+//   [u32 algo_name_len][utf-8 algo_name]
+//   [u32 key_offset][u32 key_len]
+//   [u32 data_offset][u32 data_len]
+// Total request size is small (<100 B) regardless of key/data size —
+// both buffers live in `napiHostMemory.buffer` at their respective
+// offsets and are read directly by the host handler.
+//
+// Reply payload: raw HMAC bytes (same as OP_SUBTLE_HMAC).
+// Status: REPLY_STATUS_OK on success; HOST_ERROR if SubtleCrypto throws;
+// INVALID_ARGS if either (offset, len) pair overruns the napi memory.
+//
+// Memory layout (shares the digest staging region — both ops are
+// single-flight via sync RPC so no overlap):
+//   - Key goes at DIGEST_STAGING_OFFSET (128 KiB).
+//   - Data follows at DIGEST_STAGING_OFFSET + ((keyLen + 7) & ~7)
+//     (8-byte aligned to keep the staging region clean).
+//   - Combined region capped by napi memory size (4 pages = 256 KiB
+//     initial → 128 KiB available; max 16 pages = 1 MiB).
+
 // ── Status codes for replies ────────────────────────────────────────
 
 export const REPLY_STATUS_OK = 0;

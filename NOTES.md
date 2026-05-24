@@ -33,7 +33,7 @@ see [ARCHIVE.md](./ARCHIVE.md).
 | Outbound `http.request` (Node-honest default) | ✅ → throws | `outbound-throw` policy |
 | `import` (ESM) | ❌ | `module_wrap_*` are stubs |
 | OPFS persistence | ❌ | in-memory only |
-| `worker_threads` | ❌ | not started |
+| `worker_threads` | 🟡 phase 1 | `new Worker()` spawns (host+wasm) pair; `exit` event fires.  postMessage / terminate / MessageChannel are phase 2+.  See [docs/worker-threads-design.md](./docs/worker-threads-design.md) |
 | `child_process` | ❌ | needs subprocess model |
 | Concurrent HTTP | ✅ | ring of 16 SAB slots; SW Map keyed by reqId |
 | Async `fs.readFile` / `fs.writeFile` | ✅ | cross-thread SAB file table; pool workers share data region with main |
@@ -303,6 +303,49 @@ the browser-target tree.
   plain-obj, nested-obj, array-of-obj, date, uint8array, arraybuffer,
   circular-self-ref — all PASS.  Map/Set/RegExp remain unsupported
   (separate follow-up).
+
+### Worker_threads (phase 1 shipped 2026-05-24)
+
+- `worker-threads-phase-1-policy-opt-in` — `worker-threads-per-thread`
+  policy is opt-in (not in `defaultBrowserPolicies`).  Currently only
+  `new Worker(filename)` is supported through the policy patch.  Eval
+  mode (`new Worker(code, { eval: true })`) and data-URL mode fall
+  through to the original WorkerImpl (which throws on browser-target).
+  Promote to default once phase 2 (postMessage) is proven.
+- `worker-threads-no-postmessage` — phase 1 does NOT support
+  `parentPort.postMessage` or `worker.postMessage` (lib's
+  `messagePort.postMessage` is a no-op stub).  workerData is plumbed
+  end-to-end through the spawn payload but not exposed to user code in
+  the child.  Phase 2 wires the actual postMessage channel.
+- `worker-threads-no-terminate` — `worker.terminate()` is a no-op.
+  Phase 3 wires a 'terminate' message that the child wasm honors.
+- `worker-threads-no-error-event` — uncaught child exceptions exit the
+  child with a non-zero code; the `exit` event fires with that code
+  but `error` event does not.  Phase 3 wires structured error
+  propagation via reverse RPC.
+- `worker-threads-file-mode-needs-fs-visibility` — file-mode `new
+  Worker('/abs/path.js')` requires the path to be visible to the
+  child's wasm FS adapter (`/node-lib/**` works; `/tmp/*` does not
+  cross-worker today — see `fs-write-not-visible-to-read` /
+  `sab-fs-read-only-writes-not-persisted`).  No suite-side test uses
+  file mode yet; the spawn-exit test bypasses the policy and uses
+  `globalThis.__edgeSpawnNodeWorker` with an inline bootstrap script.
+- `worker-threads-reverse-rpc-exit-fragility` — `process.exit(N)`
+  called inside a reverse-RPC handler stack (e.g. directly inside the
+  user's `worker.on('exit', cb)` callback) does NOT propagate cleanly
+  to the parent's `_start` — the handler's try/catch swallows the
+  ExitSignal.  User code must call `process.exit` from a natural
+  libuv loop callback (setTimeout / setImmediate / nextTick).  The
+  spawn-exit test polls a flag from a setTimeout for this reason.
+  Phase 3 should clean this up by emitting the exit event via
+  `process.nextTick` so user callbacks run on the natural stack.
+- `worker-threads-child-sentinel-mangling` — main's child-wasm-worker
+  message listener replaces "_start ran" with "_start.ran" in
+  forwarded log text so the browser-test-runner's SENTINEL_RE doesn't
+  match the child's exit-line and report the wrong code for the
+  parent.  Hacky; cleaner alternatives: prefix the sentinel with a
+  zero-width character, suppress the line entirely, or extend the
+  runner to scope the match to the parent's "── edgejs.wasm" section.
 
 ### Cross-worker primitives
 

@@ -129,6 +129,7 @@ export { inboundHttpsViaSW } from "./inbound-https-via-sw";
 export { outboundThrow } from "./outbound-throw";
 export { outboundFetchTunnel } from "./outbound-fetch-tunnel";
 export { fastReadFile } from "./fast-readfile";
+export { workerThreadsPerThread } from "./worker-threads-per-thread";
 
 import { bufferPoolDisable } from "./buffer-pool-disable";
 import { bufferWriteSync } from "./buffer-write-sync";
@@ -146,6 +147,7 @@ import { inboundHttpsViaSW } from "./inbound-https-via-sw";
 import { outboundThrow } from "./outbound-throw";
 import { outboundFetchTunnel } from "./outbound-fetch-tunnel";
 import { fastReadFile } from "./fast-readfile";
+import { workerThreadsPerThread } from "./worker-threads-per-thread";
 
 // =============================================================================
 // SANE DEFAULTS
@@ -227,4 +229,5 @@ export const policyRegistry: Record<string, Policy> = {
   [outboundThrow.name]: outboundThrow,
   [outboundFetchTunnel.name]: outboundFetchTunnel,
   [fastReadFile.name]: fastReadFile,
+  [workerThreadsPerThread.name]: workerThreadsPerThread,
 };

@@ -49,7 +49,7 @@ import { attachRing as attachHostRing, type RingConfig as HostRingConfig } from 
 import { RpcClient } from "./host-worker/rpc-client";
 import { RpcServer } from "./host-worker/rpc-server";
 import { SyncRpcClient } from "./host-worker/rpc-client-sync";
-import { OP_PING, OP_WASM_ECHO, OP_SUBTLE_DIGEST, OP_SUBTLE_HMAC, OP_SUBTLE_DIGEST_VIA_NAPI_MEM, OP_SUBTLE_HMAC_VIA_NAPI_MEM, OP_NAPI_OPEN_HANDLE_SCOPE, OP_NAPI_CLOSE_HANDLE_SCOPE, DIGEST_STAGING_OFFSET, REPLY_STATUS_OK } from "./host-worker/rpc-protocol";
+import { OP_PING, OP_WASM_ECHO, OP_SUBTLE_DIGEST, OP_SUBTLE_HMAC, OP_SUBTLE_DIGEST_VIA_NAPI_MEM, OP_SUBTLE_HMAC_VIA_NAPI_MEM, OP_NAPI_OPEN_HANDLE_SCOPE, OP_NAPI_CLOSE_HANDLE_SCOPE, OP_SPAWN_USER_WORKER, OP_DELIVER_USER_WORKER_EXIT, DIGEST_STAGING_OFFSET, REPLY_STATUS_OK, REPLY_STATUS_INVALID_ARGS, REPLY_STATUS_HOST_ERROR } from "./host-worker/rpc-protocol";
 import { registerWasmCallbackInvoker, createCallbackDepthCounter } from "./host-worker/callback-dispatch";
 const HOST_RPC_RING_CONFIG: HostRingConfig = { numSlots: 32, slotSize: 4 * 1024 };
 let hostRpcClient: RpcClient | null = null;
@@ -286,6 +286,63 @@ function installHostHmacSyncGlobal(): void {
   (globalThis as { __edgeHostHmacSync?: HostHmacSync }).__edgeHostHmacSync = impl;
 }
 
+// ── Worker-threads phase 1: spawn-node-worker globalThis (Path B) ───
+//
+// See docs/worker-threads-design.md "How the lib patch reaches the host".
+// Lib's patched `internal/worker.js` calls this function synchronously
+// when user code does `new Worker(filename)`.  We park the wasm thread
+// on Atomics.wait via the sync RPC client; the host worker forwards to
+// main, main spawns the (host+wasm) pair, returns the workerId.
+//
+// Why Path B (this function) instead of Path A (a wasm primitive): see
+// the design doc.  Short version: matches the established E18/E21/E22
+// offload pattern; no C++ scaffolding per primitive.
+
+// `bootstrapScript` is a JS source string evaluated verbatim in the
+// child wasm runtime's user-script slot AFTER edge.js boots.  The
+// policy patch (worker-threads-per-thread.ts) is responsible for
+// constructing the right script: `require(<resolved-path>)` for file
+// mode, or the user's code as-is for eval mode.  Direct callers (e.g.
+// the phase-1 spawn-exit probe test) can pass any JS.
+type SpawnNodeWorker = (bootstrapScript: string, workerData?: Uint8Array) => number;
+
+function installSpawnNodeWorkerGlobal(): void {
+  const impl: SpawnNodeWorker = (bootstrapScript, workerData) => {
+    if (!hostRpcSyncClient) {
+      throw new Error("__edgeSpawnNodeWorker: host RPC sync client not attached");
+    }
+    const bsBytes = new TextEncoder().encode(bootstrapScript);
+    const wd = workerData ?? new Uint8Array(0);
+    const payload = new Uint8Array(4 + bsBytes.byteLength + 4 + wd.byteLength);
+    const dv = new DataView(payload.buffer);
+    dv.setUint32(0, bsBytes.byteLength, true);
+    payload.set(bsBytes, 4);
+    dv.setUint32(4 + bsBytes.byteLength, wd.byteLength, true);
+    payload.set(wd, 4 + bsBytes.byteLength + 4);
+    const reply = hostRpcSyncClient.callSync(OP_SPAWN_USER_WORKER, hostWorkerId, 0, payload);
+    if (reply.status !== REPLY_STATUS_OK) {
+      const msg = new TextDecoder().decode(reply.payload) || `spawn-user-worker status=${reply.status}`;
+      throw new Error("__edgeSpawnNodeWorker: " + msg);
+    }
+    if (reply.payload.byteLength < 4) {
+      throw new Error("__edgeSpawnNodeWorker: reply payload too short");
+    }
+    return new DataView(
+      reply.payload.buffer, reply.payload.byteOffset, reply.payload.byteLength,
+    ).getUint32(0, true);
+  };
+  (globalThis as { __edgeSpawnNodeWorker?: SpawnNodeWorker }).__edgeSpawnNodeWorker = impl;
+}
+
+// Worker-threads phase 1: user-worker bootstrap state.  Set when main
+// posts `edge-user-worker-bootstrap` to a child wasm runtime worker
+// (which it does INSTEAD of `start` for user-workers).  The boot path
+// reads these to: (a) skip fetch+compile by using sharedWasmModule,
+// (b) set userScript to require the srcPath after edge boots,
+// (c) post `user-worker-exit` to main after _start finishes.
+let sharedWasmModule: WebAssembly.Module | null = null;
+let userWorkerMode: { workerId: number; bootstrapScript: string; workerData: Uint8Array } | null = null;
+
 self.addEventListener("message", (e: MessageEvent) => {
   const data = e.data as { kind?: string; sab?: SharedArrayBuffer; requestSab?: SharedArrayBuffer; replySab?: SharedArrayBuffer; hostWorkerId?: number } | null;
   if (data?.kind === "edge-fs-snapshot-sab" && data.sab) {
@@ -337,6 +394,7 @@ self.addEventListener("message", (e: MessageEvent) => {
     // synchronous implementation via this same global.
     installHostDigestSyncGlobal();
     installHostHmacSyncGlobal();
+    installSpawnNodeWorkerGlobal();
     // L4 reverse channel — host can send requests TO this worker.
     // Reverse-direction SABs come in the same message.
     const reverseReqSab = (data as { reverseRequestSab?: SharedArrayBuffer }).reverseRequestSab;
@@ -350,6 +408,42 @@ self.addEventListener("message", (e: MessageEvent) => {
         const copy = new Uint8Array(args.byteLength);
         copy.set(args);
         return { payload: copy, status: REPLY_STATUS_OK };
+      });
+      // Worker-threads phase 1: parent's wasm receives this when one of
+      // its child user-workers exits.  Host posts via reverse RPC; we
+      // look up the JS callback registered by the user's
+      // `worker.on('exit', cb)` and invoke it with the exit code.  The
+      // policy patches lib's worker.js to record callbacks in a
+      // globalThis map keyed by workerId.
+      reverseRpcServer.register(OP_DELIVER_USER_WORKER_EXIT, async (_ctx, args) => {
+        try {
+          if (args.byteLength < 8) {
+            return {
+              payload: new TextEncoder().encode("deliver-user-worker-exit: args too short"),
+              status: REPLY_STATUS_INVALID_ARGS,
+            };
+          }
+          const dv = new DataView(args.buffer, args.byteOffset, args.byteLength);
+          const workerId = dv.getUint32(0, true);
+          const exitCode = dv.getUint32(4, true);
+          type ExitDispatcher = (workerId: number, code: number) => void;
+          const dispatch = (globalThis as { __edgeDispatchUserWorkerExit?: ExitDispatcher })
+            .__edgeDispatchUserWorkerExit;
+          if (typeof dispatch === "function") {
+            try { dispatch(workerId, exitCode); }
+            catch (err) {
+              post("log", { text: `[runtime] OP_DELIVER_USER_WORKER_EXIT dispatch threw: ${(err as Error).message}`, level: "warn" });
+            }
+          } else {
+            post("log", { text: `[runtime] OP_DELIVER_USER_WORKER_EXIT #${workerId}: no dispatcher registered`, level: "warn" });
+          }
+          return { payload: new Uint8Array(0), status: REPLY_STATUS_OK };
+        } catch (e) {
+          return {
+            payload: new TextEncoder().encode((e as Error).message),
+            status: REPLY_STATUS_HOST_ERROR,
+          };
+        }
       });
       void reverseRpcServer.start().catch((err) => {
         post("log", { text: `[runtime] reverse RPC server crashed: ${(err as Error).message}`, level: "err" });
@@ -429,9 +523,19 @@ async function runEdgeWithEmnapi() {
     post("log", { text: "[worker] tracing disabled (?trace=0)", level: "info" });
   }
 
-  const resp = await fetch("/edgejs.wasm");
-  const wasmBytes = await resp.arrayBuffer();
-  post("log", { text: `fetched edgejs.wasm (${(wasmBytes.byteLength / 1_000_000).toFixed(1)} MB)`, level: "info" });
+  // E24 + worker-threads phase 1: if we received a pre-compiled
+  // WebAssembly.Module via `edge-user-worker-bootstrap`, skip the fetch
+  // and compile entirely — saves ~22 ms per spawned child (verified
+  // by E24).  Module is structured-cloneable; compiled code is shared
+  // across worker boundary per Chromium's postMessage semantics.
+  let wasmBytes: ArrayBuffer | null = null;
+  if (!sharedWasmModule) {
+    const resp = await fetch("/edgejs.wasm");
+    wasmBytes = await resp.arrayBuffer();
+    post("log", { text: `fetched edgejs.wasm (${(wasmBytes.byteLength / 1_000_000).toFixed(1)} MB)`, level: "info" });
+  } else {
+    post("log", { text: "[worker-threads] using shared pre-compiled wasm Module (E24)", level: "info" });
+  }
 
   const memory = new WebAssembly.Memory({ initial: 337, maximum: 65536, shared: true });
   post("log", {
@@ -916,8 +1020,17 @@ async function runEdgeWithEmnapi() {
   (wasmImports.env as Record<string, unknown>).memory = memory;
 
   const t0 = nowMs();
-  const module = await WebAssembly.compile(wasmBytes);
-  post("log", { text: `compiled in ${(nowMs() - t0).toFixed(0)} ms`, level: "info" });
+  let module: WebAssembly.Module;
+  if (sharedWasmModule) {
+    module = sharedWasmModule;
+  } else {
+    if (!wasmBytes) {
+      post("log", { text: "FATAL: neither sharedWasmModule nor wasmBytes available", level: "err" });
+      return;
+    }
+    module = await WebAssembly.compile(wasmBytes);
+    post("log", { text: `compiled in ${(nowMs() - t0).toFixed(0)} ms`, level: "info" });
+  }
 
   let instance: WebAssembly.Instance;
   try {
@@ -1037,6 +1150,22 @@ async function runEdgeWithEmnapi() {
       (exitCode !== null ? `(exit=${exitCode})` : threwMsg ? `(THREW)` : "(returned)"),
     level: exitCode === 0 ? "info" : exitCode !== null ? "err" : threwMsg ? "err" : "info",
   });
+
+  // Worker-threads phase 1: if this is a child user-worker, notify main
+  // so it can forward the exit event to the parent's host worker (which
+  // fires OP_DELIVER_USER_WORKER_EXIT into parent's wasm).  Main also
+  // terminates this child's host + wasm workers after forwarding.
+  if (userWorkerMode) {
+    // If _start threw without an ExitSignal, use 1 (Node convention for
+    // uncaught exceptions).  If it returned cleanly without proc_exit,
+    // use 0.
+    const effectiveCode = exitCode ?? (threwMsg ? 1 : 0);
+    self.postMessage({
+      kind: "user-worker-exit",
+      workerId: userWorkerMode.workerId,
+      exitCode: effectiveCode,
+    });
+  }
   if (blWatcher) {
     const events = blWatcher.drain();
     post("log", { text: `byteLength events: ${events.length}`, level: "info" });
@@ -1167,6 +1296,36 @@ self.onmessage = (e) => {
     const port = e.data.port as MessagePort;
     port.onmessage = onBridgeMessage;
     port.start();
+    return;
+  }
+  // Worker-threads phase 1: user-worker bootstrap (acts as `start` for
+  // child runtimes spawned via `new Worker(filename)`).  Carries a
+  // pre-compiled WebAssembly.Module (E24 mandate, ~22 ms compile time
+  // savings per child) plus the srcPath the child should require after
+  // edge.js boots.  We synthesize a userScript that requires the
+  // srcPath, treat it as if `start` had arrived, then call boot().
+  if (e.data?.kind === "edge-user-worker-bootstrap") {
+    const { workerId, bootstrapScript, workerData, sharedWasmModule: mod } = e.data as {
+      workerId: number;
+      bootstrapScript: string;
+      workerData?: Uint8Array;
+      sharedWasmModule?: WebAssembly.Module;
+    };
+    if (typeof bootstrapScript !== "string" || typeof workerId !== "number") {
+      post("log", { text: "[runtime] edge-user-worker-bootstrap: missing bootstrapScript or workerId", level: "err" });
+      return;
+    }
+    if (mod) sharedWasmModule = mod;
+    userWorkerMode = {
+      workerId,
+      bootstrapScript,
+      workerData: workerData ?? new Uint8Array(0),
+    };
+    // The user script runs verbatim in edge.js's lib environment.  The
+    // policy patch (worker-threads-per-thread.ts) constructs this for
+    // file mode (= `require(<path>)`) or eval mode (= the code itself).
+    userScript = bootstrapScript;
+    boot();
     return;
   }
   if (e.data?.kind === "start") {

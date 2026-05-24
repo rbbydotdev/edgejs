@@ -41,6 +41,8 @@ import {
   OP_SUBTLE_HMAC,
   OP_SUBTLE_DIGEST_VIA_NAPI_MEM,
   OP_SUBTLE_HMAC_VIA_NAPI_MEM,
+  OP_SPAWN_USER_WORKER,
+  OP_DELIVER_USER_WORKER_EXIT,
   DIGEST_STAGING_OFFSET,
   REPLY_STATUS_OK,
   REPLY_STATUS_HOST_ERROR,
@@ -233,6 +235,89 @@ function ensureNapiContext(): void {
 
 function log(text: string, level: "info" | "warn" | "err" = "info"): void {
   self.postMessage({ kind: "host-log", text: `[host-worker:${hostWorkerId}] ${text}`, level });
+}
+
+// ── Worker-threads phase 1: spawn-user-worker plumbing ─────────────
+//
+// The host worker doesn't spawn user-worker pairs directly — Web Worker
+// construction needs page-thread privileges (and main is where the
+// shared compiled WebAssembly.Module + the userWorkers registry live,
+// per docs/worker-threads-design.md).  We postMessage main with a
+// spawn request and await its reply.
+//
+// Path B (chosen) — see docs/worker-threads-design.md:
+//   wasm → globalThis.__edgeSpawnNodeWorker (sync RPC)
+//        → here (OP_SPAWN_USER_WORKER handler)
+//        → postMessage main {kind:'spawn-user-worker', requestId, ...}
+//        → main spawns the pair, replies {kind:'spawn-user-worker-reply', requestId, workerId}
+//        → here resolves the pending promise
+//        → returns workerId to wasm
+
+interface PendingSpawn {
+  resolve: (workerId: number) => void;
+  reject: (err: Error) => void;
+}
+
+const pendingSpawns = new Map<number, PendingSpawn>();
+let nextSpawnRequestId = 1;
+
+function postToMainAndAwaitSpawn(bootstrapScript: string, workerData: Uint8Array): Promise<number> {
+  return new Promise<number>((resolve, reject) => {
+    const requestId = nextSpawnRequestId++;
+    pendingSpawns.set(requestId, { resolve, reject });
+    self.postMessage({
+      kind: "spawn-user-worker",
+      requestId,
+      parentHostWorkerId: hostWorkerId,
+      bootstrapScript,
+      // structuredClone-able by postMessage; main reuses the bytes when
+      // forwarding to the child wasm at bootstrap time.
+      workerData,
+    });
+    // No timeout intentionally — spawn is async-on-main and may take
+    // 100-300ms for the child wasm to instantiate (per E24 + edge boot).
+    // If main never replies, the wasm thread blocks on Atomics.wait
+    // forever, which surfaces as an obvious hang in dev (good).
+  });
+}
+
+// Called by the main-message listener when main replies to a pending
+// spawn request OR delivers an exit event for a previously-spawned child.
+function handleMainSpawnReply(data: { requestId: number; workerId?: number; error?: string }): void {
+  const pending = pendingSpawns.get(data.requestId);
+  if (!pending) {
+    log(`spawn-user-worker-reply: no pending request for id=${data.requestId}`, "warn");
+    return;
+  }
+  pendingSpawns.delete(data.requestId);
+  if (data.error) {
+    pending.reject(new Error(data.error));
+  } else if (typeof data.workerId === "number") {
+    pending.resolve(data.workerId);
+  } else {
+    pending.reject(new Error("spawn-user-worker-reply: missing workerId and error"));
+  }
+}
+
+// Called when main delivers an exit event from a spawned child.  We fire
+// the reverse-RPC into our wasm runtime, which has a handler registered
+// for OP_DELIVER_USER_WORKER_EXIT that invokes the user-supplied
+// `worker.on('exit', cb)` callback.
+function deliverUserWorkerExit(workerId: number, exitCode: number): void {
+  if (!reverseClient) {
+    log(`deliver-user-worker-exit: reverseClient not attached (workerId=${workerId})`, "warn");
+    return;
+  }
+  const payload = new Uint8Array(8);
+  const dv = new DataView(payload.buffer);
+  dv.setUint32(0, workerId, true);
+  dv.setUint32(4, exitCode, true);
+  // Fire-and-forget — wasm's handler queues the callback for invocation
+  // on its event loop; we don't need the reply value here.
+  void reverseClient.call(OP_DELIVER_USER_WORKER_EXIT, hostWorkerId, 0, payload)
+    .catch((err) => {
+      log(`deliver-user-worker-exit: reverseClient.call threw: ${(err as Error).message}`, "warn");
+    });
 }
 
 function registerHandlers(srv: RpcServer): void {
@@ -665,6 +750,71 @@ function registerHandlers(srv: RpcServer): void {
     }
   });
 
+  // Worker_threads phase 1: spawn a user-worker pair on main.
+  //
+  // Request payload layout (LE u32):
+  //   [u32 bootstrap_len][utf-8 bootstrap_script]
+  //   [u32 worker_data_len][worker_data bytes]
+  // Reply payload: [u32 workerId] (LE).
+  //
+  // Per Path B (docs/worker-threads-design.md): the calling JS context
+  // is lib's `worker.js` patched-constructor running on the parent's
+  // wasm runtime worker; it invoked `globalThis.__edgeSpawnNodeWorker`
+  // which routed here via sync RPC.  This handler does NOT spawn the
+  // pair itself (main has the WebAssembly.Module cache + the userWorkers
+  // registry); it forwards to main and awaits the assigned workerId.
+  //
+  // `bootstrapScript` is a JS source string the child wasm runtime will
+  // execute as its user-script slot after edge.js boots.  See worker.ts
+  // for the calling-convention comment.
+  srv.register(OP_SPAWN_USER_WORKER, async (_ctx, args) => {
+    try {
+      if (args.byteLength < 8) {
+        return {
+          payload: new TextEncoder().encode("spawn-user-worker: args too short"),
+          status: REPLY_STATUS_INVALID_ARGS,
+        };
+      }
+      const dv = new DataView(args.buffer, args.byteOffset, args.byteLength);
+      const bsLen = dv.getUint32(0, true);
+      if (4 + bsLen + 4 > args.byteLength) {
+        return {
+          payload: new TextEncoder().encode("spawn-user-worker: bootstrap_script overruns payload"),
+          status: REPLY_STATUS_INVALID_ARGS,
+        };
+      }
+      const bootstrapScript = new TextDecoder("utf-8").decode(
+        args.subarray(4, 4 + bsLen),
+      );
+      const workerDataLen = dv.getUint32(4 + bsLen, true);
+      if (4 + bsLen + 4 + workerDataLen > args.byteLength) {
+        return {
+          payload: new TextEncoder().encode("spawn-user-worker: worker_data overruns payload"),
+          status: REPLY_STATUS_INVALID_ARGS,
+        };
+      }
+      const workerDataStart = 4 + bsLen + 4;
+      const workerData = args.subarray(workerDataStart, workerDataStart + workerDataLen);
+      // Copy because the args buffer aliases the SAB slot; main reuses
+      // workerData across postMessage and structuredClone semantics
+      // require a stable buffer.
+      const workerDataCopy = new Uint8Array(workerData.byteLength);
+      workerDataCopy.set(workerData);
+
+      const workerId = await postToMainAndAwaitSpawn(bootstrapScript, workerDataCopy);
+
+      const reply = new Uint8Array(4);
+      new DataView(reply.buffer).setUint32(0, workerId, true);
+      return { payload: reply, status: REPLY_STATUS_OK };
+    } catch (e) {
+      const msg = (e instanceof Error ? e.message : String(e)) || "spawn-user-worker threw";
+      return {
+        payload: new TextEncoder().encode(msg),
+        status: REPLY_STATUS_HOST_ERROR,
+      };
+    }
+  });
+
   // F-1: NAPI handlers.  Each one delegates to host's emnapi context.
   //
   // Request payload layout: 8 bytes = (envHandle u32, resultPtr u32).
@@ -885,9 +1035,26 @@ async function runReverseEcho(bytes: number): Promise<void> {
 
 function attachMessageListener(): void {
 self.addEventListener("message", (e: MessageEvent) => {
-  const data = e.data as (Partial<InitMessage> | ReverseEchoMessage) | null;
+  const data = e.data as (Partial<InitMessage> | ReverseEchoMessage | {
+    kind: "spawn-user-worker-reply";
+    requestId: number;
+    workerId?: number;
+    error?: string;
+  } | {
+    kind: "deliver-user-worker-exit";
+    workerId: number;
+    exitCode: number;
+  }) | null;
   if (data?.kind === "reverse-echo") {
     void runReverseEcho(data.bytes ?? 32);
+    return;
+  }
+  if (data?.kind === "spawn-user-worker-reply") {
+    handleMainSpawnReply(data);
+    return;
+  }
+  if (data?.kind === "deliver-user-worker-exit") {
+    deliverUserWorkerExit(data.workerId, data.exitCode);
     return;
   }
   if (!data || data.kind !== "init") return;
