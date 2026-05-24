@@ -1,0 +1,53 @@
+browser-target/src/host-worker/host-worker.ts
+  s_7bec0ecbfcdcd0::t_93b0b5d760264b 46-49
+  s_7bec0ecbfcdcd0::t_008ba473635df2 858-944
+  s_7bec0ecbfcdcd0::t_952e2ab689d1d1 1174-1180,1194-1199
+  s_7bec0ecbfcdcd0::t_a34cc9163649d4 327-362
+browser-target/src/host-worker/rpc-protocol.ts
+  s_7bec0ecbfcdcd0::t_2a819baa487a61 601-654
+browser-target/src/worker.ts
+  s_7bec0ecbfcdcd0::t_bd4e262b0e2bc3 338-387,398-399
+  s_7bec0ecbfcdcd0::t_9f4cd1df83dade 1472-1480
+  s_7bec0ecbfcdcd0::t_82c84c8662d5b9 512-541,543-595
+  s_7bec0ecbfcdcd0::t_789893daf6eb76 461
+  s_7bec0ecbfcdcd0::t_05ae6d3156695f 388-397
+  s_7bec0ecbfcdcd0::t_f1f9345d423450 53
+  s_7bec0ecbfcdcd0::t_238add0bfa51b9 52
+  s_7bec0ecbfcdcd0::t_764d3dd17ec8fe 542
+browser-target/src/policies/worker-threads-per-thread.ts
+  s_7bec0ecbfcdcd0::t_7f4e863d10b1cc 3,7-12,14,18-23,25,27-31,33-42,44-52,54-58,60,62-75,85,98,127-129,133-138,148,156,160,175-280,283-315,319,321-322
+  s_7bec0ecbfcdcd0::t_2b75c037c858c7 281-282
+tests/js/worker-threads-message-roundtrip.js
+  s_7bec0ecbfcdcd0::t_731a7fef5ca3c7 93
+  s_7bec0ecbfcdcd0::t_16a9a5c138e6ea 48
+  s_7bec0ecbfcdcd0::t_0b49b7784f2c19 1-47,49-53,66,70,82-92,94-101,103,105-109,111-112
+  s_7bec0ecbfcdcd0::t_10a02bad4d3cd7 54-65,67-69,71-81
+  s_7bec0ecbfcdcd0::t_9f3b9187316ec8 102,104,110,113
+NOTES.md
+  s_7bec0ecbfcdcd0::t_0b93ada9ce9a1c 36
+  s_7bec0ecbfcdcd0::t_67b527a00c5426 315-333
+browser-target/src/main.ts
+  s_7bec0ecbfcdcd0::t_8383573395e8cb 1177,1182
+  s_7bec0ecbfcdcd0::t_2dbbc310a06432 1200,1208
+  s_7bec0ecbfcdcd0::t_6f04aebdee6b9a 1169-1176,1178-1181,1183-1199,1201-1207,1209-1235
+browser-target/src/host-worker/marshal-postmessage.ts
+  s_7bec0ecbfcdcd0::t_5ba8c16aa15eb9 1-36
+tests/js/worker-threads-message-roundtrip.stdout
+  s_7bec0ecbfcdcd0::t_ae59ba27b2ffac 1-3
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "04180510bb4cfe82680ccbf47378705c7c7301d3",
+  "prompts": {},
+  "sessions": {
+    "s_7bec0ecbfcdcd0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d560d5ae-265f-44ae-89c4-d35659b3ab9e",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
