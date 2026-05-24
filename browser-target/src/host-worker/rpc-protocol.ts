@@ -460,6 +460,50 @@ export const OP_SUBTLE_DIGEST = OP_DOMAIN_HOST_API | 0x0001;
 // SHA-1=20, SHA-256=32, SHA-384=48, SHA-512=64).
 // Status: REPLY_STATUS_OK on success; HOST_ERROR if SubtleCrypto
 // throws (e.g. unknown algorithm).
+//
+// E18 caveat (resolved in E22): the data is framed into the SAME RPC
+// slot as the algo name, capping input at ~4055 B post-framing.  E22
+// adds OP_SUBTLE_DIGEST_VIA_NAPI_MEM that routes the data through the
+// shared napi-host-memory SAB; this op is retained for the small-input
+// fast path and for the Node test harness's simpler implementation.
+
+// E22: digest staging region offset in the shared napi-host-memory
+// SAB.  Both the host-worker (which reads input bytes from here) and
+// the wasm runtime worker (which writes input bytes here before
+// sending OP_SUBTLE_DIGEST_VIA_NAPI_MEM) reference this constant.
+// 128 KiB places staging above the napi handle bump allocator (which
+// grows from 16 KiB upward) and below the 256 KiB initial memory
+// ceiling; ~128 KiB of input fits without growing napi memory.
+export const DIGEST_STAGING_OFFSET = 128 * 1024;
+
+export const OP_SUBTLE_HMAC = OP_DOMAIN_HOST_API | 0x0002;
+// E21: HMAC via SubtleCrypto.sign({name:'HMAC'}, key, data).  Sync RPC
+// pattern mirrors OP_SUBTLE_DIGEST; wire format extends with a key-bytes
+// preamble.  Request: [u32 algo_name_len][algo_name][u32 key_len][key]
+// [u32 data_len][data].  Reply: raw HMAC bytes.
+
+export const OP_SUBTLE_DIGEST_VIA_NAPI_MEM = OP_DOMAIN_HOST_API | 0x0003;
+// E22: same semantics as OP_SUBTLE_DIGEST, but the data bytes travel
+// through the shared napi-host-memory SAB instead of the RPC slot.
+// Lets us hash arbitrarily large inputs (bounded only by the napi
+// memory size, currently up to ~1MB) without multi-slot framing.
+//
+// Request payload layout (LE u32, contiguous bytes):
+//   [u32 algo_name_len][utf-8 algo_name][u32 data_offset][u32 data_len]
+// Total request size is small (<100 B) regardless of data size — the
+// data lives at `napiHostMemory.buffer[data_offset .. data_offset+data_len]`
+// and is read directly by the host handler.
+//
+// Reply payload: raw digest bytes (same as OP_SUBTLE_DIGEST).
+// Status: REPLY_STATUS_OK on success; HOST_ERROR if SubtleCrypto throws;
+// INVALID_ARGS if the (offset, length) pair overruns the napi memory.
+//
+// Memory layout invariants (host-worker.ts):
+//   - napi handle pool grows from 16 KiB upward (bump-allocated).
+//   - Digest staging region reserved at offset DIGEST_STAGING_OFFSET
+//     (128 KiB).  Caller writes input bytes there before sending RPC;
+//     the staging region is reused per call because the wasm worker is
+//     single-flight on this sync RPC (Atomics.wait blocks the thread).
 
 // ── Status codes for replies ────────────────────────────────────────
 

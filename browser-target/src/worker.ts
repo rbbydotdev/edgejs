@@ -49,7 +49,7 @@ import { attachRing as attachHostRing, type RingConfig as HostRingConfig } from 
 import { RpcClient } from "./host-worker/rpc-client";
 import { RpcServer } from "./host-worker/rpc-server";
 import { SyncRpcClient } from "./host-worker/rpc-client-sync";
-import { OP_PING, OP_WASM_ECHO, OP_SUBTLE_DIGEST, REPLY_STATUS_OK } from "./host-worker/rpc-protocol";
+import { OP_PING, OP_WASM_ECHO, OP_SUBTLE_DIGEST, OP_SUBTLE_HMAC, OP_SUBTLE_DIGEST_VIA_NAPI_MEM, DIGEST_STAGING_OFFSET, REPLY_STATUS_OK } from "./host-worker/rpc-protocol";
 import { registerWasmCallbackInvoker, createCallbackDepthCounter } from "./host-worker/callback-dispatch";
 const HOST_RPC_RING_CONFIG: HostRingConfig = { numSlots: 32, slotSize: 4 * 1024 };
 let hostRpcClient: RpcClient | null = null;
@@ -68,6 +68,11 @@ let hostWorkerId = -1;
  *  read what host emnapi wrote (and vice versa).  Same buffer, shared
  *  across worker boundary. */
 let hostNapiMemoryView: Uint32Array | null = null;
+/** E22: byte-level view of the host's napi memory SAB, used by the
+ *  `__edgeHostDigestSync` global to copy large input data into the
+ *  digest staging region.  Same SAB as `hostNapiMemoryView`, different
+ *  element width. */
+let hostNapiMemoryBytes: Uint8Array | null = null;
 function getHostNapiMemoryView(): Uint32Array | null { return hostNapiMemoryView; }
 // Re-exported indirectly via a global accessor so other modules can use it.
 (globalThis as { __edgeHostNapiMemView?: () => Uint32Array | null }).__edgeHostNapiMemView = getHostNapiMemoryView;
@@ -83,19 +88,33 @@ let sharedWake: { i32: Int32Array; idx: number } | null = null;
 function getSharedWake(): { i32: Int32Array; idx: number } | null { return sharedWake; }
 (globalThis as { __edgeHostSharedWake?: () => { i32: Int32Array; idx: number } | null }).__edgeHostSharedWake = getSharedWake;
 
-/** E18: synchronous digest bridge.  The `crypto-hash-via-host-worker`
+/** E18 / E22: synchronous digest bridge.  The `crypto-hash-via-host-worker`
  *  policy patches `lib/crypto.js`'s `createHash().digest()` to call
  *  `globalThis.__edgeHostDigestSync(algo, bytes)` and return the raw
  *  digest bytes.  Implementation here parks the wasm thread via
  *  `Atomics.wait` until the host worker replies with the digest
- *  computed by `SubtleCrypto.digest(...)`. */
+ *  computed by `SubtleCrypto.digest(...)`.
+ *
+ *  TRANSPORT SELECTION (E22)
+ *
+ *  - Small inputs (≤ SLOT_PAYLOAD_BUDGET ~4 KiB): use OP_SUBTLE_DIGEST
+ *    and frame `(algoName, dataLen, dataBytes)` into the RPC slot.
+ *    Fewest hops, no shared-memory dependency.
+ *  - Larger inputs: copy the bytes into the digest staging region of
+ *    the shared napi-host-memory SAB at DIGEST_STAGING_OFFSET, then
+ *    send OP_SUBTLE_DIGEST_VIA_NAPI_MEM whose payload is just
+ *    `(algoName, dataOffset, dataLen)` (<100 B).  Bypasses the
+ *    single-slot framing cap.  The wasm thread blocks on Atomics.wait
+ *    while the host reads the staging region, so the offset is reused
+ *    across calls without contention. */
 function installHostDigestSyncGlobal(): void {
   const TE = new TextEncoder();
   type HostDigestSync = (algoName: string, bytes: Uint8Array) => Uint8Array;
   // Slot payload capacity = HOST_RPC_RING_CONFIG.slotSize - SLOT_HEADER_SIZE
   // (16) - REQUEST_HEADER_SIZE (8) = 4096 - 16 - 8 = 4072 bytes total.
   // Subtract the wire framing overhead (algo_len u32 + algo bytes +
-  // data_len u32) to get the available data budget.
+  // data_len u32) to get the available data budget for the small-input
+  // OP_SUBTLE_DIGEST path.
   const SLOT_PAYLOAD_BUDGET = HOST_RPC_RING_CONFIG.slotSize - 16 - 8;
   const impl: HostDigestSync = (algoName: string, bytes: Uint8Array) => {
     if (!hostRpcSyncClient) {
@@ -105,31 +124,112 @@ function installHostDigestSyncGlobal(): void {
     const algoLen = algoBytes.byteLength;
     const dataLen = bytes.byteLength;
     const framedLen = 4 + algoLen + 4 + dataLen;
-    if (framedLen > SLOT_PAYLOAD_BUDGET) {
-      // #!~debt e18-slot-overflow: single-slot wire format caps input at
-      // ~4KB.  Larger inputs need multi-slot chunking OR a parallel
-      // shared-memory data channel.  Today we throw a clear error so
-      // callers know to disable the policy or chunk their own input.
+
+    // Small-input fast path: frame everything into one slot.
+    if (framedLen <= SLOT_PAYLOAD_BUDGET) {
+      const payload = new Uint8Array(framedLen);
+      const dv = new DataView(payload.buffer);
+      dv.setUint32(0, algoLen, true);
+      payload.set(algoBytes, 4);
+      dv.setUint32(4 + algoLen, dataLen, true);
+      if (dataLen > 0) payload.set(bytes, 4 + algoLen + 4);
+      const reply = hostRpcSyncClient.callSync(OP_SUBTLE_DIGEST, hostWorkerId, 0, payload);
+      if (reply.status !== REPLY_STATUS_OK) {
+        const msg = new TextDecoder().decode(reply.payload) || `OP_SUBTLE_DIGEST status=${reply.status}`;
+        throw new Error("__edgeHostDigestSync: " + msg);
+      }
+      return reply.payload;
+    }
+
+    // E22 large-input path: stage data in the shared napi memory SAB.
+    if (!hostNapiMemoryBytes) {
       throw new Error(
-        `__edgeHostDigestSync: data too large for single RPC slot ` +
-        `(${dataLen}B + ${algoLen}B algo > budget ${SLOT_PAYLOAD_BUDGET}B). ` +
-        `Disable crypto-hash-via-host-worker policy for inputs >${SLOT_PAYLOAD_BUDGET - 32}B.`,
+        "__edgeHostDigestSync: napi memory SAB not attached; large-input path unavailable. " +
+        "(Small-input fast path remains usable.)",
+      );
+    }
+    const napiMemLen = hostNapiMemoryBytes.byteLength;
+    const stagingCapacity = napiMemLen - DIGEST_STAGING_OFFSET;
+    if (dataLen > stagingCapacity) {
+      // The staging region is bounded by the napi memory size minus the
+      // bump-allocator reserve.  At 4-page initial = 256 KiB, that's
+      // ~128 KiB.  Growing the napi memory would extend this; for now
+      // surface a clear error so callers can drop the policy for huge
+      // inputs.
+      throw new Error(
+        `__edgeHostDigestSync: data too large for digest staging region ` +
+        `(${dataLen}B > capacity ${stagingCapacity}B at offset ${DIGEST_STAGING_OFFSET}). ` +
+        `Disable crypto-hash-via-host-worker policy for inputs >${stagingCapacity}B.`,
+      );
+    }
+    // Copy input bytes into staging.  Single-flight: this sync RPC
+    // blocks the wasm thread until the host reply lands, so there is
+    // no concurrent use of the staging region from this worker.
+    if (dataLen > 0) {
+      hostNapiMemoryBytes.set(bytes, DIGEST_STAGING_OFFSET);
+    }
+    // Build the small request payload: algo_name + (offset, len) triple.
+    const reqLen = 4 + algoLen + 4 + 4;
+    const payload = new Uint8Array(reqLen);
+    const dv = new DataView(payload.buffer);
+    dv.setUint32(0, algoLen, true);
+    payload.set(algoBytes, 4);
+    dv.setUint32(4 + algoLen, DIGEST_STAGING_OFFSET, true);
+    dv.setUint32(4 + algoLen + 4, dataLen, true);
+    const reply = hostRpcSyncClient.callSync(
+      OP_SUBTLE_DIGEST_VIA_NAPI_MEM, hostWorkerId, 0, payload,
+    );
+    if (reply.status !== REPLY_STATUS_OK) {
+      const msg = new TextDecoder().decode(reply.payload) || `OP_SUBTLE_DIGEST_VIA_NAPI_MEM status=${reply.status}`;
+      throw new Error("__edgeHostDigestSync: " + msg);
+    }
+    return reply.payload;
+  };
+  (globalThis as { __edgeHostDigestSync?: HostDigestSync }).__edgeHostDigestSync = impl;
+}
+
+/** E21: synchronous HMAC bridge.  The `crypto-hmac-via-host-worker`
+ *  policy patches `lib/crypto.js`'s `createHmac().digest()` to call
+ *  `globalThis.__edgeHostHmacSync(algo, key, bytes)` and return the
+ *  raw MAC bytes.  Same Atomics.wait shape as
+ *  `installHostDigestSyncGlobal`; wire format extends with a
+ *  key-bytes preamble. */
+function installHostHmacSyncGlobal(): void {
+  const TE = new TextEncoder();
+  type HostHmacSync = (algoName: string, key: Uint8Array, bytes: Uint8Array) => Uint8Array;
+  const SLOT_PAYLOAD_BUDGET = HOST_RPC_RING_CONFIG.slotSize - 16 - 8;
+  const impl: HostHmacSync = (algoName: string, key: Uint8Array, bytes: Uint8Array) => {
+    if (!hostRpcSyncClient) {
+      throw new Error("__edgeHostHmacSync: host RPC sync client not attached");
+    }
+    const algoBytes = TE.encode(algoName);
+    const algoLen = algoBytes.byteLength;
+    const keyLen = key.byteLength;
+    const dataLen = bytes.byteLength;
+    const framedLen = 4 + algoLen + 4 + keyLen + 4 + dataLen;
+    if (framedLen > SLOT_PAYLOAD_BUDGET) {
+      throw new Error(
+        `__edgeHostHmacSync: data too large for single RPC slot ` +
+        `(key=${keyLen}B + data=${dataLen}B + algo=${algoLen}B > budget ${SLOT_PAYLOAD_BUDGET}B). ` +
+        `Disable crypto-hmac-via-host-worker policy for inputs >${SLOT_PAYLOAD_BUDGET - 32 - keyLen}B.`,
       );
     }
     const payload = new Uint8Array(framedLen);
     const dv = new DataView(payload.buffer);
     dv.setUint32(0, algoLen, true);
     payload.set(algoBytes, 4);
-    dv.setUint32(4 + algoLen, dataLen, true);
-    if (dataLen > 0) payload.set(bytes, 4 + algoLen + 4);
-    const reply = hostRpcSyncClient.callSync(OP_SUBTLE_DIGEST, hostWorkerId, 0, payload);
+    dv.setUint32(4 + algoLen, keyLen, true);
+    if (keyLen > 0) payload.set(key, 4 + algoLen + 4);
+    dv.setUint32(4 + algoLen + 4 + keyLen, dataLen, true);
+    if (dataLen > 0) payload.set(bytes, 4 + algoLen + 4 + keyLen + 4);
+    const reply = hostRpcSyncClient.callSync(OP_SUBTLE_HMAC, hostWorkerId, 0, payload);
     if (reply.status !== REPLY_STATUS_OK) {
-      const msg = new TextDecoder().decode(reply.payload) || `OP_SUBTLE_DIGEST status=${reply.status}`;
-      throw new Error("__edgeHostDigestSync: " + msg);
+      const msg = new TextDecoder().decode(reply.payload) || `OP_SUBTLE_HMAC status=${reply.status}`;
+      throw new Error("__edgeHostHmacSync: " + msg);
     }
     return reply.payload;
   };
-  (globalThis as { __edgeHostDigestSync?: HostDigestSync }).__edgeHostDigestSync = impl;
+  (globalThis as { __edgeHostHmacSync?: HostHmacSync }).__edgeHostHmacSync = impl;
 }
 
 self.addEventListener("message", (e: MessageEvent) => {
@@ -150,6 +250,11 @@ self.addEventListener("message", (e: MessageEvent) => {
     const napiMemSab = (data as { napiMemorySab?: SharedArrayBuffer }).napiMemorySab;
     if (napiMemSab) {
       hostNapiMemoryView = new Uint32Array(napiMemSab);
+      // E22: byte-level view over the same SAB.  __edgeHostDigestSync
+      // copies user input into the digest staging region of this view
+      // before sending OP_SUBTLE_DIGEST_VIA_NAPI_MEM — that's how we
+      // get past the 4 KiB single-slot wire limit.
+      hostNapiMemoryBytes = new Uint8Array(napiMemSab);
       post("log", { text: `[runtime] host napi memory attached (${napiMemSab.byteLength} bytes)`, level: "info" });
     }
     // F-9 path-a: attach shared-wake view.  Used by SyncRpcClient
@@ -177,6 +282,7 @@ self.addEventListener("message", (e: MessageEvent) => {
     // policy code engine-agnostic — Node harness installs its own
     // synchronous implementation via this same global.
     installHostDigestSyncGlobal();
+    installHostHmacSyncGlobal();
     // L4 reverse channel — host can send requests TO this worker.
     // Reverse-direction SABs come in the same message.
     const reverseReqSab = (data as { reverseRequestSab?: SharedArrayBuffer }).reverseRequestSab;

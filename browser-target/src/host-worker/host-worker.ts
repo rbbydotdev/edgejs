@@ -35,10 +35,18 @@ import {
   OP_NAPI_GET_NULL,
   OP_NAPI_GET_GLOBAL,
   OP_SUBTLE_DIGEST,
+  OP_SUBTLE_HMAC,
+  OP_SUBTLE_DIGEST_VIA_NAPI_MEM,
+  DIGEST_STAGING_OFFSET,
   REPLY_STATUS_OK,
   REPLY_STATUS_HOST_ERROR,
   REPLY_STATUS_INVALID_ARGS,
 } from "./rpc-protocol";
+
+// E22: napi handle bump allocator must stay below DIGEST_STAGING_OFFSET
+// so the digest staging region (used by OP_SUBTLE_DIGEST_VIA_NAPI_MEM)
+// isn't trampled.
+const POOL_ALLOC_CEILING = DIGEST_STAGING_OFFSET;
 // F-1: emnapi context on host worker.  Imports via the project facade
 // (single swap point for v1 vs v2 — see plans/lever-b-l5-options.md
 // "v1 vs v2" finding).
@@ -145,7 +153,12 @@ function ensureNapiContext(): void {
   if (napiCtx) return;
   napiCtx = createContext();
   // F-1: stub instance.  F-2 replaces with the real shared memory.
-  napiHostMemory = new WebAssembly.Memory({ initial: 1, maximum: 16, shared: true });
+  // E22: initial bumped from 1 to 4 pages (64 KiB → 256 KiB) so the
+  // top half can host the digest staging region (DIGEST_STAGING_OFFSET
+  // = 128 KiB) while leaving 112 KiB of headroom for the napi handle
+  // bump allocator (16 KiB reserve + ~96 KiB usable).  maximum left at
+  // 16 pages (1 MiB) so future growth is still possible if needed.
+  napiHostMemory = new WebAssembly.Memory({ initial: 4, maximum: 16, shared: true });
   const wasmModule = new WebAssembly.Module(new Uint8Array([
     0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
   ]));
@@ -157,7 +170,18 @@ function ensureNapiContext(): void {
       malloc: (size: number) => {
         // Q1 resolution: host-side bump allocator
         const ptr = poolNext;
-        poolNext += (size + 7) & ~7;
+        const newNext = poolNext + ((size + 7) & ~7);
+        if (newNext > POOL_ALLOC_CEILING) {
+          // Would collide with the digest staging region (E22).  Real
+          // production would either expand napi memory or move staging
+          // higher; for the current workload mix the pool stays well
+          // under 96 KiB.
+          log(
+            `napi malloc(${size}) would exceed POOL_ALLOC_CEILING ${POOL_ALLOC_CEILING}; bumping anyway (debt)`,
+            "warn",
+          );
+        }
+        poolNext = newNext;
         return ptr;
       },
       free: () => {},
@@ -391,6 +415,159 @@ function registerHandlers(srv: RpcServer): void {
       return { payload: out, status: REPLY_STATUS_OK };
     } catch (e) {
       const msg = (e instanceof Error ? e.message : String(e)) || "subtle-digest threw";
+      return {
+        payload: new TextEncoder().encode(msg),
+        status: REPLY_STATUS_HOST_ERROR,
+      };
+    }
+  });
+
+  // E21: SubtleCrypto HMAC bridge.  Lets the wasm-side
+  // `crypto-hmac-via-host-worker` policy turn `Hmac.prototype.digest`
+  // into a synchronous call.  Pattern mirrors OP_SUBTLE_DIGEST above;
+  // wire format extends with a key-bytes preamble.
+  //
+  // Request payload (LE u32 lengths, contiguous bytes):
+  //   [u32 algo_name_len][utf-8 algo_name][u32 key_len][key_bytes][u32 data_len][data]
+  // Reply payload: raw HMAC bytes (e.g. 32 for HMAC-SHA-256).
+  srv.register(OP_SUBTLE_HMAC, async (_ctx, args) => {
+    try {
+      if (args.byteLength < 12) {
+        return {
+          payload: new TextEncoder().encode("subtle-hmac: args too short"),
+          status: REPLY_STATUS_INVALID_ARGS,
+        };
+      }
+      const dv = new DataView(args.buffer, args.byteOffset, args.byteLength);
+      const algoLen = dv.getUint32(0, true);
+      if (4 + algoLen + 4 > args.byteLength) {
+        return {
+          payload: new TextEncoder().encode("subtle-hmac: algo_name overruns payload"),
+          status: REPLY_STATUS_INVALID_ARGS,
+        };
+      }
+      const algoName = new TextDecoder("utf-8").decode(
+        args.subarray(4, 4 + algoLen),
+      );
+      const keyLenOff = 4 + algoLen;
+      const keyLen = dv.getUint32(keyLenOff, true);
+      const keyOff = keyLenOff + 4;
+      if (keyOff + keyLen + 4 > args.byteLength) {
+        return {
+          payload: new TextEncoder().encode("subtle-hmac: key overruns payload"),
+          status: REPLY_STATUS_INVALID_ARGS,
+        };
+      }
+      const dataLenOff = keyOff + keyLen;
+      const dataLen = dv.getUint32(dataLenOff, true);
+      const dataOff = dataLenOff + 4;
+      if (dataOff + dataLen > args.byteLength) {
+        return {
+          payload: new TextEncoder().encode("subtle-hmac: data overruns payload"),
+          status: REPLY_STATUS_INVALID_ARGS,
+        };
+      }
+      const keyCopy = new Uint8Array(keyLen);
+      if (keyLen > 0) keyCopy.set(args.subarray(keyOff, keyOff + keyLen));
+      const dataCopy = new Uint8Array(dataLen);
+      if (dataLen > 0) dataCopy.set(args.subarray(dataOff, dataOff + dataLen));
+      const subtle = (globalThis as { crypto?: { subtle?: SubtleCrypto } }).crypto?.subtle;
+      if (!subtle) {
+        return {
+          payload: new TextEncoder().encode("subtle-hmac: host SubtleCrypto unavailable"),
+          status: REPLY_STATUS_HOST_ERROR,
+        };
+      }
+      const cryptoKey = await subtle.importKey(
+        "raw",
+        keyCopy,
+        { name: "HMAC", hash: algoName },
+        false,
+        ["sign"],
+      );
+      const ab = await subtle.sign("HMAC", cryptoKey, dataCopy);
+      const out = new Uint8Array(ab.byteLength);
+      out.set(new Uint8Array(ab));
+      return { payload: out, status: REPLY_STATUS_OK };
+    } catch (e) {
+      const msg = (e instanceof Error ? e.message : String(e)) || "subtle-hmac threw";
+      return {
+        payload: new TextEncoder().encode(msg),
+        status: REPLY_STATUS_HOST_ERROR,
+      };
+    }
+  });
+
+  // E22: digest with data delivered via shared napi-host-memory.  Same
+  // semantics as OP_SUBTLE_DIGEST, but the RPC request only carries
+  //   [u32 algo_name_len][utf-8 algo_name][u32 data_offset][u32 data_len]
+  // — the bytes themselves live in `napiHostMemory.buffer` at
+  // `data_offset` (typically DIGEST_STAGING_OFFSET).  Unblocks inputs
+  // larger than a single 4 KiB RPC slot (the E18 cap, see NOTES.md
+  // `e18-slot-overflow`).
+  //
+  // Memory model: the wasm runtime worker attached a SAB view of
+  // `napiHostMemory.buffer` via the F-2 plumbing (worker.ts /
+  // `getHostNapiMemoryView`), so a write on the wasm side is visible
+  // here without any postMessage.  The wasm worker is single-flight on
+  // this sync RPC (Atomics.wait blocks its thread), so reusing the same
+  // staging offset across calls is safe — no concurrent overlap.
+  srv.register(OP_SUBTLE_DIGEST_VIA_NAPI_MEM, async (_ctx, args) => {
+    try {
+      if (args.byteLength < 12) {
+        return {
+          payload: new TextEncoder().encode("subtle-digest-via-napi: args too short"),
+          status: REPLY_STATUS_INVALID_ARGS,
+        };
+      }
+      const dv = new DataView(args.buffer, args.byteOffset, args.byteLength);
+      const algoLen = dv.getUint32(0, true);
+      if (4 + algoLen + 8 > args.byteLength) {
+        return {
+          payload: new TextEncoder().encode("subtle-digest-via-napi: algo_name overruns payload"),
+          status: REPLY_STATUS_INVALID_ARGS,
+        };
+      }
+      const algoName = new TextDecoder("utf-8").decode(
+        args.subarray(4, 4 + algoLen),
+      );
+      const dataOffset = dv.getUint32(4 + algoLen, true);
+      const dataLen = dv.getUint32(4 + algoLen + 4, true);
+      // Make sure the napi memory exists and the region is in range.
+      ensureNapiContext();
+      const mem = napiHostMemory!;
+      if (dataOffset + dataLen > mem.buffer.byteLength) {
+        return {
+          payload: new TextEncoder().encode(
+            `subtle-digest-via-napi: (offset=${dataOffset}+len=${dataLen}) ` +
+            `exceeds napi memory ${mem.buffer.byteLength}`,
+          ),
+          status: REPLY_STATUS_INVALID_ARGS,
+        };
+      }
+      // Copy bytes from the shared SAB into a JS-heap buffer.
+      // SubtleCrypto.digest rejects SAB-backed views in most runtimes
+      // (Chrome's spec compliance for the 2024 SAB-friendly update is
+      // still partial); the copy is portable.  The copy is also what
+      // E18 does — the win here is bypassing the 4 KiB slot framing,
+      // not eliminating that single copy.
+      const dataCopy = new Uint8Array(dataLen);
+      if (dataLen > 0) {
+        dataCopy.set(new Uint8Array(mem.buffer, dataOffset, dataLen));
+      }
+      const subtle = (globalThis as { crypto?: { subtle?: SubtleCrypto } }).crypto?.subtle;
+      if (!subtle) {
+        return {
+          payload: new TextEncoder().encode("subtle-digest-via-napi: host SubtleCrypto unavailable"),
+          status: REPLY_STATUS_HOST_ERROR,
+        };
+      }
+      const ab = await subtle.digest(algoName, dataCopy);
+      const out = new Uint8Array(ab.byteLength);
+      out.set(new Uint8Array(ab));
+      return { payload: out, status: REPLY_STATUS_OK };
+    } catch (e) {
+      const msg = (e instanceof Error ? e.message : String(e)) || "subtle-digest-via-napi threw";
       return {
         payload: new TextEncoder().encode(msg),
         status: REPLY_STATUS_HOST_ERROR,

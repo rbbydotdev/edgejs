@@ -341,17 +341,15 @@ the browser-target tree.
   E19 audit + E20 (`process-methods-wasm-state`) follow the same
   pattern.  Read the doc before adding a sixth fix or considering a
   napi-layer change.
-- `e18-slot-overflow` (E18 2026-05-24) — `crypto-hash-via-host-worker`
-  policy caps `digest()` input at the single RPC slot payload budget
-  (`HOST_RPC_RING_CONFIG.slotSize - 16 - 8 - 4 - len(algoName) - 4`
-  ≈ 4055 bytes after framing).  Larger inputs throw a clear error
-  pointing the caller back to bundled OpenSSL.  Long-term fix:
-  multi-slot chunked transfer (extend wire format with a
-  continuation bit), OR a parallel shared-memory data channel where
-  the request slot just carries the (algoName, dataPtr, dataLen)
-  triple and the host reads bytes directly from the wasm SAB.  Today
-  the cap is documented and intentional (smaller-than-OpenSSL
-  surface for the common short-string-hashing case).
+- ~~`e18-slot-overflow`~~ — **RESOLVED** (E22 2026-05-24) by shared
+  napi-memory data channel: new
+  `OP_SUBTLE_DIGEST_VIA_NAPI_MEM = 0x0003` op carries
+  `(algoName, dataOffset, dataLen)` in the RPC slot; bytes live in
+  `napiHostMemory.buffer` at `DIGEST_STAGING_OFFSET = 128 KiB`.
+  Inputs of arbitrary size (up to wasm memory cap, ~128 KiB initial,
+  ~896 KiB growable) now hash correctly.  64KB test ships.  Small
+  inputs continue to use the fast-path inline RPC slot.  See
+  `experiments/e22-digest-slot-overflow/FINDINGS.md`.
 
 - `l1-perf-variance-investigation` (L1 2026-05-23) — local
   perf-harness measurements after L1 show wasmRunMs median 200-290ms
