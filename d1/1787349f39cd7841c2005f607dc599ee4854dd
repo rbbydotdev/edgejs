@@ -1,0 +1,27 @@
+NOTES.md
+  s_7bec0ecbfcdcd0::t_39501badc28567 198-217
+  s_7bec0ecbfcdcd0::t_1831063b553de6 249-262
+browser-target/src/host-worker/cross-context-marshal.ts
+  s_7bec0ecbfcdcd0::t_7465b44987ffae 23-36,46-62,64,72-79
+  s_7bec0ecbfcdcd0::t_658482770d69d3 134-153,156-182
+  s_7bec0ecbfcdcd0::t_d6df1a817b1728 233-261,263-271,297-394,396,398
+  s_7bec0ecbfcdcd0::t_77999a60f12c51 408-417,421-425,431-443,466-475,477,484,487-560
+browser-target/src/main.ts
+  s_7bec0ecbfcdcd0::t_9e0c555ec87217 545-622
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "d11787349f39cd7841c2005f607dc599ee4854dd",
+  "prompts": {},
+  "sessions": {
+    "s_7bec0ecbfcdcd0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d560d5ae-265f-44ae-89c4-d35659b3ab9e",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
