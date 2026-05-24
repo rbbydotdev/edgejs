@@ -1,0 +1,33 @@
+tests/js/zlib-bundled-gzip.stdout
+  s_7bec0ecbfcdcd0::t_2729c800d825b8 1
+browser-target/src/policies/zlib-writestate-wasm.ts
+  s_7bec0ecbfcdcd0::t_2729c800d825b8 1-188
+browser-target/src/policies/index.ts
+  s_7bec0ecbfcdcd0::t_a9f553d109fc5b 193
+  s_7bec0ecbfcdcd0::t_a2568d8e1a1e65 214
+  s_7bec0ecbfcdcd0::t_54a01a75f12af3 124
+  s_7bec0ecbfcdcd0::t_835819910c0609 138
+  s_7bec0ecbfcdcd0::t_246314e823d36c 175
+experiments/e15-zlib-fix/FINDINGS.md
+  s_7bec0ecbfcdcd0::t_f7cab44231b6f4 1-87
+NOTES.md
+  s_7bec0ecbfcdcd0::t_c9eba4888ed9fe 328-335
+tests/js/zlib-bundled-gzip.js
+  s_7bec0ecbfcdcd0::t_2729c800d825b8 1-37
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "94f0795f5498bc250b7a50a4791aff52eab8fe99",
+  "prompts": {},
+  "sessions": {
+    "s_7bec0ecbfcdcd0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d560d5ae-265f-44ae-89c4-d35659b3ab9e",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
