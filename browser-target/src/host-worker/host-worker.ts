@@ -37,6 +37,7 @@ import {
   OP_SUBTLE_DIGEST,
   OP_SUBTLE_HMAC,
   OP_SUBTLE_DIGEST_VIA_NAPI_MEM,
+  OP_SUBTLE_HMAC_VIA_NAPI_MEM,
   DIGEST_STAGING_OFFSET,
   REPLY_STATUS_OK,
   REPLY_STATUS_HOST_ERROR,
@@ -568,6 +569,92 @@ function registerHandlers(srv: RpcServer): void {
       return { payload: out, status: REPLY_STATUS_OK };
     } catch (e) {
       const msg = (e instanceof Error ? e.message : String(e)) || "subtle-digest-via-napi threw";
+      return {
+        payload: new TextEncoder().encode(msg),
+        status: REPLY_STATUS_HOST_ERROR,
+      };
+    }
+  });
+
+  // E22-C: HMAC with key+data delivered via shared napi-host-memory.
+  // Same semantics as OP_SUBTLE_HMAC, but the RPC request only carries
+  //   [u32 algo_name_len][algo_name]
+  //   [u32 key_off][u32 key_len][u32 data_off][u32 data_len]
+  // — the bytes themselves live in `napiHostMemory.buffer` at the
+  // given offsets.  Unblocks combined inputs larger than the 4 KiB
+  // single-slot framing cap E21 inherited from E18.  Shares the
+  // digest staging region; safe because both ops are single-flight
+  // (sync RPC blocks the wasm thread).
+  srv.register(OP_SUBTLE_HMAC_VIA_NAPI_MEM, async (_ctx, args) => {
+    try {
+      if (args.byteLength < 20) {
+        return {
+          payload: new TextEncoder().encode("subtle-hmac-via-napi: args too short"),
+          status: REPLY_STATUS_INVALID_ARGS,
+        };
+      }
+      const dv = new DataView(args.buffer, args.byteOffset, args.byteLength);
+      const algoLen = dv.getUint32(0, true);
+      if (4 + algoLen + 16 > args.byteLength) {
+        return {
+          payload: new TextEncoder().encode("subtle-hmac-via-napi: algo_name overruns payload"),
+          status: REPLY_STATUS_INVALID_ARGS,
+        };
+      }
+      const algoName = new TextDecoder("utf-8").decode(
+        args.subarray(4, 4 + algoLen),
+      );
+      const keyOffset = dv.getUint32(4 + algoLen, true);
+      const keyLen = dv.getUint32(4 + algoLen + 4, true);
+      const dataOffset = dv.getUint32(4 + algoLen + 8, true);
+      const dataLen = dv.getUint32(4 + algoLen + 12, true);
+      ensureNapiContext();
+      const mem = napiHostMemory!;
+      if (keyOffset + keyLen > mem.buffer.byteLength) {
+        return {
+          payload: new TextEncoder().encode(
+            `subtle-hmac-via-napi: key (off=${keyOffset}+len=${keyLen}) ` +
+            `exceeds napi memory ${mem.buffer.byteLength}`,
+          ),
+          status: REPLY_STATUS_INVALID_ARGS,
+        };
+      }
+      if (dataOffset + dataLen > mem.buffer.byteLength) {
+        return {
+          payload: new TextEncoder().encode(
+            `subtle-hmac-via-napi: data (off=${dataOffset}+len=${dataLen}) ` +
+            `exceeds napi memory ${mem.buffer.byteLength}`,
+          ),
+          status: REPLY_STATUS_INVALID_ARGS,
+        };
+      }
+      // Copy bytes from the shared SAB into JS-heap buffers.  SubtleCrypto
+      // (importKey + sign) rejects SAB-backed views in most runtimes;
+      // copy keeps it portable.  Single-flight RPC means no overlap.
+      const keyCopy = new Uint8Array(keyLen);
+      if (keyLen > 0) keyCopy.set(new Uint8Array(mem.buffer, keyOffset, keyLen));
+      const dataCopy = new Uint8Array(dataLen);
+      if (dataLen > 0) dataCopy.set(new Uint8Array(mem.buffer, dataOffset, dataLen));
+      const subtle = (globalThis as { crypto?: { subtle?: SubtleCrypto } }).crypto?.subtle;
+      if (!subtle) {
+        return {
+          payload: new TextEncoder().encode("subtle-hmac-via-napi: host SubtleCrypto unavailable"),
+          status: REPLY_STATUS_HOST_ERROR,
+        };
+      }
+      const cryptoKey = await subtle.importKey(
+        "raw",
+        keyCopy,
+        { name: "HMAC", hash: algoName },
+        false,
+        ["sign"],
+      );
+      const ab = await subtle.sign("HMAC", cryptoKey, dataCopy);
+      const out = new Uint8Array(ab.byteLength);
+      out.set(new Uint8Array(ab));
+      return { payload: out, status: REPLY_STATUS_OK };
+    } catch (e) {
+      const msg = (e instanceof Error ? e.message : String(e)) || "subtle-hmac-via-napi threw";
       return {
         payload: new TextEncoder().encode(msg),
         status: REPLY_STATUS_HOST_ERROR,

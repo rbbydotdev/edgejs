@@ -45,6 +45,23 @@ import type { Policy } from "./index";
 // large data, bundled OpenSSL's streaming state machine is more
 // memory-efficient; this policy is opt-in for that reason.
 //
+// SIZE-THRESHOLD FALLBACK
+//
+// E22's napi-mem staging region supports up to ~128 KiB without
+// growing wasm memory; beyond that the worker threw a "data too
+// large for digest staging region" error pointing the caller back
+// to bundled OpenSSL.  That's a sharp edge: a user hashing a 2 MiB
+// file via `crypto.createHash` gets an explicit failure rather than
+// a (slightly slower) correct answer.
+//
+// `LARGE_INPUT_THRESHOLD` (default 1 MiB) decides when `digest()`
+// transparently feeds the buffered chunks back through the captured
+// `origCreateHash` — bundled OpenSSL — instead of paying the
+// staging-region copy + SubtleCrypto round-trip.  The caller sees
+// the correct bytes and doesn't know which path produced them.
+// The threshold sits comfortably below the staging cap so we never
+// rely on the worker-side guard for the transparency contract.
+//
 // COMPOSITION
 //
 // Opt-in.  Not in `minimalPolicies` or `defaultBrowserPolicies`.
@@ -59,12 +76,40 @@ import type { Policy } from "./index";
 // encoding the bytes per the requested encoding (hex / base64 /
 // base64url / latin1 / binary; default is a Node Buffer).
 
+// Default fallback threshold (in bytes) — inputs larger than this go
+// to bundled OpenSSL via `origCreateHash` instead of the host worker.
+//
+// The host-worker staging region tops out at ~128 KiB today (E22).
+// Going above that throws an explicit "data too large for digest
+// staging region" error from `worker.ts`.  This threshold sits
+// comfortably above the staging cap so the transparent fallback
+// triggers BEFORE the worker-side guard fires — user code never
+// sees the opaque overflow error.
+//
+// Picked 1 MiB because:
+//   - covers typical file-hash workloads (multi-MB files) without
+//     paying the SubtleCrypto memcpy + SAB staging round-trip.
+//   - well above 128 KiB so the policy's natural "use host worker"
+//     range (small/medium inputs) is preserved; only multi-MB cases
+//     route to OpenSSL.
+//   - small enough that the bundled-OpenSSL stream path's per-update
+//     cost remains negligible.
+//
+// Tune `LARGE_INPUT_FALLBACK_THRESHOLD` at module construction time
+// if a deployment wants a different break-even point.
+//
+// NOTE: the threshold is checked at `digest()` time against the
+// accumulated buffered length.  `update()` does NOT pre-check —
+// see FINDINGS open questions for the decision rationale.
+const LARGE_INPUT_FALLBACK_THRESHOLD = 1 * 1024 * 1024;
+
 const POST_PATCH = `
 ;(function applyCryptoHashViaHostWorker() {
   if (typeof module === 'undefined' || !module || !module.exports) return;
   var exp = module.exports;
   var hostDigestSync = (typeof globalThis !== 'undefined' && globalThis.__edgeHostDigestSync) || null;
   if (typeof hostDigestSync !== 'function') return;
+  var LARGE_INPUT_FALLBACK_THRESHOLD = ${LARGE_INPUT_FALLBACK_THRESHOLD};
 
   // Map Node digest names to WebCrypto names.  Node accepts both forms
   // ("sha256" and "SHA-256") for sync calls; WebCrypto only accepts the
@@ -159,6 +204,23 @@ const POST_PATCH = `
         throw new Error('Digest already called');
       }
       consumed = true;
+      // Size-threshold fallback: above the threshold, replay the
+      // buffered chunks through bundled OpenSSL.  This keeps the
+      // caller's API contract identical (same Hash interface, same
+      // output bytes) while sidestepping the host-worker staging
+      // cap.  Triggered for inputs >1 MiB by default — well below
+      // the staging-region limit, so user code never sees the
+      // staging overflow error.
+      if (totalLen > LARGE_INPUT_FALLBACK_THRESHOLD) {
+        var fallback = origCreateHash(algo, options);
+        for (var fi = 0; fi < chunks.length; fi++) {
+          fallback.update(chunks[fi]);
+        }
+        chunks = null;
+        // Forward encoding verbatim — bundled OpenSSL handles all
+        // Node-supported encodings (hex / base64 / latin1 / Buffer).
+        return encoding ? fallback.digest(encoding) : fallback.digest();
+      }
       var combined;
       if (chunks.length === 1) {
         combined = chunks[0];
@@ -187,7 +249,7 @@ const POST_PATCH = `
 export const cryptoHashViaHostWorker: Policy = {
   name: "crypto-hash-via-host-worker",
   description:
-    "Offload crypto.createHash().digest() to host SubtleCrypto.digest via worker + sync-RPC. Sync API preserved through Atomics.wait on the SAB reply slot. SHA-1/256/384/512 only; unknown algos fall through to bundled OpenSSL.",
+    "Offload crypto.createHash().digest() to host SubtleCrypto.digest via worker + sync-RPC. Sync API preserved through Atomics.wait on the SAB reply slot. SHA-1/256/384/512 only; unknown algos fall through to bundled OpenSSL. Inputs >1 MiB transparently fall through to bundled OpenSSL.",
   builtinOverrides: {
     crypto: { post: POST_PATCH },
   },

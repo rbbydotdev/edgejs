@@ -505,6 +505,32 @@ export const OP_SUBTLE_DIGEST_VIA_NAPI_MEM = OP_DOMAIN_HOST_API | 0x0003;
 //     the staging region is reused per call because the wasm worker is
 //     single-flight on this sync RPC (Atomics.wait blocks the thread).
 
+export const OP_SUBTLE_HMAC_VIA_NAPI_MEM = OP_DOMAIN_HOST_API | 0x0004;
+// E22-C: same semantics as OP_SUBTLE_HMAC, but the key AND data bytes
+// travel through the shared napi-host-memory SAB.  Lets us HMAC inputs
+// whose combined (key + data) size exceeds the ~4 KiB single-slot
+// framing budget E21 inherited from E18.
+//
+// Request payload layout (LE u32, contiguous bytes):
+//   [u32 algo_name_len][utf-8 algo_name]
+//   [u32 key_offset][u32 key_len]
+//   [u32 data_offset][u32 data_len]
+// Total request size is small (<100 B) regardless of key/data size —
+// both buffers live in `napiHostMemory.buffer` at their respective
+// offsets and are read directly by the host handler.
+//
+// Reply payload: raw HMAC bytes (same as OP_SUBTLE_HMAC).
+// Status: REPLY_STATUS_OK on success; HOST_ERROR if SubtleCrypto throws;
+// INVALID_ARGS if either (offset, len) pair overruns the napi memory.
+//
+// Memory layout (shares the digest staging region — both ops are
+// single-flight via sync RPC so no overlap):
+//   - Key goes at DIGEST_STAGING_OFFSET (128 KiB).
+//   - Data follows at DIGEST_STAGING_OFFSET + ((keyLen + 7) & ~7)
+//     (8-byte aligned to keep the staging region clean).
+//   - Combined region capped by napi memory size (4 pages = 256 KiB
+//     initial → 128 KiB available; max 16 pages = 1 MiB).
+
 // ── Status codes for replies ────────────────────────────────────────
 
 export const REPLY_STATUS_OK = 0;

@@ -49,7 +49,7 @@ import { attachRing as attachHostRing, type RingConfig as HostRingConfig } from 
 import { RpcClient } from "./host-worker/rpc-client";
 import { RpcServer } from "./host-worker/rpc-server";
 import { SyncRpcClient } from "./host-worker/rpc-client-sync";
-import { OP_PING, OP_WASM_ECHO, OP_SUBTLE_DIGEST, OP_SUBTLE_HMAC, OP_SUBTLE_DIGEST_VIA_NAPI_MEM, DIGEST_STAGING_OFFSET, REPLY_STATUS_OK } from "./host-worker/rpc-protocol";
+import { OP_PING, OP_WASM_ECHO, OP_SUBTLE_DIGEST, OP_SUBTLE_HMAC, OP_SUBTLE_DIGEST_VIA_NAPI_MEM, OP_SUBTLE_HMAC_VIA_NAPI_MEM, DIGEST_STAGING_OFFSET, REPLY_STATUS_OK } from "./host-worker/rpc-protocol";
 import { registerWasmCallbackInvoker, createCallbackDepthCounter } from "./host-worker/callback-dispatch";
 const HOST_RPC_RING_CONFIG: HostRingConfig = { numSlots: 32, slotSize: 4 * 1024 };
 let hostRpcClient: RpcClient | null = null;
@@ -188,12 +188,22 @@ function installHostDigestSyncGlobal(): void {
   (globalThis as { __edgeHostDigestSync?: HostDigestSync }).__edgeHostDigestSync = impl;
 }
 
-/** E21: synchronous HMAC bridge.  The `crypto-hmac-via-host-worker`
+/** E21 / E22-C: synchronous HMAC bridge.  The `crypto-hmac-via-host-worker`
  *  policy patches `lib/crypto.js`'s `createHmac().digest()` to call
  *  `globalThis.__edgeHostHmacSync(algo, key, bytes)` and return the
  *  raw MAC bytes.  Same Atomics.wait shape as
  *  `installHostDigestSyncGlobal`; wire format extends with a
- *  key-bytes preamble. */
+ *  key-bytes preamble.
+ *
+ *  TRANSPORT SELECTION (E22-C, mirrors digest)
+ *
+ *  - Small inputs (key + data + algo fits the ~4 KiB slot): use
+ *    OP_SUBTLE_HMAC and frame everything inline.  Same as E21.
+ *  - Larger combined inputs: stage key followed by data in the shared
+ *    napi-host-memory SAB (sharing the digest staging region — both
+ *    ops are single-flight via sync RPC, so no overlap).  Send
+ *    OP_SUBTLE_HMAC_VIA_NAPI_MEM whose payload is just
+ *    `(algoName, keyOffset, keyLen, dataOffset, dataLen)` (<100 B). */
 function installHostHmacSyncGlobal(): void {
   const TE = new TextEncoder();
   type HostHmacSync = (algoName: string, key: Uint8Array, bytes: Uint8Array) => Uint8Array;
@@ -207,24 +217,68 @@ function installHostHmacSyncGlobal(): void {
     const keyLen = key.byteLength;
     const dataLen = bytes.byteLength;
     const framedLen = 4 + algoLen + 4 + keyLen + 4 + dataLen;
-    if (framedLen > SLOT_PAYLOAD_BUDGET) {
+
+    // Small-input fast path: frame everything into one slot.
+    if (framedLen <= SLOT_PAYLOAD_BUDGET) {
+      const payload = new Uint8Array(framedLen);
+      const dv = new DataView(payload.buffer);
+      dv.setUint32(0, algoLen, true);
+      payload.set(algoBytes, 4);
+      dv.setUint32(4 + algoLen, keyLen, true);
+      if (keyLen > 0) payload.set(key, 4 + algoLen + 4);
+      dv.setUint32(4 + algoLen + 4 + keyLen, dataLen, true);
+      if (dataLen > 0) payload.set(bytes, 4 + algoLen + 4 + keyLen + 4);
+      const reply = hostRpcSyncClient.callSync(OP_SUBTLE_HMAC, hostWorkerId, 0, payload);
+      if (reply.status !== REPLY_STATUS_OK) {
+        const msg = new TextDecoder().decode(reply.payload) || `OP_SUBTLE_HMAC status=${reply.status}`;
+        throw new Error("__edgeHostHmacSync: " + msg);
+      }
+      return reply.payload;
+    }
+
+    // E22-C large-input path: stage key + data in the shared napi memory SAB.
+    if (!hostNapiMemoryBytes) {
       throw new Error(
-        `__edgeHostHmacSync: data too large for single RPC slot ` +
-        `(key=${keyLen}B + data=${dataLen}B + algo=${algoLen}B > budget ${SLOT_PAYLOAD_BUDGET}B). ` +
-        `Disable crypto-hmac-via-host-worker policy for inputs >${SLOT_PAYLOAD_BUDGET - 32 - keyLen}B.`,
+        "__edgeHostHmacSync: napi memory SAB not attached; large-input path unavailable. " +
+        "(Small-input fast path remains usable.)",
       );
     }
-    const payload = new Uint8Array(framedLen);
+    // Lay out key, then data 8-byte aligned, both inside the staging
+    // region (which is shared with digest; sync RPC single-flight makes
+    // it safe).  Total occupied = alignedKeyLen + dataLen.
+    const KEY_OFFSET = DIGEST_STAGING_OFFSET;
+    const alignedKeyLen = (keyLen + 7) & ~7;
+    const DATA_OFFSET = KEY_OFFSET + alignedKeyLen;
+    const napiMemLen = hostNapiMemoryBytes.byteLength;
+    const stagingCapacity = napiMemLen - DIGEST_STAGING_OFFSET;
+    const totalNeeded = alignedKeyLen + dataLen;
+    if (totalNeeded > stagingCapacity) {
+      throw new Error(
+        `__edgeHostHmacSync: key+data too large for staging region ` +
+        `(key=${keyLen}B aligned=${alignedKeyLen}B + data=${dataLen}B = ${totalNeeded}B ` +
+        `> capacity ${stagingCapacity}B at offset ${DIGEST_STAGING_OFFSET}). ` +
+        `Disable crypto-hmac-via-host-worker policy for combined inputs >${stagingCapacity}B.`,
+      );
+    }
+    // Copy key+data into staging.  Single-flight: this sync RPC blocks
+    // the wasm thread until host reply lands; no concurrent use.
+    if (keyLen > 0) hostNapiMemoryBytes.set(key, KEY_OFFSET);
+    if (dataLen > 0) hostNapiMemoryBytes.set(bytes, DATA_OFFSET);
+    // Build the small request payload: algo + (key_off, key_len, data_off, data_len).
+    const reqLen = 4 + algoLen + 4 + 4 + 4 + 4;
+    const payload = new Uint8Array(reqLen);
     const dv = new DataView(payload.buffer);
     dv.setUint32(0, algoLen, true);
     payload.set(algoBytes, 4);
-    dv.setUint32(4 + algoLen, keyLen, true);
-    if (keyLen > 0) payload.set(key, 4 + algoLen + 4);
-    dv.setUint32(4 + algoLen + 4 + keyLen, dataLen, true);
-    if (dataLen > 0) payload.set(bytes, 4 + algoLen + 4 + keyLen + 4);
-    const reply = hostRpcSyncClient.callSync(OP_SUBTLE_HMAC, hostWorkerId, 0, payload);
+    dv.setUint32(4 + algoLen, KEY_OFFSET, true);
+    dv.setUint32(4 + algoLen + 4, keyLen, true);
+    dv.setUint32(4 + algoLen + 8, DATA_OFFSET, true);
+    dv.setUint32(4 + algoLen + 12, dataLen, true);
+    const reply = hostRpcSyncClient.callSync(
+      OP_SUBTLE_HMAC_VIA_NAPI_MEM, hostWorkerId, 0, payload,
+    );
     if (reply.status !== REPLY_STATUS_OK) {
-      const msg = new TextDecoder().decode(reply.payload) || `OP_SUBTLE_HMAC status=${reply.status}`;
+      const msg = new TextDecoder().decode(reply.payload) || `OP_SUBTLE_HMAC_VIA_NAPI_MEM status=${reply.status}`;
       throw new Error("__edgeHostHmacSync: " + msg);
     }
     return reply.payload;
