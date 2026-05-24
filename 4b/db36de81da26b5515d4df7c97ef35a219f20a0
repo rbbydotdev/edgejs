@@ -1,0 +1,94 @@
+tests/js/als-shim-then-await-warns.stdout
+  s_81f07f3ad355d3::t_9088a5b7233c57 1
+tests/js/als-shim-then-chain.stdout
+  s_81f07f3ad355d3::t_083f5364172c37 1
+tests/js/als-shim-then-await-warns.js
+  s_81f07f3ad355d3::t_e94028039a691a 1-12
+tests/js/async-hooks-throw-create.js
+  s_81f07f3ad355d3::t_b2bbf666dcc1a4 1-10
+tests/js/als-transpile-await-survives.stdout
+  s_81f07f3ad355d3::t_097d1010cb6ed9 1
+tests/js/als-native-when-available.stdout
+  s_81f07f3ad355d3::t_a9ce4280bffcbb 1
+browser-target/src/policies/index.ts
+  s_81f07f3ad355d3::t_83e2e4017270b7 245-250
+  s_81f07f3ad355d3::t_5bbde3c499dc57 157-162
+  s_81f07f3ad355d3::t_5ca6d2d2bcc758 133-138
+browser-target/src/policies/async-hooks-partial.ts
+  s_81f07f3ad355d3::t_c3643bd2596d80 1-199
+browser-target/src/policies/als-transpile.ts
+  s_81f07f3ad355d3::t_7e31b2408155cf 1-80
+tests/js/async-hooks-partial-then-chain.harness-args
+  s_81f07f3ad355d3::t_7455030543781c 1
+NOTES.md
+  s_81f07f3ad355d3::t_910b8aaaf5ab9c 121-147
+  s_81f07f3ad355d3::t_1cc4d1361efd79 87-117
+browser-target/src/vendor/transpile.ts
+  ai_agent 1-48
+browser-target/src/policies/als-shim-then.ts
+  s_81f07f3ad355d3::t_d382c44ccc04ac 1-223
+tests/js/async-hooks-throw-create.stdout
+  s_81f07f3ad355d3::t_a3fca96cf38b92 1-2
+tests/js/als-shim-then-await-warns.harness-args
+  s_81f07f3ad355d3::t_ba006e95681e68 1
+tests/js/async-hooks-partial-then-chain.js
+  s_81f07f3ad355d3::t_13a5e9eaed4a17 1-18
+tests/js/als-transpile-await-survives.harness-args
+  s_81f07f3ad355d3::t_0595beb83e8197 1
+tests/js/als-native-when-available.js
+  s_81f07f3ad355d3::t_1c89da22d6fe50 1-16
+tests/js/als-transpile-await-survives.js
+  s_81f07f3ad355d3::t_7abd9d320d77ce 1-12
+browser-target/src/policies/async-hooks-throw.ts
+  s_81f07f3ad355d3::t_5cb20fa15eff7c 1-77
+tests/js/async-hooks-partial-then-chain.stdout
+  s_81f07f3ad355d3::t_f8281c3a9fb9f7 1-3
+tests/js/als-throw-construct-then-call.stdout
+  s_81f07f3ad355d3::t_3826a61830c3dc 1-2
+tests/js/als-shim-then-chain.js
+  s_81f07f3ad355d3::t_77b1a2fdaac4a1 1-10
+experiments/e26-als-policies/runner.mjs
+  s_81f07f3ad355d3::t_b11faccafd45f1 1-53
+tests/js/async-hooks-partial-asyncresource.stdout
+  s_81f07f3ad355d3::t_8da6c8131b5b50 1-4
+browser-target/src/policies/als-native.ts
+  s_81f07f3ad355d3::t_961f69e2a0f22e 1-98
+tests/js/async-hooks-partial-asyncresource.harness-args
+  s_81f07f3ad355d3::t_c0847592c6a315 1
+ARCHITECTURE.md
+  s_81f07f3ad355d3::t_cabf850328e3d6 213-234
+tests/js/async-hooks-partial-asyncresource.js
+  s_81f07f3ad355d3::t_46c5e9d46645ff 1-26
+experiments/e26-als-policies/FINDINGS.md
+  s_81f07f3ad355d3::t_61e261045ce008 1-28
+browser-target/src/napi-host/unofficial.ts
+  s_81f07f3ad355d3::t_da6cfa7db3f7fa 404-413,415-419,421-427
+  s_81f07f3ad355d3::t_623fe8ce3668d4 548-553,558-567,574-581
+  s_81f07f3ad355d3::t_49e61508a59e47 23-88
+browser-target/src/policies/als-throw.ts
+  s_81f07f3ad355d3::t_f260f90359487d 1-73
+tests/js/als-throw-construct-then-call.js
+  s_81f07f3ad355d3::t_12d573c6b42e77 1-12
+experiments/e26-als-policies/PLAN.md
+  s_81f07f3ad355d3::t_5d3b771356f906 1-50
+tests/js/als-native-when-available.harness-args
+  s_81f07f3ad355d3::t_47d4077d92f717 1
+tests/js/als-shim-then-chain.harness-args
+  s_81f07f3ad355d3::t_41a070fd3d3ad3 1
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "4bdb36de81da26b5515d4df7c97ef35a219f20a0",
+  "prompts": {},
+  "sessions": {
+    "s_81f07f3ad355d3": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "52f3107c-c887-44ab-96ef-784411d67824",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
