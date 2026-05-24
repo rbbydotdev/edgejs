@@ -1,0 +1,21 @@
+experiments/e13-zlib-crash-debug/FINDINGS.md
+  s_7bec0ecbfcdcd0::t_afe88d9d1d86ce 1-136
+NOTES.md
+  s_7bec0ecbfcdcd0::t_744f446128da31 309-343
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "044a6418b7792c8c7ade5bf70aee54b5f8118cd6",
+  "prompts": {},
+  "sessions": {
+    "s_7bec0ecbfcdcd0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d560d5ae-265f-44ae-89c4-d35659b3ab9e",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
