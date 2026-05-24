@@ -1,0 +1,80 @@
+experiments/e2-exception-propagation/probe.mjs
+  s_7bec0ecbfcdcd0::t_e4fec6a65b0e30 1-312
+browser-target/src/host-worker/host-worker.ts
+  s_7bec0ecbfcdcd0::t_0d0e34721dea43 37-39,710-813
+browser-target/scripts/probe-scope-bounded.mjs
+  s_7bec0ecbfcdcd0::t_6016749b1f2c9b 1-54
+tests/js/scope-forwarding-bounded.js
+  s_7bec0ecbfcdcd0::t_6016749b1f2c9b 1-14
+experiments/e1-bundled-args-perf/package.json
+  s_7bec0ecbfcdcd0::t_680bae6587ff03 1-8
+browser-target/src/worker.ts
+  s_7bec0ecbfcdcd0::t_1ea3e8f36b67f6 52
+  s_7bec0ecbfcdcd0::t_0d0e34721dea43 720-792
+experiments/e3-reentrancy-depth/run.log
+  s_7bec0ecbfcdcd0::t_cd47daee95b6f8 2,4-8,10,12-22,24,26-36,38-51,53-56
+  s_7bec0ecbfcdcd0::t_aa1f73b428a910 23,25
+  s_7bec0ecbfcdcd0::t_4abb0aaa715041 37,52
+  s_7bec0ecbfcdcd0::t_24a85512fb5748 9,11
+  s_7bec0ecbfcdcd0::t_cbf03d2dae2d4f 1,3
+experiments/agent-b-scope-forwarding/FINDINGS.md
+  s_7bec0ecbfcdcd0::t_dee4090b5acb0d 1-103
+browser-target/src/host-worker/rpc-protocol.ts
+  s_7bec0ecbfcdcd0::t_0d0e34721dea43 396-427
+experiments/e3-reentrancy-depth/run3.log
+  s_7bec0ecbfcdcd0::t_e8b9830e6da169 1-22
+tests/js/scope-forwarding-bounded.harness-args
+  s_7bec0ecbfcdcd0::t_6016749b1f2c9b 1
+experiments/e2-exception-propagation/package.json
+  s_7bec0ecbfcdcd0::t_5c9d80b0e13b38 1-8
+experiments/e3-reentrancy-depth/package.json
+  s_7bec0ecbfcdcd0::t_4ac9fd893f184a 1-12
+tests/js/scope-forwarding-bounded.stdout
+  s_7bec0ecbfcdcd0::t_6016749b1f2c9b 1
+experiments/e1-bundled-args-perf/probe.mjs
+  s_7bec0ecbfcdcd0::t_e1ca7fa97a7104 193-194
+  s_7bec0ecbfcdcd0::t_8eb5cd0f89f2af 381
+  s_7bec0ecbfcdcd0::t_9b2215a0cd59c8 148
+  s_7bec0ecbfcdcd0::t_aeebf4b95950bf 65-68,75-76
+  s_7bec0ecbfcdcd0::t_a16e0b689712f4 173,176,191-192,195-197
+  s_7bec0ecbfcdcd0::t_8585c69f994a76 314
+  s_7bec0ecbfcdcd0::t_d9e6aae8267079 1-64,69-74,77-95,97-102,104-105,107-147,149-172,174-175,177-190,198-288,290-294,296-313,315-380,382-389
+  s_7bec0ecbfcdcd0::t_513b8ac257f14f 289,295
+  s_7bec0ecbfcdcd0::t_feb04d1264a7f2 96,103,106
+experiments/e3-reentrancy-depth/probe.mjs
+  s_7bec0ecbfcdcd0::t_98bfe2514a7c6c 58-60
+  s_7bec0ecbfcdcd0::t_0a12ede177a06c 769
+  s_7bec0ecbfcdcd0::t_356436d1bdfa1d 47-57
+  s_7bec0ecbfcdcd0::t_27ad305ea83350 44-46
+  s_7bec0ecbfcdcd0::t_599200894889cd 32-38,40,63,66
+  s_7bec0ecbfcdcd0::t_d1bacbbb7d9641 205-206,208-213
+  s_7bec0ecbfcdcd0::t_9ca3466ee124ab 41-43
+  s_7bec0ecbfcdcd0::t_b68fc3cd0ae03f 1-31,39,61-62,65,67-68,70-105,107-108,112,114-119,121-204,207,214-285,513-768,770
+  s_7bec0ecbfcdcd0::t_ecc32230379c86 106,109-110,113
+  s_7bec0ecbfcdcd0::t_b0977af2540a56 111,120
+  s_7bec0ecbfcdcd0::t_8ca8c311740d13 314,320-325
+  s_7bec0ecbfcdcd0::t_54b9f52803b929 286-313,315-319,326-512
+  s_7bec0ecbfcdcd0::t_4cab11b1414ddc 64,69
+experiments/e3-reentrancy-depth/stack-check.mjs
+  s_7bec0ecbfcdcd0::t_d981e6300e8168 1-24
+experiments/e3-reentrancy-depth/run2.log
+  s_7bec0ecbfcdcd0::t_103ad8462a2168 1-64
+browser-target/src/main.ts
+  s_7bec0ecbfcdcd0::t_0d0e34721dea43 141-143,654-773,1060
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "e23ff234ea76cbf94f4f56004412e61f2b87fb28",
+  "prompts": {},
+  "sessions": {
+    "s_7bec0ecbfcdcd0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d560d5ae-265f-44ae-89c4-d35659b3ab9e",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
