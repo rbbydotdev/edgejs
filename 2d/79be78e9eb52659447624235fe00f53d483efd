@@ -1,0 +1,21 @@
+docs/wasm-aliased-typedarray-pattern.md
+  s_7bec0ecbfcdcd0::t_27be60b97a636a 1-227
+NOTES.md
+  s_7bec0ecbfcdcd0::t_b04390c030c37f 336-343
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "2d79be78e9eb52659447624235fe00f53d483efd",
+  "prompts": {},
+  "sessions": {
+    "s_7bec0ecbfcdcd0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d560d5ae-265f-44ae-89c4-d35659b3ab9e",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
