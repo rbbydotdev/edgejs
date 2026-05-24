@@ -1,0 +1,27 @@
+tests/js/finalization-registry-runs.skip
+  s_7bec0ecbfcdcd0::t_841cedf35dcd7d 1-11
+experiments/e8-microtask-pump-spike/FINDINGS.md
+  s_7bec0ecbfcdcd0::t_6daee66e13bda9 1-177
+NOTES.md
+  s_7bec0ecbfcdcd0::t_5168d28a00f0a9 481-501
+  s_7bec0ecbfcdcd0::t_0ed1711e35e09b 505-510,513-515,518
+  s_7bec0ecbfcdcd0::t_730d9ac635ea70 420-479
+tests/js/unhandled-rejection-fires.skip
+  s_7bec0ecbfcdcd0::t_a959f496102f0b 1-10
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "b7a33e1661b665a5e0b102ef268b8992f16c20ca",
+  "prompts": {},
+  "sessions": {
+    "s_7bec0ecbfcdcd0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d560d5ae-265f-44ae-89c4-d35659b3ab9e",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
