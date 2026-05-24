@@ -1,0 +1,56 @@
+browser-target/src/policies/crypto-hmac-via-host-worker.ts
+  ai_agent 1-215
+tests/js/crypto-hash-via-host-worker-large.harness-args
+  s_7bec0ecbfcdcd0::t_d3b59d81b24f3c 1
+tests/js/crypto-hmac-via-host-worker.stdout
+  ai_agent 1
+NOTES.md
+  s_7bec0ecbfcdcd0::t_11d652debbb4eb 344-352
+browser-target/src/host-worker/rpc-protocol.ts
+  s_7bec0ecbfcdcd0::t_26310f110386b2 485
+  s_7bec0ecbfcdcd0::t_d3b59d81b24f3c 463-478,486-506
+  s_7bec0ecbfcdcd0::t_f254dd3cad9a59 479-484
+tests/js/crypto-hash-via-host-worker-large.js
+  s_7bec0ecbfcdcd0::t_d3b59d81b24f3c 1-77
+browser-target/src/host-worker/host-worker.ts
+  s_7bec0ecbfcdcd0::t_f8d45dcf9a07e7 38
+  s_7bec0ecbfcdcd0::t_d3b59d81b24f3c 39-40,45-49,156-161,173-184,501-570
+  s_7bec0ecbfcdcd0::t_bfb24720a37e5a 425-500
+browser-target/src/worker.ts
+  s_7bec0ecbfcdcd0::t_7af1eb2d6c625b 52
+  s_7bec0ecbfcdcd0::t_17ef2194a9d23a 191-234
+  s_7bec0ecbfcdcd0::t_d3b59d81b24f3c 71-75,91,96-109,116-117,127-145,147-148,151-173,177-181,183,253-257
+  s_7bec0ecbfcdcd0::t_8194fc3598ba3e 285
+browser-target/src/policies/index.ts
+  s_7bec0ecbfcdcd0::t_d29f5f7fc058e2 140
+  s_7bec0ecbfcdcd0::t_e5bd2961da08e2 221
+  s_7bec0ecbfcdcd0::t_af125cb88a02c3 123
+experiments/e23-microtask-flakiness/FINDINGS.md
+  s_7bec0ecbfcdcd0::t_da95812d291c70 1-103
+tests/js/crypto-hmac-via-host-worker.harness-args
+  ai_agent 1
+tests/js/crypto-hmac-via-host-worker.js
+  ai_agent 1-57
+experiments/e21-hmac-host-rpc/FINDINGS.md
+  s_7bec0ecbfcdcd0::t_c24330af596cce 1-86
+tests/js/crypto-hash-via-host-worker-large.stdout
+  s_7bec0ecbfcdcd0::t_d3b59d81b24f3c 1
+experiments/e22-digest-slot-overflow/FINDINGS.md
+  s_7bec0ecbfcdcd0::t_935930ac853e71 1-106
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "d7127d6a094341c7608b11983fb9f00c095a58c5",
+  "prompts": {},
+  "sessions": {
+    "s_7bec0ecbfcdcd0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d560d5ae-265f-44ae-89c4-d35659b3ab9e",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
