@@ -96,12 +96,23 @@ wasm-backed view.
 | `Zlib._writeState` | `lib/zlib.js:674` | `Uint32Array(2)` | Fixed (E15) |
 | `Brotli._writeState` | `lib/zlib.js:836` | `Uint32Array(2)` | Fixed (E15) |
 | `Zstd writeState` | `lib/zlib.js:895` | `Uint32Array(2)` | Fixed (E15) |
-| `process.cpuUsage()` | `lib/internal/process/per_thread.js:123` | `Float64Array(2)` | Fixed (E20) |
+| `process.cpuUsage()` | `lib/internal/process/per_thread.js:123` | `Float64Array(2)` | Fixed (E20) — wraps factory, not module-scope |
 | `process.threadCpuUsage()` | `lib/internal/process/per_thread.js:163` | `Float64Array(2)` | Fixed (E20) |
 | `process.memoryUsage()` | `lib/internal/process/per_thread.js:215` | `Float64Array(5)` | Fixed (E20) |
 | `process.resourceUsage()` | `lib/internal/process/per_thread.js:329` | `Float64Array(16)` | Fixed (E20) |
 
-Per E19's audit, these are the ONLY sites in all of `lib/`.
+Per E19's audit, these are the ONLY sites in all of `lib/`.  Both
+shipped policies (`zlib-writestate-wasm`, `process-methods-wasm-state`)
+in `defaultBrowserPolicies` + `minimalPolicies` — correctness fixes,
+not opt-in.
+
+**Implementation note from E20:** the per_thread.js Float64Arrays
+turned out to be inside a factory function (`wrapProcessMethods`),
+not at module scope.  The policy wraps the factory's RETURN VALUE,
+replacing the 4 methods with versions that use wasm-backed views.
+A structurally-different surface from zlib (which wraps
+`Class.prototype.init`) — confirms the "don't extract a helper yet"
+call, since the two policies share little code.
 
 ## How to detect a new instance
 

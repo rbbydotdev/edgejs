@@ -123,6 +123,7 @@ export { cryptoHashViaHostWorker } from "./crypto-hash-via-host-worker";
 export { compressionViaCompressionStream } from "./compression-via-compressionstream";
 export { wasmCompileViaHost } from "./wasm-compile-via-host";
 export { zlibWriteStateWasm } from "./zlib-writestate-wasm";
+export { processMethodsWasmState } from "./process-methods-wasm-state";
 export { inboundHttpsViaSW } from "./inbound-https-via-sw";
 export { outboundThrow } from "./outbound-throw";
 export { outboundFetchTunnel } from "./outbound-fetch-tunnel";
@@ -138,6 +139,7 @@ import { cryptoHashViaHostWorker } from "./crypto-hash-via-host-worker";
 import { compressionViaCompressionStream } from "./compression-via-compressionstream";
 import { wasmCompileViaHost } from "./wasm-compile-via-host";
 import { zlibWriteStateWasm } from "./zlib-writestate-wasm";
+import { processMethodsWasmState } from "./process-methods-wasm-state";
 import { inboundHttpsViaSW } from "./inbound-https-via-sw";
 import { outboundThrow } from "./outbound-throw";
 import { outboundFetchTunnel } from "./outbound-fetch-tunnel";
@@ -175,6 +177,7 @@ export const minimalPolicies: Policy[] = [
   bufferPoolDisable,
   bufferWasmAliased,
   zlibWriteStateWasm,
+  processMethodsWasmState,
 ];
 
 /**
@@ -193,6 +196,7 @@ export const defaultBrowserPolicies: Policy[] = [
   bufferPoolDisable,
   bufferWasmAliased,
   zlibWriteStateWasm,
+  processMethodsWasmState,
   inboundHttpsViaSW,
   outboundThrow,
 ];
@@ -215,6 +219,7 @@ export const policyRegistry: Record<string, Policy> = {
   [compressionViaCompressionStream.name]: compressionViaCompressionStream,
   [wasmCompileViaHost.name]: wasmCompileViaHost,
   [zlibWriteStateWasm.name]: zlibWriteStateWasm,
+  [processMethodsWasmState.name]: processMethodsWasmState,
   [inboundHttpsViaSW.name]: inboundHttpsViaSW,
   [outboundThrow.name]: outboundThrow,
   [outboundFetchTunnel.name]: outboundFetchTunnel,

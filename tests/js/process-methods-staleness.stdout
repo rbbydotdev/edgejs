@@ -1,0 +1,7 @@
+cpu1-fresh
+cpu-diff-shape-ok
+mem-shape-ok
+rss-alias-present
+resource-shape-ok
+resource-repeatable
+e20-ok
