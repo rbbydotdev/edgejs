@@ -1,0 +1,71 @@
+docs/worker-threads-design.md
+  s_7bec0ecbfcdcd0::t_06e239efc2f191 90-138
+tests/js/worker-threads-spawn-exit.js
+  s_7bec0ecbfcdcd0::t_7efd70ce7a5214 23-26
+  s_7bec0ecbfcdcd0::t_b6a097094ecf90 28
+  s_7bec0ecbfcdcd0::t_2ab014251a8979 27,29,35-47
+  s_7bec0ecbfcdcd0::t_10a7c5f5be0f35 1-22,30-34
+browser-target/src/main.ts
+  s_7bec0ecbfcdcd0::t_d167d230005e6f 1050
+  s_7bec0ecbfcdcd0::t_df6e5b1a80f479 83-87
+  s_7bec0ecbfcdcd0::t_9ad67695d1f2bc 1091-1097,1106-1109,1111-1112
+  s_7bec0ecbfcdcd0::t_7d3f2136a62314 1011-1049,1051-1079,1084-1086,1088-1090,1113-1120,1123-1133,1135-1143,1146-1153,1155-1168,1192-1193,1203,1209-1210
+  s_7bec0ecbfcdcd0::t_951304575558c0 1121-1122
+  s_7bec0ecbfcdcd0::t_6b76beab9bb0da 1134
+  s_7bec0ecbfcdcd0::t_a18d22cc86ed82 1098-1105
+  s_7bec0ecbfcdcd0::t_4b0de8d0abf4d3 1169-1191,1194-1202,1204-1208
+  s_7bec0ecbfcdcd0::t_239688f7d5cca6 1080-1083,1087
+  s_7bec0ecbfcdcd0::t_3ea664f91de84e 1110
+  s_7bec0ecbfcdcd0::t_43ea8a3922d02b 1144-1145,1154
+browser-target/src/worker.ts
+  s_7bec0ecbfcdcd0::t_ec18ca656bf426 52
+  s_7bec0ecbfcdcd0::t_d3c69eace604cf 1308,1310,1314-1315,1321,1324-1327
+  s_7bec0ecbfcdcd0::t_ca6ba1ac4a3eb7 1301-1307,1309,1311-1313,1316-1320,1322-1323,1328-1330
+  s_7bec0ecbfcdcd0::t_a9682f312204ac 397
+  s_7bec0ecbfcdcd0::t_8438f6dce04ca0 1023-1033
+  s_7bec0ecbfcdcd0::t_75d552394057f9 289-300,308-309,311-313,315,317,322-343,345
+  s_7bec0ecbfcdcd0::t_708301e34a1343 344
+  s_7bec0ecbfcdcd0::t_01a8afa21fbc6c 412-447
+  s_7bec0ecbfcdcd0::t_b9ed1e3d68b233 1153-1168
+  s_7bec0ecbfcdcd0::t_0349e6a6ba35bc 526-538
+  s_7bec0ecbfcdcd0::t_91d9d38f597be3 301-307,310,314,316,318-321
+NOTES.md
+  s_7bec0ecbfcdcd0::t_6ed474f96a8bf8 307-349
+  s_7bec0ecbfcdcd0::t_28cd77f80d91ab 36
+browser-target/src/host-worker/rpc-protocol.ts
+  s_7bec0ecbfcdcd0::t_5d418642132d18 566-600
+  s_7bec0ecbfcdcd0::t_5e82c204cee700 543-565
+browser-target/src/host-worker/host-worker.ts
+  s_7bec0ecbfcdcd0::t_16286c3cb0da6a 756,766-769,779-780,782,786-787,789-790,796,804
+  s_7bec0ecbfcdcd0::t_53a367f6d07e42 44-45
+  s_7bec0ecbfcdcd0::t_a159d4c802616b 264,272
+  s_7bec0ecbfcdcd0::t_002710a848e759 240-263,265-271,273-322
+  s_7bec0ecbfcdcd0::t_26aa27e8c525ad 753-755,757-765,770-778,781,783-785,788,791-795,797-803,805-817
+  s_7bec0ecbfcdcd0::t_69dcb5549975de 1038-1047,1052-1057
+tests/js/worker-threads-spawn-exit.stdout
+  s_7bec0ecbfcdcd0::t_92bc9c027a0556 1-2
+browser-target/src/policies/index.ts
+  s_7bec0ecbfcdcd0::t_19937b7984b17b 150
+  s_7bec0ecbfcdcd0::t_1b24739e78a442 232
+  s_7bec0ecbfcdcd0::t_23c7787e4badc5 132
+browser-target/src/policies/worker-threads-per-thread.ts
+  s_7bec0ecbfcdcd0::t_73166adc3e8957 99-103,112
+  s_7bec0ecbfcdcd0::t_3793c99811813a 125-131,137-141,144
+  s_7bec0ecbfcdcd0::t_8fe380a5e37d4d 1-98,104-111,113-124,132-136,142-143,145-222
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "3cd379c22b391b9f9c32d2b2ce1cb13c91be67ef",
+  "prompts": {},
+  "sessions": {
+    "s_7bec0ecbfcdcd0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d560d5ae-265f-44ae-89c4-d35659b3ab9e",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
