@@ -34,6 +34,7 @@ import {
   OP_NAPI_GET_UNDEFINED,
   OP_NAPI_GET_NULL,
   OP_NAPI_GET_GLOBAL,
+  OP_SUBTLE_DIGEST,
   REPLY_STATUS_OK,
   REPLY_STATUS_HOST_ERROR,
   REPLY_STATUS_INVALID_ARGS,
@@ -332,6 +333,68 @@ function registerHandlers(srv: RpcServer): void {
       const msg = (e instanceof Error ? e.stack ?? e.message : String(e)) || "user script threw";
       const payload = new TextEncoder().encode(out.join("\n") + "\n\nERROR: " + msg);
       return { payload, status: REPLY_STATUS_HOST_ERROR };
+    }
+  });
+
+  // E18: SubtleCrypto.digest bridge.  Lets the wasm-side
+  // `crypto-hash-via-host-worker` policy turn `Hash.prototype.digest`
+  // into a synchronous call by parking the wasm thread on a sync RPC
+  // while the host worker awaits the async `subtle.digest(...)` and
+  // writes the bytes back to the reply slot.
+  //
+  // Request payload (LE u32 lengths, contiguous bytes):
+  //   [u32 algo_name_len][utf-8 algo_name][u32 data_len][data]
+  // Reply payload: raw digest bytes (e.g. 32 for SHA-256).
+  srv.register(OP_SUBTLE_DIGEST, async (_ctx, args) => {
+    try {
+      if (args.byteLength < 8) {
+        return {
+          payload: new TextEncoder().encode("subtle-digest: args too short"),
+          status: REPLY_STATUS_INVALID_ARGS,
+        };
+      }
+      const dv = new DataView(args.buffer, args.byteOffset, args.byteLength);
+      const algoLen = dv.getUint32(0, true);
+      if (4 + algoLen + 4 > args.byteLength) {
+        return {
+          payload: new TextEncoder().encode("subtle-digest: algo_name overruns payload"),
+          status: REPLY_STATUS_INVALID_ARGS,
+        };
+      }
+      const algoName = new TextDecoder("utf-8").decode(
+        args.subarray(4, 4 + algoLen),
+      );
+      const dataLen = dv.getUint32(4 + algoLen, true);
+      const dataOff = 4 + algoLen + 4;
+      if (dataOff + dataLen > args.byteLength) {
+        return {
+          payload: new TextEncoder().encode("subtle-digest: data overruns payload"),
+          status: REPLY_STATUS_INVALID_ARGS,
+        };
+      }
+      // Copy bytes into a JS-heap buffer.  SubtleCrypto rejects SAB-backed
+      // views on most runtimes; copy keeps it portable.
+      const dataCopy = new Uint8Array(dataLen);
+      if (dataLen > 0) {
+        dataCopy.set(args.subarray(dataOff, dataOff + dataLen));
+      }
+      const subtle = (globalThis as { crypto?: { subtle?: SubtleCrypto } }).crypto?.subtle;
+      if (!subtle) {
+        return {
+          payload: new TextEncoder().encode("subtle-digest: host SubtleCrypto unavailable"),
+          status: REPLY_STATUS_HOST_ERROR,
+        };
+      }
+      const ab = await subtle.digest(algoName, dataCopy);
+      const out = new Uint8Array(ab.byteLength);
+      out.set(new Uint8Array(ab));
+      return { payload: out, status: REPLY_STATUS_OK };
+    } catch (e) {
+      const msg = (e instanceof Error ? e.message : String(e)) || "subtle-digest threw";
+      return {
+        payload: new TextEncoder().encode(msg),
+        status: REPLY_STATUS_HOST_ERROR,
+      };
     }
   });
 

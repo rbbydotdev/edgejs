@@ -24,6 +24,9 @@ export const OP_DOMAIN_NAPI_CB = 0x0200;   // 0x0200–0x02FF (callback napi)
 export const OP_DOMAIN_MICROTASK = 0x0300; // 0x0300–0x03FF
 export const OP_DOMAIN_MODULE = 0x0400;    // 0x0400–0x04FF (lib/* source delivery, L5)
 export const OP_DOMAIN_POLICY = 0x0500;    // 0x0500–0x05FF (policy hooks)
+export const OP_DOMAIN_HOST_API = 0x0600;  // 0x0600–0x06FF (host-API-bridge ops:
+                                           // SubtleCrypto.digest, future host APIs
+                                           // that policies route via worker+sync-RPC)
 
 // ── Control ops (proof-of-life + lifecycle) ─────────────────────────
 
@@ -432,6 +435,31 @@ export const OP_NAPI_DEFINE_CLASS = OP_DOMAIN_NAPI_CB | 0x0005;
 // F-7 cutover replaces edge.js's in-process napi-host with the RPC
 // path, at which point this reverse channel becomes load-bearing.
 export const OP_INVOKE_WASM_CALLBACK = OP_DOMAIN_NAPI_CB | 0x0100;
+
+// ── Host-API bridge ops (E18) ───────────────────────────────────────
+//
+// These ops let wasm-side policies route Node sync APIs to host async
+// APIs by parking the wasm thread on a sync RPC.  The host handler does
+// `await` on the host-side async API and writes the bytes to the reply
+// slot; wasm wakes via Atomics.wait and returns the bytes synchronously
+// to the caller.
+//
+// Generic shape (request → reply):
+//   Request:  arg-specific payload (see per-op layout below)
+//   Reply:    raw result bytes; status = REPLY_STATUS_OK on success
+//             or REPLY_STATUS_HOST_ERROR with UTF-8 error message.
+
+export const OP_SUBTLE_DIGEST = OP_DOMAIN_HOST_API | 0x0001;
+// Compute a one-shot crypto digest via host SubtleCrypto.digest().
+// Request payload layout (LE u32 lengths, contiguous bytes):
+//   [u32 algo_name_len][utf-8 algo_name][u32 data_len][data]
+// Where algo_name is a WebCrypto algorithm identifier
+// (e.g. "SHA-256", "SHA-384") — the policy is responsible for the
+// Node↔WebCrypto naming mapping.
+// Reply payload: raw digest bytes (length determined by algorithm —
+// SHA-1=20, SHA-256=32, SHA-384=48, SHA-512=64).
+// Status: REPLY_STATUS_OK on success; HOST_ERROR if SubtleCrypto
+// throws (e.g. unknown algorithm).
 
 // ── Status codes for replies ────────────────────────────────────────
 

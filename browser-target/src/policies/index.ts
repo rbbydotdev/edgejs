@@ -119,6 +119,7 @@ export { bufferWasmAliased } from "./buffer-wasm-aliased";
 export { taskQueueEnqueueFix } from "./task-queue-enqueue-fix";
 export { cryptoHostRandom } from "./crypto-host-random";
 export { cryptoViaSubtle } from "./crypto-via-subtle";
+export { cryptoHashViaHostWorker } from "./crypto-hash-via-host-worker";
 export { compressionViaCompressionStream } from "./compression-via-compressionstream";
 export { wasmCompileViaHost } from "./wasm-compile-via-host";
 export { zlibWriteStateWasm } from "./zlib-writestate-wasm";
@@ -133,6 +134,7 @@ import { bufferWasmAliased } from "./buffer-wasm-aliased";
 import { taskQueueEnqueueFix } from "./task-queue-enqueue-fix";
 import { cryptoHostRandom } from "./crypto-host-random";
 import { cryptoViaSubtle } from "./crypto-via-subtle";
+import { cryptoHashViaHostWorker } from "./crypto-hash-via-host-worker";
 import { compressionViaCompressionStream } from "./compression-via-compressionstream";
 import { wasmCompileViaHost } from "./wasm-compile-via-host";
 import { zlibWriteStateWasm } from "./zlib-writestate-wasm";
@@ -209,6 +211,7 @@ export const policyRegistry: Record<string, Policy> = {
   [taskQueueEnqueueFix.name]: taskQueueEnqueueFix,
   [cryptoHostRandom.name]: cryptoHostRandom,
   [cryptoViaSubtle.name]: cryptoViaSubtle,
+  [cryptoHashViaHostWorker.name]: cryptoHashViaHostWorker,
   [compressionViaCompressionStream.name]: compressionViaCompressionStream,
   [wasmCompileViaHost.name]: wasmCompileViaHost,
   [zlibWriteStateWasm.name]: zlibWriteStateWasm,

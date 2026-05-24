@@ -333,6 +333,17 @@ the browser-target tree.
   in `defaultBrowserPolicies` + `minimalPolicies` — this is a
   correctness fix, not opt-in.  `compression-via-compressionstream`
   is now perf-only.  See `experiments/e15-zlib-fix/FINDINGS.md`.
+- `e18-slot-overflow` (E18 2026-05-24) — `crypto-hash-via-host-worker`
+  policy caps `digest()` input at the single RPC slot payload budget
+  (`HOST_RPC_RING_CONFIG.slotSize - 16 - 8 - 4 - len(algoName) - 4`
+  ≈ 4055 bytes after framing).  Larger inputs throw a clear error
+  pointing the caller back to bundled OpenSSL.  Long-term fix:
+  multi-slot chunked transfer (extend wire format with a
+  continuation bit), OR a parallel shared-memory data channel where
+  the request slot just carries the (algoName, dataPtr, dataLen)
+  triple and the host reads bytes directly from the wasm SAB.  Today
+  the cap is documented and intentional (smaller-than-OpenSSL
+  surface for the common short-string-hashing case).
 
 - `l1-perf-variance-investigation` (L1 2026-05-23) — local
   perf-harness measurements after L1 show wasmRunMs median 200-290ms

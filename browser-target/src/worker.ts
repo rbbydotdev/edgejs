@@ -48,10 +48,18 @@ let fsSnapshotSab: SharedArrayBuffer | null = null;
 import { attachRing as attachHostRing, type RingConfig as HostRingConfig } from "./wasi-shim/sab-ring";
 import { RpcClient } from "./host-worker/rpc-client";
 import { RpcServer } from "./host-worker/rpc-server";
-import { OP_PING, OP_WASM_ECHO, REPLY_STATUS_OK } from "./host-worker/rpc-protocol";
+import { SyncRpcClient } from "./host-worker/rpc-client-sync";
+import { OP_PING, OP_WASM_ECHO, OP_SUBTLE_DIGEST, REPLY_STATUS_OK } from "./host-worker/rpc-protocol";
 import { registerWasmCallbackInvoker, createCallbackDepthCounter } from "./host-worker/callback-dispatch";
 const HOST_RPC_RING_CONFIG: HostRingConfig = { numSlots: 32, slotSize: 4 * 1024 };
 let hostRpcClient: RpcClient | null = null;
+/** E18: sync variant on the forward channel (wasm → host).  Wraps the
+ *  same request/reply SAB pair that `hostRpcClient` uses, but blocks
+ *  the wasm thread via Atomics.wait until a reply arrives — needed by
+ *  policies that must offload a Node SYNC API (e.g. `Hash.digest()`)
+ *  to a host async API.  Async-by-default APIs (pbkdf2 callback,
+ *  WebAssembly.compile) continue to use the async `hostRpcClient`. */
+let hostRpcSyncClient: SyncRpcClient | null = null;
 /** Reverse-channel server: host can request things FROM wasm worker.
  *  Used for finalizers, threadsafe function dispatch in L5+. */
 let reverseRpcServer: RpcServer | null = null;
@@ -75,6 +83,55 @@ let sharedWake: { i32: Int32Array; idx: number } | null = null;
 function getSharedWake(): { i32: Int32Array; idx: number } | null { return sharedWake; }
 (globalThis as { __edgeHostSharedWake?: () => { i32: Int32Array; idx: number } | null }).__edgeHostSharedWake = getSharedWake;
 
+/** E18: synchronous digest bridge.  The `crypto-hash-via-host-worker`
+ *  policy patches `lib/crypto.js`'s `createHash().digest()` to call
+ *  `globalThis.__edgeHostDigestSync(algo, bytes)` and return the raw
+ *  digest bytes.  Implementation here parks the wasm thread via
+ *  `Atomics.wait` until the host worker replies with the digest
+ *  computed by `SubtleCrypto.digest(...)`. */
+function installHostDigestSyncGlobal(): void {
+  const TE = new TextEncoder();
+  type HostDigestSync = (algoName: string, bytes: Uint8Array) => Uint8Array;
+  // Slot payload capacity = HOST_RPC_RING_CONFIG.slotSize - SLOT_HEADER_SIZE
+  // (16) - REQUEST_HEADER_SIZE (8) = 4096 - 16 - 8 = 4072 bytes total.
+  // Subtract the wire framing overhead (algo_len u32 + algo bytes +
+  // data_len u32) to get the available data budget.
+  const SLOT_PAYLOAD_BUDGET = HOST_RPC_RING_CONFIG.slotSize - 16 - 8;
+  const impl: HostDigestSync = (algoName: string, bytes: Uint8Array) => {
+    if (!hostRpcSyncClient) {
+      throw new Error("__edgeHostDigestSync: host RPC sync client not attached");
+    }
+    const algoBytes = TE.encode(algoName);
+    const algoLen = algoBytes.byteLength;
+    const dataLen = bytes.byteLength;
+    const framedLen = 4 + algoLen + 4 + dataLen;
+    if (framedLen > SLOT_PAYLOAD_BUDGET) {
+      // #!~debt e18-slot-overflow: single-slot wire format caps input at
+      // ~4KB.  Larger inputs need multi-slot chunking OR a parallel
+      // shared-memory data channel.  Today we throw a clear error so
+      // callers know to disable the policy or chunk their own input.
+      throw new Error(
+        `__edgeHostDigestSync: data too large for single RPC slot ` +
+        `(${dataLen}B + ${algoLen}B algo > budget ${SLOT_PAYLOAD_BUDGET}B). ` +
+        `Disable crypto-hash-via-host-worker policy for inputs >${SLOT_PAYLOAD_BUDGET - 32}B.`,
+      );
+    }
+    const payload = new Uint8Array(framedLen);
+    const dv = new DataView(payload.buffer);
+    dv.setUint32(0, algoLen, true);
+    payload.set(algoBytes, 4);
+    dv.setUint32(4 + algoLen, dataLen, true);
+    if (dataLen > 0) payload.set(bytes, 4 + algoLen + 4);
+    const reply = hostRpcSyncClient.callSync(OP_SUBTLE_DIGEST, hostWorkerId, 0, payload);
+    if (reply.status !== REPLY_STATUS_OK) {
+      const msg = new TextDecoder().decode(reply.payload) || `OP_SUBTLE_DIGEST status=${reply.status}`;
+      throw new Error("__edgeHostDigestSync: " + msg);
+    }
+    return reply.payload;
+  };
+  (globalThis as { __edgeHostDigestSync?: HostDigestSync }).__edgeHostDigestSync = impl;
+}
+
 self.addEventListener("message", (e: MessageEvent) => {
   const data = e.data as { kind?: string; sab?: SharedArrayBuffer; requestSab?: SharedArrayBuffer; replySab?: SharedArrayBuffer; hostWorkerId?: number } | null;
   if (data?.kind === "edge-fs-snapshot-sab" && data.sab) {
@@ -85,6 +142,10 @@ self.addEventListener("message", (e: MessageEvent) => {
     const replyRing = attachHostRing(data.replySab, HOST_RPC_RING_CONFIG);
     hostRpcClient = new RpcClient(requestRing, replyRing);
     post("log", { text: `[runtime] host RPC client attached (hostWorkerId=${hostWorkerId})`, level: "info" });
+    // E18: sync forward client on the same rings.  sharedWake is wired
+    // a few lines below — we re-construct after it lands; until then
+    // hostRpcSyncClient stays null and the digest global gracefully
+    // throws if called early.
     // F-2: attach view onto host's napi memory.
     const napiMemSab = (data as { napiMemorySab?: SharedArrayBuffer }).napiMemorySab;
     if (napiMemSab) {
@@ -99,6 +160,23 @@ self.addEventListener("message", (e: MessageEvent) => {
       sharedWake = { i32: new Int32Array(sharedWakeSab), idx: 0 };
       post("log", { text: `[runtime] shared-wake SAB attached (${sharedWakeSab.byteLength} bytes)`, level: "info" });
     }
+    // E18: forward sync client on the host RPC rings.  Uses the same
+    // shared-wake address as the existing async client; the sync
+    // variant blocks via Atomics.wait while host replies arrive.
+    hostRpcSyncClient = new SyncRpcClient(
+      requestRing,
+      replyRing,
+      sharedWake,
+      // No reverse-channel drainer needed here: this client is for
+      // outbound wasm→host calls only.  The reverse channel is owned
+      // by reverseRpcServer (host→wasm requests) wired below.
+      null,
+    );
+    // Install the `__edgeHostDigestSync(algoName, bytes) → Uint8Array`
+    // global the `crypto-hash-via-host-worker` policy reads.  Keeps the
+    // policy code engine-agnostic — Node harness installs its own
+    // synchronous implementation via this same global.
+    installHostDigestSyncGlobal();
     // L4 reverse channel — host can send requests TO this worker.
     // Reverse-direction SABs come in the same message.
     const reverseReqSab = (data as { reverseRequestSab?: SharedArrayBuffer }).reverseRequestSab;
