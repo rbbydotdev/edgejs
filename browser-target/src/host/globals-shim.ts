@@ -66,6 +66,34 @@ if (hostCrypto && !g.__edgeHostNativeCrypto) {
 // Browser-worker note: a DedicatedWorker has no Node `process._tickCallback`.
 // The snapshot will be null and the drain op falls back to noop — needs the
 // browser equivalent (likely Asyncify-style yields per NOTES.md #1).
+// Snapshot host's native CompressionStream / DecompressionStream BEFORE
+// edge's bootstrap exposes its OWN classes (in lib/internal/webstreams/
+// compression.js) on globalThis.  Edge's classes wrap the BUNDLED zlib
+// engines, so any policy that wants to offload to the host's native
+// CompressionStream (e.g. `compression-via-compressionstream`) needs the
+// original reference.
+//
+// Stored as `globalThis.__edgeHostCompressionStream` /
+// `__edgeHostDecompressionStream`.  Non-configurable so edge can't override.
+const hostCompressionStream = (globalThis as { CompressionStream?: unknown }).CompressionStream;
+if (typeof hostCompressionStream === "function" && !g.__edgeHostCompressionStream) {
+  Object.defineProperty(g, "__edgeHostCompressionStream", {
+    value: hostCompressionStream,
+    writable: false,
+    configurable: false,
+    enumerable: false,
+  });
+}
+const hostDecompressionStream = (globalThis as { DecompressionStream?: unknown }).DecompressionStream;
+if (typeof hostDecompressionStream === "function" && !g.__edgeHostDecompressionStream) {
+  Object.defineProperty(g, "__edgeHostDecompressionStream", {
+    value: hostDecompressionStream,
+    writable: false,
+    configurable: false,
+    enumerable: false,
+  });
+}
+
 const hostProcess = (globalThis as { process?: { _tickCallback?: () => void } }).process;
 const hostTickCallback = (hostProcess && typeof hostProcess._tickCallback === "function")
   ? hostProcess._tickCallback.bind(hostProcess)

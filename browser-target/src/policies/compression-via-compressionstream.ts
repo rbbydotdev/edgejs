@@ -65,8 +65,12 @@ const POST_PATCH = `
   if (typeof module === 'undefined' || !module || !module.exports) return;
   var exp = module.exports;
 
-  var hasCS = typeof CompressionStream === 'function' &&
-              typeof DecompressionStream === 'function';
+  // Use the host's NATIVE CompressionStream snapshotted by globals-shim
+  // BEFORE edge's bootstrap exposed its OWN \`globalThis.CompressionStream\`
+  // (which wraps bundled zlib — defeats the whole point of this policy).
+  var HostCS = (typeof globalThis !== 'undefined' && globalThis.__edgeHostCompressionStream) || null;
+  var HostDS = (typeof globalThis !== 'undefined' && globalThis.__edgeHostDecompressionStream) || null;
+  var hasCS = typeof HostCS === 'function' && typeof HostDS === 'function';
   if (!hasCS) return;
 
   // Map zlib method name → CompressionStream/DecompressionStream format.
@@ -165,14 +169,24 @@ const POST_PATCH = `
       try {
         var input = bufferToHeapU8(buffer);
         var stream = kind === 'compress'
-          ? new CompressionStream(format)
-          : new DecompressionStream(format);
+          ? new HostCS(format)
+          : new HostDS(format);
+        // Fire the callback directly off the Promise resolution.  Going
+        // through \`process.nextTick\` instead would queue the callback
+        // for a future event-loop tick — but the wasm event loop on the
+        // browser path doesn't always drain a nested nextTick (the one
+        // queued by the inner Promise of a chained call) before the
+        // outer continuation runs out of work, leading to dropped
+        // callbacks.  Direct invocation is async (after the host
+        // CompressionStream Promise settles) and matches the observable
+        // semantics of zlib's stream-based async path (which similarly
+        // never goes through nextTick).
         runStream(stream, input).then(
-          function (out) { process.nextTick(function () { n.cb(null, out); }); },
-          function (e) { process.nextTick(function () { n.cb(e); }); }
+          function (out) { n.cb(null, out); },
+          function (e) { n.cb(e); }
         );
       } catch (eOuter) {
-        process.nextTick(function () { n.cb(eOuter); });
+        n.cb(eOuter);
       }
       // Lib's convenience methods return undefined when called async.
     };
