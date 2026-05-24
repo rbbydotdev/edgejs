@@ -1,0 +1,35 @@
+browser-target/src/worker.ts
+  s_7bec0ecbfcdcd0::t_4963311125d609 591
+  s_7bec0ecbfcdcd0::t_2b25e6ab7e5d2e 513
+  s_7bec0ecbfcdcd0::t_a3f80297cef0f9 555
+  s_7bec0ecbfcdcd0::t_6167b9eadceffc 32-47
+browser-target/src/policies/worker-threads-per-thread.ts
+  s_7bec0ecbfcdcd0::t_b2a49f0a25782b 385-408,410-415
+  s_7bec0ecbfcdcd0::t_05b3d4f27cf4dd 67-109
+  s_7bec0ecbfcdcd0::t_4f4b65e6934dfe 312-338
+  s_7bec0ecbfcdcd0::t_0cd8fef166fcb6 281-294
+  s_7bec0ecbfcdcd0::t_c88a6c9ce570c9 231
+  s_7bec0ecbfcdcd0::t_de46e359d64d8b 362
+NOTES.md
+  s_7bec0ecbfcdcd0::t_33660b48e12a1a 347-376
+tests/js/worker-threads-message-roundtrip.js
+  s_7bec0ecbfcdcd0::t_1cfc2b7ed1c5da 59-76
+  s_7bec0ecbfcdcd0::t_12b38b5390520b 78
+  s_7bec0ecbfcdcd0::t_b5206075100a6b 80-85
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "81f82cd2fafa616d2b189bdd1ce88ceaa3c8ece6",
+  "prompts": {},
+  "sessions": {
+    "s_7bec0ecbfcdcd0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d560d5ae-265f-44ae-89c4-d35659b3ab9e",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
