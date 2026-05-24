@@ -1,0 +1,35 @@
+browser-target/src/napi-host/index.ts
+  s_7bec0ecbfcdcd0::t_04ff06000418f9 478-479,481-482
+  s_7bec0ecbfcdcd0::t_f4e55a189499db 480,483
+  s_7bec0ecbfcdcd0::t_8354bc2e161096 700-721,723-724
+  s_7bec0ecbfcdcd0::t_bd6dbcbf1cbabd 559
+  s_7bec0ecbfcdcd0::t_9b6accd0c31d94 722
+  s_7bec0ecbfcdcd0::t_e3f350531c4ab2 654
+browser-target/src/napi-host/emnapi.ts
+  s_7bec0ecbfcdcd0::t_8288ed1f4ab331 87-90
+browser-target/src/napi-host/unofficial.ts
+  s_7bec0ecbfcdcd0::t_17223c2af2598f 35-48
+  s_7bec0ecbfcdcd0::t_f3c736acfc4247 80
+  s_7bec0ecbfcdcd0::t_601a2387970342 99-104,106-107,109
+  s_7bec0ecbfcdcd0::t_242f700b5843a2 136-150,153,156
+browser-target/src/napi-host/instance-proxy.ts
+  s_7bec0ecbfcdcd0::t_a0c431a3952dc8 86-89,91-95,106-110
+  s_7bec0ecbfcdcd0::t_7361d640f2a042 128,134-135
+  s_7bec0ecbfcdcd0::t_49853183735660 46-58,62
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "b1b6f9b11d1d775373adaeb47748a873c16e1035",
+  "prompts": {},
+  "sessions": {
+    "s_7bec0ecbfcdcd0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d560d5ae-265f-44ae-89c4-d35659b3ab9e",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
