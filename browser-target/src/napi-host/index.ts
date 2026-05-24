@@ -17,7 +17,16 @@
 // napi_create_buffer_copy throws NotSupportBufferError forever.
 import "../host/globals-shim";
 
-import { createContext, createNapiModule, type Context, type Env, type NapiModule } from "./emnapi";
+import {
+  createContext,
+  createNapiModule,
+  v8Plugin,
+  asyncWorkPlugin,
+  tsfnPlugin,
+  type Context,
+  type Env,
+  type NapiModule,
+} from "./emnapi";
 import { createInstanceProxy } from "./instance-proxy";
 import { createUnofficialNapi } from "./unofficial";
 import { buildMicrotaskOpsImports, createMicrotaskOpsState, installHostPromiseRejectListeners, type MicrotaskOpsState } from "./microtask-ops";
@@ -204,7 +213,7 @@ function patchEmnapiToUseWasmBackedBuffers(
   const emnapiNs = (napiModule as unknown as { emnapi: { syncMemory?: (js_to_wasm: boolean, view: unknown, offset: number, len: number) => unknown } }).emnapi;
   function syncWasmToJs(handleId: number): void {
     if (!emnapiNs?.syncMemory) return;
-    const value = context.handleStore.get(handleId)?.value;
+    const value = context.jsValueFromNapiValue(handleId);
     if (!value || typeof (value as { byteLength?: number }).byteLength !== "number") return;
     try {
       emnapiNs.syncMemory(false, value, 0, (value as { byteLength: number }).byteLength);
@@ -237,8 +246,8 @@ function patchEmnapiToUseWasmBackedBuffers(
       if (!allocd) return origCreateBuffer(env, length, data_out, result);  // malloc not ready
       const dv = new DataView(memory.buffer);
       if (data_out > 0) dv.setUint32(data_out, allocd.ptr, true);
-      const handle = context.addToCurrentScope(allocd.view);
-      if (result > 0) dv.setUint32(result, handle.id, true);
+      const handle = context.napiValueFromJsValue(allocd.view);
+      if (result > 0) dv.setUint32(result, Number(handle), true);
       void env;
       return 0; // napi_ok
     };
@@ -264,11 +273,11 @@ function patchEmnapiToUseWasmBackedBuffers(
       // Our "ArrayBuffer" handle is actually a Uint8Array view over wasm memory.
       // emnapi's type checks would fail, but our overrides below recognize it.
       const view = new Uint8Array(memory.buffer, ptr, byte_length);
-      const handle = context.addToCurrentScope(view);
-      wasmBackedABs.set(handle.id, { ptr, length: byte_length });
+      const handle = context.napiValueFromJsValue(view);
+      wasmBackedABs.set(Number(handle), { ptr, length: byte_length });
       const dv = new DataView(memory.buffer);
       if (data_out > 0) dv.setUint32(data_out, ptr, true);
-      if (result > 0) dv.setUint32(result, handle.id, true);
+      if (result > 0) dv.setUint32(result, Number(handle), true);
       void env;
       return 0;
     };
@@ -309,16 +318,16 @@ function patchEmnapiToUseWasmBackedBuffers(
         return origCreateExternalArrayBuffer(env, external_data, byte_length, finalize_cb, finalize_hint, result);
       }
       const view = new Uint8Array(memory.buffer, external_data, byte_length);
-      const handle = context.addToCurrentScope(view);
-      wasmBackedABs.set(handle.id, { ptr: external_data, length: byte_length });
+      const handle = context.napiValueFromJsValue(view);
+      wasmBackedABs.set(Number(handle), { ptr: external_data, length: byte_length });
       const dv = new DataView(memory.buffer);
-      if (result > 0) dv.setUint32(result, handle.id, true);
+      if (result > 0) dv.setUint32(result, Number(handle), true);
       // Mirror emnapi's finalizer convention: caller passes (finalize_data =
       // external_data) and the C++ finalizer frees that pointer when JS GCs
       // the wrapper.  napi_add_finalizer registers via the existing
       // emnapi finalizer machinery — no special handling needed.
       if (finalize_cb && typeof origAddFinalizer === "function") {
-        origAddFinalizer(env, handle.id, external_data, finalize_cb, finalize_hint, 0);
+        origAddFinalizer(env, Number(handle), external_data, finalize_cb, finalize_hint, 0);
       }
       return 0; // napi_ok
     };
@@ -350,8 +359,8 @@ function patchEmnapiToUseWasmBackedBuffers(
       if (!ctorInfo) return origCreateTypedArray(env, type, length, ab_handle, byte_offset, result);
       const realOffset = wab.ptr + byte_offset;
       const view = new ctorInfo.Ctor(memory.buffer, realOffset, length);
-      const handle = context.addToCurrentScope(view);
-      if (result > 0) new DataView(memory.buffer).setUint32(result, handle.id, true);
+      const handle = context.napiValueFromJsValue(view);
+      if (result > 0) new DataView(memory.buffer).setUint32(result, Number(handle), true);
       void env;
       return 0;
     };
@@ -426,8 +435,8 @@ function patchEmnapiToUseWasmBackedBuffers(
       }
       const dv = new DataView(memory.buffer);
       if (result_data > 0) dv.setUint32(result_data, allocd.ptr, true);
-      const handle = context.addToCurrentScope(allocd.view);
-      if (result > 0) dv.setUint32(result, handle.id, true);
+      const handle = context.napiValueFromJsValue(allocd.view);
+      if (result > 0) dv.setUint32(result, Number(handle), true);
       void env;
       return 0;
     };
@@ -469,11 +478,26 @@ export function createNapiHost(opts: NapiHostOptions): NapiHost {
 
   // Build emnapi's NapiModule (without instantiating any wasm yet).  This
   // pre-populates `napiModule.imports.napi` with all standard napi_* fns.
+  //
+  // V2 cutover: v2 moved core napi machinery into opt-in plugins (handle
+  // scopes, async-work, threadsafe-functions).  Without plugins the wasm
+  // fails to instantiate (napi_create_handle_scope is missing from the
+  // import namespace).  V1 had these implicit; v2 makes them explicit so
+  // embedders can pick the slice they need.  See `napi-host/emnapi.ts`
+  // for the plugin source + Vite/tsconfig wiring.
+  //
+  // The cast satisfies V1's stale `CreateOptions` TS type that doesn't
+  // list `plugins` — V1's runtime ignores the unknown field; V2 reads it.
+  // After the v1→v2 cutover completes (npm @emnapi/* drops out, vendored
+  // is the only runtime), the cast can come off.
+  // #!~debt vendored-emnapi-flag — running with mixed v1 types + v2
+  // runtime during the cutover transition.
   const napiModule: NapiModule = createNapiModule({
     context,
     filename: opts.filename ?? "edgejs",
     asyncWorkPoolSize: 0,
-  });
+    plugins: [v8Plugin, asyncWorkPlugin, tsfnPlugin],
+  } as Parameters<typeof createNapiModule>[0] & { plugins?: unknown[] });
 
   // Patch emnapi's napi_define_class / napi_define_properties.  Both walk a
   // property-descriptor array and call `emnapiDefineProperty`, which reads
@@ -526,6 +550,7 @@ export function createNapiHost(opts: NapiHostOptions): NapiHost {
     context,
     memory: opts.memory,
     envs,
+    napiModule: napiModule as unknown as { envObject?: Env },
     builtinOverrides: builtinOverridesMap,
     postLog: opts.postLog,
     // E9: route through the holder — wasm-side process.exit() lands here.
@@ -563,7 +588,7 @@ export function createNapiHost(opts: NapiHostOptions): NapiHost {
     // splice the patch source AFTER it (inside the same function wrapper).
     const overrideRegex = /^(\(function\([^)]*\) \{\n)([\s\S]*)(\n\}\)\n\/\/# sourceURL=)/;
     napiNs.napi_run_script = (envHandle: number, scriptHandle: number, resultPtr: number): number => {
-      const scriptValue = context.handleStore.get(scriptHandle)?.value;
+      const scriptValue = context.jsValueFromNapiValue(scriptHandle);
       if (typeof scriptValue === "string" && scriptValue.includes("//# sourceURL=node:")) {
         const m = scriptValue.match(/\/\/# sourceURL=(node:[^\n]+)/);
         if (m) {
@@ -592,8 +617,8 @@ export function createNapiHost(opts: NapiHostOptions): NapiHost {
             }
             const replaced = scriptValue.replace(overrideRegex, replacement);
             opts.postLog?.(`[override] matched ${filename} (via run_script)`, "debug");
-            const newHandle = context.ensureHandle(replaced);
-            return origRunScript(envHandle, newHandle.id, resultPtr);
+            const newHandle = context.napiValueFromJsValue(replaced);
+            return origRunScript(envHandle, Number(newHandle), resultPtr);
           }
         }
       }

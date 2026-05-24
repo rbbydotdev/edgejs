@@ -32,6 +32,13 @@ export interface UnofficialHostContext {
   memory: WebAssembly.Memory;
   /** The Env we created during `unofficial_napi_create_env`; lookup table by env handle. */
   envs: Map<number, Env>;
+  /** The NapiModule from createNapiModule.  V2 init creates an env
+   *  during `napiModule.init({instance})` and stashes it on
+   *  `napiModule.envObject`; `unofficial_napi_create_env` reuses it
+   *  rather than calling `context.createEnv` (whose signature changed
+   *  v1→v2: positional makeDynCall args → bridge object).  When v1 is
+   *  the runtime, `envObject` is unset and we fall back to v1 createEnv. */
+  napiModule?: { envObject?: Env };
   /**
    * Module-source overrides — see ModuleOverride type in policies/index.ts.
    * Keyed by edge's builtin filename format
@@ -63,7 +70,7 @@ function dv(memory: WebAssembly.Memory): DataView {
 }
 
 export function createUnofficialNapi(ctx: UnofficialHostContext): Record<string, Function> {
-  const { context, memory, envs } = ctx;
+  const { context, memory, envs, napiModule } = ctx;
 
   // Tracks "scope handle ID" → "env ID" so we can release scopes by their
   // own handle, which is what wasm passes back.
@@ -79,33 +86,53 @@ export function createUnofficialNapi(ctx: UnofficialHostContext): Record<string,
 
     // (module_api_version, env_out_ptr, scope_out_ptr) -> napi_status
     unofficial_napi_create_env(_apiVersion: number, envOutPtr: number, scopeOutPtr: number): number {
-      const env = context.createEnv(
-        "edgejs",
-        8, // module API version
-        // makeDynCall_vppp / makeDynCall_vp: called when emnapi needs to invoke
-        // a wasm function pointer (for finalizers, callbacks).  These are
-        // factories that return the dispatcher closure; emnapi calls them at
-        // env-creation time, so we can't lazily look up the wasm table here.
-        //
+      // V2 cutover: if emnapi's standard init flow already created an
+      // env (it does — `napiModule.init({instance})` allocates a struct
+      // via our `emnapi_create_env` stub, calls `emnapiCtx.createEnv(...)`,
+      // and stashes the result on `napiModule.envObject` + the module-
+      // level `emnapiEnv` reference that v2's napi functions read), reuse
+      // it.  Calling `context.createEnv` again with v1 positional args
+      // would fail because v2's signature wants a `bridge` object as the
+      // 3rd arg, not a `makeDynCall_vppp` function.
+      //
+      // V1 fallback: `napiModule.envObject` is undefined; we create the
+      // env ourselves using v1's positional signature.
+      let env: Env;
+      const existingEnv = napiModule?.envObject;
+      if (existingEnv) {
+        env = existingEnv;
+      } else {
+        // V1 path — positional createEnv signature.
         // #!~debt dyncall-before-table-ready: dispatchers are silent no-ops
         // — they accept the dispatch call and do nothing.  Finalizers fire
         // during emnapi's `RefTracker.finalizeAll` on process exit, after
         // user work is done; skipping them is harmless (the OS reclaims).
-        // Long-term: wire `wasmTable = instance.exports.__indirect_function_table`
-        // through `bindInstance` and have the dispatcher call into it.
-        (() => () => undefined) as never,
-        (() => () => undefined) as never,
-        (msg?: string) => { throw new Error(`napi abort: ${msg ?? "(no message)"}`); },
-        undefined,
-      );
-      envs.set(env.id, env);
+        env = (context as unknown as {
+          createEnv: (
+            filename: string,
+            version: number,
+            makeDynCall_vppp: unknown,
+            makeDynCall_vp: unknown,
+            abort: (msg?: string) => void,
+            nodeBinding: unknown,
+          ) => Env;
+        }).createEnv(
+          "edgejs",
+          8,
+          (() => () => undefined),
+          (() => () => undefined),
+          (msg?: string) => { throw new Error(`napi abort: ${msg ?? "(no message)"}`); },
+          undefined,
+        );
+      }
+      envs.set(Number(env.id), env);
 
       const scope = context.openScope(env);
-      scopeToEnv.set(scope.id, env.id);
+      scopeToEnv.set(Number(scope.id), Number(env.id));
 
       const view = dv(memory);
-      if (envOutPtr > 0) view.setUint32(envOutPtr, env.id, true);
-      if (scopeOutPtr > 0) view.setUint32(scopeOutPtr, scope.id, true);
+      if (envOutPtr > 0) view.setUint32(envOutPtr, Number(env.id), true);
+      if (scopeOutPtr > 0) view.setUint32(scopeOutPtr, Number(scope.id), true);
       return 0; // napi_ok
     },
 
@@ -165,8 +192,8 @@ export function createUnofficialNapi(ctx: UnofficialHostContext): Record<string,
         description = decoder.decode(copy);
       }
       const sym = description ? Symbol(description) : Symbol();
-      const handle = context.ensureHandle(sym);
-      dv(memory).setUint32(resultPtr, handle.id, true);
+      const handle = context.napiValueFromJsValue(sym);
+      dv(memory).setUint32(resultPtr, Number(handle), true);
       return 0;
     },
 
@@ -194,8 +221,8 @@ export function createUnofficialNapi(ctx: UnofficialHostContext): Record<string,
       _hostDefinedOptionId: number,
       resultPtr: number,
     ): number {
-      let code = context.handleStore.get(codeHandle)?.value as string | undefined;
-      const filename = context.handleStore.get(filenameHandle)?.value as string | undefined;
+      let code = context.jsValueFromNapiValue(codeHandle) as string | undefined;
+      const filename = context.jsValueFromNapiValue(filenameHandle) as string | undefined;
       if (typeof code !== "string") return 1;
 
       // Module-source override hook (1 of 2).  Edge's
@@ -237,7 +264,7 @@ export function createUnofficialNapi(ctx: UnofficialHostContext): Record<string,
       // params: optional array of strings (the wrapper-function arg names).
       let paramNames: string[] = [];
       if (paramsHandle > 0) {
-        const arr = context.handleStore.get(paramsHandle)?.value;
+        const arr = context.jsValueFromNapiValue(paramsHandle);
         if (Array.isArray(arr)) paramNames = arr.map(String);
       }
 
@@ -269,8 +296,8 @@ export function createUnofficialNapi(ctx: UnofficialHostContext): Record<string,
         sourceMapURL: undefined,
         cachedDataRejected: false,
       };
-      const handle = context.ensureHandle(wrapper);
-      dv(memory).setUint32(resultPtr, handle.id, true);
+      const handle = context.napiValueFromJsValue(wrapper);
+      dv(memory).setUint32(resultPtr, Number(handle), true);
       return 0;
     },
 
@@ -529,8 +556,8 @@ export function createUnofficialNapi(ctx: UnofficialHostContext): Record<string,
     ): number {
       const env = envs.get(envHandle);
       if (env && callsitesOut > 0) {
-        const arr = context.ensureHandle([]);
-        dv(memory).setUint32(callsitesOut, arr.id, true);
+        const arr = context.napiValueFromJsValue([]);
+        dv(memory).setUint32(callsitesOut, Number(arr), true);
       }
       return 0;
     },
@@ -555,7 +582,7 @@ export function createUnofficialNapi(ctx: UnofficialHostContext): Record<string,
       envHandle: number, valueHandle: number, resultOut: number,
     ): number {
       const env = envs.get(envHandle);
-      const value = env ? context.handleStore.get(valueHandle)?.value : undefined;
+      const value = env ? context.jsValueFromNapiValue(valueHandle) : undefined;
       const has = ArrayBuffer.isView(value) && (value as ArrayBufferView).buffer != null;
       if (resultOut > 0) dv(memory).setUint8(resultOut, has ? 1 : 0);
       return 0;
@@ -566,11 +593,11 @@ export function createUnofficialNapi(ctx: UnofficialHostContext): Record<string,
     ): number {
       const env = envs.get(envHandle);
       if (!env) return 1;
-      const v = context.handleStore.get(valueHandle)?.value;
+      const v = context.jsValueFromNapiValue(valueHandle);
       const name = v == null ? "" : (v as object)?.constructor?.name ?? "";
       if (nameOut > 0) {
-        const h = context.ensureHandle(name);
-        dv(memory).setUint32(nameOut, h.id, true);
+        const h = context.napiValueFromJsValue(name);
+        dv(memory).setUint32(nameOut, Number(h), true);
       }
       return 0;
     },
@@ -580,13 +607,13 @@ export function createUnofficialNapi(ctx: UnofficialHostContext): Record<string,
     ): number {
       const env = envs.get(envHandle);
       if (!env) return 1;
-      const v = context.handleStore.get(valueHandle)?.value;
+      const v = context.jsValueFromNapiValue(valueHandle);
       const keys = (v && typeof v === "object")
         ? Object.getOwnPropertyNames(v).filter((k) => !/^[0-9]+$/.test(k))
         : [];
       if (resultOut > 0) {
-        const h = context.ensureHandle(keys);
-        dv(memory).setUint32(resultOut, h.id, true);
+        const h = context.napiValueFromJsValue(keys);
+        dv(memory).setUint32(resultOut, Number(h), true);
       }
       return 0;
     },
@@ -597,14 +624,14 @@ export function createUnofficialNapi(ctx: UnofficialHostContext): Record<string,
     ): number {
       const env = envs.get(envHandle);
       if (!env) return 1;
-      const v = context.handleStore.get(valueHandle)?.value;
+      const v = context.jsValueFromNapiValue(valueHandle);
       let entries: unknown[] = [];
       let isKeyValue = false;
       if (v instanceof Map) { entries = Array.from(v.entries()).flat(); isKeyValue = true; }
       else if (v instanceof Set) { entries = Array.from(v); isKeyValue = false; }
       if (entriesOut > 0) {
-        const h = context.ensureHandle(entries);
-        dv(memory).setUint32(entriesOut, h.id, true);
+        const h = context.napiValueFromJsValue(entries);
+        dv(memory).setUint32(entriesOut, Number(h), true);
       }
       if (isKeyValueOut > 0) dv(memory).setUint8(isKeyValueOut, isKeyValue ? 1 : 0);
       return 0;
@@ -624,13 +651,13 @@ export function createUnofficialNapi(ctx: UnofficialHostContext): Record<string,
     ): number {
       const env = envs.get(envHandle);
       if (!env) return 1;
-      const v = context.handleStore.get(valueHandle)?.value;
+      const v = context.jsValueFromNapiValue(valueHandle);
       let cloned: unknown;
       try { cloned = (globalThis as { structuredClone?: <T>(v: T) => T }).structuredClone?.(v) ?? v; }
       catch { cloned = v; }
       if (resultOut > 0) {
-        const h = context.ensureHandle(cloned);
-        dv(memory).setUint32(resultOut, h.id, true);
+        const h = context.napiValueFromJsValue(cloned);
+        dv(memory).setUint32(resultOut, Number(h), true);
       }
       return 0;
     },
@@ -648,8 +675,8 @@ export function createUnofficialNapi(ctx: UnofficialHostContext): Record<string,
     // Wasm sig (2 args): (napi_env, result_ptr).
     unofficial_napi_create_serdes_binding(_envHandle: number, resultOut: number): number {
       if (resultOut > 0) {
-        const stub = context.ensureHandle({ serialize: (v: unknown) => JSON.stringify(v), deserialize: (s: string) => JSON.parse(s) });
-        dv(memory).setUint32(resultOut, stub.id, true);
+        const stub = context.napiValueFromJsValue({ serialize: (v: unknown) => JSON.stringify(v), deserialize: (s: string) => JSON.parse(s) });
+        dv(memory).setUint32(resultOut, Number(stub), true);
       }
       return 0;
     },
@@ -659,13 +686,13 @@ export function createUnofficialNapi(ctx: UnofficialHostContext): Record<string,
     ): number {
       const env = envs.get(envHandle);
       if (!env) return 1;
-      const v = context.handleStore.get(valueHandle)?.value;
+      const v = context.jsValueFromNapiValue(valueHandle);
       const bytes = encoder.encode(JSON.stringify(v ?? null));
       if (payloadOut > 0) {
         const ab = new ArrayBuffer(bytes.length);
         new Uint8Array(ab).set(bytes);
-        const h = context.ensureHandle(ab);
-        dv(memory).setUint32(payloadOut, h.id, true);
+        const h = context.napiValueFromJsValue(ab);
+        dv(memory).setUint32(payloadOut, Number(h), true);
       }
       return 0;
     },
@@ -675,14 +702,14 @@ export function createUnofficialNapi(ctx: UnofficialHostContext): Record<string,
     ): number {
       const env = envs.get(envHandle);
       if (!env) return 1;
-      const buf = context.handleStore.get(payloadHandle)?.value as ArrayBuffer | undefined;
+      const buf = context.jsValueFromNapiValue(payloadHandle) as ArrayBuffer | undefined;
       let value: unknown = null;
       if (buf) {
         try { value = JSON.parse(decoder.decode(new Uint8Array(buf))); } catch { /* leave null */ }
       }
       if (resultOut > 0) {
-        const h = context.ensureHandle(value);
-        dv(memory).setUint32(resultOut, h.id, true);
+        const h = context.napiValueFromJsValue(value);
+        dv(memory).setUint32(resultOut, Number(h), true);
       }
       return 0;
     },
@@ -705,8 +732,8 @@ export function createUnofficialNapi(ctx: UnofficialHostContext): Record<string,
         // #!~debt context object is just an empty marker; real vm.Context
         // has its own globalThis, intrinsics, etc.  Boot tolerates this
         // because edge mostly uses the default context anyway.
-        const h = context.ensureHandle({ __edge_context__: true });
-        dv(memory).setUint32(resultOut, h.id, true);
+        const h = context.napiValueFromJsValue({ __edge_context__: true });
+        dv(memory).setUint32(resultOut, Number(h), true);
       }
       return 0;
     },
@@ -730,7 +757,7 @@ export function createUnofficialNapi(ctx: UnofficialHostContext): Record<string,
     ): number {
       const env = envs.get(envHandle);
       if (!env) return 1;
-      const source = context.handleStore.get(sourceHandle)?.value as string | undefined;
+      const source = context.jsValueFromNapiValue(sourceHandle) as string | undefined;
       if (typeof source !== "string") return 1;
       let value: unknown;
       try {
@@ -746,8 +773,8 @@ export function createUnofficialNapi(ctx: UnofficialHostContext): Record<string,
         return 1;
       }
       if (resultOut > 0) {
-        const h = context.ensureHandle(value);
-        dv(memory).setUint32(resultOut, h.id, true);
+        const h = context.napiValueFromJsValue(value);
+        dv(memory).setUint32(resultOut, Number(h), true);
       }
       return 0;
     },
@@ -769,7 +796,7 @@ export function createUnofficialNapi(ctx: UnofficialHostContext): Record<string,
       const env = envs.get(envHandle);
       if (!env) return 1;
       const paramsArray = ["exports", "require", "module", "__filename", "__dirname"];
-      const paramsHandle = context.ensureHandle(paramsArray).id;
+      const paramsHandle = context.napiValueFromJsValue(paramsArray);
       return impls.unofficial_napi_contextify_compile_function(
         envHandle, codeHandle, filenameHandle, 0, 0, 0, 0, 0, 0, paramsHandle, 0, resultOut,
       );
@@ -783,7 +810,7 @@ export function createUnofficialNapi(ctx: UnofficialHostContext): Record<string,
     ): number {
       const env = envs.get(envHandle);
       if (!env) return 1;
-      const code = context.handleStore.get(codeHandle)?.value as string | undefined;
+      const code = context.jsValueFromNapiValue(codeHandle) as string | undefined;
       // #!~debt naïve regex check — misses dynamic import, commented imports,
       // template-literal exports.  Real impl parses with acorn.  Good enough
       // for the "is this ESM or CJS?" boot heuristic.
@@ -799,8 +826,8 @@ export function createUnofficialNapi(ctx: UnofficialHostContext): Record<string,
     ): number {
       // No V8 cache — return an empty ArrayBuffer.
       if (resultOut > 0) {
-        const h = context.ensureHandle(new ArrayBuffer(0));
-        dv(memory).setUint32(resultOut, h.id, true);
+        const h = context.napiValueFromJsValue(new ArrayBuffer(0));
+        dv(memory).setUint32(resultOut, Number(h), true);
       }
       return 0;
     },
@@ -825,8 +852,8 @@ export function createUnofficialNapi(ctx: UnofficialHostContext): Record<string,
       if (!env) return 1;
       const mod = { kind: "source-text", wrapper, url, source, status: 0, namespace: {} };
       if (handlePtr > 0) {
-        const h = context.ensureHandle(mod);
-        dv(memory).setUint32(handlePtr, h.id, true);
+        const h = context.napiValueFromJsValue(mod);
+        dv(memory).setUint32(handlePtr, Number(h), true);
       }
       return 0;
     },
@@ -840,8 +867,8 @@ export function createUnofficialNapi(ctx: UnofficialHostContext): Record<string,
       if (!env) return 1;
       const mod = { kind: "synthetic", wrapper, url, exportNames, status: 0, namespace: {} };
       if (handlePtr > 0) {
-        const h = context.ensureHandle(mod);
-        dv(memory).setUint32(handlePtr, h.id, true);
+        const h = context.napiValueFromJsValue(mod);
+        dv(memory).setUint32(handlePtr, Number(h), true);
       }
       return 0;
     },
@@ -851,8 +878,8 @@ export function createUnofficialNapi(ctx: UnofficialHostContext): Record<string,
     ): number {
       const env = envs.get(envHandle);
       if (env && resultOut > 0) {
-        const h = context.ensureHandle({ kind: "required-facade", exports: {} });
-        dv(memory).setUint32(resultOut, h.id, true);
+        const h = context.napiValueFromJsValue({ kind: "required-facade", exports: {} });
+        dv(memory).setUint32(resultOut, Number(h), true);
       }
       return 0;
     },
@@ -861,8 +888,8 @@ export function createUnofficialNapi(ctx: UnofficialHostContext): Record<string,
       _envHandle: number, _handle: number, resultOut: number,
     ): number {
       if (resultOut > 0) {
-        const h = context.ensureHandle(new ArrayBuffer(0));
-        dv(memory).setUint32(resultOut, h.id, true);
+        const h = context.napiValueFromJsValue(new ArrayBuffer(0));
+        dv(memory).setUint32(resultOut, Number(h), true);
       }
       return 0;
     },
@@ -874,8 +901,8 @@ export function createUnofficialNapi(ctx: UnofficialHostContext): Record<string,
     ): number {
       const env = envs.get(envHandle);
       if (env && resultOut > 0) {
-        const h = context.ensureHandle([]);
-        dv(memory).setUint32(resultOut, h.id, true);
+        const h = context.napiValueFromJsValue([]);
+        dv(memory).setUint32(resultOut, Number(h), true);
       }
       return 0;
     },
@@ -893,8 +920,8 @@ export function createUnofficialNapi(ctx: UnofficialHostContext): Record<string,
     ): number {
       const env = envs.get(envHandle);
       if (env && resultOut > 0) {
-        const h = context.ensureHandle(Promise.resolve(undefined));
-        dv(memory).setUint32(resultOut, h.id, true);
+        const h = context.napiValueFromJsValue(Promise.resolve(undefined));
+        dv(memory).setUint32(resultOut, Number(h), true);
       }
       return 0;
     },
@@ -905,8 +932,8 @@ export function createUnofficialNapi(ctx: UnofficialHostContext): Record<string,
     ): number {
       const env = envs.get(envHandle);
       if (env && resultOut > 0) {
-        const h = context.ensureHandle(undefined);
-        dv(memory).setUint32(resultOut, h.id, true);
+        const h = context.napiValueFromJsValue(undefined);
+        dv(memory).setUint32(resultOut, Number(h), true);
       }
       return 0;
     },
@@ -916,10 +943,10 @@ export function createUnofficialNapi(ctx: UnofficialHostContext): Record<string,
     ): number {
       const env = envs.get(envHandle);
       if (!env) return 1;
-      const mod = context.handleStore.get(handle)?.value as { namespace?: object } | undefined;
+      const mod = context.jsValueFromNapiValue(handle) as { namespace?: object } | undefined;
       if (resultOut > 0) {
-        const h = context.ensureHandle(mod?.namespace ?? {});
-        dv(memory).setUint32(resultOut, h.id, true);
+        const h = context.napiValueFromJsValue(mod?.namespace ?? {});
+        dv(memory).setUint32(resultOut, Number(h), true);
       }
       return 0;
     },
@@ -936,8 +963,8 @@ export function createUnofficialNapi(ctx: UnofficialHostContext): Record<string,
     ): number {
       const env = envs.get(envHandle);
       if (env && resultOut > 0) {
-        const h = context.ensureHandle(undefined);
-        dv(memory).setUint32(resultOut, h.id, true);
+        const h = context.napiValueFromJsValue(undefined);
+        dv(memory).setUint32(resultOut, Number(h), true);
       }
       return 0;
     },
@@ -947,8 +974,8 @@ export function createUnofficialNapi(ctx: UnofficialHostContext): Record<string,
     ): number {
       const env = envs.get(envHandle);
       if (env && resultOut > 0) {
-        const h = context.ensureHandle(undefined);
-        dv(memory).setUint32(resultOut, h.id, true);
+        const h = context.napiValueFromJsValue(undefined);
+        dv(memory).setUint32(resultOut, Number(h), true);
       }
       return 0;
     },

@@ -888,7 +888,7 @@ export function makeNapiOpRegistry(napi: Record<string, NapiFn>): NapiOpRegistry
           if (handleId === 0) return;
           const napiCtx = getNapiContext();
           if (!napiCtx) return;
-          const value = napiCtx.handleStore.get(handleId)?.value;
+          const value = napiCtx.jsValueFromNapiValue(handleId);
           if (value === null || value === undefined) return;
           const t = typeof value;
           if (t !== "object" && t !== "function" && t !== "symbol") return;
@@ -1033,7 +1033,7 @@ export function makeNapiOpRegistry(napi: Record<string, NapiFn>): NapiOpRegistry
           if (handleId === 0) return;
           const napiCtx = getNapiContext();
           if (!napiCtx) return;
-          const value = napiCtx.handleStore.get(handleId)?.value;
+          const value = napiCtx.jsValueFromNapiValue(handleId);
           if (value === null || value === undefined) return;
           const t = typeof value;
           if (t !== "object" && t !== "function" && t !== "symbol") return;
@@ -1178,8 +1178,8 @@ export function makeNapiOpRegistry(napi: Record<string, NapiFn>): NapiOpRegistry
             try { Object.defineProperty(closure, "name", { value: name }); }
             catch { /* non-fatal: name is debugging-only */ }
           }
-          const handle = napiCtx.addToCurrentScope(closure);
-          new DataView(memory.buffer).setUint32(resultPtr, handle.id >>> 0, true);
+          const handle = napiCtx.napiValueFromJsValue(closure);
+          new DataView(memory.buffer).setUint32(resultPtr, Number(handle) >>> 0, true);
           return { payload: EMPTY, status: 0 };
         });
 
@@ -1315,8 +1315,8 @@ export function makeNapiOpRegistry(napi: Record<string, NapiFn>): NapiOpRegistry
             }
           }
 
-          const handle = napiCtx.addToCurrentScope(Klass);
-          new DataView(memory.buffer).setUint32(resultPtr, handle.id >>> 0, true);
+          const handle = napiCtx.napiValueFromJsValue(Klass);
+          new DataView(memory.buffer).setUint32(resultPtr, Number(handle) >>> 0, true);
           return { payload: EMPTY, status: 0 };
         });
       }

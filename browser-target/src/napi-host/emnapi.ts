@@ -37,11 +37,40 @@
 // vendored tree lives at `vendor/emnapi/`.  See NOTES.md entry
 // `vendored-emnapi-flag` for current flag-ON status.
 
-export { createContext } from "@emnapi/runtime";
-export type { Context, Env } from "@emnapi/runtime";
+import { createContext as upstreamCreateContext } from "@emnapi/runtime";
+import type { Context as UpstreamContext } from "@emnapi/runtime";
+export type { Env } from "@emnapi/runtime";
+
+// V2 cutover: the v1 `Context` `.d.ts` from `@emnapi/runtime` is stale
+// vs. the actual JS surface — both the v1 runtime and v2's vendored
+// runtime expose `jsValueFromNapiValue` / `napiValueFromJsValue` as
+// public methods, but they're missing from v1's published types.  Re-
+// export `Context` as the upstream type intersected with the runtime-
+// access surface so call sites can use these methods without per-site
+// casts.  Same approach for `addToCurrentScope` / `ensureHandle` /
+// `handleStore` which v2's public Context API drops entirely — those
+// are now replaced by the `napiValueFromJsValue` path (the codemod
+// `scripts/codemod-v1-to-v2.mjs` did the bulk rewrites).
+export type Context = UpstreamContext & ContextRuntimeAccess;
+export const createContext: (...args: Parameters<typeof upstreamCreateContext>) => Context =
+  upstreamCreateContext as never;
 
 export { createNapiModule } from "@emnapi/core";
 export type { NapiModule } from "@emnapi/core";
+
+// V2 plugins.  Loaded from vendored regardless of EDGE_USE_VENDORED_EMNAPI
+// flag (Vite alias for `@emnapi/core/plugins` always points at vendored;
+// V1's npm package doesn't export this subpath, and V1's createNapiModule
+// ignores the `plugins:` option as unknown).  Same source works for both
+// runtimes without dual code paths.
+//
+// V2 needs at least `v8` (handle scopes, env, value coercion) and
+// `asyncWork` (napi_create_async_work + queue) to instantiate.  `tsfn`
+// (napi_threadsafe_function) is what worker_threads Path A uses for
+// libuv-integrated parentPort/Worker postMessage delivery (replaces the
+// JS-side setInterval keepalive + setImmediate dispatch wrap — see
+// worker-threads-uses-js-keepalive-not-tsfn debt).
+export { v8 as v8Plugin, asyncWork as asyncWorkPlugin, tsfn as tsfnPlugin } from "@emnapi/core/plugins";
 
 /** Runtime methods on `@emnapi/runtime` `Context` that exist in the
  *  shipped JS but are missing from the published `.d.ts`.  Cast a

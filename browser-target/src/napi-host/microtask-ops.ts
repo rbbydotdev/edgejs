@@ -76,7 +76,7 @@ export function buildMicrotaskOpsImports(
 
   function resolveValue(handleId: number): unknown {
     if (!handleId) return undefined;
-    return context.handleStore.get(handleId)?.value;
+    return context.jsValueFromNapiValue(handleId);
   }
 
   const imports: Record<string, Function> = {

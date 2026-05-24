@@ -21,8 +21,22 @@ import { resolve, dirname } from "node:path";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const useVendoredEmnapi = process.env.EDGE_USE_VENDORED_EMNAPI === "true";
 
+// `@emnapi/core/plugins` subpath always resolves to vendored (v2-only).
+// V1's npm package doesn't export this subpath; vendored plugins are
+// loaded by createNapiModule when v2 is the active runtime.  V1 ignores
+// the `plugins:` option entirely.  Listed FIRST so the more-specific
+// subpath alias takes precedence over the `@emnapi/core` alias below.
+const pluginsAlias = {
+  find: "@emnapi/core/plugins",
+  replacement: resolve(
+    __dirname,
+    "../vendor/emnapi/packages/core/dist/plugins/index.js",
+  ),
+};
+
 const vendoredAliases = useVendoredEmnapi
   ? [
+      pluginsAlias,
       {
         find: "@emnapi/runtime",
         replacement: resolve(
@@ -45,7 +59,7 @@ const vendoredAliases = useVendoredEmnapi
         ),
       },
     ]
-  : [];
+  : [pluginsAlias];
 
 if (useVendoredEmnapi) {
   // Visible in vite stdout so test runners log this clearly.

@@ -12,7 +12,10 @@
     "esModuleInterop": true,
     "resolveJsonModule": true,
     "isolatedModules": true,
-    "verbatimModuleSyntax": false
+    "verbatimModuleSyntax": false,
+    "paths": {
+      "@emnapi/core/plugins": ["../vendor/emnapi/packages/core/dist/plugins/index.d.ts"]
+    }
   },
   "include": ["src", "scripts"]
 }
