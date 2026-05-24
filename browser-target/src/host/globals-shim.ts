@@ -94,6 +94,49 @@ if (typeof hostDecompressionStream === "function" && !g.__edgeHostDecompressionS
   });
 }
 
+// Snapshot host's native WebAssembly compile / instantiate functions BEFORE
+// edge's bootstrap freezes its own `WebAssembly` intrinsic in
+// `internal/freeze_intrinsics.js`.  Edge does NOT install a polyfill, but it
+// DOES freeze the inherited intrinsic; if a future bootstrap layer (or a
+// userland mutation) shadows `WebAssembly.compile` / `compileStreaming` /
+// `instantiate` / `instantiateStreaming`, the `wasm-compile-via-host` policy
+// still reaches the real host implementations via this snapshot.
+//
+// Stored as `globalThis.__edgeHostWebAssembly` — an object with bound
+// functions only.  We don't snapshot `WebAssembly` itself because the value
+// constructors (Module/Instance/Memory/Table/...) are intrinsics edge already
+// freezes, and mixing host vs guest constructors creates `instanceof` foot-
+// guns.  Routing only the compile/instantiate methods keeps callers' use of
+// `mod instanceof WebAssembly.Module` correct (the returned Module is a host
+// Module — its prototype is `WebAssembly.Module.prototype`, which IS the
+// same as the user code's `WebAssembly.Module` since `WebAssembly` itself
+// is the shared intrinsic).
+//
+// Each entry falls back to `undefined` when the host engine doesn't expose
+// the API (e.g. `compileStreaming` exists in browsers but is gated behind
+// flags in some older Node versions).
+const hostWA = (globalThis as { WebAssembly?: {
+  compile?: (bytes: BufferSource) => Promise<unknown>;
+  compileStreaming?: (source: Response | Promise<Response>) => Promise<unknown>;
+  instantiate?: (bytesOrModule: BufferSource | unknown, imports?: unknown) => Promise<unknown>;
+  instantiateStreaming?: (source: Response | Promise<Response>, imports?: unknown) => Promise<unknown>;
+  validate?: (bytes: BufferSource) => boolean;
+} }).WebAssembly;
+if (hostWA && !g.__edgeHostWebAssembly) {
+  Object.defineProperty(g, "__edgeHostWebAssembly", {
+    value: {
+      compile: typeof hostWA.compile === "function" ? hostWA.compile.bind(hostWA) : undefined,
+      compileStreaming: typeof hostWA.compileStreaming === "function" ? hostWA.compileStreaming.bind(hostWA) : undefined,
+      instantiate: typeof hostWA.instantiate === "function" ? hostWA.instantiate.bind(hostWA) : undefined,
+      instantiateStreaming: typeof hostWA.instantiateStreaming === "function" ? hostWA.instantiateStreaming.bind(hostWA) : undefined,
+      validate: typeof hostWA.validate === "function" ? hostWA.validate.bind(hostWA) : undefined,
+    },
+    writable: false,
+    configurable: false,
+    enumerable: false,
+  });
+}
+
 const hostProcess = (globalThis as { process?: { _tickCallback?: () => void } }).process;
 const hostTickCallback = (hostProcess && typeof hostProcess._tickCallback === "function")
   ? hostProcess._tickCallback.bind(hostProcess)
