@@ -204,8 +204,35 @@ export function installHostPromiseRejectListeners(
   function dispatch(type: number, promise: unknown, reason: unknown): void {
     const cb = state.promiseRejectCallback;
     if (!cb) return;
+    // Step 1: hand the rejection to lib's promiseRejectHandler — pushes
+    // onto pendingUnhandledRejections, sets hasRejectionToWarn.
     try { cb(type, promise, reason); }
     catch (e) { postLog?.(`[promise-reject] lib handler threw: ${(e as Error)?.message}`, "warn"); }
+    // Step 2: drain the wasm-side nextTick/rejection queue now.
+    //
+    // Without this, lib's queued rejection sits in pendingUnhandledRejections
+    // until the next libuv callback's EdgeRunCallbackScopeCheckpoint fires —
+    // which can be 100s of ms later if the only scheduled work is a
+    // setTimeout.  Real Node fires unhandledRejection within the same task
+    // as the rejection because V8 calls the per-isolate reject callback
+    // from inside the microtask checkpoint, AND Node's microtask
+    // checkpoint is followed by InternalCallbackScope's tick drain.
+    //
+    // On the wasm path, the V8 reject callback fires asynchronously (the
+    // 'unhandledrejection' macrotask event on the worker; see HTML spec
+    // "notify about rejected promises").  We're now in that event handler,
+    // outside any wasm callback scope.  Call lib's tick callback
+    // (process._tickCallback, registered via setTickCallback during
+    // bootstrap) to flush pendingUnhandledRejections immediately — same
+    // emission point Node's native InternalCallbackScope would hit.
+    try {
+      const proc = (globalThis as { process?: { _tickCallback?: () => void } }).process;
+      if (proc && typeof proc._tickCallback === "function") {
+        proc._tickCallback();
+      }
+    } catch (e) {
+      postLog?.(`[promise-reject] tick drain threw: ${(e as Error)?.message}`, "warn");
+    }
   }
   const proc = (globalThis as { process?: { on?: (event: string, fn: (...a: unknown[]) => void) => void } }).process;
   if (proc && typeof proc.on === "function") {

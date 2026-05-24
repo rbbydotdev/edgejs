@@ -229,7 +229,7 @@ async function runEdgeWithEmnapi() {
   const { builtinOverrides, userScriptPrelude, applied: appliedPolicies } =
     composePolicies(browserPolicies);
   void hasJspi;
-  const napi = createNapiHost({ memory, builtinOverrides });
+  const napi = createNapiHost({ memory, builtinOverrides, postLog: (text, level) => post("log", { text, level }) });
   post("log", { text: `policies applied: ${appliedPolicies.join(", ")}`, level: "info" });
   post("log", { text: `napi-host: ${Object.keys(napi.imports.napi).length} napi entries seeded`, level: "info" });
 

@@ -1,10 +1,17 @@
-E8 reclassification (2026-05-24): the handler IS captured AND IS fired —
-just AFTER a surviving `setTimeout(100)` that the test wasn't expecting.
-The original framing — "lib defers emission via tickCallback which edge's
-runtime doesn't drive" — is partly right (lib does defer via nextTick),
-but the deeper issue is that `process.nextTick(emit)` doesn't drive
-between `poll_oneoff` iterations on the wasm path.  See
-experiments/e8-microtask-pump-spike/FINDINGS.md.
+E10 (2026-05-24): primary "handler fires AFTER setTimeout" bug is fixed in
+this worktree — host promise-reject dispatch now calls process._tickCallback
+after the wasm-side promiseRejectHandler, so pendingUnhandledRejections
+drains within the same worker macrotask event that received the
+'unhandledrejection' notification.  Handler now fires at t=29ms (before
+the setTimeout(100) at t=130ms).
 
-Still skipped pending an investigation of `process.nextTick` drive
-timing in `lib/internal/process/promises.js`.
+Test still fails because of an orthogonal bug: process.exit(0) called
+from inside the handler doesn't preempt the in-flight
+pollOneoffAwaitTimer (Atomics.waitAsync) — the timer expires anyway and
+the surviving setTimeout(100) fires before uv_run sees the stop flag.
+Same class as finalization-registry-runs.  Tracked as E10 open
+question 1; needs unofficial_napi_terminate_execution to wake the
+sleepSab and pollOneoffAwaitTimer to re-check exit state after resume.
+
+See experiments/e10-nexttick-timing/ (worktree-only) for full trace
+and fix details.
