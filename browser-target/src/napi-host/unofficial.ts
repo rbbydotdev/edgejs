@@ -311,9 +311,24 @@ export function createUnofficialNapi(ctx: UnofficialHostContext): Record<string,
         return 1;
       }
 
+      // Bootstrap-error tracing: log first throw from any bootstrap
+      // module.  Without this, edge.js's triggerFatalException tries to
+      // surface the error through console.error, which lazy-loads
+      // internal/util/colors, which hits the lazy-load-from-microtask
+      // debt and reports "fn is not a function" instead of the real
+      // error.  Once the cutover is green we can drop this.
+      const compiledWithTrace = function (this: unknown, ...args: unknown[]): unknown {
+        try {
+          return (compiled as Function).apply(this, args);
+        } catch (e) {
+          const err = e as Error;
+          console.log(`[bootstrap-throw] ${filename}: ${err.message ?? e}\n${(err.stack ?? "").slice(0, 800)}`);
+          throw e;
+        }
+      };
       // Wrap in the result-object shape edge's wrapSafe expects.
       const wrapper = {
-        function: compiled,
+        function: compiledWithTrace,
         sourceURL: filename,
         sourceMapURL: undefined,
         cachedDataRejected: false,

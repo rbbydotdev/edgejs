@@ -19,7 +19,19 @@ import { resolve, dirname } from "node:path";
 // version delta; flag-ON may currently break.  See NOTES.md
 // "vendored-emnapi-flag" for current status.
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const useVendoredEmnapi = process.env.EDGE_USE_VENDORED_EMNAPI === "true";
+// V2 cutover (2026-05-25): vendored v2 is now the default runtime.
+// The cutover landed the env=bridge.address bridge + plugin wiring +
+// codemod rewrites in src/napi-host/ that map v1 Context internals
+// (handleStore/ensureHandle/addToCurrentScope) to v2's public API
+// (napiValueFromJsValue/jsValueFromNapiValue).  Those rewrites are
+// v2-only at runtime — v1 npm @emnapi/* lacks these methods on
+// Context — so we no longer ship a working v1 path.
+//
+// Opt OUT with `EDGE_USE_VENDORED_EMNAPI=false` for diagnosis only;
+// expect failures on flag-OFF until v1 support is restored (which is
+// not currently a goal — see NOTES.md vendored-emnapi-flag, now
+// inverted).  Default ON.
+const useVendoredEmnapi = process.env.EDGE_USE_VENDORED_EMNAPI !== "false";
 
 // `@emnapi/core/plugins` subpath always resolves to vendored (v2-only).
 // V1's npm package doesn't export this subpath; vendored plugins are

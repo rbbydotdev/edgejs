@@ -459,7 +459,26 @@ the browser-target tree.
 
 ### Test infrastructure
 
-- `vendored-emnapi-flag` (L0 2026-05-23) — `EDGE_USE_VENDORED_EMNAPI=true`
+- ~~`vendored-emnapi-flag`~~ — **INVERTED** (2026-05-25, v2 cutover).
+  Vendored v2.0.0-alpha.1 is now the DEFAULT runtime; flag-OFF
+  (`EDGE_USE_VENDORED_EMNAPI=false`) is broken because the codemod in
+  `scripts/codemod-v1-to-v2.mjs` rewrote `src/napi-host/*` from v1's
+  Context API (`handleStore.get(h)?.value`, `ensureHandle(v)`,
+  `addToCurrentScope(v)`) to v2's public API
+  (`jsValueFromNapiValue`, `napiValueFromJsValue`).  V1's npm
+  @emnapi/* doesn't have those methods on Context, so flag-OFF
+  fails uniformly.  The cutover landed via the env=bridge.address
+  bridge in `unofficial_napi_create_env` (v2 invokes callbacks with
+  `envObject.bridge.address` as napi_env, not `envObject.id` — the
+  wasm-side state lookup needs the same identifier both ways).
+  Suite on v2: 40 pass / 1 fail / 0 err / 3 skip; the failure is
+  `crypto-randombytes` (returns all-zero buffers — likely a
+  buffer-override / handle-binding interaction with v2's
+  `napiValueFromJsValue` adding to currentScope rather than v1's
+  `addToCurrentScope` returning a Handle).  See commit
+  `b1b6f9b1` for the breakthrough fix.
+- `vendored-emnapi-flag-original` (L0 2026-05-23, kept for history) —
+  Old debt: `EDGE_USE_VENDORED_EMNAPI=true`
   swaps imports of `@emnapi/*` to `vendor/emnapi/packages/*/dist/*` via
   Vite alias.  Default OFF; flag mechanism works (verified by running
   test:browser under both states).  Vendored copy is v2.0.0-alpha.1
