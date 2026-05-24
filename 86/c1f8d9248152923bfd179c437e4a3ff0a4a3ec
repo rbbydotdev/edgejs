@@ -1,0 +1,33 @@
+browser-target/src/policies/index.ts
+  s_7bec0ecbfcdcd0::t_2b5356eb112864 121
+  s_7bec0ecbfcdcd0::t_69fedf0a03642e 134
+  s_7bec0ecbfcdcd0::t_2906e6a555655a 207
+tests/js/crypto-pbkdf2-via-subtle.stdout
+  s_7bec0ecbfcdcd0::t_90a3b2b001cead 1
+experiments/e14-crypto-subtle-async/FINDINGS.md
+  s_7bec0ecbfcdcd0::t_db8b97c2eca3ac 1-109
+tests/js/crypto-pbkdf2-via-subtle.harness-args
+  s_7bec0ecbfcdcd0::t_90a3b2b001cead 1
+browser-target/src/policies/crypto-via-subtle.ts
+  s_7bec0ecbfcdcd0::t_90a3b2b001cead 1-211
+browser-target/src/host/globals-shim.ts
+  s_7bec0ecbfcdcd0::t_b1a35ebe9ec632 52-71
+tests/js/crypto-pbkdf2-via-subtle.js
+  s_7bec0ecbfcdcd0::t_90a3b2b001cead 1-59
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "86c1f8d9248152923bfd179c437e4a3ff0a4a3ec",
+  "prompts": {},
+  "sessions": {
+    "s_7bec0ecbfcdcd0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d560d5ae-265f-44ae-89c4-d35659b3ab9e",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
