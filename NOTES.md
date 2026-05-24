@@ -333,6 +333,14 @@ the browser-target tree.
   in `defaultBrowserPolicies` + `minimalPolicies` — this is a
   correctness fix, not opt-in.  `compression-via-compressionstream`
   is now perf-only.  See `experiments/e15-zlib-fix/FINDINGS.md`.
+
+  **Bug class documented in
+  [docs/wasm-aliased-typedarray-pattern.md](./docs/wasm-aliased-typedarray-pattern.md)**
+  — covers detection heuristic, current per-binding fix pattern, when
+  to escalate to a generalized helper, and a sketch of that helper.
+  E19 audit + E20 (`process-methods-wasm-state`) follow the same
+  pattern.  Read the doc before adding a sixth fix or considering a
+  napi-layer change.
 - `e18-slot-overflow` (E18 2026-05-24) — `crypto-hash-via-host-worker`
   policy caps `digest()` input at the single RPC slot payload budget
   (`HOST_RPC_RING_CONFIG.slotSize - 16 - 8 - 4 - len(algoName) - 4`
