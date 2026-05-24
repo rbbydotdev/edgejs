@@ -306,6 +306,41 @@ the browser-target tree.
 
 ### Cross-worker primitives
 
+- `node-harness-regression` (2026-05-24, surfaced by E13/E14) —
+  `browser-target/scripts/node-harness.mjs` invocations exit with
+  code 127 in ~3ms after 15 host calls.  Trace: `wasi/thread-spawn`
+  returns -1 then `wasix_32v1/proc_exit2(127)` during boot.
+  Reproduces on `main` with a trivial `--eval "console.log('hello')"`.
+  The `browser-test-runner.mjs` path (Playwright via Chromium) is
+  UNAFFECTED — 31/0/3 baseline maintained.
+
+  Both `browser-target/edgejs.wasm` (bundled May 23 at commit
+  `44719a6b`) and the host-side TS layer have moved since.  E13/E14
+  agents could not isolate which side regressed; the browser path
+  works because it uses different wasi-shim semantics (JSPI suspend
+  vs synchronous Atomics).
+
+  Status: tracked.  Doesn't block the regression net we actually
+  rely on (browser-test-runner).  Promote when the node-harness
+  becomes the chosen verification path again (e.g. for CI in
+  non-browser environments).
+
+- `zlib-have-should-not-go-down` (2026-05-24, surfaced by E11,
+  diagnosed by E13) — `zlib.gzip(...)` without the
+  `compression-via-compressionstream` policy crashes with
+  `ERR_INTERNAL_ASSERTION: have should not go down`.  Root cause:
+  `lib/zlib.js:674`'s `_writeState = new Uint32Array(2)` is JS-heap
+  and never goes through the `buffer-wasm-aliased` substitution;
+  the `napi_get_typedarray_info` host override syncs wasm→JS BEFORE
+  C++ writes the new completion's avail_out value, so JS reads
+  state one completion behind wasm.  Fix recommendation (medium):
+  policy `{post}`-patch `_writeState` to a wasm-backed view, OR
+  override `napi_create_typedarray` to swap small JS-heap TAs for
+  wasm-backed views.  Today the `compression-via-compressionstream`
+  policy (shipped opt-in) bypasses the bug entirely.  Promote when
+  sync-zlib parity matters.  See
+  `experiments/e13-zlib-crash-debug/FINDINGS.md`.
+
 - `l1-perf-variance-investigation` (L1 2026-05-23) — local
   perf-harness measurements after L1 show wasmRunMs median 200-290ms
   vs L0 baseline 129ms (60-100% slowdown).  Agent's own verification
