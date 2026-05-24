@@ -48,6 +48,40 @@ see [ARCHIVE.md](./ARCHIVE.md).
 `browser-target/src/policies/index.ts` for the full bundle. Architecture
 of policy stack is in [ARCHITECTURE.md](./ARCHITECTURE.md#active-policies).
 
+**Host-RPC tier status (2026-05-24, post-F-9 + E5/E6/E7):**
+All 106 napi op handlers exist on the host worker
+(`browser-target/src/host-worker/`) and pass the F-9 sweep probe
+(29/30; only pre-existing `create_external_arraybuffer` arg-validity
+gap).  The wasm-side intercept layer that would route real edge.js
+code through these handlers is **NOT wired** —
+`grep OP_NAPI_ browser-target/src/napi-host/` returns zero hits.  The
+tier is functionally complete, unit-verified, and currently unused
+by any real workload.  Three experiments (E5/E6/E7) quantified the
+cost of cutting it over:
+
+- **E5** ([FINDINGS](experiments/e5-callback-triage-observation/FINDINGS.md)):
+  callback-fire distribution under the test suite is bootstrap-
+  dominated; hot-path candidates per the F-9 plan (stream `_read`,
+  llhttp parser) fire ZERO times.  No defensible production allow-
+  list without sustained-load measurement (E8 candidate).
+- **E6** ([FINDINGS](experiments/e6-wasm-side-forwarding/FINDINGS.md)):
+  Pattern B (Proxy on `napi.imports`) wins; cost is uniform ~20 µs
+  RPC plumbing per call (40-55× in-process).  Naive forwarding is
+  prohibitive (~600 ms added to `_start`).  Ship gated by
+  `forwardedNapiOps: Set<string>` default-empty.
+- **E7** ([FINDINGS](experiments/e7-scope-discipline-observation/FINDINGS.md)):
+  edge.js never opens scopes from the wasm side; the original
+  "forward `napi_open/close_handle_scope`" plan is a no-op.  Root-
+  scope rotation at quiescence is the right pattern for the
+  `host-emnapi-root-scope-accumulates` debt.
+
+**Net posture:** the host-RPC tier is held in reserve as
+infrastructure for a future deployment that explicitly needs it
+(multi-context isolation, security boundary, hot-swap engine).
+Don't ship the wasm-side intercept until a concrete motivation
+appears; the test suite already works end-to-end via the existing
+in-process path.
+
 ---
 
 ## Active tech-debt catalog
@@ -204,18 +238,27 @@ the browser-target tree.
   any subsequent RPC that references those handle ids deref's to
   `undefined`.  emnapi-runtime/dist/emnapi.cjs.js:262-268.
 
-  The real fix requires wasm-side scope-op forwarding: add
-  OP_NAPI_OPEN_HANDLE_SCOPE / OP_NAPI_CLOSE_HANDLE_SCOPE RPC ops, have
-  the wasm-side napi-host shim (`browser-target/src/napi-host/`)
-  intercept emnapi's own `napi_open_handle_scope` / `_close_` calls,
-  forward them via RPC so host's scope discipline mirrors wasm's.
-  That's an architectural shift, not a refactor of one file.
+  E7 measurement (2026-05-24,
+  experiments/e7-scope-discipline-observation/FINDINGS.md) flipped
+  the original "forward wasm-side scope ops" plan: edge.js never
+  calls `napi_open_handle_scope` from the wasm side (0 calls / 18
+  wasm-routed tests, max depth 0).  All 4,913 suite-wide scope opens
+  happen INSIDE emnapi via `Context.openScope` (callbacks +
+  finalizers), never crossing the import boundary.  Per-call
+  forwarding of all `Context.openScope` is feasible (~17 ms/test)
+  but doesn't scale (estimated ~9.3 s for a 10k-request server).
+
+  Right pattern: **root-scope rotation at quiescence points** — flush
+  at `unofficial_napi_release_env`, between RPC requests at known
+  quiescence, or periodic compaction when handle count exceeds a
+  threshold.  Cheaper than per-call forwarding; achieves the same
+  bounded-accumulation property.
 
   Status: deferred.  Today's accumulation is bounded by request
-  count; no memory pressure observed in tests.  Promote when (a) a
-  long-running deployment shows growth, or (b) wasm-side scope-op
-  forwarding lands for another reason.
-  See experiments/r9-host-emnapi-init/FINDINGS.md.
+  count; no memory pressure observed in tests.  Promote when a
+  long-running deployment shows growth.
+  See experiments/r9-host-emnapi-init/FINDINGS.md and
+  experiments/e7-scope-discipline-observation/FINDINGS.md.
 - `cluster-b-finalizers-noop` (2026-05-23, F-9 batch 4 cluster B) —
   `napi_create_external{,_arraybuffer,_buffer}` register host-side
   finalizer closures in a `finalizerClosures` Map but pass
