@@ -1,0 +1,19 @@
+experiments/e19-staleness-audit/FINDINGS.md
+  s_7bec0ecbfcdcd0::t_c28bbf12a87875 1-163
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "c95f71a3cb760ca7598f55dbc8b6c6edc600288c",
+  "prompts": {},
+  "sessions": {
+    "s_7bec0ecbfcdcd0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d560d5ae-265f-44ae-89c4-d35659b3ab9e",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
