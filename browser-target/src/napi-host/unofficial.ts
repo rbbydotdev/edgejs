@@ -32,13 +32,20 @@ export interface UnofficialHostContext {
   memory: WebAssembly.Memory;
   /** The Env we created during `unofficial_napi_create_env`; lookup table by env handle. */
   envs: Map<number, Env>;
-  /** The NapiModule from createNapiModule.  V2 init creates an env
-   *  during `napiModule.init({instance})` and stashes it on
-   *  `napiModule.envObject`; `unofficial_napi_create_env` reuses it
-   *  rather than calling `context.createEnv` (whose signature changed
-   *  v1→v2: positional makeDynCall args → bridge object).  When v1 is
-   *  the runtime, `envObject` is unset and we fall back to v1 createEnv. */
-  napiModule?: { envObject?: Env };
+  /** Holder for the env that v2's init flow created.  V2's
+   *  `napiModule.init({instance})` allocates a struct via our
+   *  `emnapi_create_env` stub (instance-proxy.ts), writes the resulting
+   *  env's id at struct+24, then deletes `napiModule.envObject`
+   *  (emnapi-core.js:407).  The Env survives via the module-level
+   *  `emnapiEnv` reference and the Context's envStore.
+   *
+   *  After napiModule.init, bindInstance reads the env id from memory
+   *  and stashes the Env here.  `unofficial_napi_create_env` reuses it
+   *  rather than calling `context.createEnv` (whose v1 positional
+   *  signature is different from v2's `(filename, version, bridge,
+   *  nodeBinding?)`).  On v1, this holder stays null and the v1
+   *  fallback path creates an env itself. */
+  v2InitEnvHolder?: { value: Env | null };
   /**
    * Module-source overrides — see ModuleOverride type in policies/index.ts.
    * Keyed by edge's builtin filename format
@@ -70,7 +77,7 @@ function dv(memory: WebAssembly.Memory): DataView {
 }
 
 export function createUnofficialNapi(ctx: UnofficialHostContext): Record<string, Function> {
-  const { context, memory, envs, napiModule } = ctx;
+  const { context, memory, envs, v2InitEnvHolder } = ctx;
 
   // Tracks "scope handle ID" → "env ID" so we can release scopes by their
   // own handle, which is what wasm passes back.
@@ -89,16 +96,17 @@ export function createUnofficialNapi(ctx: UnofficialHostContext): Record<string,
       // V2 cutover: if emnapi's standard init flow already created an
       // env (it does — `napiModule.init({instance})` allocates a struct
       // via our `emnapi_create_env` stub, calls `emnapiCtx.createEnv(...)`,
-      // and stashes the result on `napiModule.envObject` + the module-
-      // level `emnapiEnv` reference that v2's napi functions read), reuse
-      // it.  Calling `context.createEnv` again with v1 positional args
-      // would fail because v2's signature wants a `bridge` object as the
-      // 3rd arg, not a `makeDynCall_vppp` function.
+      // and stashes the result; bindInstance recovers it via memory
+      // readback into `v2InitEnvHolder.value` since `napiModule.envObject`
+      // gets deleted at emnapi-core.js:407 right after init), reuse it.
+      // Calling `context.createEnv` again with v1 positional args would
+      // fail because v2's signature wants a `bridge` object as the 3rd
+      // arg, not a `makeDynCall_vppp` function.
       //
-      // V1 fallback: `napiModule.envObject` is undefined; we create the
-      // env ourselves using v1's positional signature.
+      // V1 fallback: `v2InitEnvHolder` is null; we create the env
+      // ourselves using v1's positional signature.
       let env: Env;
-      const existingEnv = napiModule?.envObject;
+      const existingEnv = v2InitEnvHolder?.value;
       if (existingEnv) {
         env = existingEnv;
       } else {
@@ -125,13 +133,27 @@ export function createUnofficialNapi(ctx: UnofficialHostContext): Record<string,
           undefined,
         );
       }
-      envs.set(Number(env.id), env);
+      // CRITICAL: pick the env value that wasm-side callbacks will
+      // receive.  In v2, when a JS callback created via napi_create_function
+      // is invoked, emnapi passes `envObject.bridge.address` (a wasm
+      // pointer) as the napi_env arg — NOT `envObject.id` (the small
+      // integer the Context.envStore is keyed on).  Edge.js's wasm code
+      // stores per-env state (like ModuleLoaderState for the
+      // `internalBinding()` resolver) keyed by whatever it received from
+      // `unofficial_napi_create_env`; the same value MUST come back in
+      // callbacks or `GetModuleLoaderState(env)` lookups miss.
+      //
+      // V1 envs don't have a `bridge` field — env.id IS the value
+      // callbacks receive.  Branch on presence.
+      const envBridgeAddress = (env as unknown as { bridge?: { address: number } }).bridge?.address;
+      const envHandle = envBridgeAddress !== undefined ? envBridgeAddress : Number(env.id);
+      envs.set(envHandle, env);
 
       const scope = context.openScope(env);
-      scopeToEnv.set(Number(scope.id), Number(env.id));
+      scopeToEnv.set(Number(scope.id), envHandle);
 
       const view = dv(memory);
-      if (envOutPtr > 0) view.setUint32(envOutPtr, Number(env.id), true);
+      if (envOutPtr > 0) view.setUint32(envOutPtr, envHandle, true);
       if (scopeOutPtr > 0) view.setUint32(scopeOutPtr, Number(scope.id), true);
       return 0; // napi_ok
     },

@@ -43,10 +43,23 @@ type Stubs = {
 // for the other NapiEnvOffset32 fields v2 also writes.
 const V2_NAPI_ENV_STRUCT_SIZE = 64;
 
+/** Result of `createInstanceProxy` — the proxy AND an out-param holder
+ *  for v2's env-struct pointer.  V2's init flow reads
+ *  `instance.exports.emnapi_create_env()` and writes `envObject.id` at
+ *  `returned_ptr + 24`.  After `napiModule.init` returns, the caller
+ *  reads `envStructPtr.value + 24` from wasm memory to recover the env
+ *  id — Context.getEnv(id) then gives the Env object emnapi created.
+ *  Tracking the pointer here keeps the proxy single-source for the
+ *  v2 bridge state.  V1 init never calls our stub so `value` stays 0. */
+export interface InstanceProxyResult {
+  instance: WebAssembly.Instance;
+  envStructPtr: { value: number };
+}
+
 export function createInstanceProxy(
   realInstance: WebAssembly.Instance,
   stubs: Partial<Stubs> = {},
-): WebAssembly.Instance {
+): InstanceProxyResult {
   // edgejs.wasm exports `unofficial_napi_guest_malloc` + (post-rebuild)
   // `unofficial_napi_guest_free` so host JS can allocate guest-backed
   // memory for ArrayBuffer / typed-array bridging (see WASIX_TODO.md
@@ -70,11 +83,16 @@ export function createInstanceProxy(
     // contract (it's not a napi-rs addon — it IS the runtime).  Returning 0
     // tells emnapi "no exports to register," which is harmless.
     napi_register_wasm_v1: () => 0,
-    // V2 cutover stubs — see Stubs type comment for the protocol.  We
-    // emit one allocation per init; emnapi-side `_emnapi_delete_env`
-    // happens on Context destroy which is process-exit (no real leak).
+    // V2 cutover stubs — see Stubs type comment for the protocol.  The
+    // pointer returned by `emnapi_create_env` is captured on
+    // `envStructPtr.value` so `bindInstance` can read the env id back
+    // from wasm memory after `napiModule.init` writes it at offset+24.
     emnapi_create_env: typeof guestMalloc === "function"
-      ? () => (guestMalloc as (n: number) => number)(V2_NAPI_ENV_STRUCT_SIZE)
+      ? () => {
+          const ptr = (guestMalloc as (n: number) => number)(V2_NAPI_ENV_STRUCT_SIZE);
+          envStructPtr.value = ptr;
+          return ptr;
+        }
       : () => {
           throw new Error(
             "emnapi_create_env stub: wasm has no guest allocator " +
@@ -85,6 +103,11 @@ export function createInstanceProxy(
       ? (ptr: number) => { (guestFree as (p: number) => void)(ptr); }
       : () => { /* leak; pre-rebuild wasm has no guest_free */ },
   };
+
+  // Out-param: v2's init flow writes envObject.id at envStructPtr.value
+  // + 24.  V1 init never calls our emnapi_create_env stub, so the value
+  // stays 0 — bindInstance can use 0 as "v2 init did NOT run" signal.
+  const envStructPtr: { value: number } = { value: 0 };
   const merged = { ...defaultStubs, ...stubs };
 
   const proxiedExports = new Proxy(realInstance.exports, {
@@ -102,10 +125,12 @@ export function createInstanceProxy(
     },
   });
 
-  return new Proxy(realInstance, {
+  const instance = new Proxy(realInstance, {
     get(target, key, receiver) {
       if (key === "exports") return proxiedExports;
       return Reflect.get(target, key, receiver);
     },
   });
+
+  return { instance, envStructPtr };
 }

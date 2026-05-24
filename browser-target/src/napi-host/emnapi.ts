@@ -84,6 +84,10 @@ export { v8 as v8Plugin, asyncWork as asyncWorkPlugin, tsfn as tsfnPlugin } from
 export interface ContextRuntimeAccess {
   jsValueFromNapiValue<T = unknown>(napiValue: number | bigint): T | undefined;
   napiValueFromJsValue(value: unknown): number | bigint;
+  /** Lookup an Env by its `id`.  Public on both v1 and v2 Context.
+   *  Used after `napiModule.init` (v2) to recover the env emnapi
+   *  created — see `napi-host/index.ts:bindInstance` `v2InitEnv` flow. */
+  getEnv(envId: number | bigint): import("@emnapi/runtime").Env | undefined;
 }
 export interface ContextEnvLookup {
   getEnv<T = unknown>(envId: number | bigint): T | undefined;

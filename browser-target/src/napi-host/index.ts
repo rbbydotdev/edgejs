@@ -475,6 +475,12 @@ export function getWasmEnv(): Env | undefined {
 export function createNapiHost(opts: NapiHostOptions): NapiHost {
   const context = createContext();
   const envs = new Map<number, Env>();
+  // V2 cutover: env that v2's init flow created (via our
+  // emnapi_create_env stub).  Populated in bindInstance after
+  // napiModule.init; passed to createUnofficialNapi via the holder so
+  // unofficial_napi_create_env can reuse it (avoids v1 createEnv
+  // signature mismatch on v2).  Stays null on v1.
+  const v2InitEnvHolder: { value: Env | null } = { value: null };
 
   // Build emnapi's NapiModule (without instantiating any wasm yet).  This
   // pre-populates `napiModule.imports.napi` with all standard napi_* fns.
@@ -550,7 +556,7 @@ export function createNapiHost(opts: NapiHostOptions): NapiHost {
     context,
     memory: opts.memory,
     envs,
-    napiModule: napiModule as unknown as { envObject?: Env },
+    v2InitEnvHolder,
     builtinOverrides: builtinOverridesMap,
     postLog: opts.postLog,
     // E9: route through the holder — wasm-side process.exit() lands here.
@@ -645,7 +651,7 @@ export function createNapiHost(opts: NapiHostOptions): NapiHost {
       if (typeof malloc === "function") {
         wasmMallocImpl = malloc as (n: number) => number;
       }
-      const proxied = createInstanceProxy(realInstance);
+      const { instance: proxied, envStructPtr } = createInstanceProxy(realInstance);
 
       // Track JS-driven wasm re-entries.  emnapi's napi callback
       // dispatch + setImmediate / next-tick handlers reach wasm via
@@ -691,6 +697,31 @@ export function createNapiHost(opts: NapiHostOptions): NapiHost {
         memory: opts.memory,
         table: wrappedTable,
       });
+
+      // V2 cutover: v2's init flow allocated an env struct via our
+      // `emnapi_create_env` stub (instance-proxy.ts) and wrote
+      // `envObject.id` at `envStructPtr.value + 24`.  After init the
+      // module-level `emnapiEnv` reference (closure-private inside
+      // emnapi-core.js) holds the Env, but napiModule.envObject is
+      // already deleted (emnapi-core.js:407).  Recover the env id from
+      // memory and stash the Env so `unofficial_napi_create_env` can
+      // reuse it — calling context.createEnv again with v1 args would
+      // fail because v2's signature is (filename, version, bridge,
+      // nodeBinding) not (filename, version, vppp, vp, abort, binding).
+      //
+      // envStructPtr.value === 0 means v1 init ran (our stub never
+      // fired), so leave v2InitEnv unset and the v1 fallback path will
+      // create the env itself.
+      if (envStructPtr.value !== 0) {
+        const dv = new DataView(opts.memory.buffer);
+        // Struct address v2 writes to is (ptr + 8 - 8 + 24) = ptr + 24
+        // per emnapi-core.js:384.
+        const envId = dv.getUint32(envStructPtr.value + 24, true);
+        const env = context.getEnv(envId);
+        if (env) {
+          v2InitEnvHolder.value = env;
+        }
+      }
     },
   };
   activeNapiHost = host;
