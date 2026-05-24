@@ -33,7 +33,7 @@ see [ARCHIVE.md](./ARCHIVE.md).
 | Outbound `http.request` (Node-honest default) | ✅ → throws | `outbound-throw` policy |
 | `import` (ESM) | ❌ | `module_wrap_*` are stubs |
 | OPFS persistence | ❌ | in-memory only |
-| `worker_threads` | 🟡 phase 1 | `new Worker()` spawns (host+wasm) pair; `exit` event fires.  postMessage / terminate / MessageChannel are phase 2+.  See [docs/worker-threads-design.md](./docs/worker-threads-design.md) |
+| `worker_threads` | 🟡 phase 1+2 | `new Worker()` + `exit` (phase 1) + `worker.postMessage` / `parentPort.postMessage` (phase 2).  terminate / error event / workerData exposure / MessageChannel are phase 3+.  See [docs/worker-threads-design.md](./docs/worker-threads-design.md) |
 | `child_process` | ❌ | needs subprocess model |
 | Concurrent HTTP | ✅ | ring of 16 SAB slots; SW Map keyed by reqId |
 | Async `fs.readFile` / `fs.writeFile` | ✅ | cross-thread SAB file table; pool workers share data region with main |
@@ -312,11 +312,25 @@ the browser-target tree.
   mode (`new Worker(code, { eval: true })`) and data-URL mode fall
   through to the original WorkerImpl (which throws on browser-target).
   Promote to default once phase 2 (postMessage) is proven.
-- `worker-threads-no-postmessage` — phase 1 does NOT support
-  `parentPort.postMessage` or `worker.postMessage` (lib's
-  `messagePort.postMessage` is a no-op stub).  workerData is plumbed
-  end-to-end through the spawn payload but not exposed to user code in
-  the child.  Phase 2 wires the actual postMessage channel.
+- ~~`worker-threads-no-postmessage`~~ — **RESOLVED** by phase 2.
+  `worker.postMessage(data)` and `parentPort.postMessage(data)` now
+  shuttle structured-clone JS values between parent and child via the
+  same wasm→host→main→host→wasm RPC chain that phase 1 used for spawn
+  and exit.  cross-context-marshal.ts wire format handles primitives,
+  plain objects, arrays, typed arrays, ArrayBuffers, Map/Set/RegExp,
+  Date, and circular refs by value.  See
+  `tests/js/worker-threads-message-roundtrip.js` for the end-to-end
+  proof (parent → child → parent roundtrip with a nested object).
+- `worker-threads-no-workerdata` — `options.workerData` is plumbed
+  end-to-end as bytes through `__edgeSpawnNodeWorker` (phase 1 set up
+  the payload, phase 2 wires marshal) but the child-side policy patch
+  does NOT yet unmarshal the bytes into `require('worker_threads').
+  workerData`.  Deferred to phase 2.x because the marshal call must
+  happen inside lib's `Worker` constructor (which reads `options.
+  workerData` at line 342) AFTER our EdgeWorkerImpl returns — needs a
+  post-construction "first message" trick or wrapping the user-facing
+  Worker class with a subclass that extracts options.workerData and
+  marshals it via a side-channel.
 - `worker-threads-no-terminate` — `worker.terminate()` is a no-op.
   Phase 3 wires a 'terminate' message that the child wasm honors.
 - `worker-threads-no-error-event` — uncaught child exceptions exit the

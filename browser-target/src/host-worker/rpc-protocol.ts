@@ -598,6 +598,60 @@ export const OP_DELIVER_USER_WORKER_EXIT = OP_DOMAIN_HOST_API | 0x0006;
 // Status: REPLY_STATUS_OK once the parent-side callback has been
 //   queued (not necessarily invoked — invocation happens on parent's
 //   event loop turn).
+
+// ── Worker_threads phase 2: postMessage ─────────────────────────────
+//
+// Bidirectional structured-clone message passing between a parent
+// (host+wasm) pair and its spawned user-worker pair.  Same chain shape
+// as phase 1's spawn/exit ops: forward = wasm→host sync RPC, reverse =
+// host→wasm via reverseRpcServer; main page routes between the host
+// workers.  Marshaled bytes use the wire format from
+// `cross-context-marshal.ts` (see `host-worker/marshal-postmessage.ts`
+// for the wrapper).
+
+export const OP_WORKER_POST_MESSAGE_TO_CHILD = OP_DOMAIN_HOST_API | 0x0007;
+// Forward op (wasm → host).  Parent's wasm runtime calls this when
+// user JS does `worker.postMessage(data)`.  The host handler fire-and-
+// forget posts to main with the workerId + marshaled bytes; main routes
+// to the child host which fires OP_DELIVER_MESSAGE_TO_CHILD.
+//
+// Request payload layout (LE u32):
+//   [u32 workerId][u32 bytes_len][marshaled bytes]
+// Reply payload: empty.
+// Status: REPLY_STATUS_OK on enqueue (NOT on delivery — delivery is
+//   asynchronous from the parent's perspective, matching Node's
+//   postMessage semantics).
+
+export const OP_WORKER_POST_MESSAGE_TO_PARENT = OP_DOMAIN_HOST_API | 0x0008;
+// Forward op (wasm → host).  Child's wasm runtime calls this when user
+// JS does `parentPort.postMessage(data)`.  Child host fire-and-forget
+// posts to main; main looks up the parent host via the userWorkers
+// registry and forwards via OP_DELIVER_MESSAGE_FROM_CHILD.
+//
+// Request payload layout (LE u32):
+//   [u32 bytes_len][marshaled bytes]
+// (No workerId field; child knows its own workerId implicitly — main
+// derives the routing target from the source host's id.)
+// Reply payload: empty.
+
+export const OP_DELIVER_MESSAGE_TO_CHILD = OP_DOMAIN_HOST_API | 0x0009;
+// Reverse op (host → wasm).  Fires from the child host's reverseClient
+// into the child wasm runtime when a message arrives from the parent.
+// Child wasm's handler invokes `globalThis.__edgeDispatchMessageToChild`
+// which the policy patch (worker-threads-per-thread.ts) wires to
+// `parentPort.emit('message', unpacked)`.
+//
+// Request payload layout (LE u32):
+//   [u32 bytes_len][marshaled bytes]
+
+export const OP_DELIVER_MESSAGE_FROM_CHILD = OP_DOMAIN_HOST_API | 0x000A;
+// Reverse op (host → wasm).  Fires from the parent host's reverseClient
+// into the parent wasm runtime when a message arrives from a child.
+// Parent wasm's handler invokes `globalThis.__edgeDispatchMessageFromChild`
+// which looks up the Worker instance in `workerById` and emits 'message'.
+//
+// Request payload layout (LE u32):
+//   [u32 workerId][u32 bytes_len][marshaled bytes]
 // E22-C: same semantics as OP_SUBTLE_HMAC, but the key AND data bytes
 // travel through the shared napi-host-memory SAB.  Lets us HMAC inputs
 // whose combined (key + data) size exceeds the ~4 KiB single-slot

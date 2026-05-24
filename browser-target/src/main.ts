@@ -1166,6 +1166,73 @@ function attachHostWorkerMessageHandlers(handle: HostWorkerHandle): void {
       });
       return;
     }
+    // Phase 2: parent→child postMessage routing.
+    // Parent host posts `worker-message-to-child {workerId, bytes}`; we
+    // look up the child host by workerId in `userWorkers` and forward
+    // via postMessage as `deliver-message-to-child`.
+    if (data?.kind === "worker-message-to-child") {
+      const wid = (data as { workerId?: number }).workerId;
+      const bytes = (data as { bytes?: Uint8Array }).bytes;
+      if (typeof wid !== "number" || !(bytes instanceof Uint8Array)) {
+        append(`worker-threads: worker-message-to-child missing fields`, "warn");
+        return;
+      }
+      const entry = userWorkers.get(wid);
+      if (!entry) {
+        append(`worker-threads: worker-message-to-child #${wid} but no such user worker`, "warn");
+        return;
+      }
+      entry.childHostHandle.worker.postMessage({
+        kind: "deliver-message-to-child",
+        bytes,
+      });
+      return;
+    }
+    // Phase 2: child→parent postMessage routing.
+    // Child host posts `worker-message-to-parent {childHostWorkerId, bytes}`;
+    // we scan `userWorkers` to find the entry whose childHostHandle.id
+    // matches, then forward to that entry's parent host as
+    // `deliver-message-from-child {workerId, bytes}`.
+    if (data?.kind === "worker-message-to-parent") {
+      const chid = (data as { childHostWorkerId?: number }).childHostWorkerId;
+      const bytes = (data as { bytes?: Uint8Array }).bytes;
+      if (typeof chid !== "number" || !(bytes instanceof Uint8Array)) {
+        append(`worker-threads: worker-message-to-parent missing fields`, "warn");
+        return;
+      }
+      let entry: UserWorkerEntry | undefined;
+      for (const e of userWorkers.values()) {
+        if (e.childHostHandle.id === chid) { entry = e; break; }
+      }
+      if (!entry) {
+        append(`worker-threads: worker-message-to-parent from host #${chid} but no matching user worker`, "warn");
+        return;
+      }
+      // Find the parent host worker (same lookup pattern as
+      // handleUserWorkerExit).  parentHostWorkerId=0 is the primary
+      // host; otherwise scan userWorkers.
+      let parentHostWorker: Worker | null = null;
+      if (hostHandle && hostHandle.id === entry.parentHostWorkerId) {
+        parentHostWorker = hostHandle.worker;
+      } else {
+        for (const e of userWorkers.values()) {
+          if (e.childHostHandle.id === entry.parentHostWorkerId) {
+            parentHostWorker = e.childHostHandle.worker;
+            break;
+          }
+        }
+      }
+      if (!parentHostWorker) {
+        append(`worker-threads: worker-message-to-parent #${entry.workerId} but parent host #${entry.parentHostWorkerId} not found`, "warn");
+        return;
+      }
+      parentHostWorker.postMessage({
+        kind: "deliver-message-from-child",
+        workerId: entry.workerId,
+        bytes,
+      });
+      return;
+    }
   });
 }
 

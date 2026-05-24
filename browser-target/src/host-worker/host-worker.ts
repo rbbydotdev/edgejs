@@ -43,6 +43,10 @@ import {
   OP_SUBTLE_HMAC_VIA_NAPI_MEM,
   OP_SPAWN_USER_WORKER,
   OP_DELIVER_USER_WORKER_EXIT,
+  OP_WORKER_POST_MESSAGE_TO_CHILD,
+  OP_WORKER_POST_MESSAGE_TO_PARENT,
+  OP_DELIVER_MESSAGE_TO_CHILD,
+  OP_DELIVER_MESSAGE_FROM_CHILD,
   DIGEST_STAGING_OFFSET,
   REPLY_STATUS_OK,
   REPLY_STATUS_HOST_ERROR,
@@ -317,6 +321,42 @@ function deliverUserWorkerExit(workerId: number, exitCode: number): void {
   void reverseClient.call(OP_DELIVER_USER_WORKER_EXIT, hostWorkerId, 0, payload)
     .catch((err) => {
       log(`deliver-user-worker-exit: reverseClient.call threw: ${(err as Error).message}`, "warn");
+    });
+}
+
+// Phase 2 postMessage: deliver a message FROM a child user-worker into
+// this host's wasm runtime (which is the PARENT in this direction —
+// main has already routed cross-host based on the userWorkers registry).
+function deliverMessageFromChild(workerId: number, bytes: Uint8Array): void {
+  if (!reverseClient) {
+    log(`deliver-message-from-child: reverseClient not attached (workerId=${workerId})`, "warn");
+    return;
+  }
+  const payload = new Uint8Array(8 + bytes.byteLength);
+  const dv = new DataView(payload.buffer);
+  dv.setUint32(0, workerId, true);
+  dv.setUint32(4, bytes.byteLength, true);
+  payload.set(bytes, 8);
+  void reverseClient.call(OP_DELIVER_MESSAGE_FROM_CHILD, hostWorkerId, 0, payload)
+    .catch((err) => {
+      log(`deliver-message-from-child: reverseClient.call threw: ${(err as Error).message}`, "warn");
+    });
+}
+
+// Phase 2 postMessage: deliver a message TO the wasm runtime running
+// on this host (which is the CHILD user-worker in this direction).
+function deliverMessageToChild(bytes: Uint8Array): void {
+  if (!reverseClient) {
+    log(`deliver-message-to-child: reverseClient not attached`, "warn");
+    return;
+  }
+  const payload = new Uint8Array(4 + bytes.byteLength);
+  const dv = new DataView(payload.buffer);
+  dv.setUint32(0, bytes.byteLength, true);
+  payload.set(bytes, 4);
+  void reverseClient.call(OP_DELIVER_MESSAGE_TO_CHILD, hostWorkerId, 0, payload)
+    .catch((err) => {
+      log(`deliver-message-to-child: reverseClient.call threw: ${(err as Error).message}`, "warn");
     });
 }
 
@@ -815,6 +855,93 @@ function registerHandlers(srv: RpcServer): void {
     }
   });
 
+  // Worker_threads phase 2: parent's wasm calls this when user JS does
+  // `worker.postMessage(data)`.  We unframe (workerId, bytes) and post
+  // to main, which routes to the child host's `deliver-message-to-child`
+  // listener.  Fire-and-forget — sync RPC ack means "enqueued for
+  // delivery," not "delivered" (matching Node's postMessage semantics).
+  //
+  // Request payload layout (LE u32):
+  //   [u32 workerId][u32 bytes_len][marshaled bytes]
+  srv.register(OP_WORKER_POST_MESSAGE_TO_CHILD, async (_ctx, args) => {
+    try {
+      if (args.byteLength < 8) {
+        return {
+          payload: new TextEncoder().encode("post-message-to-child: args too short"),
+          status: REPLY_STATUS_INVALID_ARGS,
+        };
+      }
+      const dv = new DataView(args.buffer, args.byteOffset, args.byteLength);
+      const workerId = dv.getUint32(0, true);
+      const bytesLen = dv.getUint32(4, true);
+      if (8 + bytesLen > args.byteLength) {
+        return {
+          payload: new TextEncoder().encode("post-message-to-child: bytes overrun payload"),
+          status: REPLY_STATUS_INVALID_ARGS,
+        };
+      }
+      // Copy the marshaled-bytes view — args aliases the SAB slot which
+      // may be reused before main reads it via postMessage.  structured-
+      // cloneable transferrable; we don't transfer because the caller
+      // (wasm) may still hold a reference.
+      const bytes = new Uint8Array(bytesLen);
+      bytes.set(new Uint8Array(args.buffer, args.byteOffset + 8, bytesLen));
+      self.postMessage({
+        kind: "worker-message-to-child",
+        parentHostWorkerId: hostWorkerId,
+        workerId,
+        bytes,
+      });
+      return { payload: new Uint8Array(0), status: REPLY_STATUS_OK };
+    } catch (e) {
+      const msg = (e instanceof Error ? e.message : String(e)) || "post-message-to-child threw";
+      return {
+        payload: new TextEncoder().encode(msg),
+        status: REPLY_STATUS_HOST_ERROR,
+      };
+    }
+  });
+
+  // Worker_threads phase 2: child's wasm calls this when user JS does
+  // `parentPort.postMessage(data)`.  No workerId in the payload — main
+  // looks up the parent's host via the userWorkers registry keyed on
+  // THIS host's id.
+  //
+  // Request payload layout (LE u32):
+  //   [u32 bytes_len][marshaled bytes]
+  srv.register(OP_WORKER_POST_MESSAGE_TO_PARENT, async (_ctx, args) => {
+    try {
+      if (args.byteLength < 4) {
+        return {
+          payload: new TextEncoder().encode("post-message-to-parent: args too short"),
+          status: REPLY_STATUS_INVALID_ARGS,
+        };
+      }
+      const dv = new DataView(args.buffer, args.byteOffset, args.byteLength);
+      const bytesLen = dv.getUint32(0, true);
+      if (4 + bytesLen > args.byteLength) {
+        return {
+          payload: new TextEncoder().encode("post-message-to-parent: bytes overrun payload"),
+          status: REPLY_STATUS_INVALID_ARGS,
+        };
+      }
+      const bytes = new Uint8Array(bytesLen);
+      bytes.set(new Uint8Array(args.buffer, args.byteOffset + 4, bytesLen));
+      self.postMessage({
+        kind: "worker-message-to-parent",
+        childHostWorkerId: hostWorkerId,
+        bytes,
+      });
+      return { payload: new Uint8Array(0), status: REPLY_STATUS_OK };
+    } catch (e) {
+      const msg = (e instanceof Error ? e.message : String(e)) || "post-message-to-parent threw";
+      return {
+        payload: new TextEncoder().encode(msg),
+        status: REPLY_STATUS_HOST_ERROR,
+      };
+    }
+  });
+
   // F-1: NAPI handlers.  Each one delegates to host's emnapi context.
   //
   // Request payload layout: 8 bytes = (envHandle u32, resultPtr u32).
@@ -1044,6 +1171,13 @@ self.addEventListener("message", (e: MessageEvent) => {
     kind: "deliver-user-worker-exit";
     workerId: number;
     exitCode: number;
+  } | {
+    kind: "deliver-message-to-child";
+    bytes: Uint8Array;
+  } | {
+    kind: "deliver-message-from-child";
+    workerId: number;
+    bytes: Uint8Array;
   }) | null;
   if (data?.kind === "reverse-echo") {
     void runReverseEcho(data.bytes ?? 32);
@@ -1055,6 +1189,14 @@ self.addEventListener("message", (e: MessageEvent) => {
   }
   if (data?.kind === "deliver-user-worker-exit") {
     deliverUserWorkerExit(data.workerId, data.exitCode);
+    return;
+  }
+  if (data?.kind === "deliver-message-to-child") {
+    deliverMessageToChild(data.bytes);
+    return;
+  }
+  if (data?.kind === "deliver-message-from-child") {
+    deliverMessageFromChild(data.workerId, data.bytes);
     return;
   }
   if (!data || data.kind !== "init") return;

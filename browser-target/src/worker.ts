@@ -49,7 +49,8 @@ import { attachRing as attachHostRing, type RingConfig as HostRingConfig } from 
 import { RpcClient } from "./host-worker/rpc-client";
 import { RpcServer } from "./host-worker/rpc-server";
 import { SyncRpcClient } from "./host-worker/rpc-client-sync";
-import { OP_PING, OP_WASM_ECHO, OP_SUBTLE_DIGEST, OP_SUBTLE_HMAC, OP_SUBTLE_DIGEST_VIA_NAPI_MEM, OP_SUBTLE_HMAC_VIA_NAPI_MEM, OP_NAPI_OPEN_HANDLE_SCOPE, OP_NAPI_CLOSE_HANDLE_SCOPE, OP_SPAWN_USER_WORKER, OP_DELIVER_USER_WORKER_EXIT, DIGEST_STAGING_OFFSET, REPLY_STATUS_OK, REPLY_STATUS_INVALID_ARGS, REPLY_STATUS_HOST_ERROR } from "./host-worker/rpc-protocol";
+import { OP_PING, OP_WASM_ECHO, OP_SUBTLE_DIGEST, OP_SUBTLE_HMAC, OP_SUBTLE_DIGEST_VIA_NAPI_MEM, OP_SUBTLE_HMAC_VIA_NAPI_MEM, OP_NAPI_OPEN_HANDLE_SCOPE, OP_NAPI_CLOSE_HANDLE_SCOPE, OP_SPAWN_USER_WORKER, OP_DELIVER_USER_WORKER_EXIT, OP_WORKER_POST_MESSAGE_TO_CHILD, OP_WORKER_POST_MESSAGE_TO_PARENT, OP_DELIVER_MESSAGE_TO_CHILD, OP_DELIVER_MESSAGE_FROM_CHILD, DIGEST_STAGING_OFFSET, REPLY_STATUS_OK, REPLY_STATUS_INVALID_ARGS, REPLY_STATUS_HOST_ERROR } from "./host-worker/rpc-protocol";
+import { packPostMessage, unpackPostMessage } from "./host-worker/marshal-postmessage";
 import { registerWasmCallbackInvoker, createCallbackDepthCounter } from "./host-worker/callback-dispatch";
 const HOST_RPC_RING_CONFIG: HostRingConfig = { numSlots: 32, slotSize: 4 * 1024 };
 let hostRpcClient: RpcClient | null = null;
@@ -334,6 +335,68 @@ function installSpawnNodeWorkerGlobal(): void {
   (globalThis as { __edgeSpawnNodeWorker?: SpawnNodeWorker }).__edgeSpawnNodeWorker = impl;
 }
 
+// Worker-threads phase 2: postMessage globals.  Pure plumbing — they
+// shuttle marshaled bytes through sync forward RPC (wasm → host → main
+// → other host → reverse RPC → wasm).  The actual JS-value
+// pack/unpack is done by the policy patch (worker-threads-per-thread)
+// which calls these AFTER marshaling, so we keep these globals tiny
+// and bytes-only.
+type PostMessageToWorker = (workerId: number, bytes: Uint8Array) => void;
+type PostMessageFromWorker = (bytes: Uint8Array) => void;
+
+function installPostMessageGlobals(): void {
+  // Parent-side: send a message to a specific child by workerId.
+  const toWorker: PostMessageToWorker = (workerId, bytes) => {
+    if (!hostRpcSyncClient) {
+      throw new Error("__edgePostMessageToWorker: host RPC sync client not attached");
+    }
+    const payload = new Uint8Array(4 + 4 + bytes.byteLength);
+    const dv = new DataView(payload.buffer);
+    dv.setUint32(0, workerId, true);
+    dv.setUint32(4, bytes.byteLength, true);
+    payload.set(bytes, 8);
+    const reply = hostRpcSyncClient.callSync(
+      OP_WORKER_POST_MESSAGE_TO_CHILD, hostWorkerId, 0, payload,
+    );
+    if (reply.status !== REPLY_STATUS_OK) {
+      const msg = new TextDecoder().decode(reply.payload) || `post-to-worker status=${reply.status}`;
+      throw new Error("__edgePostMessageToWorker: " + msg);
+    }
+  };
+  (globalThis as { __edgePostMessageToWorker?: PostMessageToWorker }).__edgePostMessageToWorker = toWorker;
+
+  // Child-side: send a message back to the parent.  No workerId here —
+  // main derives the routing target from the source host's id via the
+  // userWorkers registry.
+  const fromWorker: PostMessageFromWorker = (bytes) => {
+    if (!hostRpcSyncClient) {
+      throw new Error("__edgePostMessageFromWorker: host RPC sync client not attached");
+    }
+    const payload = new Uint8Array(4 + bytes.byteLength);
+    const dv = new DataView(payload.buffer);
+    dv.setUint32(0, bytes.byteLength, true);
+    payload.set(bytes, 4);
+    const reply = hostRpcSyncClient.callSync(
+      OP_WORKER_POST_MESSAGE_TO_PARENT, hostWorkerId, 0, payload,
+    );
+    if (reply.status !== REPLY_STATUS_OK) {
+      const msg = new TextDecoder().decode(reply.payload) || `post-to-parent status=${reply.status}`;
+      throw new Error("__edgePostMessageFromWorker: " + msg);
+    }
+  };
+  (globalThis as { __edgePostMessageFromWorker?: PostMessageFromWorker }).__edgePostMessageFromWorker = fromWorker;
+
+  // Phase 2: expose marshal pack/unpack as globals so the policy
+  // patch's JS string (which runs in this wasm runtime's V8 realm)
+  // can serialize JS values into the wire format
+  // `cross-context-marshal.ts` defines.  The policy can't import TS
+  // modules; calling these globals is its only path to marshaling.
+  (globalThis as { __edgePackPostMessage?: (v: unknown) => Uint8Array }).__edgePackPostMessage =
+    packPostMessage;
+  (globalThis as { __edgeUnpackPostMessage?: (b: Uint8Array) => unknown }).__edgeUnpackPostMessage =
+    unpackPostMessage;
+}
+
 // Worker-threads phase 1: user-worker bootstrap state.  Set when main
 // posts `edge-user-worker-bootstrap` to a child wasm runtime worker
 // (which it does INSTEAD of `start` for user-workers).  The boot path
@@ -395,6 +458,7 @@ self.addEventListener("message", (e: MessageEvent) => {
     installHostDigestSyncGlobal();
     installHostHmacSyncGlobal();
     installSpawnNodeWorkerGlobal();
+    installPostMessageGlobals();
     // L4 reverse channel — host can send requests TO this worker.
     // Reverse-direction SABs come in the same message.
     const reverseReqSab = (data as { reverseRequestSab?: SharedArrayBuffer }).reverseRequestSab;
@@ -436,6 +500,90 @@ self.addEventListener("message", (e: MessageEvent) => {
             }
           } else {
             post("log", { text: `[runtime] OP_DELIVER_USER_WORKER_EXIT #${workerId}: no dispatcher registered`, level: "warn" });
+          }
+          return { payload: new Uint8Array(0), status: REPLY_STATUS_OK };
+        } catch (e) {
+          return {
+            payload: new TextEncoder().encode((e as Error).message),
+            status: REPLY_STATUS_HOST_ERROR,
+          };
+        }
+      });
+      // Worker-threads phase 2: parent's wasm receives a message from a
+      // child user-worker via this reverse op.  Bytes are already
+      // structured-clone-marshaled (cross-context-marshal wire format);
+      // we hand them off to the policy patch's dispatcher which
+      // unmarshals and emits 'message' on the right Worker instance.
+      reverseRpcServer.register(OP_DELIVER_MESSAGE_FROM_CHILD, async (_ctx, args) => {
+        try {
+          if (args.byteLength < 8) {
+            return {
+              payload: new TextEncoder().encode("deliver-message-from-child: args too short"),
+              status: REPLY_STATUS_INVALID_ARGS,
+            };
+          }
+          const dv = new DataView(args.buffer, args.byteOffset, args.byteLength);
+          const workerId = dv.getUint32(0, true);
+          const bytesLen = dv.getUint32(4, true);
+          if (args.byteLength < 8 + bytesLen) {
+            return {
+              payload: new TextEncoder().encode("deliver-message-from-child: bytes truncated"),
+              status: REPLY_STATUS_INVALID_ARGS,
+            };
+          }
+          // The marshaled bytes view aliases the args buffer; copy so
+          // the dispatcher (which may queue) owns its own memory.
+          const bytes = new Uint8Array(bytesLen);
+          bytes.set(new Uint8Array(args.buffer, args.byteOffset + 8, bytesLen));
+          type FromChildDispatcher = (workerId: number, bytes: Uint8Array) => void;
+          const dispatch = (globalThis as { __edgeDispatchMessageFromChild?: FromChildDispatcher })
+            .__edgeDispatchMessageFromChild;
+          if (typeof dispatch === "function") {
+            try { dispatch(workerId, bytes); }
+            catch (err) {
+              post("log", { text: `[runtime] OP_DELIVER_MESSAGE_FROM_CHILD dispatch threw: ${(err as Error).message}`, level: "warn" });
+            }
+          } else {
+            post("log", { text: `[runtime] OP_DELIVER_MESSAGE_FROM_CHILD #${workerId}: no dispatcher registered`, level: "warn" });
+          }
+          return { payload: new Uint8Array(0), status: REPLY_STATUS_OK };
+        } catch (e) {
+          return {
+            payload: new TextEncoder().encode((e as Error).message),
+            status: REPLY_STATUS_HOST_ERROR,
+          };
+        }
+      });
+      // Worker-threads phase 2: child's wasm receives a message from
+      // its parent via this reverse op.  Same shape minus workerId.
+      reverseRpcServer.register(OP_DELIVER_MESSAGE_TO_CHILD, async (_ctx, args) => {
+        try {
+          if (args.byteLength < 4) {
+            return {
+              payload: new TextEncoder().encode("deliver-message-to-child: args too short"),
+              status: REPLY_STATUS_INVALID_ARGS,
+            };
+          }
+          const dv = new DataView(args.buffer, args.byteOffset, args.byteLength);
+          const bytesLen = dv.getUint32(0, true);
+          if (args.byteLength < 4 + bytesLen) {
+            return {
+              payload: new TextEncoder().encode("deliver-message-to-child: bytes truncated"),
+              status: REPLY_STATUS_INVALID_ARGS,
+            };
+          }
+          const bytes = new Uint8Array(bytesLen);
+          bytes.set(new Uint8Array(args.buffer, args.byteOffset + 4, bytesLen));
+          type ToChildDispatcher = (bytes: Uint8Array) => void;
+          const dispatch = (globalThis as { __edgeDispatchMessageToChild?: ToChildDispatcher })
+            .__edgeDispatchMessageToChild;
+          if (typeof dispatch === "function") {
+            try { dispatch(bytes); }
+            catch (err) {
+              post("log", { text: `[runtime] OP_DELIVER_MESSAGE_TO_CHILD dispatch threw: ${(err as Error).message}`, level: "warn" });
+            }
+          } else {
+            post("log", { text: `[runtime] OP_DELIVER_MESSAGE_TO_CHILD: no dispatcher registered`, level: "warn" });
           }
           return { payload: new Uint8Array(0), status: REPLY_STATUS_OK };
         } catch (e) {
@@ -1321,6 +1469,15 @@ self.onmessage = (e) => {
       bootstrapScript,
       workerData: workerData ?? new Uint8Array(0),
     };
+    // Phase 2: surface user-worker mode + workerData bytes on globalThis
+    // BEFORE boot() runs lib JS.  The worker-threads-per-thread policy
+    // patch reads __edgeIsUserWorker to know whether to install the
+    // parentPort export on lib/worker_threads.js; it reads
+    // __edgeUserWorkerDataBytes to unmarshal the workerData JS value
+    // exposed alongside parentPort.
+    (globalThis as { __edgeIsUserWorker?: boolean }).__edgeIsUserWorker = true;
+    (globalThis as { __edgeUserWorkerDataBytes?: Uint8Array }).__edgeUserWorkerDataBytes =
+      userWorkerMode.workerData;
     // The user script runs verbatim in edge.js's lib environment.  The
     // policy patch (worker-threads-per-thread.ts) constructs this for
     // file mode (= `require(<path>)`) or eval mode (= the code itself).
