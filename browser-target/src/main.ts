@@ -496,6 +496,51 @@ async function runF9SweepProbe(): Promise<void> {
     const handle = memU32[out / 4];
     results.push({ name: "define_class(empty)", status: r.status, ok: r.status === 0 && handle !== 0, detail: `status=${r.status} handle=${handle} ${r.errMsg ? `err=${r.errMsg}` : ""}` });
   }
+  // define_class with two property descriptors:
+  //   - "doIt" (instance method, attrs = writable | configurable)
+  //   - "Kind" (static accessor: getter only, attrs = configurable | static)
+  // 32 bytes per descriptor: utf8name, name, method, getter, setter, value, attributes, data.
+  {
+    const clsNameBytes = new TextEncoder().encode("ProbeClsProps");
+    const clsNamePtr = allocPtr(clsNameBytes.byteLength + 4);
+    memU8.set(clsNameBytes, clsNamePtr);
+
+    // Property name strings (nul-terminated for NAPI_AUTO_LENGTH path).
+    const doItBytes = new TextEncoder().encode("doIt\0");
+    const doItPtr = allocPtr(doItBytes.byteLength + 4);
+    memU8.set(doItBytes, doItPtr);
+    const kindBytes = new TextEncoder().encode("Kind\0");
+    const kindPtr = allocPtr(kindBytes.byteLength + 4);
+    memU8.set(kindBytes, kindPtr);
+
+    // Descriptor array: 2 × 32B = 64B.  8-byte aligned by allocPtr.
+    const propsPtr = allocPtr(64);
+    const propsDv = new DataView(hostHandle.napiMemorySab as unknown as ArrayBuffer);
+    // Desc 0 — "doIt" method, writable | configurable (1|4=5)
+    propsDv.setUint32(propsPtr +  0, doItPtr,    true); // utf8name
+    propsDv.setUint32(propsPtr +  4, 0,          true); // name
+    propsDv.setUint32(propsPtr +  8, 0xfeedaaaa, true); // method funcref
+    propsDv.setUint32(propsPtr + 12, 0,          true); // getter
+    propsDv.setUint32(propsPtr + 16, 0,          true); // setter
+    propsDv.setUint32(propsPtr + 20, 0,          true); // value
+    propsDv.setUint32(propsPtr + 24, 5,          true); // attrs = writable | configurable
+    propsDv.setUint32(propsPtr + 28, 0xbeefaaaa, true); // data
+    // Desc 1 — "Kind" static accessor (getter only), configurable | static (4|1024=1028)
+    propsDv.setUint32(propsPtr + 32, kindPtr,    true);
+    propsDv.setUint32(propsPtr + 36, 0,          true);
+    propsDv.setUint32(propsPtr + 40, 0,          true); // method
+    propsDv.setUint32(propsPtr + 44, 0xfeedbbbb, true); // getter funcref
+    propsDv.setUint32(propsPtr + 48, 0,          true); // setter
+    propsDv.setUint32(propsPtr + 52, 0,          true); // value
+    propsDv.setUint32(propsPtr + 56, 1028,       true); // attrs = configurable | static
+    propsDv.setUint32(propsPtr + 60, 0xbeefbbbb, true); // data
+
+    const out = allocPtr();
+    const r = await callOp(proto.OP_NAPI_DEFINE_CLASS, "define_class(2props)",
+      [1, clsNamePtr, clsNameBytes.byteLength, 0xfeed0300, 0xbeef0300, 2, propsPtr, out]);
+    const handle = memU32[out / 4];
+    results.push({ name: "define_class(2props)", status: r.status, ok: r.status === 0 && handle !== 0, detail: `status=${r.status} handle=${handle} ${r.errMsg ? `err=${r.errMsg}` : ""}` });
+  }
 
   // Emit per-op result + summary.
   for (const r of results) {

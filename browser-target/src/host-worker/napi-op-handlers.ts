@@ -918,12 +918,13 @@ export function makeNapiOpRegistry(napi: Record<string, NapiFn>): NapiOpRegistry
       // returned napi_value flow back to the wasm runtime worker via
       // OP_INVOKE_WASM_CALLBACK with R7+R8 cbinfo + arg marshaling.
       //
-      // #!~debt cluster-d-define-class-properties: napi_define_class
-      // currently supports only property_count=0 (no methods/getters
-      // on the class).  Decoding the napi_property_descriptor array
-      // and wrapping per-property funcrefs is left for follow-up; the
-      // common case (constructor-only classes wrapping native state)
-      // works today.  Tracked in NOTES.md.
+      // napi_define_class decodes the napi_property_descriptor array
+      // (32B stride per descriptor: utf8name, name, method, getter,
+      // setter, value, attributes, data) and wraps each method/
+      // getter/setter funcref via makeHostSideCallbackClosure.  Static
+      // properties (attributes & napi_static = 1024) install on the
+      // class object; instance properties on its prototype.  Mirrors
+      // emnapi-core.cjs.js:3791-3819.
       {
         const decodeUtf8Name = (
           mem: WebAssembly.Memory,
@@ -992,6 +993,14 @@ export function makeNapiOpRegistry(napi: Record<string, NapiFn>): NapiOpRegistry
           return { payload: EMPTY, status: 0 };
         });
 
+        // napi_property_attributes bits — duplicated here from
+        // js_native_api_types.h so the file is self-contained.
+        const NAPI_WRITABLE     = 1 << 0;
+        const NAPI_ENUMERABLE   = 1 << 1;
+        const NAPI_CONFIGURABLE = 1 << 2;
+        const NAPI_STATIC       = 1 << 10;
+        const PROP_DESCRIPTOR_STRIDE = 32;
+
         server.register(OP_NAPI_DEFINE_CLASS, async (_ctx, args) => {
           if (args.byteLength < 32) return err("napi handler: args too short for napi_define_class");
           const dv = new DataView(args.buffer, args.byteOffset, args.byteLength);
@@ -1001,7 +1010,7 @@ export function makeNapiOpRegistry(napi: Record<string, NapiFn>): NapiOpRegistry
           const ctorPtr       = dv.getUint32(12, true);
           const dataPtr       = dv.getUint32(16, true);
           const propertyCount = dv.getUint32(20, true);
-          // const propertiesPtr = dv.getUint32(24, true);
+          const propertiesPtr = dv.getUint32(24, true);
           const resultPtr     = dv.getUint32(28, true);
 
           const napiCtx = getNapiContext();
@@ -1012,15 +1021,12 @@ export function makeNapiOpRegistry(napi: Record<string, NapiFn>): NapiOpRegistry
           if (!ctorPtr || !resultPtr) {
             return { payload: EMPTY, status: 1 };
           }
+          if (propertyCount > 0 && !propertiesPtr) {
+            return { payload: EMPTY, status: 1 };
+          }
           const reverseClient = getHostSideReverseSyncClient();
           if (!reverseClient) {
             return err("napi handler: reverse sync client not ready for define_class");
-          }
-          if (propertyCount !== 0) {
-            // See cluster-d-define-class-properties debt above.
-            return err(
-              `napi handler: napi_define_class with property_count=${propertyCount} not yet supported (debt: cluster-d-define-class-properties)`,
-            );
           }
 
           const ctorClosure = makeHostSideCallbackClosure({
@@ -1037,11 +1043,88 @@ export function makeNapiOpRegistry(napi: Record<string, NapiFn>): NapiOpRegistry
           // from JS code (debugging) and Node API parity.
           const Klass = function (this: unknown, ...callArgs: unknown[]) {
             return ctorClosure.apply(this, callArgs);
-          } as unknown as { new (...a: unknown[]): unknown };
+          } as unknown as { new (...a: unknown[]): unknown } & Function;
           if (name) {
             try { Object.defineProperty(Klass, "name", { value: name }); }
             catch { /* non-fatal */ }
           }
+
+          // Decode + install per-property descriptors.  Mirrors emnapi's
+          // napi_define_class (emnapi-core.cjs.js:3791-3819) but builds
+          // per-funcref host closures via makeHostSideCallbackClosure
+          // instead of resolving against the host's stub wasmTable.
+          const memDv = new DataView(memory.buffer);
+          const handleStore = napiCtx.handleStore;
+          for (let i = 0; i < propertyCount; i++) {
+            const propPtr = propertiesPtr + i * PROP_DESCRIPTOR_STRIDE;
+            const pUtf8name = memDv.getUint32(propPtr,      true);
+            const pName     = memDv.getUint32(propPtr + 4,  true);
+            const pMethod   = memDv.getUint32(propPtr + 8,  true);
+            const pGetter   = memDv.getUint32(propPtr + 12, true);
+            const pSetter   = memDv.getUint32(propPtr + 16, true);
+            const pValue    = memDv.getUint32(propPtr + 20, true);
+            const pAttrs    = memDv.getUint32(propPtr + 24, true);
+            const pData     = memDv.getUint32(propPtr + 28, true);
+
+            let propertyKey: string | symbol;
+            if (pUtf8name) {
+              // NAPI_AUTO_LENGTH: emnapi uses -1 → look for nul.
+              propertyKey = decodeUtf8Name(memory, pUtf8name, 0xFFFFFFFF);
+            } else {
+              if (!pName) {
+                return { payload: EMPTY, status: 4 }; // napi_name_expected
+              }
+              const handle = handleStore.get(pName);
+              const v = handle?.value;
+              if (typeof v !== "string" && typeof v !== "symbol") {
+                return { payload: EMPTY, status: 4 };
+              }
+              propertyKey = v;
+            }
+
+            const target = (pAttrs & NAPI_STATIC) !== 0
+              ? (Klass as unknown as object)
+              : (Klass.prototype as object);
+
+            const desc: PropertyDescriptor = {
+              configurable: (pAttrs & NAPI_CONFIGURABLE) !== 0,
+              enumerable:   (pAttrs & NAPI_ENUMERABLE) !== 0,
+            };
+            if (pGetter || pSetter) {
+              if (pGetter) {
+                const gClosure = makeHostSideCallbackClosure({
+                  reverseClient, cbPtr: pGetter, dataPtr: pData, env,
+                  shape: CALLBACK_SHAPE_NAPI_CALLBACK,
+                });
+                desc.get = gClosure as () => unknown;
+              }
+              if (pSetter) {
+                const sClosure = makeHostSideCallbackClosure({
+                  reverseClient, cbPtr: pSetter, dataPtr: pData, env,
+                  shape: CALLBACK_SHAPE_NAPI_CALLBACK,
+                });
+                desc.set = sClosure as (v: unknown) => void;
+              }
+            } else if (pMethod) {
+              const mClosure = makeHostSideCallbackClosure({
+                reverseClient, cbPtr: pMethod, dataPtr: pData, env,
+                shape: CALLBACK_SHAPE_NAPI_CALLBACK,
+              });
+              desc.value = mClosure;
+              desc.writable = (pAttrs & NAPI_WRITABLE) !== 0;
+            } else {
+              // Plain value property; deref napi_value via handleStore.
+              const handle = handleStore.get(pValue);
+              desc.value = handle?.value;
+              desc.writable = (pAttrs & NAPI_WRITABLE) !== 0;
+            }
+            try {
+              Object.defineProperty(target, propertyKey, desc);
+            } catch (e) {
+              return err(`napi handler: defineProperty failed for "${String(propertyKey)}": ${(e as Error).message}`);
+            }
+          }
+
           const handle = napiCtx.addToCurrentScope(Klass);
           new DataView(memory.buffer).setUint32(resultPtr, handle.id >>> 0, true);
           return { payload: EMPTY, status: 0 };
