@@ -1,0 +1,23 @@
+browser-target/vite.config.ts
+  s_7bec0ecbfcdcd0::t_8e787ce2fdc461 22-34
+NOTES.md
+  s_7bec0ecbfcdcd0::t_2f6420220b82c5 462-481
+browser-target/src/napi-host/unofficial.ts
+  s_7bec0ecbfcdcd0::t_e9b0c4610c8c6a 314-328,331
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "ae592e63ffab69e71e0c112375b41f2c746d2289",
+  "prompts": {},
+  "sessions": {
+    "s_7bec0ecbfcdcd0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d560d5ae-265f-44ae-89c4-d35659b3ab9e",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
