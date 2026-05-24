@@ -34,6 +34,9 @@ import {
   OP_NAPI_GET_UNDEFINED,
   OP_NAPI_GET_NULL,
   OP_NAPI_GET_GLOBAL,
+  OP_NAPI_OPEN_HANDLE_SCOPE,
+  OP_NAPI_CLOSE_HANDLE_SCOPE,
+  OP_NAPI_DEBUG_HANDLE_STORE_SIZE,
   OP_SUBTLE_DIGEST,
   OP_SUBTLE_HMAC,
   OP_SUBTLE_DIGEST_VIA_NAPI_MEM,
@@ -703,6 +706,111 @@ function registerHandlers(srv: RpcServer): void {
   const registry = makeNapiOpRegistry(napi as Record<string, (...args: number[]) => number>);
   registry.register(srv);
   log(`F-4 napi op handlers registered: ${registry.count} additional ops`);
+
+  // ── B / scope-op forwarding (mirror wasm-side scope discipline) ──
+  //
+  // OPEN: wasm-side has already called napi_open_handle_scope and got
+  // its own scope id; here we open a parallel scope on the host so
+  // handles allocated by host-RPC ops during this scope's lifetime get
+  // released when the wasm side closes.
+  //
+  // CLOSE: looks up the host scope by id and calls closeScope, which
+  // calls handleStore.erase(start, end) — releasing every handle
+  // allocated between open and close.
+  //
+  // We track host scopes by their emnapi scope id (`scope.id`) so the
+  // wasm side can pass it back to identify which to close.  Out-of-
+  // order closes are tolerated: emnapi's scope chain handles that via
+  // Disposable.dispose() — we just pass the scope object back through.
+  //
+  // Env: the wasm-side env id and the host's env id are different
+  // namespaces.  The host has exactly ONE env (id=1, minted by the
+  // stub `emnapi_create_env` in ensureNapiContext).  So the wasm side
+  // sends its own envId for diagnostics, but the host always resolves
+  // its own env via envStore.  If/when host becomes multi-env, we'd
+  // add an envId→hostEnvId map here.
+  {
+    type Scope = ReturnType<NonNullable<typeof napiCtx>["openScope"]>;
+    const hostScopes = new Map<number, Scope>();
+    // Resolve the host's single env (id=1 from stub).  v1.10 has it
+    // in envStore._values[1]; the simpler accessor is envStore.get(1).
+    const getHostEnv = (): unknown => {
+      type CtxLike = { envStore?: { get?: (id: number) => unknown }; getEnv?: (id: number) => unknown };
+      const c = napiCtx as unknown as CtxLike;
+      if (c.getEnv) return c.getEnv(1);
+      if (c.envStore?.get) return c.envStore.get(1);
+      return undefined;
+    };
+
+    srv.register(OP_NAPI_OPEN_HANDLE_SCOPE, async (_ctx, _args) => {
+      if (!napiCtx || !napiModuleHost) {
+        return { payload: new TextEncoder().encode("scope: host emnapi not ready"), status: REPLY_STATUS_HOST_ERROR };
+      }
+      const env = getHostEnv();
+      if (!env) {
+        return { payload: new TextEncoder().encode("scope: host env not found"), status: REPLY_STATUS_HOST_ERROR };
+      }
+      const scope = napiCtx.openScope(env as never);
+      const scopeId = Number(scope.id);
+      hostScopes.set(scopeId, scope);
+      const reply = new Uint8Array(4);
+      new DataView(reply.buffer).setUint32(0, scopeId >>> 0, true);
+      return { payload: reply, status: REPLY_STATUS_OK };
+    });
+
+    srv.register(OP_NAPI_CLOSE_HANDLE_SCOPE, async (_ctx, args) => {
+      if (!napiCtx) {
+        return { payload: new TextEncoder().encode("scope: host emnapi not ready"), status: REPLY_STATUS_HOST_ERROR };
+      }
+      if (args.byteLength < 4) {
+        return { payload: new TextEncoder().encode("scope: close args too short"), status: REPLY_STATUS_INVALID_ARGS };
+      }
+      const scopeId = new DataView(args.buffer, args.byteOffset, args.byteLength).getUint32(0, true);
+      const env = getHostEnv();
+      const scope = hostScopes.get(scopeId);
+      if (!env || !scope) {
+        // Tolerate out-of-order/stale closes: emnapi swallows them
+        // too — see scope's Disposable.dispose() which is idempotent.
+        hostScopes.delete(scopeId);
+        return { payload: new Uint8Array(0), status: REPLY_STATUS_OK };
+      }
+      try {
+        napiCtx.closeScope(env as never, scope);
+      } catch (e) {
+        // closeScope can throw if the scope chain is in an odd state;
+        // swallow so the wasm side never gets stuck on a bad scope id.
+        log(`closeScope threw for scopeId=${scopeId}: ${(e as Error).message}`, "warn");
+      }
+      hostScopes.delete(scopeId);
+      return { payload: new Uint8Array(0), status: REPLY_STATUS_OK };
+    });
+
+    srv.register(OP_NAPI_DEBUG_HANDLE_STORE_SIZE, async (_ctx, _args) => {
+      if (!napiCtx) {
+        return { payload: new TextEncoder().encode("debug: host emnapi not ready"), status: REPLY_STATUS_HOST_ERROR };
+      }
+      // Read the handle store's "next id about to be assigned" cursor
+      // — the canonical "live handles" metric.  Scope close calls
+      // handleStore.erase(start, end), which sets _next back to start,
+      // so this value SHRINKS when scopes are discarded.  The internal
+      // _values array length only grows (it caches Handle wrappers for
+      // reuse), so we don't measure that.
+      //
+      // emnapi v1 (npm @emnapi/runtime 1.10): the property is `_next`.
+      // emnapi v2 (vendored): the property is `_allocator.next`.
+      // Fall back across both shapes to keep this op stable when the
+      // vendored swap flag flips.
+      type V1Shape = { _next?: number };
+      type V2Shape = { _allocator?: { next: number } };
+      type HandleStoreShape = V1Shape & V2Shape & { _values?: unknown[] };
+      const hs = (napiCtx as unknown as { handleStore?: HandleStoreShape }).handleStore;
+      const next = hs?._next ?? hs?._allocator?.next ?? hs?._values?.length ?? 0;
+      const reply = new Uint8Array(4);
+      new DataView(reply.buffer).setUint32(0, next >>> 0, true);
+      return { payload: reply, status: REPLY_STATUS_OK };
+    });
+    log(`scope-forwarding ops registered: open, close, debug_size`);
+  }
 
   // OP_HOST_READY is host→wasm; host doesn't receive it.  No handler.
   void OP_HOST_READY;

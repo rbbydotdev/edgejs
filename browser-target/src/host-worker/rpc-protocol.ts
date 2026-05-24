@@ -393,6 +393,38 @@ export const OP_NAPI_ADD_FINALIZER = OP_DOMAIN_NAPI_RO | 0x00C3;
 //                    finalize_hint, &result_optional) — six args.
 // emnapi requires finalize_cb != 0 always (wrap.ts:187).
 
+// ── B / scope-op forwarding (0x01D0–0x01D2) ─────────────────────────
+//
+// These ops mirror the wasm-side `napi_open_handle_scope` /
+// `napi_close_handle_scope` so the host's emnapi scope discipline
+// matches the wasm-side's.  Without this, host-RPC ops that allocate
+// napi_value handles (every `OP_NAPI_CREATE_*` etc.) leak handles
+// into the host's long-lived root scope (R9 fix; see NOTES.md
+// `host-emnapi-root-scope-accumulates`).
+//
+// Wire protocol:
+//   OPEN  request: (env: u32) — wasm side has already opened its own
+//         scope; this just asks the host to open a parallel scope.
+//   OPEN  reply:   (hostScopeId: u32) — the host's scope id, returned
+//         to the wasm side which maps it against its wasm-side id.
+//   CLOSE request: (env: u32, hostScopeId: u32) — close the host
+//         scope identified by hostScopeId.  Host releases all handles
+//         allocated during that scope's lifetime.
+//   CLOSE reply:   empty.
+//
+// napi_open_escapable_handle_scope is deferred — same shape but
+// requires escape() bookkeeping.  Add when a workload exercises it.
+//
+// Probe op:
+//   DEBUG_HANDLE_STORE_SIZE request: empty.
+//   DEBUG_HANDLE_STORE_SIZE reply:   (size: u32) — current host
+//         handleStore length.  Used by the scope-forwarding test to
+//         assert bounded growth across a loop of host-RPC ops.
+
+export const OP_NAPI_OPEN_HANDLE_SCOPE = OP_DOMAIN_NAPI_RO | 0x00D0;
+export const OP_NAPI_CLOSE_HANDLE_SCOPE = OP_DOMAIN_NAPI_RO | 0x00D1;
+export const OP_NAPI_DEBUG_HANDLE_STORE_SIZE = OP_DOMAIN_NAPI_RO | 0x00D2;
+
 // ── NAPI callback-taking ops (F-5) ─────────────────────────────────
 export const OP_NAPI_CALL_FUNCTION = OP_DOMAIN_NAPI_CB | 0x0001;
 // napi_call_function(env, recv, fn, argc, argv_ptr, &result)

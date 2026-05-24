@@ -138,6 +138,9 @@ async function spawnHostThenRuntime(): Promise<void> {
   if (f9SweepProbe) {
     await runF9SweepProbe();
   }
+  if (scopeBoundedProbe) {
+    await runScopeBoundedProbe();
+  }
 }
 
 async function runF1NapiProbe(): Promise<void> {
@@ -648,6 +651,126 @@ async function runF9SweepProbe(): Promise<void> {
   append(`f9-sweep: ${passCount}/${results.length} ops OK — ${allOk ? "OK" : "FAIL"}`, allOk ? "info" : "err");
 }
 
+// B / scope-op forwarding probe.  Verifies that wrapping the
+// host-RPC alloc-heavy ops (OP_NAPI_CREATE_OBJECT etc.) inside
+// scope-open / scope-close ops keeps the host's handleStore size
+// BOUNDED across many iterations — the alternative is the
+// `host-emnapi-root-scope-accumulates` debt's linear growth.
+//
+// Methodology:
+//   baselineSize := DEBUG_HANDLE_STORE_SIZE before loop
+//   for i in 1..N:
+//     OP_NAPI_OPEN_HANDLE_SCOPE → hostScopeId
+//     OP_NAPI_CREATE_OBJECT × ALLOCS_PER_ITER
+//     OP_NAPI_CLOSE_HANDLE_SCOPE(hostScopeId)
+//   afterSize := DEBUG_HANDLE_STORE_SIZE after loop
+//
+// Assertion: afterSize - baselineSize is bounded by a small
+// constant (one iteration's-worth + emnapi-internal overhead),
+// NOT linear in N.  If forwarding is broken, afterSize >=
+// baselineSize + N * ALLOCS_PER_ITER (linear growth).
+async function runScopeBoundedProbe(): Promise<void> {
+  if (!hostHandle) { append("scope-bounded: hostHandle not ready", "err"); return; }
+  const { attachRing } = await import("./wasi-shim/sab-ring");
+  const { RpcClient } = await import("./host-worker/rpc-client");
+  const proto = await import("./host-worker/rpc-protocol");
+  const ringConfig = { numSlots: 32, slotSize: 4 * 1024 };
+  const client = new RpcClient(
+    attachRing(hostHandle.requestSab, ringConfig),
+    attachRing(hostHandle.replySab, ringConfig),
+  );
+
+  async function readSize(): Promise<number> {
+    const reply = await client.call(proto.OP_NAPI_DEBUG_HANDLE_STORE_SIZE, 0, 0, new Uint8Array(0));
+    if (reply.status !== 0 || reply.payload.byteLength < 4) return -1;
+    return new DataView(reply.payload.buffer, reply.payload.byteOffset, reply.payload.byteLength).getUint32(0, true);
+  }
+
+  async function openScope(): Promise<number> {
+    const reply = await client.call(proto.OP_NAPI_OPEN_HANDLE_SCOPE, 0, 0, new Uint8Array(0));
+    if (reply.status !== 0 || reply.payload.byteLength < 4) return -1;
+    return new DataView(reply.payload.buffer, reply.payload.byteOffset, reply.payload.byteLength).getUint32(0, true);
+  }
+
+  async function closeScope(scopeId: number): Promise<number> {
+    const args = new Uint8Array(4);
+    new DataView(args.buffer).setUint32(0, scopeId, true);
+    const reply = await client.call(proto.OP_NAPI_CLOSE_HANDLE_SCOPE, 0, 0, args);
+    return reply.status;
+  }
+
+  async function createObject(): Promise<number> {
+    // (env: 1, resultPtr: 4096) — resultPtr is unused for the assertion;
+    // we don't dereference it.  4096 is well within the napi mem SAB.
+    const args = new Uint8Array(8);
+    const dv = new DataView(args.buffer);
+    dv.setUint32(0, 1, true);
+    dv.setUint32(4, 4096, true);
+    const reply = await client.call(proto.OP_NAPI_CREATE_OBJECT, 0, 0, args);
+    return reply.status;
+  }
+
+  const ITERATIONS = 200;
+  const ALLOCS_PER_ITER = 5;
+
+  // ── Baseline (BEFORE the loop) ───────────────────────────────
+  const baselineSize = await readSize();
+  if (baselineSize < 0) {
+    append("scope-bounded: baseline DEBUG_HANDLE_STORE_SIZE failed", "err");
+    return;
+  }
+
+  // ── Loop: open scope, alloc many handles, close scope ────────
+  let openFails = 0, closeFails = 0, createFails = 0;
+  for (let i = 0; i < ITERATIONS; i++) {
+    const sid = await openScope();
+    if (sid < 0) { openFails++; continue; }
+    for (let k = 0; k < ALLOCS_PER_ITER; k++) {
+      const s = await createObject();
+      if (s !== 0) createFails++;
+    }
+    const cs = await closeScope(sid);
+    if (cs !== 0) closeFails++;
+  }
+  const afterSize = await readSize();
+
+  // ── Counter-experiment: skip the open/close around the same ──
+  // allocation pattern.  Confirms the leak would actually happen
+  // without the fix (otherwise the test isn't meaningful).
+  for (let i = 0; i < ITERATIONS; i++) {
+    for (let k = 0; k < ALLOCS_PER_ITER; k++) {
+      const s = await createObject();
+      if (s !== 0) createFails++;
+    }
+  }
+  const noScopeSize = await readSize();
+
+  const totalAllocs = ITERATIONS * ALLOCS_PER_ITER;
+  const scopedGrowth = afterSize - baselineSize;
+  const unscopedGrowth = noScopeSize - afterSize;
+  // The scoped variant SHOULD grow only by a small constant (one
+  // scope's worth of handles or less, since the final close
+  // releases all but possibly one set still pending in the loop
+  // exit).  Bound: 2 * ALLOCS_PER_ITER + 16 (slack for emnapi
+  // internal scope/cb info handles).
+  const scopedOk = scopedGrowth <= 2 * ALLOCS_PER_ITER + 16;
+  // The unscoped variant SHOULD grow linearly with totalAllocs.
+  // Sanity check: at least 50% of totalAllocs (allows for slot
+  // reuse but ensures the growth is dominated by the new allocs).
+  const unscopedOk = unscopedGrowth >= totalAllocs / 2;
+
+  append(`scope-bounded: baseline=${baselineSize} afterScoped=${afterSize} afterUnscoped=${noScopeSize}`, "info");
+  append(`scope-bounded: totalAllocs=${totalAllocs} scopedGrowth=${scopedGrowth} unscopedGrowth=${unscopedGrowth}`, "info");
+  append(`scope-bounded: openFails=${openFails} closeFails=${closeFails} createFails=${createFails}`, scopedOk && unscopedOk ? "info" : "warn");
+
+  const verdict = scopedOk && unscopedOk && openFails === 0 && closeFails === 0 && createFails === 0;
+  append(
+    `scope-bounded: ${verdict ? "OK" : "FAIL"} ` +
+    `(scoped <= ${2 * ALLOCS_PER_ITER + 16} ? ${scopedOk}; unscoped >= ${totalAllocs / 2} ? ${unscopedOk})`,
+    verdict ? "info" : "err",
+  );
+}
+
 async function runL9MultiHostSpike(): Promise<void> {
   const { spawnHostWorker } = await import("./host-worker/worker-pool");
   const { attachRing } = await import("./wasi-shim/sab-ring");
@@ -934,6 +1057,7 @@ const l5UserScript = params.get("l5script"); // L5 spike
 const l9MultiHost = params.get("probe") === "l9-multi-host"; // L9 spike
 const f1NapiProbe = params.get("probe") === "f1-napi";        // F-1 first napi op via RPC
 const f9SweepProbe = params.get("probe") === "f9-sweep";      // F-9 one-op-per-batch sweep
+const scopeBoundedProbe = params.get("probe") === "scope-bounded"; // B / scope-op forwarding
 
 append("page bootstrap ok. crossOriginIsolated=" + crossOriginIsolated, "info");
 if (memSnapshotSymbols.length > 0) {

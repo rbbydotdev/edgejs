@@ -1,0 +1,12 @@
+{
+  "name": "e3-reentrancy-depth-experiment",
+  "version": "0.0.0",
+  "type": "module",
+  "private": true,
+  "description": "E3 spike: find the JS stack cliff for nested sync RPC re-entrancy. Builds on R6a's pattern but pushes depth aggressively across fresh workers.",
+  "scripts": {
+    "probe": "node probe.mjs",
+    "probe:big": "node --stack-size=8192 probe.mjs",
+    "probe:bigger": "node --stack-size=16384 probe.mjs"
+  }
+}

@@ -49,7 +49,7 @@ import { attachRing as attachHostRing, type RingConfig as HostRingConfig } from 
 import { RpcClient } from "./host-worker/rpc-client";
 import { RpcServer } from "./host-worker/rpc-server";
 import { SyncRpcClient } from "./host-worker/rpc-client-sync";
-import { OP_PING, OP_WASM_ECHO, OP_SUBTLE_DIGEST, OP_SUBTLE_HMAC, OP_SUBTLE_DIGEST_VIA_NAPI_MEM, OP_SUBTLE_HMAC_VIA_NAPI_MEM, DIGEST_STAGING_OFFSET, REPLY_STATUS_OK } from "./host-worker/rpc-protocol";
+import { OP_PING, OP_WASM_ECHO, OP_SUBTLE_DIGEST, OP_SUBTLE_HMAC, OP_SUBTLE_DIGEST_VIA_NAPI_MEM, OP_SUBTLE_HMAC_VIA_NAPI_MEM, OP_NAPI_OPEN_HANDLE_SCOPE, OP_NAPI_CLOSE_HANDLE_SCOPE, DIGEST_STAGING_OFFSET, REPLY_STATUS_OK } from "./host-worker/rpc-protocol";
 import { registerWasmCallbackInvoker, createCallbackDepthCounter } from "./host-worker/callback-dispatch";
 const HOST_RPC_RING_CONFIG: HostRingConfig = { numSlots: 32, slotSize: 4 * 1024 };
 let hostRpcClient: RpcClient | null = null;
@@ -717,6 +717,79 @@ async function runEdgeWithEmnapi() {
   // so split them across the two namespaces here.  Mirrors
   // scripts/node-harness.mjs.
   const napiAll = napi.imports.napi as Record<string, Function>;
+
+  // ── B / scope-op forwarding ────────────────────────────────────
+  //
+  // Mirror wasm-side `napi_open_handle_scope` / `napi_close_handle_scope`
+  // onto the host worker so handles allocated by host-RPC ops (the
+  // F-9 family: OP_NAPI_CREATE_OBJECT etc.) don't accumulate in the
+  // host's long-lived root scope.  See NOTES.md
+  // `host-emnapi-root-scope-accumulates`.
+  //
+  // Map: wasm-side scope id (returned to the wasm caller via
+  // napi_open_handle_scope's resultPtr) → host-side scope id (what
+  // the OP_NAPI_OPEN_HANDLE_SCOPE reply carries).
+  //
+  // If hostRpcSyncClient isn't attached (e.g., bootstrap RPC SAB
+  // hasn't been wired yet), we fall back silently to wasm-only — the
+  // wasm-side scope still works; the host just accumulates (debt
+  // continues until the next scope/close pair).  Same fallback for
+  // missing scope id in close.
+  {
+    const wasmToHostScope = new Map<number, number>();
+    const origOpen = napiAll["napi_open_handle_scope"];
+    const origClose = napiAll["napi_close_handle_scope"];
+
+    if (typeof origOpen === "function") {
+      napiAll["napi_open_handle_scope"] = function (env: number, resultPtr: number): number {
+        const status = (origOpen as (e: number, p: number) => number)(env, resultPtr);
+        if (status !== 0) return status;
+        if (!hostRpcSyncClient) return status; // bootstrap before RPC SAB
+        // Read the wasm-side scope id emnapi just wrote at resultPtr.
+        // The wasm Memory accessor is direct: emnapi writes into the
+        // shared `memory.buffer` we passed to createNapiHost.
+        try {
+          const wasmScopeId = new DataView(memory.buffer).getUint32(resultPtr >>> 0, true);
+          // Fire the host RPC.  Request: empty (host has only 1 env).
+          // Reply: 4 bytes containing host scope id.
+          const reply = hostRpcSyncClient.callSync(
+            OP_NAPI_OPEN_HANDLE_SCOPE, hostWorkerId, 0, new Uint8Array(0),
+          );
+          if (reply.status === REPLY_STATUS_OK && reply.payload.byteLength >= 4) {
+            const hostScopeId = new DataView(reply.payload.buffer, reply.payload.byteOffset, reply.payload.byteLength).getUint32(0, true);
+            wasmToHostScope.set(wasmScopeId >>> 0, hostScopeId >>> 0);
+          }
+        } catch (e) {
+          // Don't propagate RPC errors back to wasm — best-effort
+          // forwarding.  The wasm side already has a valid scope.
+          post("log", { text: `[scope-forwarding] open RPC failed: ${(e as Error).message}`, level: "warn" });
+        }
+        return status;
+      };
+    }
+
+    if (typeof origClose === "function") {
+      napiAll["napi_close_handle_scope"] = function (env: number, wasmScopeId: number): number {
+        // Capture host scope id BEFORE calling close, in case the
+        // implementation invalidates the wasm-side id at any point.
+        const hostScopeId = wasmToHostScope.get(wasmScopeId >>> 0);
+        wasmToHostScope.delete(wasmScopeId >>> 0);
+        const status = (origClose as (e: number, s: number) => number)(env, wasmScopeId);
+        if (hostScopeId === undefined || !hostRpcSyncClient) return status;
+        try {
+          const payload = new Uint8Array(4);
+          new DataView(payload.buffer).setUint32(0, hostScopeId, true);
+          hostRpcSyncClient.callSync(
+            OP_NAPI_CLOSE_HANDLE_SCOPE, hostWorkerId, 0, payload,
+          );
+        } catch (e) {
+          post("log", { text: `[scope-forwarding] close RPC failed: ${(e as Error).message}`, level: "warn" });
+        }
+        return status;
+      };
+    }
+  }
+
   const napiStandard: Record<string, Function> = {};
   const napiExtension: Record<string, Function> = {};
   for (const k of Object.keys(napiAll)) {

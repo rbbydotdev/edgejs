@@ -1,0 +1,8 @@
+{
+  "name": "e2-exception-propagation-experiment",
+  "version": "0.0.0",
+  "type": "module",
+  "private": true,
+  "description": "E2 spike: pick a wire format for marshalling Error objects through the reverse RPC channel. Tests message-only, JSON, structured-clone (skipped), and typed (TLV).",
+  "scripts": { "probe": "node probe.mjs" }
+}

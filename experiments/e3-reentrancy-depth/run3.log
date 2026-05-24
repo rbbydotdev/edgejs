@@ -1,0 +1,22 @@
+
+=== variant: stack/wsMb=32 (node <no flags>, workerStackMb=32) ===
+     depth    outcome     p50_ms     max_ms     wallMs       exit     detail
+     10000       pass   2074.969   2074.969       2218          0 
+     16000       pass   5342.037   5342.037       5488          0 
+     24000       pass  12015.370  12015.370      12169          0 
+     32000       fail          —          —      20005    SIGKILL timeout(20000ms)
+     48000       fail          —          —      20008    SIGKILL timeout(20000ms)
+(stopping stack/wsMb=32 — 2 consecutive failures)
+
+=== variant: stack/wsMb=64 (node <no flags>, workerStackMb=64) ===
+     depth    outcome     p50_ms     max_ms     wallMs       exit     detail
+     10000       pass   2385.402   2385.402       2553          0 
+     16000       pass   5837.415   5837.415       6003          0 
+     24000       pass  13686.737  13686.737      13855          0 
+     32000       fail          —          —      20005    SIGKILL timeout(20000ms)
+     48000       fail          —          —      20008    SIGKILL timeout(20000ms)
+(stopping stack/wsMb=64 — 2 consecutive failures)
+
+=== summary ===
+  stack/wsMb=32: highest passing depth=24000  first failure at depth=32000 (timeout(20000ms))
+  stack/wsMb=64: highest passing depth=24000  first failure at depth=32000 (timeout(20000ms))

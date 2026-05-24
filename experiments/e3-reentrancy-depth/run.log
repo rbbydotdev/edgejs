@@ -1,0 +1,56 @@
+
+=== variant: rpc/default-stack (node <no flags>) ===
+     depth    outcome     p50_ms     max_ms     wallMs       exit     detail
+        32       pass      2.058      3.793        183          0 
+        64       pass      5.476     11.821        191          0 
+       128       pass     23.460     35.493        403          0 
+       256       pass    134.349  22889.960      24283          0 
+       384       pass    420.742  13272.674      53559          0 
+
+=== variant: stack/default-stack (node <no flags>) ===
+     depth    outcome     p50_ms     max_ms     wallMs       exit     detail
+       256       pass      1.862      3.427        155          0 
+       512       pass      6.482      7.006        142          0 
+      1024       pass     23.071     24.929        190          0 
+      2048       pass     91.311     91.311        307          0 
+      4096       pass    361.798    361.798        864          0 
+      5500       pass    664.461    664.461       1445          0 
+      7000       pass    995.667    995.667       2124          0 
+      8500       pass   1540.214   1540.214       1682          0 
+     10000       fail          —          —        656          1 stack-overflow
+     12000       fail          —          —        684          1 stack-overflow
+(stopping stack/default-stack — 2 consecutive failures)
+
+=== variant: stack/stack-8192 (node --stack-size=8192) ===
+     depth    outcome     p50_ms     max_ms     wallMs       exit     detail
+       256       pass      1.790      2.960        169          0 
+       512       pass      6.791      8.030        176          0 
+      1024       pass     22.199     26.106        226          0 
+      2048       pass     92.883     92.883        332          0 
+      4096       pass    358.589    358.589        889          0 
+      5500       pass    623.263    623.263       1412          0 
+      7000       pass   1056.530   1056.530       2243          0 
+      8500       pass   1568.113   1568.113       1739          0 
+     10000       fail          —          —        684          1 stack-overflow
+     12000       fail          —          —        709          1 stack-overflow
+(stopping stack/stack-8192 — 2 consecutive failures)
+
+=== variant: stack/stack-16384 (node --stack-size=16384) ===
+     depth    outcome     p50_ms     max_ms     wallMs       exit     detail
+       256       pass      1.840      3.071        178          0 
+       512       pass      6.558      7.312        169          0 
+      1024       pass     23.301     25.749        221          0 
+      2048       pass     90.511     90.511        330          0 
+      4096       pass    348.614    348.614        856          0 
+      5500       pass    646.829    646.829       1464          0 
+      7000       pass   1033.909   1033.909       2233          0 
+      8500       pass   1460.171   1460.171       1626          0 
+     10000       fail          —          —        676          1 stack-overflow
+     12000       fail          —          —        681          1 stack-overflow
+(stopping stack/stack-16384 — 2 consecutive failures)
+
+=== summary ===
+  rpc/default-stack: highest passing depth=384  first failure at depth=n/a ()
+  stack/default-stack: highest passing depth=8500  first failure at depth=10000 (stack-overflow)
+  stack/stack-8192: highest passing depth=8500  first failure at depth=10000 (stack-overflow)
+  stack/stack-16384: highest passing depth=8500  first failure at depth=10000 (stack-overflow)

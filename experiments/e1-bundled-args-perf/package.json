@@ -1,0 +1,8 @@
+{
+  "name": "e1-bundled-args-perf",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "probe": "node probe.mjs"
+  }
+}

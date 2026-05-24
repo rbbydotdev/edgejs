@@ -1,0 +1,64 @@
+
+=== variant: stack/default (node <no flags>, workerStackMb=default) ===
+     depth    outcome     p50_ms     max_ms     wallMs       exit     detail
+       256       pass      1.582      4.675        153          0 
+      1024       pass     23.242     25.578        188          0 
+      4096       pass    341.724    341.724        802          0 
+      7000       pass   1008.214   1008.214       2124          0 
+      8000       pass   1357.847   1357.847       1501          0 
+      8500       pass   1464.264   1464.264       1613          0 
+      9000       pass   1664.444   1664.444       1815          0 
+      9250       fail          —          —        649          1 stack-overflow
+      9500       fail          —          —        673          1 stack-overflow
+(stopping stack/default — 2 consecutive failures)
+
+=== variant: stack/wsMb=8 (node <no flags>, workerStackMb=8) ===
+     depth    outcome     p50_ms     max_ms     wallMs       exit     detail
+       256       pass      3.321      3.928        176          0 
+      1024       pass     24.659     32.581        230          0 
+      4096       pass    417.524    417.524        931          0 
+      7000       pass   1147.108   1147.108       2408          0 
+      8000       pass   1593.397   1593.397       1775          0 
+      8500       pass   1685.891   1685.891       1842          0 
+      9000       pass   1832.145   1832.145       2003          0 
+      9250       pass   1840.945   1840.945       2002          0 
+      9500       pass   2049.368   2049.368       2203          0 
+      9750       pass   2043.327   2043.327       2194          0 
+     10000       pass   2213.428   2213.428       2379          0 
+     12000       pass   3107.450   3107.450       3267          0 
+
+=== variant: stack/wsMb=16 (node <no flags>, workerStackMb=16) ===
+     depth    outcome     p50_ms     max_ms     wallMs       exit     detail
+       256       pass      1.858      3.002        163          0 
+      1024       pass     23.643     27.234        208          0 
+      4096       pass    470.820    470.820       1018          0 
+      7000       pass   1295.466   1295.466       2555          0 
+      8000       pass   1688.833   1688.833       1863          0 
+      8500       pass   1993.625   1993.625       2162          0 
+      9000       pass   1851.554   1851.554       2025          0 
+      9250       pass   1984.252   1984.252       2142          0 
+      9500       pass   2201.631   2201.631       2367          0 
+      9750       pass   2368.120   2368.120       2530          0 
+     10000       pass   2421.510   2421.510       2603          0 
+     12000       pass   3672.106   3672.106       3837          0 
+
+=== variant: stack/wsMb=32 (node <no flags>, workerStackMb=32) ===
+     depth    outcome     p50_ms     max_ms     wallMs       exit     detail
+       256       pass      2.295      3.751        178          0 
+      1024       pass     26.966     29.781        229          0 
+      4096       pass    414.940    414.940        966          0 
+      7000       pass   1191.074   1191.074       2564          0 
+      8000       pass   1774.777   1774.777       1959          0 
+      8500       pass   2342.022   2342.022       2548          0 
+      9000       pass   1908.069   1908.069       2066          0 
+      9250       pass   1972.355   1972.355       2119          0 
+      9500       pass   2039.075   2039.075       2191          0 
+      9750       pass   2054.867   2054.867       2202          0 
+     10000       pass   2157.918   2157.918       2305          0 
+     12000       pass   3045.899   3045.899       3195          0 
+
+=== summary ===
+  stack/default: highest passing depth=9000  first failure at depth=9250 (stack-overflow)
+  stack/wsMb=8: highest passing depth=12000  first failure at depth=n/a ()
+  stack/wsMb=16: highest passing depth=12000  first failure at depth=n/a ()
+  stack/wsMb=32: highest passing depth=12000  first failure at depth=n/a ()
