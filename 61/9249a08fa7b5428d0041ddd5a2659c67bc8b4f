@@ -1,0 +1,26 @@
+experiments/e7-scope-discipline-observation/FINDINGS.md
+  s_7bec0ecbfcdcd0::t_e7466ff25595ec 1-134
+experiments/e6-wasm-side-forwarding/FINDINGS.md
+  s_7bec0ecbfcdcd0::t_760a274e315776 1-125
+NOTES.md
+  s_7bec0ecbfcdcd0::t_d365d6046ecf5c 51-84
+  s_7bec0ecbfcdcd0::t_b387080e3e19f3 241-255,258-261
+experiments/e5-callback-triage-observation/FINDINGS.md
+  s_7bec0ecbfcdcd0::t_1d5d3bb331e84b 1-114
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "619249a08fa7b5428d0041ddd5a2659c67bc8b4f",
+  "prompts": {},
+  "sessions": {
+    "s_7bec0ecbfcdcd0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d560d5ae-265f-44ae-89c4-d35659b3ab9e",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
