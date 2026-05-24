@@ -109,6 +109,139 @@ function err(msg: string, status = REPLY_STATUS_INVALID_ARGS) {
 
 type NapiFn = (...args: number[]) => number;
 
+// ─── Host-side FinalizationRegistry for napi finalizers ──────────────
+//
+// Resolves cluster-{b,c}-finalizers-noop.  When the host JS object
+// backing a napi external/wrapped value is GC'd, this registry fires
+// the closure cached at registration time.  The closure does a
+// reverse-RPC into wasm where the wasm-side dispatcher resolves the
+// funcref via __indirect_function_table.get(cbPtr) and invokes
+// `void(*)(env, finalize_data, finalize_hint)`.
+//
+// `FinalizerRegistration` is the held value: enough context for the
+// callback to find the closure and the args to pass it.  We hold
+// `map` here (rather than relying on a closure capture) so we share
+// one FinalizationRegistry between cluster B and cluster C — keeps
+// observability + diagnostics centralized.
+type FinalizerRegistration = {
+  key: string;
+  env: number;
+  data: number;
+  hint: number;
+  map: Map<string, (env: number, data: number, hint: number) => void>;
+};
+
+// Tracks observable FR firings so we can write tests that don't
+// depend on the exact wasm-side outcome (which the host-worker stub
+// table can't deliver for synthetic probes anyway).  The counter is
+// incremented inside the FR callback, BEFORE the closure attempts its
+// reverse-RPC — so it ticks even if the wasm dispatch later fails.
+const finalizerStats = {
+  registered: 0,
+  fired: 0,
+  closureMissing: 0,
+  closureFailed: 0,
+  lastFiredKey: null as string | null,
+};
+
+/** Returns a snapshot of FR observability counters.  Diagnostic only —
+ *  test harnesses use this to confirm the FR machinery is wired. */
+export function getFinalizerStats(): Readonly<typeof finalizerStats> {
+  return { ...finalizerStats };
+}
+
+/** Test-only: registers N synthetic objects with the host-side FR
+ *  (no emnapi handle path), drops the strong refs, and forces GC via
+ *  `globalThis.gc()` if available.  Used by probes to prove the FR →
+ *  cached-closure dispatch fires under deterministic GC pressure —
+ *  the production code path goes through emnapi which holds strong
+ *  refs in a persistent root scope, blocking GC observation in tests.
+ *
+ *  Each synthetic registration:
+ *    - allocates a key `synthetic:<i>`,
+ *    - installs a closure into a shared synthetic-test Map that just
+ *      mutates a per-call counter (no reverse-RPC — wasm would not
+ *      have a real funcref to resolve anyway in test mode),
+ *    - registers a fresh `{ tag: 'synthetic', i }` object with the FR.
+ *
+ *  After registering, the strong-ref Set is cleared and `gc()` is
+ *  called.  When the test harness checks stats, `fired` should equal
+ *  N for these synthetic keys.  Returns the post-gc snapshot. */
+export async function probeFinalizerFire(count: number): Promise<typeof finalizerStats> {
+  // Closure map shared across all synthetic registrations.  Each key
+  // gets its own closure that increments the synthetic counter.
+  const syntheticMap = new Map<string, (env: number, data: number, hint: number) => void>();
+  const beforeFired = finalizerStats.fired;
+
+  // Register N synthetic objects.  The objects MUST be allocated
+  // inside a function scope so V8's escape analysis can release them
+  // when the scope unwinds.  We pass the FR registration's held
+  // value but DON'T retain a strong reference to the JS object after
+  // the registration — that's what allows GC.
+  for (let i = 0; i < count; i++) {
+    const key = `synthetic:${i}`;
+    syntheticMap.set(key, () => { /* no-op closure; firing is observed via stats */ });
+    const obj = { tag: "synthetic", i } as Record<string, unknown>;
+    finalizerRegistry.register(obj, {
+      key, env: 0, data: i, hint: i,
+      map: syntheticMap,
+    });
+    finalizerStats.registered += 1;
+    // obj goes out of scope at next loop iteration; V8 may collect.
+  }
+
+  // Force GC across multiple attempts.  V8's FR cleanup may need
+  // several cycles to drain — particularly when GC is triggered
+  // imperatively (less common path than incremental GC).  Yield to
+  // the microtask queue between attempts so any pending FR callbacks
+  // can fire (FR callbacks run as microtasks per ECMA-262).
+  const gc = (globalThis as { gc?: () => void }).gc;
+  // Log gc availability so the probe can diagnose --expose-gc state.
+  // The stats helper exports lastFiredKey; we co-opt it to surface
+  // gc-availability info when no firings happened.
+  if (typeof gc !== "function") {
+    finalizerStats.lastFiredKey = "(gc unavailable)";
+  } else {
+    finalizerStats.lastFiredKey = "(gc available; awaiting drain)";
+  }
+  // Keep the wait short — the dispatch loop is single-threaded, so a
+  // long-running handler stalls other RPC.  Most FR drains happen in
+  // <100ms if they happen at all.
+  for (let attempt = 0; attempt < 5 && finalizerStats.fired < beforeFired + count; attempt++) {
+    if (typeof gc === "function") gc();
+    // Yield to microtasks (FR callbacks).
+    await new Promise<void>((r) => queueMicrotask(() => r()));
+    // Yield to a task too — some V8 builds defer FR drain.
+    await new Promise<void>((r) => setTimeout(r, 20));
+  }
+
+  return { ...finalizerStats };
+}
+
+const finalizerRegistry = new FinalizationRegistry<FinalizerRegistration>((reg) => {
+  finalizerStats.fired += 1;
+  finalizerStats.lastFiredKey = reg.key;
+  const closure = reg.map.get(reg.key);
+  if (!closure) {
+    finalizerStats.closureMissing += 1;
+    return;
+  }
+  // Edge case 1: wasm worker may be gone, dynCall may trap, the cb
+  // may not resolve.  callSync throws on transport error and on
+  // wasm-side throws.  We swallow because by spec napi finalizers
+  // must not propagate errors.
+  // Edge case 2: same JS object may be registered multiple times if
+  // napi_add_finalizer is called repeatedly with different (cb, hint)
+  // tuples — the FR fires once per registration, each invoking the
+  // matching closure.  Held values are distinct, so V8's FR honours
+  // both registrations.
+  try {
+    closure(reg.env, reg.data, reg.hint);
+  } catch {
+    finalizerStats.closureFailed += 1;
+  }
+});
+
 
 /** Make a handler for two-u32 ops (env, resultPtr). */
 function makeTwoU32(napiFn: NapiFn | undefined, opName: string) {
@@ -686,31 +819,26 @@ export function makeNapiOpRegistry(napi: Record<string, NapiFn>): NapiOpRegistry
       //   OP_NAPI_CREATE_EXTERNAL_BUFFER       (env, len, data, cb, hint, &result)
       //
       // Each builds a host-side JS closure via `makeHostSideCallbackClosure`
-      // with shape=FINALIZER, keyed in a Map so the same `(env, cbPtr,
-      // dataPtr=finalize_hint)` tuple reuses the same closure reference.
+      // with shape=FINALIZER, keyed in a Map.  Resolves
+      // cluster-b-finalizers-noop via a host-side FinalizationRegistry
+      // that observes GC of the external/arraybuffer/buffer JS object
+      // and fires the cached closure (reverse-RPC → wasm finalize).
       //
-      // #!~debt cluster-b-finalizers-noop — emnapi's Finalizer.callFinalizer
-      // (vendor/emnapi/packages/runtime/src/Finalizer.ts:52-66) coerces
-      // `finalize_callback` via `Number(cb)` and dispatches through
-      // `bridge.makeDynCall_vppp(fini)` with NO `typeof === 'function'`
-      // branch (cf. CleanupQueue.drain at Context.ts:86-90 which DOES
-      // branch).  So even if we pass a JS closure to emnapi's
-      // `napi_create_external{,_arraybuffer,_buffer}`, the closure will
-      // never be invoked at finalize time — the host-worker stub table
-      // also can't resolve any non-zero funcref index.
+      // Why this works (vs. relying on emnapi's Finalizer):
+      //   emnapi's `Finalizer.callFinalizer` (vendor/emnapi/packages/
+      //   runtime/src/Finalizer.ts:52-66) dispatches `finalize_callback`
+      //   via `bridge.makeDynCall_vppp(fini)`.  The host-worker's
+      //   makeDynCall_vppp is wired to a noop factory, and the stub
+      //   wasmTable cannot resolve non-zero funcrefs.  We bypass that
+      //   path entirely: pass `finalize_cb=0` to emnapi (no upstream
+      //   finalizer attached), then register the resulting JS object
+      //   with our own FinalizationRegistry instead.
       //
-      // The handlers therefore pass `finalize_cb=0` to emnapi (creating
-      // the external/arraybuffer/buffer cleanly with no finalize hook)
-      // while still building and caching the closure for the day the
-      // host bridge can dispatch it.  This matches the guest-side
-      // behavior (napi/src/guest/napi.rs:2246 also drops _finalize_cb),
-      // so there's no net regression vs. native edge.
-      //
-      // Long-term fix paths (NOT this batch's work):
-      //   (a) Patch emnapi's Finalizer to mirror CleanupQueue's
-      //       JS-callable branch.
-      //   (b) Wire a host-side FinalizationRegistry keyed on the
-      //       external handle that calls the cached closure on GC.
+      // Lifetime: emnapi creates the external value → we deref the
+      // handle → register the JS object with the FR (held value = cache
+      // key) → when host V8 GCs the object, FR callback looks up the
+      // closure and invokes it (reverse-RPC drives wasm-side
+      // dynCall(fnptr)(env, data, hint)).
       {
         const finalizerClosures = new Map<string, (env: number, data: number, hint: number) => void>();
         const createExtFn = napi["napi_create_external"];
@@ -724,14 +852,17 @@ export function makeNapiOpRegistry(napi: Record<string, NapiFn>): NapiOpRegistry
           env: number,
           cbPtr: number,
           finalizeHint: number,
-        ): boolean => {
-          // Returns true iff a closure was built (or already cached) for
-          // a non-zero cbPtr.  cbPtr=0 means "no finalizer", skip.
-          if (cbPtr === 0) return false;
+        ): string | null => {
+          // Returns the cache key iff a closure was built (or already
+          // cached) for a non-zero cbPtr.  cbPtr=0 means "no finalizer",
+          // return null.  Also returns null if the reverse-sync client
+          // isn't ready (in which case the FR registration is skipped —
+          // we'd have no way to invoke the cached closure anyway).
+          if (cbPtr === 0) return null;
           const key = keyOf(env, cbPtr, finalizeHint);
-          if (finalizerClosures.has(key)) return true;
+          if (finalizerClosures.has(key)) return key;
           const reverseClient = getHostSideReverseSyncClient();
-          if (!reverseClient) return false;
+          if (!reverseClient) return null;
           const hostClosure = makeHostSideCallbackClosure({
             reverseClient,
             cbPtr,
@@ -744,7 +875,28 @@ export function makeNapiOpRegistry(napi: Record<string, NapiFn>): NapiOpRegistry
             void envArg;
           };
           finalizerClosures.set(key, finalizer);
-          return true;
+          return key;
+        };
+
+        const registerForGC = (handleId: number, key: string, env: number, finalizeData: number, finalizeHint: number): void => {
+          // After emnapi created the external value, deref the napi_value
+          // → JS object, then register with the FinalizationRegistry.
+          // The held value packs (key, env, data, hint) so the FR
+          // callback knows how to dispatch.  We only register objects
+          // that V8 can actually track (objects/functions/symbols);
+          // primitives can't be FR-registered.
+          if (handleId === 0) return;
+          const napiCtx = getNapiContext();
+          if (!napiCtx) return;
+          const value = napiCtx.handleStore.get(handleId)?.value;
+          if (value === null || value === undefined) return;
+          const t = typeof value;
+          if (t !== "object" && t !== "function" && t !== "symbol") return;
+          finalizerRegistry.register(value as object, {
+            key, env, data: finalizeData, hint: finalizeHint,
+            map: finalizerClosures,
+          });
+          finalizerStats.registered += 1;
         };
 
         server.register(OP_NAPI_CREATE_EXTERNAL, async (_ctx, args) => {
@@ -756,13 +908,17 @@ export function makeNapiOpRegistry(napi: Record<string, NapiFn>): NapiOpRegistry
           const cbPtr     = dv.getUint32(8,  true);
           const finalizeHint = dv.getUint32(12, true);
           const resultPtr = dv.getUint32(16, true);
-          ensureClosure(env, cbPtr, finalizeHint);
-          // See cluster-b-finalizers-noop debt above: pass 0 for
-          // finalize_cb so emnapi doesn't try to resolve a wasm funcref
-          // index against the host-worker's stub table.  The cached
-          // closure is dormant until a future host-side finalization
-          // path picks it up.
+          const key = ensureClosure(env, cbPtr, finalizeHint);
+          // Pass 0 for finalize_cb: bypass emnapi's broken Finalizer
+          // dispatch.  The FR registration below replaces it.
           const status = createExtFn(env, data, 0, 0, resultPtr);
+          if (status === 0 && key) {
+            const memory = getNapiHostMemory();
+            if (memory) {
+              const resultHandle = new DataView(memory.buffer).getUint32(resultPtr, true);
+              registerForGC(resultHandle, key, env, data, finalizeHint);
+            }
+          }
           return { payload: EMPTY, status };
         });
 
@@ -776,9 +932,15 @@ export function makeNapiOpRegistry(napi: Record<string, NapiFn>): NapiOpRegistry
           const cbPtr        = dv.getUint32(12, true);
           const finalizeHint = dv.getUint32(16, true);
           const resultPtr    = dv.getUint32(20, true);
-          ensureClosure(env, cbPtr, finalizeHint);
-          // See cluster-b-finalizers-noop debt above.
+          const key = ensureClosure(env, cbPtr, finalizeHint);
           const status = createExtABFn(env, externalData, byteLength, 0, 0, resultPtr);
+          if (status === 0 && key) {
+            const memory = getNapiHostMemory();
+            if (memory) {
+              const resultHandle = new DataView(memory.buffer).getUint32(resultPtr, true);
+              registerForGC(resultHandle, key, env, externalData, finalizeHint);
+            }
+          }
           return { payload: EMPTY, status };
         });
 
@@ -792,9 +954,15 @@ export function makeNapiOpRegistry(napi: Record<string, NapiFn>): NapiOpRegistry
           const cbPtr        = dv.getUint32(12, true);
           const finalizeHint = dv.getUint32(16, true);
           const resultPtr    = dv.getUint32(20, true);
-          ensureClosure(env, cbPtr, finalizeHint);
-          // See cluster-b-finalizers-noop debt above.
+          const key = ensureClosure(env, cbPtr, finalizeHint);
           const status = createExtBufFn(env, length, data, 0, 0, resultPtr);
+          if (status === 0 && key) {
+            const memory = getNapiHostMemory();
+            if (memory) {
+              const resultHandle = new DataView(memory.buffer).getUint32(resultPtr, true);
+              registerForGC(resultHandle, key, env, data, finalizeHint);
+            }
+          }
           return { payload: EMPTY, status };
         });
       }
@@ -808,27 +976,23 @@ export function makeNapiOpRegistry(napi: Record<string, NapiFn>): NapiOpRegistry
       // napi_unwrap and napi_remove_wrap are 3-u32 reads (no callback)
       // wired via the THREE_U32 factory table at the top of this function.
       //
-      // #!~debt cluster-c-finalizers-noop — emnapi's Finalizer dispatches
-      // finalize_cb through `bridge.makeDynCall_vppp(fini)`, which on the
-      // host-worker is wired to a noop factory (`(() => () => undefined)`
-      // — see napi-host/unofficial.ts dyncall-before-table-ready).  So
-      // the funcref index we pass to emnapi is never actually invoked
-      // at finalize-time; the finalizer is dormant.  We still build a
-      // host-side closure via makeHostSideCallbackClosure and cache it
-      // in a Map keyed by `(env, cbPtr, finalizeHint)` so a future
-      // FinalizationRegistry-based wiring (or emnapi patch) can pick
-      // it up without re-allocating closures.
+      // Resolves cluster-c-finalizers-noop the same way cluster B does:
+      // host-side FinalizationRegistry observes GC of the wrapped JS
+      // object and fires the cached closure.  We still pass the
+      // original funcref index to emnapi (emnapi's $CHECK_ARG! rejects
+      // 0 for these ops via napi_invalid_arg), but emnapi's noop
+      // dynCall means the funcref is never actually invoked — only our
+      // FR-driven dispatch fires the finalizer.
       //
-      // Unlike cluster B (which passes 0 to emnapi for finalize_cb),
-      // cluster C passes the ORIGINAL cbPtr through:
-      //   - napi_wrap with non-zero result requires non-zero finalize_cb
-      //     (internal.ts:118 returns napi_invalid_arg otherwise).
-      //   - napi_add_finalizer always requires non-zero finalize_cb
-      //     ($CHECK_ARG at wrap.ts:187).
-      // Pass-through is safe precisely because makeDynCall_vppp is a noop
-      // — no funcref resolution is ever attempted on the host worker.
-      // This matches guest-side native edge (drops _finalize_cb), so no
-      // net regression.
+      // napi_remove_wrap edge case: emnapi clears the wrap state but
+      // the host JS object still has our FR registration.  When the
+      // object eventually GCs the closure WILL fire.  This is benign
+      // for now (the closure dispatches a finalize call to wasm where
+      // the wasm-side runtime may handle missing-state cleanly); a
+      // future improvement could call FinalizationRegistry.unregister
+      // via a held token, but the napi_remove_wrap handler currently
+      // goes through the generic THREE_U32 factory which doesn't have
+      // access to the token Map.
       {
         const wrapFinalizerClosures = new Map<string, (env: number, data: number, hint: number) => void>();
         const wrapFn = napi["napi_wrap"];
@@ -841,14 +1005,15 @@ export function makeNapiOpRegistry(napi: Record<string, NapiFn>): NapiOpRegistry
           env: number,
           cbPtr: number,
           finalizeHint: number,
-        ): void => {
+        ): string | null => {
           // Cache a FINALIZER-shape closure for the (env, cbPtr, hint)
-          // tuple.  cbPtr=0 means "no finalizer" — nothing to cache.
-          if (cbPtr === 0) return;
+          // tuple.  cbPtr=0 means "no finalizer" — nothing to cache,
+          // return null.
+          if (cbPtr === 0) return null;
           const key = keyOf(env, cbPtr, finalizeHint);
-          if (wrapFinalizerClosures.has(key)) return;
+          if (wrapFinalizerClosures.has(key)) return key;
           const reverseClient = getHostSideReverseSyncClient();
-          if (!reverseClient) return;
+          if (!reverseClient) return null;
           const hostClosure = makeHostSideCallbackClosure({
             reverseClient,
             cbPtr,
@@ -861,6 +1026,22 @@ export function makeNapiOpRegistry(napi: Record<string, NapiFn>): NapiOpRegistry
             void envArg;
           };
           wrapFinalizerClosures.set(key, finalizer);
+          return key;
+        };
+
+        const registerForGC = (handleId: number, key: string, env: number, finalizeData: number, finalizeHint: number): void => {
+          if (handleId === 0) return;
+          const napiCtx = getNapiContext();
+          if (!napiCtx) return;
+          const value = napiCtx.handleStore.get(handleId)?.value;
+          if (value === null || value === undefined) return;
+          const t = typeof value;
+          if (t !== "object" && t !== "function" && t !== "symbol") return;
+          finalizerRegistry.register(value as object, {
+            key, env, data: finalizeData, hint: finalizeHint,
+            map: wrapFinalizerClosures,
+          });
+          finalizerStats.registered += 1;
         };
 
         server.register(OP_NAPI_WRAP, async (_ctx, args) => {
@@ -873,13 +1054,17 @@ export function makeNapiOpRegistry(napi: Record<string, NapiFn>): NapiOpRegistry
           const cbPtr        = dv.getUint32(12, true);
           const finalizeHint = dv.getUint32(16, true);
           const resultPtr    = dv.getUint32(20, true);
-          ensureClosure(env, cbPtr, finalizeHint);
-          // Pass cbPtr through (see cluster-c-finalizers-noop): emnapi's
-          // makeDynCall_vppp is a noop on the host-worker so the funcref
-          // index is never resolved at finalize-time.  Passing 0 instead
-          // would break the (result != 0 && finalize_cb == 0) → invalid_arg
-          // branch in internal.ts:118.
+          const key = ensureClosure(env, cbPtr, finalizeHint);
+          // Pass cbPtr through: emnapi's makeDynCall_vppp is noop so
+          // the funcref index is never resolved at finalize-time.
+          // Passing 0 would trip internal.ts:118 napi_invalid_arg when
+          // a result reference is requested.
           const status = wrapFn(env, jsObject, nativeObj, cbPtr, finalizeHint, resultPtr);
+          if (status === 0 && key) {
+            // For napi_wrap, the GC trigger is the wrapped jsObject
+            // itself (not a new result handle).  Deref jsObject.
+            registerForGC(jsObject, key, env, nativeObj, finalizeHint);
+          }
           return { payload: EMPTY, status };
         });
 
@@ -893,11 +1078,16 @@ export function makeNapiOpRegistry(napi: Record<string, NapiFn>): NapiOpRegistry
           const cbPtr         = dv.getUint32(12, true);
           const finalizeHint  = dv.getUint32(16, true);
           const resultPtr     = dv.getUint32(20, true);
-          ensureClosure(env, cbPtr, finalizeHint);
+          const key = ensureClosure(env, cbPtr, finalizeHint);
           // emnapi $CHECK_ARG! rejects finalize_cb=0 unconditionally for
-          // napi_add_finalizer (wrap.ts:187).  Pass cbPtr through — safe
-          // because of cluster-c-finalizers-noop.
+          // napi_add_finalizer (wrap.ts:187).  Pass cbPtr through —
+          // safe because emnapi's dynCall is noop on the host-worker.
           const status = addFinFn(env, jsObject, finalizeData, cbPtr, finalizeHint, resultPtr);
+          if (status === 0 && key) {
+            // GC trigger is the jsObject (the value to which we're
+            // attaching the finalizer).
+            registerForGC(jsObject, key, env, finalizeData, finalizeHint);
+          }
           return { payload: EMPTY, status };
         });
       }

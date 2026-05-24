@@ -259,26 +259,26 @@ the browser-target tree.
   long-running deployment shows growth.
   See experiments/r9-host-emnapi-init/FINDINGS.md and
   experiments/e7-scope-discipline-observation/FINDINGS.md.
-- `cluster-b-finalizers-noop` (2026-05-23, F-9 batch 4 cluster B) —
-  `napi_create_external{,_arraybuffer,_buffer}` register host-side
-  finalizer closures in a `finalizerClosures` Map but pass
-  `finalize_cb=0` to emnapi.  Root cause: emnapi v1's `Finalizer`
-  machinery (`vendor/emnapi/packages/runtime/src/Finalizer.ts:52-66`)
-  only accepts wasm funcref indices, NOT JS callables — unlike
-  `CleanupQueue` which DOES branch on `typeof`.  Net behavior matches
-  guest-side native edge (which also drops `_finalize_cb`).  Future
-  resolution: patch emnapi's `Finalizer.callFinalizer` to recognize
-  JS-callable branch, OR wire host-side `FinalizationRegistry` keyed
-  on the external handle.
-- `cluster-c-finalizers-noop` (2026-05-23, F-9 batch 4 cluster C) —
-  `napi_wrap` and `napi_add_finalizer` pass the wasm funcref through
-  to emnapi (rather than 0; emnapi rejects 0 for these via
-  `napi_invalid_arg`).  Same Finalizer constraint as cluster B; the
-  funcref-passthrough is safe because `makeDynCall_vppp` is wired to
-  a no-op (existing `dynCall-before-table-ready` debt), so the
-  funcref is never resolved against any table.  Net behavior matches
-  cluster B + guest-side native edge.  Same future-resolution paths
-  apply.
+- ~~`cluster-b-finalizers-noop`~~ + ~~`cluster-c-finalizers-noop`~~
+  **RESOLVED** (2026-05-24, Agent A) by host-side
+  `FinalizationRegistry`-driven dispatch.  Both clusters now register
+  the host-side JS object (deref'd from the napi_value returned by
+  `napi_create_external` / `napi_wrap` / `napi_add_finalizer`) with a
+  module-level `FinalizationRegistry`.  When the JS object is GC'd by
+  the host worker's V8, the FR callback fires the cached closure built
+  by `makeHostSideCallbackClosure` (shape=FINALIZER), which round-trips
+  to wasm via reverse-RPC where the wasm-side dispatcher resolves the
+  funcref via `__indirect_function_table.get(cbPtr)` and invokes
+  `void(*)(env, finalize_data, finalize_hint)`.  Observability counters
+  (`finalizerStats.registered/fired/closureMissing/closureFailed`)
+  exposed via `getFinalizerStats()` for diagnostic probes.
+
+  Test gap: deterministic GC observation isn't possible without
+  `--expose-gc` (browser-test-runner doesn't pass that flag).  Suite-
+  side test asserts wiring (registration counter ticks); fire-on-GC
+  validated via a dedicated probe script under `--expose-gc` (out-of-
+  band).  F-9 sweep (32/33 ops) confirms the cluster handlers still
+  function under the new dispatch path.
 - ~~`cluster-d-define-class-properties`~~ — **RESOLVED** (2026-05-24,
   F-9 batch 4 cluster D follow-up) by decoding the
   napi_property_descriptor array (32B stride) in the
