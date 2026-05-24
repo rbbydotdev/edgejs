@@ -1,0 +1,19 @@
+experiments/e17-createhash-jspi-spike/FINDINGS.md
+  s_7bec0ecbfcdcd0::t_501d13e7c4c5f3 1-125
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "cf740aa6ad7072735b644d4d54e7b852f8cb8fee",
+  "prompts": {},
+  "sessions": {
+    "s_7bec0ecbfcdcd0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d560d5ae-265f-44ae-89c4-d35659b3ab9e",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
