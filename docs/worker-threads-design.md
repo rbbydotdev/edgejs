@@ -114,7 +114,11 @@ Our shim:
 When the child Worker actually boots, it processes the queued
 bootstrap, loads the file, then user messages.
 
-**E25 will validate this works under JSPI.**
+**E25 confirmed (2026-05-24)**: the trick works under JSPI.  Child
+Worker's event loop runs concurrently with parent's JSPI-suspended
+wasm; pre-queued bootstrap messages reach the child during parent's
+suspend window.  Sentinel-arrival gap on parent is ~0.06ms after
+JSPI resume.  See `experiments/e25-sync-spawn-jspi/FINDINGS.md`.
 
 ### How to share the compiled wasm Module
 
