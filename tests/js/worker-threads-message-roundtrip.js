@@ -23,9 +23,14 @@
 // __edge{Pack,Unpack}PostMessage globals) by sending a mixed-type
 // object: string, number, array of ints, nested plain object.
 //
-// Phase 2 will additionally add a sibling test that uses the actual
-// `new Worker()` API via the worker-threads-per-thread policy patch —
-// once file-mode FS visibility (or inline-source eval mode) lands.
+// This test runs against the bare wasm-side globals (not the
+// worker-threads-per-thread policy), so the child bootstrap below has
+// to install its own __edgeDispatchMessageToChild handler.  The
+// policy patch's parentPort keepalive isn't in play here — but the
+// setImmediate wrapping on the reverse-RPC dispatch is, which lets
+// the child call `process.exit` directly from inside the message
+// handler and have it propagate through _start's exit signal path
+// cleanly.
 
 if (typeof globalThis.__edgeSpawnNodeWorker !== 'function') {
   console.error('FAIL: __edgeSpawnNodeWorker not installed');
@@ -51,34 +56,34 @@ globalThis.__edgeDispatchUserWorkerExit = (_workerId, code) => {
   childExitCode = code;
 };
 
-// Child bootstrap: install the receive-side dispatcher, but defer all
-// actual work (reply, exit) to the natural libuv stack via a polling
-// setInterval.  Two reasons:
-//   1. Without something pending on libuv, _start returns immediately
-//      after the synchronous dispatcher install and the child exits
-//      with code 0 BEFORE the parent gets a chance to send.  The
-//      reverse-RPC server runs on a JSPI/Atomics path that doesn't
-//      register with libuv as a pending handle.
-//   2. NOTES.md `worker-threads-reverse-rpc-exit-fragility`:
-//      process.exit / setTimeout-to-exit called from inside the
-//      reverse-RPC handler stack doesn't propagate cleanly.  Better
-//      to set a flag and exit on the natural libuv timer callback.
+// Child bootstrap: install the message dispatcher plus a libuv-visible
+// keepalive ticker.  The ticker is a short-period (100 ms) setInterval
+// — it serves two roles:
+//   1. Keeps libuv alive (uv_timer_t is a pending handle).
+//   2. Actively drives libuv loop iterations so the reverse-RPC
+//      handler's setImmediate (added in worker.ts) gets a chance to
+//      run — without ticks, poll_oneoff would park indefinitely.
+//
+// The worker-threads-per-thread policy patch installs a similar (but
+// longer-period) keepalive on parentPort once a 'message' listener
+// is registered.  This test bypasses the policy and uses the raw
+// __edgeDispatchMessageToChild global, so it has to manage its own
+// keepalive.
+//
+// The handler calls process.exit(0) directly: the setImmediate wrap
+// in worker.ts puts dispatch on libuv's check-phase tick, so
+// ExitSignal propagates through _start's normal exit-handler path
+// instead of being swallowed by the reverse-RPC handler's try/catch.
 const childBootstrap = `
-  var pendingBytes = null;
+  var keepalive = setInterval(function() {}, 100);
   globalThis.__edgeDispatchMessageToChild = function(bytes) {
-    pendingBytes = bytes;
+    var data = globalThis.__edgeUnpackPostMessage(bytes);
+    var reply = { echoed: data, fromChild: true };
+    var replyBytes = globalThis.__edgePackPostMessage(reply);
+    globalThis.__edgePostMessageFromWorker(replyBytes);
+    clearInterval(keepalive);
+    process.exit(0);
   };
-  var interval = setInterval(function() {
-    if (pendingBytes !== null) {
-      clearInterval(interval);
-      var data = globalThis.__edgeUnpackPostMessage(pendingBytes);
-      var reply = { echoed: data, fromChild: true };
-      var replyBytes = globalThis.__edgePackPostMessage(reply);
-      globalThis.__edgePostMessageFromWorker(replyBytes);
-      setTimeout(function() { process.exit(0); }, 50);
-    }
-  }, 50);
-  setTimeout(function() { process.exit(3); }, 8000);
 `;
 
 const workerId = globalThis.__edgeSpawnNodeWorker(childBootstrap);

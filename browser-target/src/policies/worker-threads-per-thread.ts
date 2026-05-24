@@ -64,6 +64,49 @@ import type { Policy } from "./index";
 // to default once phase 3 (terminate + error events) is in.  Users opt
 // in via `?policies=worker-threads-per-thread`.
 
+// Libuv-keepalive helper shared by both the parent-side per-Worker
+// keepalive and the child-side parentPort keepalive.
+//
+// The keepalive is a `setInterval` because libuv sees it as a pending
+// `uv_timer_t` handle — that's what keeps `_start`'s event loop from
+// returning while parentPort/Worker has registered 'message' listeners.
+//
+// CRITICAL: the period must be SHORT (we use 50ms), not long.  Two
+// roles:
+//   1. Pending-handle behavior: the timer's existence keeps libuv
+//      from exiting (any period works for this).
+//   2. Loop-driving behavior: libuv's check phase (where setImmediate
+//      callbacks queued by reverse-RPC handlers fire) only runs when
+//      the loop iterates.  Without a short period, libuv parks in
+//      `poll_oneoff` waiting for the next timer — so inbound messages
+//      enqueue a setImmediate that never fires.  50ms keeps delivery
+//      latency bounded.
+//
+// #!~debt worker-threads-uses-js-keepalive-not-tsfn — this is the
+// pure-JS emulation of emnapi v2 TSFN's `_emnapi_runtime_keepalive_push`.
+// Real Path A via TSFN (or a `uv_async_t`-backed C++ binding) would
+// wake `poll_oneoff` precisely when needed and would show up under
+// `process._getActiveHandles()`.  Deferred until the emnapi v1→v2
+// cutover lands (see `vendored-emnapi-flag` debt in NOTES.md).
+const KEEPALIVE_PERIOD_MS = 50;
+const KEEPALIVE_HELPER_JS = `
+function makeKeepalive(periodMs) {
+  var handle = null;
+  return {
+    ensure: function() {
+      if (handle === null) {
+        // Do NOT call .unref() — we WANT it to keep libuv alive AND
+        // drive loop iterations so reverse-RPC's setImmediate fires.
+        handle = setInterval(function() {}, periodMs);
+      }
+    },
+    release: function() {
+      if (handle !== null) { clearInterval(handle); handle = null; }
+    },
+  };
+}
+`;
+
 // Pre-patch on `internal/worker`: replaces `internalBinding('worker').Worker`
 // BEFORE the module's top-level `const { Worker: WorkerImpl } = ...` reads
 // it.  This is unchanged from phase 1 except:
@@ -185,6 +228,7 @@ const PRE_PATCH = `
 // are in scope here because this code runs at the END of
 // `internal/worker.js` module evaluation.
 const POST_PATCH = `
+${KEEPALIVE_HELPER_JS}
 ;(function postEdgeWorkerThreadsPatch() {
   // Defensive — these globals come from the wasm runtime's worker.ts
   // (installPostMessageGlobals); if the policy is enabled but the
@@ -234,6 +278,22 @@ const POST_PATCH = `
     return origPostMessage.apply(this, arguments);
   };
 
+  // Per-Worker libuv keepalive on the PARENT side.  See the
+  // KEEPALIVE_HELPER_JS comment in this file for rationale.
+  var workerKeepalives = new Map();  // wid → keepalive object
+  function workerKeepaliveFor(wid) {
+    var k = workerKeepalives.get(wid);
+    if (k === undefined) {
+      k = makeKeepalive(${KEEPALIVE_PERIOD_MS});
+      workerKeepalives.set(wid, k);
+    }
+    return k;
+  }
+  function dropWorkerKeepalive(wid) {
+    var k = workerKeepalives.get(wid);
+    if (k !== undefined) { k.release(); workerKeepalives.delete(wid); }
+  }
+
   // Wrap the Worker constructor to register instances in workerById.
   // ES6 class subclassing preserves the prototype chain (EventEmitter
   // etc.) so user-facing APIs are unchanged.
@@ -245,8 +305,39 @@ const POST_PATCH = `
       if (h && typeof h.__edgeWorkerId === 'number') {
         var wid = h.__edgeWorkerId;
         workerById.set(wid, this);
-        // Clean up on exit so workerById doesn't leak across spawns.
-        this.on('exit', function() { workerById.delete(wid); });
+        // Clean up on exit so workerById doesn't leak across spawns,
+        // and drop the keepalive so the parent loop can drain.
+        this.on('exit', function() {
+          workerById.delete(wid);
+          dropWorkerKeepalive(wid);
+        });
+        // Keepalive lifecycle: install on first 'message' listener,
+        // tear down when listenerCount drops to 0.
+        // 'newListener' fires BEFORE the listener is added — use the
+        // EVENT itself as the trigger (count would still read 0).
+        this.on('newListener', function(event) {
+          if (event === 'message') workerKeepaliveFor(wid).ensure();
+        });
+        // 'removeListener' fires AFTER removal — the post-removal
+        // listenerCount is the right value to gate teardown on.
+        this.on('removeListener', function(event) {
+          if (event === 'message' && this.listenerCount('message') === 0) {
+            dropWorkerKeepalive(wid);
+          }
+        });
+        // Node's worker.unref()/ref() semantics: unref lets the loop
+        // exit even while listeners are registered; ref re-attaches.
+        var origUnref = this.unref ? this.unref.bind(this) : null;
+        var origRef = this.ref ? this.ref.bind(this) : null;
+        var self = this;
+        this.unref = function() {
+          dropWorkerKeepalive(wid);
+          return origUnref ? origUnref() : self;
+        };
+        this.ref = function() {
+          if (self.listenerCount('message') > 0) workerKeepaliveFor(wid).ensure();
+          return origRef ? origRef() : self;
+        };
       }
     }
   }
@@ -268,6 +359,7 @@ const POST_PATCH = `
 // is a no-op — parentPort stays null, matching Node's main-thread
 // semantics.
 const WORKER_THREADS_POST_PATCH = `
+${KEEPALIVE_HELPER_JS}
 ;(function postEdgeWorkerThreadsParentPortPatch() {
   if (globalThis.__edgeIsUserWorker !== true) return;
   if (typeof globalThis.__edgePostMessageFromWorker !== 'function') return;
@@ -289,12 +381,38 @@ const WORKER_THREADS_POST_PATCH = `
     globalThis.__edgePostMessageFromWorker(bytes);
     void transferList;
   };
-  // No-op port lifecycle methods; Node's MessagePort has these and
-  // user code (and some lib code) may call them defensively.
+
+  // Libuv keepalive — see KEEPALIVE_HELPER_JS comment for rationale.
+  var keepalive = makeKeepalive(${KEEPALIVE_PERIOD_MS});
+
+  // 'newListener' fires BEFORE the listener is added, so listenerCount
+  // would still read 0 at that point — use the EVENT as the trigger.
+  parentPort.on('newListener', function(event) {
+    if (event === 'message') keepalive.ensure();
+  });
+  // 'removeListener' fires AFTER the listener is removed — the count
+  // reflects post-removal state.
+  parentPort.on('removeListener', function(event) {
+    if (event === 'message' && parentPort.listenerCount('message') === 0) {
+      keepalive.release();
+    }
+  });
+
+  // Port lifecycle methods.  unref()/close() let the loop exit;
+  // ref() re-attaches if a 'message' listener is still registered.
+  var origRemoveAll = parentPort.removeAllListeners.bind(parentPort);
+  parentPort.removeAllListeners = function(event) {
+    var r = origRemoveAll(event);
+    if (!event || event === 'message') keepalive.release();
+    return r;
+  };
   parentPort.start = function() {};
-  parentPort.unref = function() { return parentPort; };
-  parentPort.ref = function() { return parentPort; };
-  parentPort.close = function() {};
+  parentPort.unref = function() { keepalive.release(); return parentPort; };
+  parentPort.ref = function() {
+    if (parentPort.listenerCount('message') > 0) keepalive.ensure();
+    return parentPort;
+  };
+  parentPort.close = function() { keepalive.release(); };
 
   // Wire the dispatcher.  Reverse RPC from parent → child fires this
   // global; we unmarshal and emit on parentPort.

@@ -344,15 +344,36 @@ the browser-target tree.
   `sab-fs-read-only-writes-not-persisted`).  No suite-side test uses
   file mode yet; the spawn-exit test bypasses the policy and uses
   `globalThis.__edgeSpawnNodeWorker` with an inline bootstrap script.
-- `worker-threads-reverse-rpc-exit-fragility` — `process.exit(N)`
-  called inside a reverse-RPC handler stack (e.g. directly inside the
-  user's `worker.on('exit', cb)` callback) does NOT propagate cleanly
-  to the parent's `_start` — the handler's try/catch swallows the
-  ExitSignal.  User code must call `process.exit` from a natural
-  libuv loop callback (setTimeout / setImmediate / nextTick).  The
-  spawn-exit test polls a flag from a setTimeout for this reason.
-  Phase 3 should clean this up by emitting the exit event via
-  `process.nextTick` so user callbacks run on the natural stack.
+- ~~`worker-threads-reverse-rpc-exit-fragility`~~ — **RESOLVED**
+  (2026-05-25, phase 2 follow-up) by wrapping every reverse-RPC
+  dispatcher call (`OP_DELIVER_USER_WORKER_EXIT`,
+  `OP_DELIVER_MESSAGE_TO_CHILD`, `OP_DELIVER_MESSAGE_FROM_CHILD`) in
+  `setImmediate(...)` via the `dispatchOnLibuvTick` helper in
+  `browser-target/src/worker.ts`.  The user's event-handler callback
+  now runs on libuv's check-phase tick, outside the reverse-RPC
+  handler's try/catch, so `process.exit` from inside a 'message' or
+  'exit' handler propagates through `_start`'s normal exit-signal
+  path.  The phase-1 spawn-exit test still uses a polling pattern
+  because it bypasses the policy patch — kept as-is for historical
+  consistency, but no longer required.
+- `worker-threads-uses-js-keepalive-not-tsfn` — `parentPort` (child
+  side) and `Worker` (parent side) keep libuv alive while there's a
+  'message' listener registered via a 50ms `setInterval` (libuv sees
+  it as a `uv_timer_t` pending handle).  Two roles:  (a) prevents
+  `_start` from returning while listeners are pending;  (b) drives
+  loop iterations so `setImmediate`-queued message deliveries actually
+  fire — without iteration, libuv parks in `poll_oneoff` and
+  `setImmediate` never runs.  Emulates emnapi v2 TSFN's
+  `_emnapi_runtime_keepalive_push` mechanism in pure JS.  Migration
+  to real TSFN (or a `uv_async_t`-backed C++ binding — Path A
+  proper) is deferred until either the emnapi v1→v2 cutover lands
+  (see `vendored-emnapi-flag` debt + NOTES followup #4 v-table mode)
+  or someone takes on the C++ binding project.  Observable warts the
+  current shortcut doesn't close: (i) the keepalive timer is visible
+  under `process._getActiveHandles()` as a generic Timeout, not as a
+  MessagePort/Worker handle;  (ii) ~50ms max delivery latency for
+  incoming messages (vs. immediate on real TSFN);  (iii) ~20Hz
+  no-op wakeup cost while listeners are registered.
 - `worker-threads-child-sentinel-mangling` — main's child-wasm-worker
   message listener replaces "_start ran" with "_start.ran" in
   forwarded log text so the browser-test-runner's SENTINEL_RE doesn't

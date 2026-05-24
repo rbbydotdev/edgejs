@@ -29,6 +29,22 @@ declare const self: DedicatedWorkerGlobalScope;
 // can't shadow them mid-run.
 const nowMs = performance.now.bind(performance);
 
+// Wrap a reverse-RPC dispatcher call in `setImmediate` so it runs on
+// libuv's natural check-phase tick — outside the reverse-RPC handler's
+// try/catch.  This is what lets `process.exit` thrown from the user's
+// event handler propagate through `_start`'s normal exit-signal path
+// instead of getting swallowed as a generic error.  Resolves
+// worker-threads-reverse-rpc-exit-fragility for every reverse-RPC
+// delivery channel (exit, message-to-child, message-from-child).
+function dispatchOnLibuvTick(label: string, fn: () => void): void {
+  setImmediate(() => {
+    try { fn(); }
+    catch (err) {
+      post("log", { text: `[runtime] ${label} dispatch threw: ${(err as Error).message}`, level: "warn" });
+    }
+  });
+}
+
 function post(kind: string, payload: Record<string, unknown> = {}) {
   self.postMessage({ kind, ...payload });
 }
@@ -494,10 +510,7 @@ self.addEventListener("message", (e: MessageEvent) => {
           const dispatch = (globalThis as { __edgeDispatchUserWorkerExit?: ExitDispatcher })
             .__edgeDispatchUserWorkerExit;
           if (typeof dispatch === "function") {
-            try { dispatch(workerId, exitCode); }
-            catch (err) {
-              post("log", { text: `[runtime] OP_DELIVER_USER_WORKER_EXIT dispatch threw: ${(err as Error).message}`, level: "warn" });
-            }
+            dispatchOnLibuvTick("OP_DELIVER_USER_WORKER_EXIT", () => dispatch(workerId, exitCode));
           } else {
             post("log", { text: `[runtime] OP_DELIVER_USER_WORKER_EXIT #${workerId}: no dispatcher registered`, level: "warn" });
           }
@@ -539,10 +552,7 @@ self.addEventListener("message", (e: MessageEvent) => {
           const dispatch = (globalThis as { __edgeDispatchMessageFromChild?: FromChildDispatcher })
             .__edgeDispatchMessageFromChild;
           if (typeof dispatch === "function") {
-            try { dispatch(workerId, bytes); }
-            catch (err) {
-              post("log", { text: `[runtime] OP_DELIVER_MESSAGE_FROM_CHILD dispatch threw: ${(err as Error).message}`, level: "warn" });
-            }
+            dispatchOnLibuvTick("OP_DELIVER_MESSAGE_FROM_CHILD", () => dispatch(workerId, bytes));
           } else {
             post("log", { text: `[runtime] OP_DELIVER_MESSAGE_FROM_CHILD #${workerId}: no dispatcher registered`, level: "warn" });
           }
@@ -578,10 +588,7 @@ self.addEventListener("message", (e: MessageEvent) => {
           const dispatch = (globalThis as { __edgeDispatchMessageToChild?: ToChildDispatcher })
             .__edgeDispatchMessageToChild;
           if (typeof dispatch === "function") {
-            try { dispatch(bytes); }
-            catch (err) {
-              post("log", { text: `[runtime] OP_DELIVER_MESSAGE_TO_CHILD dispatch threw: ${(err as Error).message}`, level: "warn" });
-            }
+            dispatchOnLibuvTick("OP_DELIVER_MESSAGE_TO_CHILD", () => dispatch(bytes));
           } else {
             post("log", { text: `[runtime] OP_DELIVER_MESSAGE_TO_CHILD: no dispatcher registered`, level: "warn" });
           }
