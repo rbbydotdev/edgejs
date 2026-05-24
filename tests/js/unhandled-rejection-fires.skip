@@ -1,5 +1,10 @@
-NOTES.md "process.on('unhandledRejection') partially wired": lib defers
-emission via tickCallback which edge's runtime doesn't drive in the same
-window; rejection captured but doesn't surface to user listeners before
-exit.  Lever B (JS-host worker with own tickCallback drive) should close
-this.  Un-skip after.
+E8 reclassification (2026-05-24): the handler IS captured AND IS fired —
+just AFTER a surviving `setTimeout(100)` that the test wasn't expecting.
+The original framing — "lib defers emission via tickCallback which edge's
+runtime doesn't drive" — is partly right (lib does defer via nextTick),
+but the deeper issue is that `process.nextTick(emit)` doesn't drive
+between `poll_oneoff` iterations on the wasm path.  See
+experiments/e8-microtask-pump-spike/FINDINGS.md.
+
+Still skipped pending an investigation of `process.nextTick` drive
+timing in `lib/internal/process/promises.js`.

@@ -417,110 +417,105 @@ or splitting the wasm runtime off the JS thread.
 
 ## Active followups (priority order)
 
-### 1. Microtask checkpoint pump (Phase B follow-up) — needs novel solution
+### 1. Microtask checkpoint pump — premise was wrong; reframe required
 
-Phase B (wasm imports for `unofficial_napi_*` ops) closed
-`task-queue-fallback-recursion`, but did NOT close
-`lazy-load-from-microtask` or `microtasks-starved-by-pending-timer`
-(verified by `tests/js/regression-*.{js,skip}`).
+**Reframed 2026-05-24 by E8 spike**
+(experiments/e8-microtask-pump-spike/FINDINGS.md).
 
-**The constraint (browser target — the actual deployment shape)**:
+The original framing of this followup was:
+> Edge's `_start` runs as ONE long synchronous task on the worker
+> thread.  It never returns to the worker's event loop, so no task
+> boundary fires, so microtasks never drain.
 
-Wasm runs inside a `DedicatedWorker`.  That worker has its own event
-loop and microtask queue.  `queueMicrotask` / `Promise.then` queue
-onto it; microtasks drain at TASK BOUNDARIES (after an event handler
-returns, after a `postMessage` is processed, after a `setTimeout`
-fires).  No browser exposes `PerformMicrotaskCheckpoint` to JS.
+This is **partly wrong**.  E8 empirically tested three primitives
+under JSPI suspension on the wasm worker:
 
-Edge's `_start` runs as ONE long synchronous task on the worker
-thread.  It never returns to the worker's event loop, so no task
-boundary fires, so microtasks never drain.  When `poll_oneoff` blocks
-on `Atomics.wait`, the worker thread is stuck — microtasks couldn't
-drain even in principle until that wait releases.
+| Primitive | Fires during JSPI suspension? |
+|---|---|
+| `Promise.resolve().then(...)` (microtask) | **Yes** ✓ |
+| `setTimeout(..., 1ms)` (macrotask) | **No** ✗ — deadlocks |
+| `Atomics.waitAsync(..., 1ms).value` (engine timer) | **Yes** ✓ |
 
-The fix shape: wasm has to YIELD back to the worker's event loop
-periodically.  Then the loop turns, microtasks drain (including
-any `await fetch(...)` / `await stream.read()` continuations), and
-we resume wasm.  That's exactly what Asyncify-at-the-syscall-boundary
-buys us.
+**Microtasks DO drain on the wasm worker.**  V8's microtask scope
+is processed during the JSPI await; only the worker's macrotask
+queue freezes (the host loop can't dispatch while wasm holds the
+thread at the C++ layer).
 
-**Node-harness side-note** (for diagnostic context, not the fix):
-Edge's `src/edge_runtime.cc:1870` calls `unofficial_napi_process_microtasks(env)`
-once per loop iteration expecting `Isolate::PerformMicrotaskCheckpoint()`.
-We DO plumb Node's `process._tickCallback` through to honor that
-contract (snapshot in `host/globals-shim.ts`, invoked by
-`microtask-ops.ts`).  Isolated experiments
-(`/tmp/microtask-drain-experiment/exp8-harness-fix-pattern.mjs`)
-confirmed the drain primitive works when wasm is called from a
-scope-depth-0 entry (libuv callback, `setImmediate`).  BUT inside
-edge.js's full runtime, scope depth stays >= 1 throughout `_start`'s
-execution because the wasm doesn't exit + re-enter Node's scope
-between libuv-internal callbacks — so V8's
-`MicrotasksScope::PerformCheckpoint(>0 depth)` early-returns and
-the drain only fires at end-of-`_start`.  Calling _tickCallback is
-still correct intent (composes when a future fix gives us
-scope-depth-0 callback boundaries) but doesn't currently close the
-two regression-skipped bugs.  Doesn't translate to browser anyway.
-Solution has to come from the wasm-yields-to-event-loop side
-(Asyncify-at-the-syscall-boundary), not the host-side-drain side.
+Of the 4 tests this followup was supposed to fix:
+- `regression-lazy-load-from-microtask` — **already passes on the
+  wasm path** (verified 3/3 stable runs).  Moved off `host=1`.
+- `regression-microtask-not-starved` — **already passes on the
+  wasm path** (verified 3/3 stable runs).  Moved off `host=1`.
+- `finalization-registry-runs` — still fails, but for a different
+  reason: `process.exit(0)` inside a `FinalizationRegistry`
+  callback doesn't terminate before a surviving `setTimeout(200)`
+  fires.  Reclassify: `process.exit` semantics issue.
+- `unhandled-rejection-fires` — still fails, different reason:
+  handler IS captured and IS fired, just AFTER a surviving
+  `setTimeout(100)`.  Reclassify: lib's
+  `process.nextTick(emit)` timing on the wasm path.
 
-**Real approaches:**
+The 5 `host=1` microtask-ordering tests (await-resumes-as-microtask,
+microtask-before-timer, nexttick-before-microtask,
+promise-chain-drains-fully, queuemicrotask-orders-with-promise)
+have mixed results on the wasm path — 2/5 pass, 3/5 fail or flake
+on specific ordering semantics.  Keep `host=1` for those.
 
-- **(a) Move wasm to a Worker (emnapi multithreaded mode).**  Per
-  emnapi docs (https://emnapi-docs.vercel.app/guide/multithreaded-async.html):
-  spawn a Worker with the wasm + napi context inside it, host JS on
-  main thread.  Main thread's microtask queue drains naturally between
-  postMessage volleys, and wasm-side waits use SAB-coordinated wakeups
-  through the worker.  Requires emnapi vendoring + recompile of edge.js
-  with pthread support, plus a substantial harness/SW restructure.
-  Largest correctness win; biggest surface change.
+**Real remaining issues** (downgraded from "needs novel solution"
+to "ordinary bug investigations"):
 
-- **(b) Syscall-level Asyncify at the wasi-shim boundary.**  When
-  `poll_oneoff` is called with a timer-only subscription, the wasi-shim
-  saves the wasm context, returns control to JS, `setTimeout(resume, N)`
-  for the timer, microtasks drain in the gap, then we re-enter wasm on
-  the timer fire.  Smaller blast radius than full Asyncify — only the
-  syscall boundary yields, not arbitrary call stacks.  Requires real
-  Asyncify (Emscripten compile flag) OR our own continuation primitive
-  in the wasi shim.
+1. `process.exit` from a `FinalizationRegistry` callback doesn't
+   prevent surviving timers — likely the exit throws in a microtask
+   frame after `_start` already returned.
+2. `unhandledRejection` event timing — lib defers via
+   `process.nextTick`; that chain doesn't drive between
+   `poll_oneoff` iterations on the wasm path.
+3. The 3 flaky `host=1` ordering tests — investigate one at a time.
 
-- **(c) Full Asyncify on `_start`.**  Recompile with `-s ASYNCIFY=1`
-  or equivalent for WASIX, wrap `_start` so any wasm function can
-  yield to the host.  Pyodide / Emception use this.  Cost: ~20-30%
-  perf overhead, +25-50% wasm binary size, unclear WASIX support.
+**Strategic implication:** the "microtask drain bug" was a stronger
+argument for moving user JS to the host worker (Lever B) than the
+reality supports.  The wasm path is more capable than the previous
+docs claimed.  Re-evaluate the Lever B motivation against actual
+costs.
 
-- **(d) Expose a context-aware drain in emnapi.**  Upstream patch
-  to emnapi adding `napiModule.emnapi.runMicrotasks()` that calls
-  `context->GetMicrotaskQueue()->PerformCheckpoint(isolate)` on edge's
-  V8 context.  Tightest fix BUT (i) requires C++ side support since
-  V8 context isn't reachable from JS, and (ii) upstream coordination
-  with toyobayashi/emnapi.  Probably folds into our existing emnapi
-  vendoring plan (followup #4).
+**Historical approaches (now superseded by E8 findings):**
 
-**Recommended order**: (d) first — investigate whether it's possible
-to add a JS-callable drain in emnapi for edge's env's context.  If
-upstream merges or we vendor + patch, this is the cleanest fix.
-Fall back to (b) syscall-level Asyncify if (d) doesn't pan out.
-(a) and (c) are heavy lifts kept for completeness.
+The earlier framing proposed four candidate fixes: (a) move wasm to
+its own Worker via emnapi multithreaded mode, (b) syscall-level
+Asyncify at the wasi-shim boundary, (c) full Asyncify on `_start`,
+(d) C++-side context-aware drain in emnapi.  These were sized to
+fix a problem (microtasks never drain) that E8 showed doesn't fully
+exist.  Reads of those approaches are preserved in
+[ARCHIVE.md](./ARCHIVE.md) for context but no longer block
+deployment.
 
-This bug is not load-bearing for any test currently in the corpus
-(the regressions are `.skip`), so it can sleep while we ship other
-phases — but it gates Node-correct concurrency semantics that real
-apps depend on (Promise.then before timer, await before timer).
+E8 attempted approach (b) and found `setTimeout` deadlocks under
+JSPI on the worker — V8 holds the thread; macrotasks can't fire.
+Approach (b) cannot be implemented without real wasm-stack-
+switching (approach c).  Approach (a) is still a real option for
+ESM / worker_threads support but no longer justified by microtask
+drain alone.
+
+**Status: downgraded.**  Not blocking any test in the corpus today
+(2 regression tests moved to wasm path; remaining `.skip` tests
+have different root causes now reclassified above).
 
 ### 2. Offload policies (Phase C in the architecture plan)
 
-**Blocked-by-#1**: every host-async policy (compression, crypto-via-subtle,
-wasm-compile-via-host, streams) needs Promise continuations to resolve
-inside edge's context — see #1 for why this currently doesn't work.
+**Previously "Blocked-by-#1"** — E8 (2026-05-24) found microtasks
+DO drain on the wasm path, so the supposed blocker is weaker than
+documented.  Async host-offload policies should be re-attempted
+with the corrected understanding; per-policy validation needed
+(some may still have edge cases around `process.nextTick` timing
+that E8 also uncovered).
 
 `compression-via-compressionstream` is shipped as a spec / reference
-(in `src/policies/`, registered as opt-in) but does NOT execute its
-callback today — kept so the fix path for #1 can validate against a
-concrete consumer.  Test deferred until #1 lands.
+(in `src/policies/`, registered as opt-in) but did NOT execute its
+callback when last tested.  Worth retrying now that the microtask-
+drain premise has been corrected.
 
 Synchronous offloads (crypto random was the first) are NOT blocked
-and remain a fine direction independent of #1.
+and remain a fine direction.
 
 - `crypto-via-subtle` — `crypto.createHash` / `Hmac` / `pbkdf2` /
   `randomBytes` route to SubtleCrypto. ~80% smaller crypto surface.
