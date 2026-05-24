@@ -20,10 +20,20 @@
 // `experiments/r8-cross-context-marshaling/`):
 //
 //   - Primitives serialized inline (undefined/null/bool/int32/double/string).
-//   - Objects routed through a shared `IdentityMap` keyed by JS identity.
-//     The wire carries the identity id; both sides resolve to the SAME JS
-//     object reference, preserving `===`-identity and prototypes across
-//     the boundary, and handling circular refs trivially.
+//   - Objects encoded BY VALUE — recursive deep-clone into the wire bytes
+//     (plain objects, arrays, typed arrays, ArrayBuffer, Date).  Identity
+//     is NOT preserved across calls; the same object packed twice produces
+//     two distinct receiver-side objects.  Matches structuredClone /
+//     postMessage semantics.
+//   - Circular references handled via a per-frame `seen` map; second
+//     visit emits MARSHAL_TAG_CIRCULAR_REF with the first-emit's frame-
+//     local id.  Receiver patches via the symmetric `byFrameId` map.
+//   - Identity-preserving by-ref (MARSHAL_TAG_OBJECT_BYREF / tag 7) is
+//     retained for callers that explicitly share an IdentityMap across
+//     pack + unpack (e.g. same-heap diagnostic probes).  Falls through
+//     to by-ref for objects whose prototype isn't Object.prototype or
+//     null (class instances) — receiver throws cleanly if it doesn't
+//     hold the shared IdentityMap.
 //   - One-byte tag prefix per value disambiguates the payload layout.
 //
 // WIRE FORMAT
@@ -33,25 +43,40 @@
 //
 //   all multi-byte fields are little-endian.
 //
-//   | Tag | Value      | Payload                                              |
-//   |----:|------------|------------------------------------------------------|
-//   |   0 | undefined  | (none)                                               |
-//   |   1 | null       | (none)                                               |
-//   |   2 | false      | (none)                                               |
-//   |   3 | true       | (none)                                               |
-//   |   4 | double     | 8 bytes float64                                      |
-//   |   5 | int32      | 4 bytes int32   (fast path for small ints)           |
-//   |   6 | string     | 4 bytes len + N bytes utf-8                          |
-//   |   7 | object     | 4 bytes identityId + 4 bytes flags (bit0 = isArray)  |
-//   | 255 | unsupported| (none) — decoder throws                              |
+//   | Tag | Value         | Payload                                              |
+//   |----:|---------------|------------------------------------------------------|
+//   |   0 | undefined     | (none)                                               |
+//   |   1 | null          | (none)                                               |
+//   |   2 | false         | (none)                                               |
+//   |   3 | true          | (none)                                               |
+//   |   4 | double        | 8 bytes float64                                      |
+//   |   5 | int32         | 4 bytes int32   (fast path for small ints)           |
+//   |   6 | string        | 4 bytes len + N bytes utf-8                          |
+//   |   7 | object-by-ref | 4 bytes identityId + 4 bytes flags (shared IdentityMap) |
+//   |   8 | plain object  | 4 bytes propCount + repeated [packed key, packed value] |
+//   |   9 | array         | 4 bytes len + repeated [packed value]                |
+//   |  10 | typed array   | 1 byte kind + 4 bytes byteLen + bytes                |
+//   |  11 | arraybuffer   | 4 bytes byteLen + bytes                              |
+//   |  12 | date          | 8 bytes float64 ms-since-epoch                       |
+//   |  17 | circular-ref  | 4 bytes frameId (back-ref within this pack frame)    |
+//   | 255 | unsupported   | (none) — decoder throws                              |
 //
-// LIFETIME (objects)
+// LIFETIME (by-ref objects)
 //
 // `IdentityMap.objToId` is a WeakMap; entries auto-collect when the object
 // is GC'd.  `idToRef` holds `WeakRef<object>` registered with a
 // `FinalizationRegistry` so cross-side GC reaps both halves.  If the object
 // is GC'd between pack and unpack the decoder throws
 // "marshal: identity reference collected".
+//
+// LIMITATIONS
+//
+//   - Functions, symbols, bigints → tag 255 / decoder throws.
+//   - Class instances (non-plain prototype) emit tag 7 by-ref; only
+//     resolvable with a shared IdentityMap.
+//   - Map / Set / RegExp not yet supported (TODO).
+//   - Recursion guarded by MARSHAL_MAX_DEPTH (32); cycles use the
+//     per-frame `seen` map instead of depth counting.
 //
 // USAGE / ROUNDTRIP EXAMPLE
 //
@@ -106,8 +131,55 @@ export const MARSHAL_TAG_TRUE = 3;
 export const MARSHAL_TAG_DOUBLE = 4;
 export const MARSHAL_TAG_INT32 = 5;
 export const MARSHAL_TAG_STRING = 6;
-export const MARSHAL_TAG_OBJECT = 7;
+/** Object-by-reference via IdentityMap.  Only resolvable when both
+ *  sides share the same IdentityMap instance (same-heap / same
+ *  per-pair shared map).  Cross-heap receivers throw
+ *  "marshal: identity reference collected". */
+export const MARSHAL_TAG_OBJECT_BYREF = 7;
+/** Plain object — recursive [u32 propCount][repeated: packed-key, packed-value]. */
+export const MARSHAL_TAG_OBJECT_PLAIN = 8;
+/** Dense array — recursive [u32 len][repeated: packed-value]. */
+export const MARSHAL_TAG_ARRAY = 9;
+/** Typed array — [u8 kind][u32 byteLen][bytes].  Kind 0..10 per TYPED_ARRAY_KINDS. */
+export const MARSHAL_TAG_TYPED_ARRAY = 10;
+/** ArrayBuffer — [u32 byteLen][bytes]. */
+export const MARSHAL_TAG_ARRAYBUFFER = 11;
+/** Date — [f64 ms-since-epoch]. */
+export const MARSHAL_TAG_DATE = 12;
+/** Circular back-ref within the current pack frame.  [u32 frameId].
+ *  frameId is the index of an already-emitted object in the
+ *  pack-frame's `seen` map. */
+export const MARSHAL_TAG_CIRCULAR_REF = 17;
+/** Functions, symbols, bigints — decoder throws. */
 export const MARSHAL_TAG_UNSUPPORTED = 255;
+
+/** Maximum recursion depth for by-value encoding.  Guards against
+ *  pathologically deep nesting; circular refs are detected separately
+ *  via the per-frame `seen` map. */
+const MARSHAL_MAX_DEPTH = 32;
+
+// Typed-array kind table (index = wire byte; entry = constructor).
+//
+// Order is locked in — adding new entries must append, never insert.
+type TypedArrayCtor =
+  | typeof Uint8Array | typeof Int8Array | typeof Uint8ClampedArray
+  | typeof Uint16Array | typeof Int16Array
+  | typeof Uint32Array | typeof Int32Array
+  | typeof Float32Array | typeof Float64Array
+  | typeof BigUint64Array | typeof BigInt64Array;
+const TYPED_ARRAY_KINDS: TypedArrayCtor[] = [
+  Uint8Array, Int8Array, Uint8ClampedArray,
+  Uint16Array, Int16Array,
+  Uint32Array, Int32Array,
+  Float32Array, Float64Array,
+  BigUint64Array, BigInt64Array,
+];
+function typedArrayKindOf(value: ArrayBufferView): number {
+  for (let i = 0; i < TYPED_ARRAY_KINDS.length; i++) {
+    if (value instanceof TYPED_ARRAY_KINDS[i]) return i;
+  }
+  return -1;
+}
 
 // ─── Identity map ───────────────────────────────────────────────────
 //
@@ -158,8 +230,45 @@ const utf8Decoder = new TextDecoder("utf-8");
 const INT32_MIN = -2147483648;
 const INT32_MAX = 2147483647;
 
-/** Pack a single JS value into tag+payload bytes. */
+/** Per-frame state for a pack() call.  Tracks already-emitted objects
+ *  by identity so we can emit MARSHAL_TAG_CIRCULAR_REF on the second
+ *  visit instead of looping. */
+interface PackFrame {
+  /** object → frame-local id of the first emission. */
+  seen: Map<object, number>;
+  /** next frame-local id to assign. */
+  nextId: number;
+  /** current recursion depth. */
+  depth: number;
+}
+function newPackFrame(): PackFrame {
+  return { seen: new Map(), nextId: 0, depth: 0 };
+}
+
+/** Pack a single JS value into tag+payload bytes.
+ *
+ *  By default, objects are serialized BY VALUE (recursive deep clone).
+ *  Identity is NOT preserved across calls; the same object packed
+ *  twice produces two distinct receiver-side objects.  This matches
+ *  postMessage / structuredClone semantics.
+ *
+ *  Identity-preserving "by-ref" encoding (MARSHAL_TAG_OBJECT_BYREF /
+ *  tag 7) is reserved for callers that explicitly share an
+ *  IdentityMap across both pack and unpack (e.g. same-heap probes).
+ *  In a cross-worker topology where pack and unpack hold distinct
+ *  IdentityMap instances, by-ref is not resolvable and the receiver
+ *  throws.  Today's `callback-dispatch.ts` integration uses
+ *  by-value. */
 export function packValue(value: unknown, owner: IdentityOwner, idMap: IdentityMap): Uint8Array {
+  return packValueWith(value, owner, idMap, newPackFrame());
+}
+
+function packValueWith(
+  value: unknown,
+  owner: IdentityOwner,
+  idMap: IdentityMap,
+  frame: PackFrame,
+): Uint8Array {
   if (value === undefined) return new Uint8Array([MARSHAL_TAG_UNDEFINED]);
   if (value === null) return new Uint8Array([MARSHAL_TAG_NULL]);
   if (value === false) return new Uint8Array([MARSHAL_TAG_FALSE]);
@@ -185,10 +294,108 @@ export function packValue(value: unknown, owner: IdentityOwner, idMap: IdentityM
     return buf;
   }
   if (typeof value === "object") {
+    // Circular-ref check.
+    const existing = frame.seen.get(value as object);
+    if (existing !== undefined) {
+      const buf = new Uint8Array(5);
+      buf[0] = MARSHAL_TAG_CIRCULAR_REF;
+      new DataView(buf.buffer).setUint32(1, existing, true);
+      return buf;
+    }
+    if (frame.depth >= MARSHAL_MAX_DEPTH) {
+      throw new Error(`marshal: max recursion depth (${MARSHAL_MAX_DEPTH}) exceeded`);
+    }
+    const frameId = frame.nextId++;
+    frame.seen.set(value as object, frameId);
+
+    // Date — 9 bytes total.
+    if (value instanceof Date) {
+      const buf = new Uint8Array(9);
+      buf[0] = MARSHAL_TAG_DATE;
+      new DataView(buf.buffer).setFloat64(1, value.getTime(), true);
+      return buf;
+    }
+    // ArrayBuffer — [u32 byteLen][bytes].
+    if (value instanceof ArrayBuffer) {
+      const byteLen = value.byteLength;
+      const buf = new Uint8Array(5 + byteLen);
+      buf[0] = MARSHAL_TAG_ARRAYBUFFER;
+      new DataView(buf.buffer).setUint32(1, byteLen, true);
+      buf.set(new Uint8Array(value), 5);
+      return buf;
+    }
+    // Typed array — [u8 kind][u32 byteLen][bytes].
+    if (ArrayBuffer.isView(value) && !(value instanceof DataView)) {
+      const view = value as ArrayBufferView;
+      const kind = typedArrayKindOf(view);
+      if (kind < 0) return new Uint8Array([MARSHAL_TAG_UNSUPPORTED]);
+      const byteLen = view.byteLength;
+      const buf = new Uint8Array(6 + byteLen);
+      buf[0] = MARSHAL_TAG_TYPED_ARRAY;
+      buf[1] = kind;
+      new DataView(buf.buffer).setUint32(2, byteLen, true);
+      buf.set(
+        new Uint8Array(view.buffer, view.byteOffset, byteLen),
+        6,
+      );
+      return buf;
+    }
+    // Dense array — [u32 len][repeated: packed value].
+    if (Array.isArray(value)) {
+      frame.depth++;
+      try {
+        const packed: Uint8Array[] = new Array(value.length);
+        let total = 0;
+        for (let i = 0; i < value.length; i++) {
+          const p = packValueWith(value[i], owner, idMap, frame);
+          packed[i] = p;
+          total += p.byteLength;
+        }
+        const buf = new Uint8Array(5 + total);
+        buf[0] = MARSHAL_TAG_ARRAY;
+        new DataView(buf.buffer).setUint32(1, value.length, true);
+        let off = 5;
+        for (const p of packed) { buf.set(p, off); off += p.byteLength; }
+        return buf;
+      } finally {
+        frame.depth--;
+      }
+    }
+    // Plain object — only those whose prototype is Object.prototype or
+    // null.  Others (class instances) fall through to BYREF (which will
+    // throw cleanly on cross-heap receive — the caller knows to wrap
+    // via napi_wrap or to use a plain-object DTO).
+    const proto = Object.getPrototypeOf(value);
+    if (proto === Object.prototype || proto === null) {
+      frame.depth++;
+      try {
+        const keys = Object.keys(value as object);
+        const packedPairs: Uint8Array[] = [];
+        let total = 0;
+        for (const k of keys) {
+          const pk = packValueWith(k, owner, idMap, frame);
+          const pv = packValueWith(
+            (value as Record<string, unknown>)[k], owner, idMap, frame,
+          );
+          packedPairs.push(pk, pv);
+          total += pk.byteLength + pv.byteLength;
+        }
+        const buf = new Uint8Array(5 + total);
+        buf[0] = MARSHAL_TAG_OBJECT_PLAIN;
+        new DataView(buf.buffer).setUint32(1, keys.length, true);
+        let off = 5;
+        for (const p of packedPairs) { buf.set(p, off); off += p.byteLength; }
+        return buf;
+      } finally {
+        frame.depth--;
+      }
+    }
+    // Fall-through: opt-in by-ref via IdentityMap (only resolvable when
+    // both sides share the same idMap).
     const id = idMap.put(value as object, owner);
-    const flags = Array.isArray(value) ? 1 : 0;
+    const flags = 0;
     const buf = new Uint8Array(9);
-    buf[0] = MARSHAL_TAG_OBJECT;
+    buf[0] = MARSHAL_TAG_OBJECT_BYREF;
     const dv = new DataView(buf.buffer);
     dv.setUint32(1, id, true);
     dv.setUint32(5, flags, true);
@@ -198,14 +405,42 @@ export function packValue(value: unknown, owner: IdentityOwner, idMap: IdentityM
   return new Uint8Array([MARSHAL_TAG_UNSUPPORTED]);
 }
 
+/** Per-frame state for an unpack() call.  Frame-local id → constructed
+ *  object map, used to resolve MARSHAL_TAG_CIRCULAR_REF back to the
+ *  same instance built earlier in this frame. */
+interface UnpackFrame {
+  byFrameId: object[];
+}
+function newUnpackFrame(): UnpackFrame {
+  return { byFrameId: [] };
+}
+
 /**
  * Unpack a single value from `buf` starting at `offset`.  Returns the
  * decoded value and the number of bytes consumed.
+ *
+ * SAB safety: when `buf` is backed by a SharedArrayBuffer, the decoder
+ * copies bytes before calling TextDecoder (which rejects shared views)
+ * and for typed-array payloads (so the produced object lives in a
+ * regular ArrayBuffer, not SAB).
  */
 export function unpackValue(
   buf: Uint8Array,
   offset: number,
   idMap: IdentityMap,
+): { value: unknown; byteLength: number } {
+  return unpackValueWith(buf, offset, idMap, newUnpackFrame());
+}
+
+function isSharedBuffer(buf: ArrayBufferLike): boolean {
+  return typeof SharedArrayBuffer !== "undefined" && buf instanceof SharedArrayBuffer;
+}
+
+function unpackValueWith(
+  buf: Uint8Array,
+  offset: number,
+  idMap: IdentityMap,
+  frame: UnpackFrame,
 ): { value: unknown; byteLength: number } {
   const tag = buf[offset];
   switch (tag) {
@@ -228,20 +463,101 @@ export function unpackValue(
     case MARSHAL_TAG_STRING: {
       const dv = new DataView(buf.buffer, buf.byteOffset + offset + 1, 4);
       const len = dv.getUint32(0, true);
-      const bytes = new Uint8Array(buf.buffer, buf.byteOffset + offset + 5, len);
-      return { value: utf8Decoder.decode(bytes), byteLength: 5 + len };
+      const start = buf.byteOffset + offset + 5;
+      let view: Uint8Array;
+      if (isSharedBuffer(buf.buffer)) {
+        // TextDecoder rejects SAB-backed views; copy first.
+        view = new Uint8Array(len);
+        view.set(new Uint8Array(buf.buffer, start, len));
+      } else {
+        view = new Uint8Array(buf.buffer, start, len);
+      }
+      return { value: utf8Decoder.decode(view), byteLength: 5 + len };
     }
-    case MARSHAL_TAG_OBJECT: {
+    case MARSHAL_TAG_OBJECT_BYREF: {
       const dv = new DataView(buf.buffer, buf.byteOffset + offset + 1, 8);
       const id = dv.getUint32(0, true);
-      // flags at offset+4 currently only carries isArray (informational —
-      // the actual object reference IS the array, so we don't need it for
-      // correctness; reserved for future use such as Map/Set/Date hinting).
       const entry = idMap.get(id);
       if (!entry) {
         throw new Error("marshal: identity reference collected");
       }
+      frame.byFrameId.push(entry.obj);
       return { value: entry.obj, byteLength: 9 };
+    }
+    case MARSHAL_TAG_DATE: {
+      const dv = new DataView(buf.buffer, buf.byteOffset + offset + 1, 8);
+      const date = new Date(dv.getFloat64(0, true));
+      frame.byFrameId.push(date);
+      return { value: date, byteLength: 9 };
+    }
+    case MARSHAL_TAG_ARRAYBUFFER: {
+      const dv = new DataView(buf.buffer, buf.byteOffset + offset + 1, 4);
+      const byteLen = dv.getUint32(0, true);
+      const ab = new ArrayBuffer(byteLen);
+      new Uint8Array(ab).set(
+        new Uint8Array(buf.buffer, buf.byteOffset + offset + 5, byteLen),
+      );
+      frame.byFrameId.push(ab);
+      return { value: ab, byteLength: 5 + byteLen };
+    }
+    case MARSHAL_TAG_TYPED_ARRAY: {
+      const kind = buf[offset + 1];
+      const Ctor = TYPED_ARRAY_KINDS[kind];
+      if (!Ctor) throw new Error(`marshal: unknown typed-array kind ${kind}`);
+      const dv = new DataView(buf.buffer, buf.byteOffset + offset + 2, 4);
+      const byteLen = dv.getUint32(0, true);
+      // Always copy into a fresh ArrayBuffer (decoupled from sender's
+      // memory + SAB-safe).
+      const ab = new ArrayBuffer(byteLen);
+      new Uint8Array(ab).set(
+        new Uint8Array(buf.buffer, buf.byteOffset + offset + 6, byteLen),
+      );
+      const ta = new (Ctor as new (b: ArrayBuffer) => ArrayBufferView)(ab);
+      frame.byFrameId.push(ta);
+      return { value: ta, byteLength: 6 + byteLen };
+    }
+    case MARSHAL_TAG_ARRAY: {
+      const dv = new DataView(buf.buffer, buf.byteOffset + offset + 1, 4);
+      const len = dv.getUint32(0, true);
+      const arr: unknown[] = new Array(len);
+      // Register the array BEFORE recursing so child refs that point
+      // back to it via CIRCULAR_REF resolve to this instance.
+      frame.byFrameId.push(arr);
+      let cursor = 5;
+      for (let i = 0; i < len; i++) {
+        const r = unpackValueWith(buf, offset + cursor, idMap, frame);
+        arr[i] = r.value;
+        cursor += r.byteLength;
+      }
+      return { value: arr, byteLength: cursor };
+    }
+    case MARSHAL_TAG_OBJECT_PLAIN: {
+      const dv = new DataView(buf.buffer, buf.byteOffset + offset + 1, 4);
+      const propCount = dv.getUint32(0, true);
+      const obj: Record<string, unknown> = {};
+      // Register before recursing for circular self-refs.
+      frame.byFrameId.push(obj);
+      let cursor = 5;
+      for (let i = 0; i < propCount; i++) {
+        const kR = unpackValueWith(buf, offset + cursor, idMap, frame);
+        cursor += kR.byteLength;
+        const vR = unpackValueWith(buf, offset + cursor, idMap, frame);
+        cursor += vR.byteLength;
+        if (typeof kR.value !== "string") {
+          throw new Error("marshal: object key was not a string");
+        }
+        obj[kR.value as string] = vR.value;
+      }
+      return { value: obj, byteLength: cursor };
+    }
+    case MARSHAL_TAG_CIRCULAR_REF: {
+      const dv = new DataView(buf.buffer, buf.byteOffset + offset + 1, 4);
+      const frameId = dv.getUint32(0, true);
+      const target = frame.byFrameId[frameId];
+      if (target === undefined) {
+        throw new Error(`marshal: circular-ref to unknown frameId ${frameId}`);
+      }
+      return { value: target, byteLength: 5 };
     }
     case MARSHAL_TAG_UNSUPPORTED:
       throw new Error("marshal: unsupported value type");

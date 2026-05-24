@@ -542,6 +542,84 @@ async function runF9SweepProbe(): Promise<void> {
     results.push({ name: "define_class(2props)", status: r.status, ok: r.status === 0 && handle !== 0, detail: `status=${r.status} handle=${handle} ${r.errMsg ? `err=${r.errMsg}` : ""}` });
   }
 
+  // ── Marshal roundtrip — by-value cross-heap deep-clone (no RPC) ──
+  // The IdentityMap is per-instance; in a split-worker topology the
+  // host and wasm hold DIFFERENT instances and cannot share by-ref.
+  // The new by-value tags (object, array, typed array, ArrayBuffer,
+  // Date, circular-ref) handle this case via deep clone.  This probe
+  // packs in a "host" frame and unpacks in a "wasm" frame to simulate
+  // cross-worker semantics.
+  {
+    const marshal = await import("./host-worker/cross-context-marshal");
+    const hostMap = new marshal.IdentityMap();
+    const wasmMap = new marshal.IdentityMap();
+    function roundtrip<T>(value: T): T {
+      const packed = marshal.packValue(value, "host", hostMap);
+      const { value: out } = marshal.unpackValue(packed, 0, wasmMap);
+      return out as T;
+    }
+    function deepEq(a: unknown, b: unknown): boolean {
+      if (a === b) return true;
+      if (a instanceof Date && b instanceof Date) return a.getTime() === b.getTime();
+      if (ArrayBuffer.isView(a) && ArrayBuffer.isView(b)) {
+        if (a.constructor !== b.constructor) return false;
+        if (a.byteLength !== b.byteLength) return false;
+        const ua = new Uint8Array(a.buffer, a.byteOffset, a.byteLength);
+        const ub = new Uint8Array(b.buffer, b.byteOffset, b.byteLength);
+        for (let i = 0; i < ua.length; i++) if (ua[i] !== ub[i]) return false;
+        return true;
+      }
+      if (a instanceof ArrayBuffer && b instanceof ArrayBuffer) {
+        if (a.byteLength !== b.byteLength) return false;
+        const ua = new Uint8Array(a); const ub = new Uint8Array(b);
+        for (let i = 0; i < ua.length; i++) if (ua[i] !== ub[i]) return false;
+        return true;
+      }
+      if (Array.isArray(a) && Array.isArray(b)) {
+        if (a.length !== b.length) return false;
+        for (let i = 0; i < a.length; i++) if (!deepEq(a[i], b[i])) return false;
+        return true;
+      }
+      if (a && b && typeof a === "object" && typeof b === "object") {
+        const ka = Object.keys(a as object); const kb = Object.keys(b as object);
+        if (ka.length !== kb.length) return false;
+        for (const k of ka) {
+          if (!deepEq((a as Record<string, unknown>)[k], (b as Record<string, unknown>)[k])) return false;
+        }
+        return true;
+      }
+      return false;
+    }
+    const cases: Array<{ name: string; value: unknown; assert?: (v: unknown) => boolean }> = [
+      { name: "marshal: plain-obj", value: { a: 1, b: "two", c: true, d: null } },
+      { name: "marshal: nested-obj", value: { outer: { inner: 42 }, list: [1, 2, 3] } },
+      { name: "marshal: array-of-obj", value: [{ x: 1 }, { x: 2 }, { x: 3 }] },
+      { name: "marshal: date", value: new Date(1700000000000) },
+      { name: "marshal: uint8array", value: new Uint8Array([10, 20, 30, 40, 50]) },
+      { name: "marshal: arraybuffer", value: (() => { const ab = new ArrayBuffer(4); new Uint8Array(ab).set([0xde, 0xad, 0xbe, 0xef]); return ab; })() },
+      {
+        name: "marshal: circular-self-ref",
+        value: (() => { const o: Record<string, unknown> = { tag: "loop" }; o.self = o; return o; })(),
+        // Custom assertion: round-tripped object has self-referential cycle.
+        assert: (v: unknown) => {
+          const o = v as Record<string, unknown>;
+          return typeof o === "object" && o !== null && o.tag === "loop" && o.self === o;
+        },
+      },
+    ];
+    for (const c of cases) {
+      let ok = false; let detail = "";
+      try {
+        const got = roundtrip(c.value);
+        ok = c.assert ? c.assert(got) : deepEq(c.value, got);
+        detail = ok ? "roundtrip ok" : `mismatch: ${JSON.stringify(got).slice(0, 80)}`;
+      } catch (e) {
+        detail = `threw: ${(e as Error).message}`;
+      }
+      results.push({ name: c.name, status: 0, ok, detail });
+    }
+  }
+
   // Emit per-op result + summary.
   for (const r of results) {
     append(`f9-sweep: ${r.ok ? "ok  " : "FAIL"}  ${r.name.padEnd(28)} ${r.detail}`, r.ok ? "info" : "err");

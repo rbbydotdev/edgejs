@@ -195,9 +195,26 @@ the browser-target tree.
   leaving the root scope with `handleStore=null` — handle-allocating
   napi ops would throw on `handleStore.push`.  Side effect: handles
   allocated by host-RPC ops accumulate for the host worker's lifetime.
-  Production-clean refactor: open/close a scope per RPC call inside
-  each factory in napi-op-handlers.ts.  Minimum-viable patch shipped
-  first; memory pressure not observed in tests.
+
+  Investigation 2026-05-24: a naive per-RPC open/close inside each
+  napi-op-handlers.ts factory breaks the cross-RPC handle persistence
+  pattern that the sweep probe (and any real caller) depends on.
+  `HandleScope.dispose` → `HandleStore.erase(start, end)` calls
+  `values[i].dispose()` on every slot, setting `value = undefined`;
+  any subsequent RPC that references those handle ids deref's to
+  `undefined`.  emnapi-runtime/dist/emnapi.cjs.js:262-268.
+
+  The real fix requires wasm-side scope-op forwarding: add
+  OP_NAPI_OPEN_HANDLE_SCOPE / OP_NAPI_CLOSE_HANDLE_SCOPE RPC ops, have
+  the wasm-side napi-host shim (`browser-target/src/napi-host/`)
+  intercept emnapi's own `napi_open_handle_scope` / `_close_` calls,
+  forward them via RPC so host's scope discipline mirrors wasm's.
+  That's an architectural shift, not a refactor of one file.
+
+  Status: deferred.  Today's accumulation is bounded by request
+  count; no memory pressure observed in tests.  Promote when (a) a
+  long-running deployment shows growth, or (b) wasm-side scope-op
+  forwarding lands for another reason.
   See experiments/r9-host-emnapi-init/FINDINGS.md.
 - `cluster-b-finalizers-noop` (2026-05-23, F-9 batch 4 cluster B) —
   `napi_create_external{,_arraybuffer,_buffer}` register host-side
@@ -229,18 +246,20 @@ the browser-target tree.
   `Klass.prototype` (instance).  Verified by extending the F-9 sweep
   probe with a 2-descriptor class (instance method + static getter):
   22/23 ops PASS.
-- `cluster-d-cross-context-objects` (2026-05-24, F-9 batch 4 cluster D
-  + R8 marshal) — `callback-dispatch.ts` marshals NAPI_CALLBACK args
-  via R8's tag-based encoding (`cross-context-marshal.ts`).  Primitives
-  (undefined/null/bool/int32/double/string) round-trip cleanly across
-  the host↔wasm boundary.  Objects/arrays serialize as an
-  IdentityMap-id reference, but the IdentityMap is per-instance and
-  cannot share state across separate worker JS heaps — receiver throws
-  "marshal: identity reference collected".  This is the documented
-  failure mode for now; cross-heap object marshaling requires either
-  (a) structured-clone over postMessage as a side channel for objects,
-  (b) deep-copy serialization (loses identity), or (c) a shared object
-  graph maintained out-of-band.  Today's scope: primitive args only.
+- ~~`cluster-d-cross-context-objects`~~ — **RESOLVED** (2026-05-24,
+  F-9 batch 4 cluster D follow-up) by extending
+  `cross-context-marshal.ts` with by-value tags (8-12, 17): plain
+  object, dense array, typed array, ArrayBuffer, Date, and circular-ref
+  back-pointer.  Object args now deep-clone across the host↔wasm
+  boundary (postMessage / structuredClone semantics — identity is NOT
+  preserved between separate marshal calls, but cycles within a single
+  packValue call ARE preserved via per-frame `seen`/`byFrameId` maps).
+  By-ref (tag 7) retained for callers that share an IdentityMap; falls
+  through to by-ref for class instances (receiver throws cleanly if no
+  shared map).  Verified via 7 marshal probes in the F-9 sweep:
+  plain-obj, nested-obj, array-of-obj, date, uint8array, arraybuffer,
+  circular-self-ref — all PASS.  Map/Set/RegExp remain unsupported
+  (separate follow-up).
 
 ### Cross-worker primitives
 
