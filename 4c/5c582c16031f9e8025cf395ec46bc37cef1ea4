@@ -1,0 +1,19 @@
+experiments/e12-wasm-compile-via-host/FINDINGS.md
+  s_7bec0ecbfcdcd0::t_28e39c5ddb2956 1-110
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "4c5c582c16031f9e8025cf395ec46bc37cef1ea4",
+  "prompts": {},
+  "sessions": {
+    "s_7bec0ecbfcdcd0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d560d5ae-265f-44ae-89c4-d35659b3ab9e",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
