@@ -124,8 +124,13 @@ JSPI resume.  See `experiments/e25-sync-spawn-jspi/FINDINGS.md`.
 
 **Compile once in main thread, postMessage the `WebAssembly.Module`
 to each user-Worker's runtime worker as a structured-clone payload.**
-Spec says structured-clone preserves wasm Modules (no recompile
-needed).  R22 noted no project has measured this; **E24 will measure.**
+
+**E24 measured (2026-05-24)**: shared-Module via postMessage works
+perfectly.  Child-side compile time drops from ~22ms to 0ms.
+Per-pair boot drops ~2× (50-65ms → 25-35ms steady state).  Per-pair
+memory drops from ~52-72 MB to ~22 MB (only linear memory, compiled
+code shared).  **This is mandatory in v1.**  See
+`experiments/e24-spawn-cost/FINDINGS.md`.
 
 ### How to share the filesystem across user Workers
 
@@ -147,13 +152,20 @@ extend it to hand the same SAB to each new user Worker's wasi-shim.
 
 ### Resource limits
 
-- **Hard cap on simultaneous user Workers** — default TBD pending E24
-  measurement.  R22 surveyed Emscripten projects with ~200 MB/worker;
-  our wasm is 26 MB so likely 50-150 MB/worker.  Browser tab ceiling
-  is ~2-4 GB.
-- **`new Worker()` throws `ERR_WORKER_OUT_OF_MEMORY`** if cap reached.
-- **Eager pre-warm pool**: default 0 (no pre-warm), opt-in via
-  `--worker-threads-prewarm=N` policy config.
+E24 measurements drive these defaults:
+
+- **Hard cap on simultaneous user Workers: 16** (configurable).
+  Matches `os.cpus().length`-ish heuristic.  Estimated ceiling per
+  Chromium tab is ~80-100 pairs (per E24 trend extrapolation); 16
+  leaves comfortable headroom.
+- **Per-pair memory: ~22 MB** (linear memory; compiled code shared
+  per E24).
+- **`new Worker()` throws `ERR_WORKER_OUT_OF_MEMORY`** if cap reached
+  — clear error rather than silent OOM.
+- **Eager pre-warm pool**: default 0 (no pre-warm); E24 measured
+  25-35 ms steady-state lazy spawn, comparable to Node native
+  `Worker.online` (~10-30 ms).  Pre-warm wastes ~22 MB SAB per
+  unused pair.  Opt-in via policy config if a deployment needs it.
 
 ### MessagePort transferable semantics
 
@@ -191,15 +203,27 @@ timers/IO.
 **Phase 5 is just-in-time** — picks tests as they come, doesn't
 require completion to ship phases 1-4.
 
-## What's still unknown (driving E24/E25)
+## Phase 1 readiness — E24 + E25 both green
 
-- E24: per-pair memory + spawn time + WebAssembly.Module transferable
-  effectiveness
-- E25: whether WC's sync-spawn trick survives JSPI suspension on the
-  parent
+Both experiments have landed.  Findings:
 
-After E24/E25 land, this doc becomes the spec.  Until then it's a
-sketch.
+- **E24** (spawn cost): shared-Module postMessage works perfectly;
+  ~22 MB / 25-35 ms per pair; supports ~80-100 pairs / tab.  Default
+  cap 16.  Mandatory shared-Module path.
+- **E25** (sync-spawn under JSPI): WC's pre-queue-bootstrap trick
+  works.  Synchronous `new Worker()` API achievable.  Sibling Workers'
+  event loops run during parent JSPI suspend.
+
+**This doc is now the spec for phase 1 implementation.**  No
+remaining unknowns block scoping.
+
+Remaining open questions (NOT phase-1-blocking):
+- Cross-engine compat (SpiderMonkey/WebKit atomics codegen — R21
+  flagged)
+- Spawning a Worker from inside an already-JSPI-suspended callback
+  (E25 tested spawn-before-suspend; assumed to work, unmeasured)
+- Real edge.js `_start` bootstrap timing per pair (probe used minimal
+  stub; ~100-300ms expected, additive to E24's numbers)
 
 ## Future work / explicit non-goals
 
