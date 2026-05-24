@@ -1,0 +1,30 @@
+experiments/e9-process-exit-in-fr/FINDINGS.md
+  s_7bec0ecbfcdcd0::t_d33be61843cfca 1-131
+browser-target/src/worker.ts
+  s_7bec0ecbfcdcd0::t_e3d2bdd7af6008 232-236
+  s_7bec0ecbfcdcd0::t_56ade87d4fac09 397-401
+browser-target/src/napi-host/index.ts
+  s_7bec0ecbfcdcd0::t_202045ff493ee9 54-61
+  s_7bec0ecbfcdcd0::t_5c1b8dcfc0278e 525-538
+browser-target/src/napi-host/unofficial.ts
+  s_7bec0ecbfcdcd0::t_e4598f183b0d37 52-58
+  s_7bec0ecbfcdcd0::t_cba01146b9cc1c 416-433
+browser-target/src/wasi-shim.ts
+  s_7bec0ecbfcdcd0::t_20af00945cf14f 208-213,215-222,998-1009,2144-2166
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "ae54ffc22cdaa72c9af5b66ef68a61dafd019b22",
+  "prompts": {},
+  "sessions": {
+    "s_7bec0ecbfcdcd0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d560d5ae-265f-44ae-89c4-d35659b3ab9e",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
