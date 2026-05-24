@@ -1,0 +1,35 @@
+tests/js/e11-policy-deflate.stdout
+  s_7bec0ecbfcdcd0::t_b60a7fecca90ff 1-2
+tests/js/e11-policy-gzip.stdout
+  s_7bec0ecbfcdcd0::t_b60a7fecca90ff 1
+tests/js/e11-policy-deflate.harness-args
+  s_7bec0ecbfcdcd0::t_b60a7fecca90ff 1
+experiments/e11-async-offload-retry/FINDINGS.md
+  s_7bec0ecbfcdcd0::t_b2a62a742fd85e 1-105
+tests/js/e11-policy-deflate.js
+  s_7bec0ecbfcdcd0::t_b60a7fecca90ff 1-22
+browser-target/src/host/globals-shim.ts
+  s_7bec0ecbfcdcd0::t_b60a7fecca90ff 69-96
+tests/js/e11-policy-gzip.js
+  s_7bec0ecbfcdcd0::t_b60a7fecca90ff 1-31
+browser-target/src/policies/compression-via-compressionstream.ts
+  s_7bec0ecbfcdcd0::t_b60a7fecca90ff 68-73,172-183,185-186,189
+tests/js/e11-policy-gzip.harness-args
+  s_7bec0ecbfcdcd0::t_b60a7fecca90ff 1
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "1caf7effda1b5d88fd49dd89a8e5d6a904c04493",
+  "prompts": {},
+  "sessions": {
+    "s_7bec0ecbfcdcd0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d560d5ae-265f-44ae-89c4-d35659b3ab9e",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
