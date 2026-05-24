@@ -49,6 +49,13 @@ export interface UnofficialHostContext {
   /** Optional log sink — used for debug breadcrumbs that can't go through
    * console.* (edge mutates console internals during bootstrap). */
   postLog?: (line: string, level: "out" | "warn" | "err" | "debug") => void;
+  /** E9: Called when wasm-side `unofficial_napi_terminate_execution`
+   *  fires (i.e. JS-side `process.exit()` ran).  Wakes a parked
+   *  `poll_oneoff` (in `wasi-shim.ts`) so it can abort with
+   *  ExitSignal instead of letting a surviving setTimeout fire after
+   *  exit was already requested.  See experiments/e9-process-exit-in-fr/
+   *  FINDINGS.md. */
+  requestExit?: (code: number) => void;
 }
 
 function dv(memory: WebAssembly.Memory): DataView {
@@ -406,7 +413,24 @@ export function createUnofficialNapi(ctx: UnofficialHostContext): Record<string,
       // queueMicrotask drains naturally in the worker; nothing to do here.
       return 0;
     },
-    unofficial_napi_terminate_execution(_envHandle: number): number { return 0; },
+    unofficial_napi_terminate_execution(_envHandle: number): number {
+      // E9: signal "exit requested" to the wasi-shim so a parked poll_oneoff
+      // (waiting on a setTimeout) can abort early instead of letting the
+      // timer fire after process.exit() was already called.
+      //
+      // Without this, JS-side process.exit() throws ExitSignal at the
+      // wasm-import boundary, but `EdgeHandlePendingExceptionNow` sees
+      // `IsEnvironmentExitRequested=true` and discards it.  The wasm
+      // returns from the napi call and continues into libuv, which dispatches
+      // the surviving setTimeout — overwriting the exit code.
+      let code = 0;
+      try {
+        const procObj = (globalThis as { process?: { exitCode?: number } }).process;
+        if (procObj && typeof procObj.exitCode === "number") code = procObj.exitCode >>> 0;
+      } catch { /* */ }
+      ctx.requestExit?.(code);
+      return 0;
+    },
     unofficial_napi_cancel_terminate_execution(_envHandle: number): number { return 0; },
     unofficial_napi_request_interrupt(_envHandle: number, _callback: number, _data: number): number { return 0; },
     unofficial_napi_set_stack_limit(_envHandle: number, _limit: number): number { return 0; },

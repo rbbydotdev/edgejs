@@ -51,6 +51,14 @@ export interface NapiHostOptions {
    * override matches).  Routed to the same channel as the worker's
    * postLog so output is visible in both Node-harness and browser. */
   postLog?: (line: string, level: "out" | "warn" | "err" | "debug") => void;
+  /** E9: Holder for the wasi-shim's `requestExit` callback.  When the wasm
+   *  calls `unofficial_napi_terminate_execution` (because JS-side
+   *  `process.exit()` ran), we route into this so the shim's parked
+   *  `poll_oneoff` can abort.  Holder pattern because the napi-host is
+   *  created BEFORE the wasi-shim in `worker.ts` — wire the `fn` after
+   *  both are built (`holder.fn = shim.requestExit`).  See
+   *  experiments/e9-process-exit-in-fr/FINDINGS.md. */
+  requestExitHolder?: { fn?: (code: number) => void };
 }
 
 export interface NapiHost {
@@ -514,7 +522,20 @@ export function createNapiHost(opts: NapiHostOptions): NapiHost {
       builtinOverridesMap.set(key, value);
     }
   }
-  const unofficial = createUnofficialNapi({ context, memory: opts.memory, envs, builtinOverrides: builtinOverridesMap, postLog: opts.postLog });
+  const unofficial = createUnofficialNapi({
+    context,
+    memory: opts.memory,
+    envs,
+    builtinOverrides: builtinOverridesMap,
+    postLog: opts.postLog,
+    // E9: route through the holder — wasm-side process.exit() lands here.
+    // Holder.fn is wired AFTER createWasiShim returns; the wasm worker
+    // can't issue terminate_execution until _start runs, by which time
+    // the wiring is in place.
+    requestExit: opts.requestExitHolder
+      ? (code: number) => { opts.requestExitHolder?.fn?.(code); }
+      : undefined,
+  });
   for (const [name, fn] of Object.entries(unofficial)) {
     (napiModule.imports.napi as Record<string, Function>)[name] = fn;
   }

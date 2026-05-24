@@ -229,7 +229,11 @@ async function runEdgeWithEmnapi() {
   const { builtinOverrides, userScriptPrelude, applied: appliedPolicies } =
     composePolicies(browserPolicies);
   void hasJspi;
-  const napi = createNapiHost({ memory, builtinOverrides, postLog: (text, level) => post("log", { text, level }) });
+  // E9: requestExit holder — populated after createWasiShim below so
+  // wasm-side `unofficial_napi_terminate_execution` can wake a parked
+  // poll_oneoff.  See experiments/e9-process-exit-in-fr/FINDINGS.md.
+  const requestExitHolder: { fn?: (code: number) => void } = {};
+  const napi = createNapiHost({ memory, builtinOverrides, postLog: (text, level) => post("log", { text, level }), requestExitHolder });
   post("log", { text: `policies applied: ${appliedPolicies.join(", ")}`, level: "info" });
   post("log", { text: `napi-host: ${Object.keys(napi.imports.napi).length} napi entries seeded`, level: "info" });
 
@@ -389,6 +393,11 @@ async function runEdgeWithEmnapi() {
     },
     postExit: () => { /* via ExitSignal */ },
   });
+
+  // E9: now that both napi-host and wasi-shim exist, wire wasm-side
+  // process.exit() to wake the shim's parked poll_oneoff.  See
+  // experiments/e9-process-exit-in-fr/FINDINGS.md.
+  requestExitHolder.fn = shim.requestExit;
 
   // Wire the bridge to the socket bus.  Two channels:
   //   1) The page (relaying for the SW) writes incoming HTTP requests

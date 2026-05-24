@@ -205,7 +205,21 @@ export function createWasiShim(ctx: ShimContext): {
   wasix_32v1: Record<string, Function>;
   wasi: Record<string, Function>;
   bus: SocketBus;
+  /** E9: Called by napi-host when `unofficial_napi_terminate_execution`
+   * fires (i.e. JS-side `process.exit()` ran).  Wakes any parked
+   * poll_oneoff so it can throw ExitSignal instead of letting a
+   * surviving setTimeout fire after exit was already requested.
+   * See napi-host/unofficial.ts and experiments/e9-process-exit-in-fr. */
+  requestExit: (code: number) => void;
 } {
+  // ---- E9: exit-requested state ----
+  // Set by `requestExit()` when napi-host's `unofficial_napi_terminate_execution`
+  // fires.  Checked by `pollOneoffAwaitTimer` after each engine-timer wake
+  // so the wasm aborts with ExitSignal before libuv-wasix gets a chance to
+  // service the surviving setTimeout that would otherwise fire and overwrite
+  // the exit code.
+  const exitState: { requested: boolean; code: number } = { requested: false, code: 0 };
+
   // ---- stdout/stderr buffering for postLog ----
   const stdoutBuf: number[] = [];
   const stderrBuf: number[] = [];
@@ -980,6 +994,18 @@ export function createWasiShim(ctx: ShimContext): {
       // Fallback for engines without Atomics.waitAsync (none of our
       // current targets) — relies on macrotask queue, deadlocks under JSPI.
       await new Promise<void>((resolve) => setTimeout(resolve, ms));
+    }
+    // E9: if a FinalizationRegistry callback (or other JS that fires during
+    // the JSPI suspend window) called process.exit(), napi-host set our
+    // exit-requested flag.  Throw ExitSignal so the wasm unwinds back to
+    // the harness instead of returning here, which would cause libuv-wasix
+    // to dispatch the surviving setTimeout callback and overwrite the exit
+    // code.  See experiments/e9-process-exit-in-fr/FINDINGS.md.
+    if (exitState.requested) {
+      flushBuf(stdoutBuf, "out");
+      flushBuf(stderrBuf, "warn");
+      ctx.postExit(exitState.code >>> 0);
+      throw new ExitSignal(exitState.code >>> 0);
     }
     const dvAfter = view(ctx.memory);
     const finalN = pollOneoffEmitPostWaitEvents(dvAfter, inPtr, outPtr, nWrittenSoFar, nsubs);
@@ -2115,7 +2141,29 @@ export function createWasiShim(ctx: ShimContext): {
     futexWaitAsyncImpl,
   );
 
-  return { wasi_snapshot_preview1, wasix_32v1, wasi, bus };
+  // E9: exposed to napi-host so `unofficial_napi_terminate_execution`
+  // can wake a parked poll_oneoff before its timer expires.
+  function requestExit(code: number) {
+    exitState.requested = true;
+    exitState.code = code >>> 0;
+    // Force the value-check in Atomics.waitAsync(sleepI32, 0, 0, ms) to
+    // differ from the expected value (0).  This causes the wait to
+    // resolve immediately ("ok").  We restore to 0 immediately after so
+    // subsequent waits on this slot still match expected=0.
+    try {
+      NativeAtomics.store(sleepI32, 0, 1);
+      NativeAtomics.notify(sleepI32, 0);
+      NativeAtomics.store(sleepI32, 0, 0);
+    } catch { /* SAB may not be writable in odd test envs; skip */ }
+    // Also wake any socket-accept / pipe-read parked waits, in case
+    // poll_oneoff is on the socket path rather than timer-only.
+    try {
+      NativeAtomics.add(wake, WAKE_ACCEPT_IDX, 1);
+      NativeAtomics.notify(wake, WAKE_ACCEPT_IDX);
+    } catch { /* */ }
+  }
+
+  return { wasi_snapshot_preview1, wasix_32v1, wasi, bus, requestExit };
 }
 
 export class ExitSignal extends Error {
