@@ -1,0 +1,29 @@
+experiments/agent-c-hmac-napi-mem/FINDINGS.md
+  s_7bec0ecbfcdcd0::t_469bfdd574a096 1-76
+tests/js/crypto-hash-large-fallback.harness-args
+  ai_agent 1
+browser-target/src/policies/crypto-hash-via-host-worker.ts
+  ai_agent 48-64,79-105,112,207-223,252
+tests/js/crypto-hash-large-fallback.stdout
+  ai_agent 1
+experiments/agent-d-hash-size-fallback/FINDINGS.md
+  s_7bec0ecbfcdcd0::t_15bc84a8ecf0b4 1-64
+tests/js/crypto-hash-large-fallback.js
+  ai_agent 1-25
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "896911c37496f49dac4f6670d7d1731c98cf803f",
+  "prompts": {},
+  "sessions": {
+    "s_7bec0ecbfcdcd0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d560d5ae-265f-44ae-89c4-d35659b3ab9e",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
