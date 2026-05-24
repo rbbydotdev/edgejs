@@ -118,6 +118,7 @@ export { bufferWriteSync } from "./buffer-write-sync";
 export { bufferWasmAliased } from "./buffer-wasm-aliased";
 export { taskQueueEnqueueFix } from "./task-queue-enqueue-fix";
 export { cryptoHostRandom } from "./crypto-host-random";
+export { cryptoViaSubtle } from "./crypto-via-subtle";
 export { compressionViaCompressionStream } from "./compression-via-compressionstream";
 export { wasmCompileViaHost } from "./wasm-compile-via-host";
 export { inboundHttpsViaSW } from "./inbound-https-via-sw";
@@ -130,6 +131,7 @@ import { bufferWriteSync } from "./buffer-write-sync";
 import { bufferWasmAliased } from "./buffer-wasm-aliased";
 import { taskQueueEnqueueFix } from "./task-queue-enqueue-fix";
 import { cryptoHostRandom } from "./crypto-host-random";
+import { cryptoViaSubtle } from "./crypto-via-subtle";
 import { compressionViaCompressionStream } from "./compression-via-compressionstream";
 import { wasmCompileViaHost } from "./wasm-compile-via-host";
 import { inboundHttpsViaSW } from "./inbound-https-via-sw";
@@ -202,6 +204,7 @@ export const policyRegistry: Record<string, Policy> = {
   [bufferWasmAliased.name]: bufferWasmAliased,
   [taskQueueEnqueueFix.name]: taskQueueEnqueueFix,
   [cryptoHostRandom.name]: cryptoHostRandom,
+  [cryptoViaSubtle.name]: cryptoViaSubtle,
   [compressionViaCompressionStream.name]: compressionViaCompressionStream,
   [wasmCompileViaHost.name]: wasmCompileViaHost,
   [inboundHttpsViaSW.name]: inboundHttpsViaSW,

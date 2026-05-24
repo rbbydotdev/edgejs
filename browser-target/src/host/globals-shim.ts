@@ -49,6 +49,29 @@ if (hostCrypto && !g.__edgeHostNativeCrypto) {
   });
 }
 
+// Snapshot host's SubtleCrypto separately so policies that need async
+// SubtleCrypto methods (e.g. `crypto-via-subtle` offloading
+// `crypto.pbkdf2` to `subtle.deriveBits`) can reach it from inside edge's
+// execution context — where `globalThis.crypto` is shadowed by edge's
+// bundled `lib/crypto.js` module.  The snapshot above includes `subtle`
+// under `__edgeHostNativeCrypto`, but the bare reference at
+// `__edgeHostNativeCryptoSubtle` keeps the access path symmetric with
+// `__edgeHostCompressionStream` / `__edgeHostDecompressionStream` and
+// makes the policy code easier to read.
+//
+// We DON'T bind methods on the SubtleCrypto object — the spec requires
+// `subtle.X(...)` to be called with `this === subtle`, so policies must
+// call `subtle.X(...)` directly (not `X.call(...)` against an unbound
+// reference).  Storing the whole object handles that for free.
+if (hostCrypto?.subtle && !g.__edgeHostNativeCryptoSubtle) {
+  Object.defineProperty(g, "__edgeHostNativeCryptoSubtle", {
+    value: hostCrypto.subtle,
+    writable: false,
+    configurable: false,
+    enumerable: false,
+  });
+}
+
 // Snapshot host Node's `process._tickCallback` BEFORE edge replaces the
 // `process` global with its own lib module.  Node's `_tickCallback` calls
 // `internalBinding('task_queue').runMicrotasks` which calls
