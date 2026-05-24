@@ -1,0 +1,19 @@
+experiments/e16-map-set-regexp-marshal/FINDINGS.md
+  s_7bec0ecbfcdcd0::t_9127791f728a2b 1-100
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "012f1be42d97332a18b1f792910b849e4d159190",
+  "prompts": {},
+  "sessions": {
+    "s_7bec0ecbfcdcd0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d560d5ae-265f-44ae-89c4-d35659b3ab9e",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
