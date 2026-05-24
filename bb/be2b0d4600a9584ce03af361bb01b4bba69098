@@ -1,0 +1,23 @@
+experiments/e24-spawn-cost/FINDINGS.md
+  s_7bec0ecbfcdcd0::t_bac21578811c85 1-120
+docs/worker-threads-design.md
+  s_7bec0ecbfcdcd0::t_76f6c1586c8e46 206-215,217-218,220-226
+  s_7bec0ecbfcdcd0::t_bf6bd06fbef3d5 155-168
+  s_7bec0ecbfcdcd0::t_ecc82f9f74e834 127-133
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "bbbe2b0d4600a9584ce03af361bb01b4bba69098",
+  "prompts": {},
+  "sessions": {
+    "s_7bec0ecbfcdcd0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d560d5ae-265f-44ae-89c4-d35659b3ab9e",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
