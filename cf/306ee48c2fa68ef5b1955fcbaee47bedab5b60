@@ -1,0 +1,30 @@
+src/edge_runtime.cc
+  s_7bec0ecbfcdcd0::t_86a360f0a68c8f 1848-1873
+browser-target/imports-napi-ext.txt
+  s_7bec0ecbfcdcd0::t_1c9dab708b2fb0 84
+NOTES.md
+  s_7bec0ecbfcdcd0::t_c7bbe7d4831d49 516-527,529-531
+browser-target/src/napi-host/microtask-ops.ts
+  s_7bec0ecbfcdcd0::t_1426f3333a1e05 174-186
+  s_7bec0ecbfcdcd0::t_2c53c17800dc03 239-260
+  s_7bec0ecbfcdcd0::t_d2e0d4ca01d883 82
+  s_7bec0ecbfcdcd0::t_441e3ffce9d970 156-173,187-188
+browser-target/src/imports-generated.ts
+  s_7bec0ecbfcdcd0::t_1c9dab708b2fb0 237
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "cf306ee48c2fa68ef5b1955fcbaee47bedab5b60",
+  "prompts": {},
+  "sessions": {
+    "s_7bec0ecbfcdcd0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d560d5ae-265f-44ae-89c4-d35659b3ab9e",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
