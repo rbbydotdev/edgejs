@@ -1,0 +1,23 @@
+NOTES.md
+  s_7bec0ecbfcdcd0::t_bff9f4498ba1cd 262-281
+browser-target/src/host-worker/napi-op-handlers.ts
+  ai_agent 112-244,822-825,827-835,837-841,855-861,863,865,878-899,911-913,915-921,935,937-943,957,959-965,979-985,987-995,1008,1010-1012,1014,1016,1029-1044,1057-1061,1063-1067,1081,1083-1084,1086-1090
+experiments/agent-a-host-finalizers/FINDINGS.md
+  s_7bec0ecbfcdcd0::t_b6d7ef054f7fd7 1-90
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "0544ac44cbb31a2080b92edbbae3e990303e8e27",
+  "prompts": {},
+  "sessions": {
+    "s_7bec0ecbfcdcd0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d560d5ae-265f-44ae-89c4-d35659b3ab9e",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
