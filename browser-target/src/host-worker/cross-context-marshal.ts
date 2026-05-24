@@ -58,8 +58,20 @@
 //   |  10 | typed array   | 1 byte kind + 4 bytes byteLen + bytes                |
 //   |  11 | arraybuffer   | 4 bytes byteLen + bytes                              |
 //   |  12 | date          | 8 bytes float64 ms-since-epoch                       |
+//   |  13 | map           | 4 bytes size + repeated [packed key, packed value]   |
+//   |  14 | set           | 4 bytes size + repeated [packed value]               |
+//   |  15 | regexp        | 4 bytes sourceLen + utf-8 source + 1 byte flagsBits  |
 //   |  17 | circular-ref  | 4 bytes frameId (back-ref within this pack frame)    |
 //   | 255 | unsupported   | (none) — decoder throws                              |
+//
+// RegExp flagsBits layout (low bit → high bit):
+//   bit 0: g (global)        bit 4: u (unicode)
+//   bit 1: i (ignoreCase)    bit 5: y (sticky)
+//   bit 2: m (multiline)     bit 6: d (hasIndices)
+//   bit 3: s (dotAll)        bit 7: v (unicodeSets)
+//
+// `lastIndex` is NOT preserved across the round-trip (matches
+// structuredClone semantics — receivers see lastIndex == 0).
 //
 // LIFETIME (by-ref objects)
 //
@@ -74,7 +86,10 @@
 //   - Functions, symbols, bigints → tag 255 / decoder throws.
 //   - Class instances (non-plain prototype) emit tag 7 by-ref; only
 //     resolvable with a shared IdentityMap.
-//   - Map / Set / RegExp not yet supported (TODO).
+//   - Map / Set / RegExp supported by value (tags 13/14/15).  Maps and
+//     Sets register in the per-frame `seen` map so circular references
+//     through them resolve normally.  RegExp `lastIndex` is not
+//     preserved (matches structuredClone).
 //   - Recursion guarded by MARSHAL_MAX_DEPTH (32); cycles use the
 //     per-frame `seen` map instead of depth counting.
 //
@@ -146,12 +161,70 @@ export const MARSHAL_TAG_TYPED_ARRAY = 10;
 export const MARSHAL_TAG_ARRAYBUFFER = 11;
 /** Date — [f64 ms-since-epoch]. */
 export const MARSHAL_TAG_DATE = 12;
+/** Map — [u32 size][repeated: packed-key, packed-value].  Keys may be
+ *  any marshalable value.  Insertion order is preserved by the
+ *  emitter/decoder. */
+export const MARSHAL_TAG_MAP = 13;
+/** Set — [u32 size][repeated: packed-value].  Insertion order is
+ *  preserved. */
+export const MARSHAL_TAG_SET = 14;
+/** RegExp — [u32 sourceLen][utf-8 source bytes][u8 flagsBits].
+ *  flagsBits packs the JS flag characters (g/i/m/s/u/y/d/v) into one
+ *  byte.  `lastIndex` is not preserved across the round-trip. */
+export const MARSHAL_TAG_REGEXP = 15;
 /** Circular back-ref within the current pack frame.  [u32 frameId].
  *  frameId is the index of an already-emitted object in the
  *  pack-frame's `seen` map. */
 export const MARSHAL_TAG_CIRCULAR_REF = 17;
 /** Functions, symbols, bigints — decoder throws. */
 export const MARSHAL_TAG_UNSUPPORTED = 255;
+
+// ─── RegExp flag bits ───────────────────────────────────────────────
+//
+// Pack/unpack JS RegExp flags into a single byte.  Bit assignment is
+// load-bearing wire format; future additions must use unused bits.
+const REGEXP_FLAG_G = 1 << 0; // global
+const REGEXP_FLAG_I = 1 << 1; // ignoreCase
+const REGEXP_FLAG_M = 1 << 2; // multiline
+const REGEXP_FLAG_S = 1 << 3; // dotAll
+const REGEXP_FLAG_U = 1 << 4; // unicode
+const REGEXP_FLAG_Y = 1 << 5; // sticky
+const REGEXP_FLAG_D = 1 << 6; // hasIndices
+const REGEXP_FLAG_V = 1 << 7; // unicodeSets
+
+function regexpFlagsToBits(flags: string): number {
+  let bits = 0;
+  for (let i = 0; i < flags.length; i++) {
+    switch (flags.charCodeAt(i)) {
+      case 0x67: bits |= REGEXP_FLAG_G; break; // 'g'
+      case 0x69: bits |= REGEXP_FLAG_I; break; // 'i'
+      case 0x6d: bits |= REGEXP_FLAG_M; break; // 'm'
+      case 0x73: bits |= REGEXP_FLAG_S; break; // 's'
+      case 0x75: bits |= REGEXP_FLAG_U; break; // 'u'
+      case 0x79: bits |= REGEXP_FLAG_Y; break; // 'y'
+      case 0x64: bits |= REGEXP_FLAG_D; break; // 'd'
+      case 0x76: bits |= REGEXP_FLAG_V; break; // 'v'
+    }
+  }
+  return bits;
+}
+
+function regexpBitsToFlags(bits: number): string {
+  // Order matches the canonical JS RegExp.prototype.flags ordering
+  // (d, g, i, m, s, u, v, y).  RegExp itself canonicalizes the order
+  // on construction so this is informational only — kept canonical for
+  // wire-debug clarity.
+  let out = "";
+  if (bits & REGEXP_FLAG_D) out += "d";
+  if (bits & REGEXP_FLAG_G) out += "g";
+  if (bits & REGEXP_FLAG_I) out += "i";
+  if (bits & REGEXP_FLAG_M) out += "m";
+  if (bits & REGEXP_FLAG_S) out += "s";
+  if (bits & REGEXP_FLAG_U) out += "u";
+  if (bits & REGEXP_FLAG_V) out += "v";
+  if (bits & REGEXP_FLAG_Y) out += "y";
+  return out;
+}
 
 /** Maximum recursion depth for by-value encoding.  Guards against
  *  pathologically deep nesting; circular refs are detected separately
@@ -314,6 +387,61 @@ function packValueWith(
       buf[0] = MARSHAL_TAG_DATE;
       new DataView(buf.buffer).setFloat64(1, value.getTime(), true);
       return buf;
+    }
+    // RegExp — [u32 sourceLen][utf-8 source][u8 flagsBits].
+    // `lastIndex` is NOT preserved (matches structuredClone).
+    if (value instanceof RegExp) {
+      const sourceBytes = utf8Encoder.encode(value.source);
+      const buf = new Uint8Array(6 + sourceBytes.byteLength);
+      buf[0] = MARSHAL_TAG_REGEXP;
+      new DataView(buf.buffer).setUint32(1, sourceBytes.byteLength, true);
+      buf.set(sourceBytes, 5);
+      buf[5 + sourceBytes.byteLength] = regexpFlagsToBits(value.flags);
+      return buf;
+    }
+    // Map — [u32 size][repeated: packed key, packed value].  Registered
+    // in `seen` above so circular references through the Map resolve.
+    if (value instanceof Map) {
+      frame.depth++;
+      try {
+        const packedPairs: Uint8Array[] = [];
+        let total = 0;
+        for (const [k, v] of value as Map<unknown, unknown>) {
+          const pk = packValueWith(k, owner, idMap, frame);
+          const pv = packValueWith(v, owner, idMap, frame);
+          packedPairs.push(pk, pv);
+          total += pk.byteLength + pv.byteLength;
+        }
+        const buf = new Uint8Array(5 + total);
+        buf[0] = MARSHAL_TAG_MAP;
+        new DataView(buf.buffer).setUint32(1, (value as Map<unknown, unknown>).size, true);
+        let off = 5;
+        for (const p of packedPairs) { buf.set(p, off); off += p.byteLength; }
+        return buf;
+      } finally {
+        frame.depth--;
+      }
+    }
+    // Set — [u32 size][repeated: packed value].
+    if (value instanceof Set) {
+      frame.depth++;
+      try {
+        const packed: Uint8Array[] = [];
+        let total = 0;
+        for (const v of value as Set<unknown>) {
+          const p = packValueWith(v, owner, idMap, frame);
+          packed.push(p);
+          total += p.byteLength;
+        }
+        const buf = new Uint8Array(5 + total);
+        buf[0] = MARSHAL_TAG_SET;
+        new DataView(buf.buffer).setUint32(1, (value as Set<unknown>).size, true);
+        let off = 5;
+        for (const p of packed) { buf.set(p, off); off += p.byteLength; }
+        return buf;
+      } finally {
+        frame.depth--;
+      }
     }
     // ArrayBuffer — [u32 byteLen][bytes].
     if (value instanceof ArrayBuffer) {
@@ -489,6 +617,57 @@ function unpackValueWith(
       const date = new Date(dv.getFloat64(0, true));
       frame.byFrameId.push(date);
       return { value: date, byteLength: 9 };
+    }
+    case MARSHAL_TAG_REGEXP: {
+      const dv = new DataView(buf.buffer, buf.byteOffset + offset + 1, 4);
+      const sourceLen = dv.getUint32(0, true);
+      const start = buf.byteOffset + offset + 5;
+      let view: Uint8Array;
+      if (isSharedBuffer(buf.buffer)) {
+        view = new Uint8Array(sourceLen);
+        view.set(new Uint8Array(buf.buffer, start, sourceLen));
+      } else {
+        view = new Uint8Array(buf.buffer, start, sourceLen);
+      }
+      const source = utf8Decoder.decode(view);
+      const flagsBits = buf[offset + 5 + sourceLen];
+      const flags = regexpBitsToFlags(flagsBits);
+      const re = new RegExp(source, flags);
+      // Register in byFrameId — the encoder assigns a frame id to every
+      // typeof "object" value (see frame.nextId++ in packValueWith),
+      // so the decoder must too or circular-ref ids will desync.
+      frame.byFrameId.push(re);
+      return { value: re, byteLength: 6 + sourceLen };
+    }
+    case MARSHAL_TAG_MAP: {
+      const dv = new DataView(buf.buffer, buf.byteOffset + offset + 1, 4);
+      const size = dv.getUint32(0, true);
+      const m = new Map<unknown, unknown>();
+      // Register before recursing — entries may reference the Map.
+      frame.byFrameId.push(m);
+      let cursor = 5;
+      for (let i = 0; i < size; i++) {
+        const kR = unpackValueWith(buf, offset + cursor, idMap, frame);
+        cursor += kR.byteLength;
+        const vR = unpackValueWith(buf, offset + cursor, idMap, frame);
+        cursor += vR.byteLength;
+        m.set(kR.value, vR.value);
+      }
+      return { value: m, byteLength: cursor };
+    }
+    case MARSHAL_TAG_SET: {
+      const dv = new DataView(buf.buffer, buf.byteOffset + offset + 1, 4);
+      const size = dv.getUint32(0, true);
+      const s = new Set<unknown>();
+      // Register before recursing — entries may reference the Set.
+      frame.byFrameId.push(s);
+      let cursor = 5;
+      for (let i = 0; i < size; i++) {
+        const r = unpackValueWith(buf, offset + cursor, idMap, frame);
+        s.add(r.value);
+        cursor += r.byteLength;
+      }
+      return { value: s, byteLength: cursor };
     }
     case MARSHAL_TAG_ARRAYBUFFER: {
       const dv = new DataView(buf.buffer, buf.byteOffset + offset + 1, 4);

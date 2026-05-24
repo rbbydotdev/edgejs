@@ -561,6 +561,22 @@ async function runF9SweepProbe(): Promise<void> {
     function deepEq(a: unknown, b: unknown): boolean {
       if (a === b) return true;
       if (a instanceof Date && b instanceof Date) return a.getTime() === b.getTime();
+      if (a instanceof RegExp && b instanceof RegExp) {
+        return a.source === b.source && a.flags === b.flags;
+      }
+      if (a instanceof Map && b instanceof Map) {
+        if (a.size !== b.size) return false;
+        for (const [k, v] of a) {
+          if (!b.has(k)) return false;
+          if (!deepEq(v, b.get(k))) return false;
+        }
+        return true;
+      }
+      if (a instanceof Set && b instanceof Set) {
+        if (a.size !== b.size) return false;
+        for (const v of a) if (!b.has(v)) return false;
+        return true;
+      }
       if (ArrayBuffer.isView(a) && ArrayBuffer.isView(b)) {
         if (a.constructor !== b.constructor) return false;
         if (a.byteLength !== b.byteLength) return false;
@@ -606,6 +622,9 @@ async function runF9SweepProbe(): Promise<void> {
           return typeof o === "object" && o !== null && o.tag === "loop" && o.self === o;
         },
       },
+      { name: "marshal: map", value: new Map<unknown, unknown>([["a", 1], ["b", "two"]]) },
+      { name: "marshal: set", value: new Set<unknown>([1, "two", true]) },
+      { name: "marshal: regexp", value: /hello\d+/gi },
     ];
     for (const c of cases) {
       let ok = false; let detail = "";
