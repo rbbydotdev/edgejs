@@ -1,0 +1,23 @@
+experiments/e23-redo-microtask-drain/FINDINGS.md
+  s_7bec0ecbfcdcd0::t_73f4bbcdfcf741 1-141
+browser-target/src/napi-host/microtask-ops.ts
+  s_7bec0ecbfcdcd0::t_c13417cd889fad 120-144
+NOTES.md
+  s_7bec0ecbfcdcd0::t_5b41ecbfc04b10 509-541
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "442833c48cda530336e320d9cb1438889b6f26cc",
+  "prompts": {},
+  "sessions": {
+    "s_7bec0ecbfcdcd0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d560d5ae-265f-44ae-89c4-d35659b3ab9e",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
