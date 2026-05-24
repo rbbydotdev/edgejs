@@ -1,0 +1,35 @@
+browser-target/src/policies/process-methods-wasm-state.ts
+  s_7bec0ecbfcdcd0::t_465453713d7114 1-201
+experiments/e20-process-methods-wasm-state/FINDINGS.md
+  s_7bec0ecbfcdcd0::t_6a22c567d717d3 1-124
+tests/js/process-methods-staleness.js
+  s_7bec0ecbfcdcd0::t_465453713d7114 1-101
+tests/js/process-methods-staleness.harness-args
+  s_7bec0ecbfcdcd0::t_465453713d7114 1
+tests/js/process-methods-staleness.stdout
+  s_7bec0ecbfcdcd0::t_465453713d7114 1-7
+browser-target/src/policies/index.ts
+  s_7bec0ecbfcdcd0::t_9a43dbd517e24c 142
+  s_7bec0ecbfcdcd0::t_1fd753b4b7c0d5 126
+  s_7bec0ecbfcdcd0::t_a79163afa64203 180
+  s_7bec0ecbfcdcd0::t_a61220e5b09eb6 199
+  s_7bec0ecbfcdcd0::t_50ad1591e40ce2 222
+docs/wasm-aliased-typedarray-pattern.md
+  s_7bec0ecbfcdcd0::t_8d6ed087c3e0a4 99,104-115
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "7203be1c9d5b7c2e990f35e1a46169e70c9e4e9d",
+  "prompts": {},
+  "sessions": {
+    "s_7bec0ecbfcdcd0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d560d5ae-265f-44ae-89c4-d35659b3ab9e",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
