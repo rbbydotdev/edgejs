@@ -256,6 +256,13 @@ ${KEEPALIVE_HELPER_JS}
   if (typeof globalThis.__edgePostMessageToWorker !== 'function') return;
   if (typeof Worker !== 'function' || typeof kHandle === 'undefined') return;
 
+  // EventEmitter for the port stub (e33).  require('events') is
+  // a Node built-in always available at policy-patch execution; if it
+  // fails the runtime is broken anyway — bail and skip the patch.
+  var EventEmitter;
+  try { EventEmitter = require('events'); }
+  catch (e) { void e; return; }
+
   // Phase 4 (e33): MessagePort transfer infra shared between parent and
   // child sides.  Detect MessagePort by duck-typing the methods the
   // edge.js binding installs.  Worker has postMessage too but lacks
@@ -284,71 +291,37 @@ ${KEEPALIVE_HELPER_JS}
     globalThis.__edgePortsByGlobalId.set(id, port);
     return id;
   }
-  // Build a plain-object stub matching Node MessagePort surface.
-  // Bidirectional routing (real postMessage) is e33 step 3; here the
-  // stub throws so incomplete use is loud not silent.
+  // Build a stub matching Node MessagePort surface.  Backed by Node's
+  // EventEmitter for listener semantics; postMessage envelopes through
+  // the cross-worker bus (e33 step 3).
   function __edgeMakePortStub(globalPortId) {
-    var listeners = { message: [], messageerror: [], close: [] };
-    var stub = {
-      on: function(ev, cb) {
-        if (!listeners[ev]) listeners[ev] = [];
-        listeners[ev].push(cb);
-        return stub;
-      },
-      once: function(ev, cb) { return stub.on(ev, cb); },
-      off: function(ev, cb) {
-        var ls = listeners[ev] || [];
-        var i = ls.indexOf(cb);
-        if (i >= 0) ls.splice(i, 1);
-        return stub;
-      },
-      emit: function(ev) {
-        var args = Array.prototype.slice.call(arguments, 1);
-        var ls = listeners[ev] || [];
-        for (var i = 0; i < ls.length; i++) {
-          try { ls[i].apply(null, args); } catch (e) { void e; }
-        }
-        return ls.length > 0;
-      },
-      removeAllListeners: function(ev) {
-        if (ev) listeners[ev] = []; else listeners = { message: [], messageerror: [], close: [] };
-        return stub;
-      },
-      listenerCount: function(ev) { return (listeners[ev] || []).length; },
-      postMessage: function(payload) {
-        // Phase 4 (e33) step 3: route the user payload back to the
-        // sibling port (which lives in the worker that did the
-        // transfer) via the existing cross-worker bus, wrapped in an
-        // __edgePortMsg envelope.  Receiver side detects the envelope
-        // and dispatches to its local port instead of normal
-        // Worker/parentPort emit('message').
-        var envelope = {
-          __edgePortMsg: true,
-          targetPortId: globalPortId,
-          payload: payload,
-        };
-        var bytes = globalThis.__edgePackPostMessage(envelope);
-        if (typeof globalThis.__edgePostMessageFromWorker === 'function') {
-          // We're inside a user-worker (child).
-          globalThis.__edgePostMessageFromWorker(bytes);
-        } else if (typeof globalThis.__edgePostMessageToWorker === 'function') {
-          // Parent-side stub (forwarded port).  Route via to-worker;
-          // requires knowing which child owns the sibling, which the
-          // current MVP doesn't track.  Throw for now.
-          throw new Error('edge.js: parent-side stub.postMessage not yet routable (e33 MVP)');
-        } else {
-          throw new Error('edge.js: stub.postMessage has no cross-worker transport available');
-        }
-      },
-      start: function() {},
-      close: function() {
-        var ports = globalThis.__edgePortStubsByGlobalId;
-        if (ports) ports.delete(globalPortId);
-      },
-      ref: function() { return stub; },
-      unref: function() { return stub; },
-      hasRef: function() { return true; },
+    var stub = new EventEmitter();
+    stub.postMessage = function(payload) {
+      var envelope = {
+        __edgePortMsg: true,
+        targetPortId: globalPortId,
+        payload: payload,
+      };
+      var bytes = globalThis.__edgePackPostMessage(envelope);
+      if (typeof globalThis.__edgePostMessageFromWorker === 'function') {
+        // Child: send back to parent via existing bus.
+        globalThis.__edgePostMessageFromWorker(bytes);
+      } else if (typeof globalThis.__edgePostMessageToWorker === 'function') {
+        // Parent-side stub (port received from a child).  Routing
+        // needs sibling-tracking we don't yet do.  Throw loudly.
+        throw new Error('edge.js: parent-side stub.postMessage not yet routable (e33 MVP)');
+      } else {
+        throw new Error('edge.js: stub.postMessage has no cross-worker transport available');
+      }
     };
+    stub.start = function() {};
+    stub.close = function() {
+      var ports = globalThis.__edgePortStubsByGlobalId;
+      if (ports) ports.delete(globalPortId);
+    };
+    stub.ref = function() { return stub; };
+    stub.unref = function() { return stub; };
+    stub.hasRef = function() { return true; };
     Object.defineProperty(stub, '__edgePortStub', { value: true });
     Object.defineProperty(stub, '__edgeGlobalPortId', { value: globalPortId });
     globalThis.__edgePortStubsByGlobalId.set(globalPortId, stub);
@@ -568,68 +541,35 @@ ${KEEPALIVE_HELPER_JS}
     globalThis.__edgePortsByGlobalId.set(id, port);
     return id;
   }
+  // Child-side stub factory.  EventEmitter is already in scope on this
+  // patch (lib's require('events') ran at the top of WORKER_THREADS_POST_PATCH
+  // for parentPort construction).  Use it directly — same battle-tested
+  // EE code path that parentPort uses.
   function __edgeMakePortStubChild(globalPortId) {
-    var listeners = { message: [], messageerror: [], close: [] };
-    var stub = {
-      on: function(ev, cb) {
-        if (!listeners[ev]) listeners[ev] = [];
-        listeners[ev].push(cb);
-        return stub;
-      },
-      once: function(ev, cb) { return stub.on(ev, cb); },
-      off: function(ev, cb) {
-        var ls = listeners[ev] || [];
-        var i = ls.indexOf(cb);
-        if (i >= 0) ls.splice(i, 1);
-        return stub;
-      },
-      emit: function(ev) {
-        var args = Array.prototype.slice.call(arguments, 1);
-        var ls = listeners[ev] || [];
-        for (var i = 0; i < ls.length; i++) {
-          try { ls[i].apply(null, args); } catch (e) { void e; }
-        }
-        return ls.length > 0;
-      },
-      removeAllListeners: function(ev) {
-        if (ev) listeners[ev] = []; else listeners = { message: [], messageerror: [], close: [] };
-        return stub;
-      },
-      listenerCount: function(ev) { return (listeners[ev] || []).length; },
-      postMessage: function(payload) {
-        // Phase 4 (e33) step 3: route the user payload back to the
-        // sibling port (which lives in the worker that did the
-        // transfer) via the existing cross-worker bus, wrapped in an
-        // __edgePortMsg envelope.  Receiver side detects the envelope
-        // and dispatches to its local port instead of normal
-        // Worker/parentPort emit('message').
-        var envelope = {
-          __edgePortMsg: true,
-          targetPortId: globalPortId,
-          payload: payload,
-        };
-        var bytes = globalThis.__edgePackPostMessage(envelope);
-        if (typeof globalThis.__edgePostMessageFromWorker === 'function') {
-          // We're inside a user-worker (child).
-          globalThis.__edgePostMessageFromWorker(bytes);
-        } else if (typeof globalThis.__edgePostMessageToWorker === 'function') {
-          // Parent-side stub (forwarded port).  Route via to-worker;
-          // requires knowing which child owns the sibling, which the
-          // current MVP doesn't track.  Throw for now.
-          throw new Error('edge.js: parent-side stub.postMessage not yet routable (e33 MVP)');
-        } else {
-          throw new Error('edge.js: stub.postMessage has no cross-worker transport available');
-        }
-      },
-      start: function() {},
-      close: function() {
-        var ports = globalThis.__edgePortStubsByGlobalId;
-        if (ports) ports.delete(globalPortId);
-      },
-      ref: function() { return stub; },
-      unref: function() { return stub; },
-      hasRef: function() { return true; },
+    var stub = new EventEmitter();
+    stub.postMessage = function(payload) {
+      var envelope = {
+        __edgePortMsg: true,
+        targetPortId: globalPortId,
+        payload: payload,
+      };
+      var bytes = globalThis.__edgePackPostMessage(envelope);
+      if (typeof globalThis.__edgePostMessageFromWorker === 'function') {
+        globalThis.__edgePostMessageFromWorker(bytes);
+      } else if (typeof globalThis.__edgePostMessageToWorker === 'function') {
+        throw new Error('edge.js: parent-side stub.postMessage not yet routable (e33 MVP)');
+      } else {
+        throw new Error('edge.js: stub.postMessage has no cross-worker transport available');
+      }
     };
+    stub.start = function() {};
+    stub.close = function() {
+      var ports = globalThis.__edgePortStubsByGlobalId;
+      if (ports) ports.delete(globalPortId);
+    };
+    stub.ref = function() { return stub; };
+    stub.unref = function() { return stub; };
+    stub.hasRef = function() { return true; };
     Object.defineProperty(stub, '__edgePortStub', { value: true });
     Object.defineProperty(stub, '__edgeGlobalPortId', { value: globalPortId });
     globalThis.__edgePortStubsByGlobalId.set(globalPortId, stub);
