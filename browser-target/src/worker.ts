@@ -1532,17 +1532,26 @@ self.onmessage = (e) => {
   // edge.js boots.  We synthesize a userScript that requires the
   // srcPath, treat it as if `start` had arrived, then call boot().
   if (e.data?.kind === "edge-user-worker-bootstrap") {
-    const { workerId, bootstrapScript, workerData, sharedWasmModule: mod } = e.data as {
+    const { workerId, bootstrapScript, workerData, sharedWasmModule: mod, extraPolicies: childPolicies } = e.data as {
       workerId: number;
       bootstrapScript: string;
       workerData?: Uint8Array;
       sharedWasmModule?: WebAssembly.Module;
+      extraPolicies?: string[];
     };
     if (typeof bootstrapScript !== "string" || typeof workerId !== "number") {
       post("log", { text: "[runtime] edge-user-worker-bootstrap: missing bootstrapScript or workerId", level: "err" });
       return;
     }
     if (mod) sharedWasmModule = mod;
+    // Followup e33: inherit parent's `?policies=...` so the same policy
+    // patches (e.g. worker-threads-per-thread for port-transfer infra)
+    // are active on the child.  Was previously a silent gap — children
+    // booted with only defaultBrowserPolicies regardless of the parent
+    // page's URL params.
+    if (Array.isArray(childPolicies)) {
+      extraPolicyNames = childPolicies.filter((s: unknown): s is string => typeof s === "string");
+    }
     userWorkerMode = {
       workerId,
       bootstrapScript,

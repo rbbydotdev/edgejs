@@ -1,0 +1,10 @@
+child_reported:PASS
+child_has_allocPortId:PASS
+child_has_makePortStub:PASS
+child_has_siblingMap:PASS
+child_has_isLikelyMessagePort:PASS
+child_has_hostWorkerId:PASS
+child_isUserWorker:PASS
+child_has_postFromWorker:PASS
+child_MC_wrapped:PASS
+child_exit_0:PASS

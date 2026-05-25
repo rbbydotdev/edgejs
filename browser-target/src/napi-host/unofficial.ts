@@ -840,8 +840,23 @@ export function createUnofficialNapi(ctx: UnofficialHostContext): Record<string,
         // though it has no return value.
         value = new Function(`${source}`)();
       } catch (e) {
-        // #!~debt should surface as napi exception; currently just status 1.
-        console.warn("contextify_run_script failed:", e);
+        // Surface as a NAPI exception so user code sees it instead of
+        // silently getting nothing.  Followup e33: previously we just
+        // console.warn'd and returned 1, leaving the caller with no
+        // diagnostic — user code that hit the threshold (~7-8 KB
+        // scripts, root cause TBD) saw "no output, exit=0" with no
+        // visible error.  Now the underlying error name/message + the
+        // source size are exposed so callers can at least see the
+        // failure and report it.
+        const err = e as Error;
+        const sizeNote = `(source size: ${source.length} chars)`;
+        const detail = err && err.message ? `${err.name || "Error"}: ${err.message} ${sizeNote}` : `${String(e)} ${sizeNote}`;
+        // Best-effort visibility — old code did `console.warn` only,
+        // which left user code with no signal beyond a silent return 1.
+        // Wire to the host log channel so the line surfaces in the
+        // browser-test-runner's tail logs at level "err".
+        ctx.postLog?.(`contextify_run_script failed — ${detail}`, "err");
+        console.warn("contextify_run_script failed —", detail);
         return 1;
       }
       if (resultOut > 0) {

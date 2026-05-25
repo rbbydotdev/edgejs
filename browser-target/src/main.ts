@@ -1045,6 +1045,17 @@ function getOrCompileSharedWasmModule(): Promise<WebAssembly.Module> {
   return cachedWasmModulePromise;
 }
 
+// Module-scope: extraPolicies as parsed from the page URL at startup.
+// spawnUserWorker reads this so children inherit the same policy set as
+// the parent.  Hoisted out of the bootstrap-time `extraPolicies` const
+// (declared at the very bottom of this file) via a module-level binding.
+// Followup e33: previously, children booted with only defaultBrowserPolicies,
+// so cross-child port-transfer tests had to inline ~3 KB of helpers into
+// every child bootstrap.  Forwarding the parent's policy list closes the
+// gap — real user code that spawns workers under a policy now gets the
+// same policy patches active on the children.
+const childInheritedPolicies: string[] = [];
+
 async function spawnUserWorker(
   parentHostWorkerId: number,
   bootstrapScript: string,
@@ -1087,6 +1098,12 @@ async function spawnUserWorker(
     bootstrapScript,
     workerData,
     sharedWasmModule: sharedModule,
+    // Followup e33: propagate the parent page's `?policies=...` so the
+    // child wasm runtime applies the same policy patches.  Without
+    // this, user code spawning workers under a policy (e.g.,
+    // worker-threads-per-thread) would silently lose those patches
+    // on the child.
+    extraPolicies: childInheritedPolicies.slice(),
   });
   // Forward log + exit messages from the child wasm runtime.  When the
   // child catches ExitSignal in _start it posts `user-worker-exit` to
@@ -1394,4 +1411,6 @@ const traceDisabled = params.get("trace") === "0";
 // See policies/index.ts policyRegistry for available names.
 const policiesParam = params.get("policies");
 const extraPolicies = policiesParam ? policiesParam.split(",").map((s) => s.trim()).filter(Boolean) : [];
+// Followup e33: stash parent policies for child workers spawned later.
+for (const p of extraPolicies) childInheritedPolicies.push(p);
 postToRuntime({ kind: "start", memSnapshotSymbols, diagnoseSabAliasing, watchByteLength, userScript, spinLimit, traceDisabled, extraPolicies });
