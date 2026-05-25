@@ -67,41 +67,99 @@ import type { Policy } from "./index";
 // Libuv-keepalive helper shared by both the parent-side per-Worker
 // keepalive and the child-side parentPort keepalive.
 //
-// The keepalive is a `setInterval` because libuv sees it as a pending
-// `uv_timer_t` handle — that's what keeps `_start`'s event loop from
-// returning while parentPort/Worker has registered 'message' listeners.
+// REAL PATH A: each keepalive is a `uv_async_t` (allocated via the
+// `__edgeNapiHost.uvAsync.acquireSlot(0)` factory installed by
+// `napi-host/uv-async.ts`).  `slot.ref()` makes it a pending handle so
+// `_start`'s `uv_run` won't return while 'message' listeners are
+// registered — that's the same shape Node uses for MessagePort.  When
+// the host receives a cross-context message and queues a
+// `dispatchOnLibuvTick`-wrapped delivery, worker.ts also calls
+// `slot.send()` which fires `uv_async_send` — that wakes a blocked
+// `poll_oneoff` immediately, replacing the prior ~50ms `setInterval`
+// poll period with O(0) delivery latency.
 //
-// CRITICAL: the period must be SHORT (we use 50ms), not long.  Two
-// roles:
-//   1. Pending-handle behavior: the timer's existence keeps libuv
-//      from exiting (any period works for this).
-//   2. Loop-driving behavior: libuv's check phase (where setImmediate
-//      callbacks queued by reverse-RPC handlers fire) only runs when
-//      the loop iterates.  Without a short period, libuv parks in
-//      `poll_oneoff` waiting for the next timer — so inbound messages
-//      enqueue a setImmediate that never fires.  50ms keeps delivery
-//      latency bounded.
+// The slot's wasm-side callback is NULL (cb=0): libuv's own dispatch
+// loop at node/deps/uv/src/unix/async.c:205-206 skips wasm dispatch
+// when async_cb is NULL, but `uv__async_send` still bumps the loop's
+// pending counter and writes the pipe wfd, which is what we need.
+// The actual JS dispatch still rides on the reverse-RPC
+// `setImmediate`-queued delivery (see `dispatchOnLibuvTick` in
+// worker.ts) — `uv_async_send` is just the wake-up signal.  See
+// experiments/e23-real-path-a-discovery/FINDINGS.md (Q4) for the
+// NULL-cb confirmation.
 //
-// #!~debt worker-threads-uses-js-keepalive-not-tsfn — this is the
-// pure-JS emulation of emnapi v2 TSFN's `_emnapi_runtime_keepalive_push`.
-// Real Path A via TSFN (or a `uv_async_t`-backed C++ binding) would
-// wake `poll_oneoff` precisely when needed and would show up under
-// `process._getActiveHandles()`.  Deferred until the emnapi v1→v2
-// cutover lands (see `vendored-emnapi-flag` debt in NOTES.md).
+// FALLBACK: if `uvAsync` isn't available at the moment the keepalive
+// is engaged (shouldn't happen in practice — `uvAsync` is wired in
+// `napi.bindInstance` which runs before `_start`, and policy patches
+// only run from within user JS evaluated AFTER `_start` boots edge),
+// we fall back to a 50ms `setInterval`.  Same shape as the
+// pre-real-Path-A behavior; kept as a safety net.
+//
+// Resolves #!~debt worker-threads-uses-js-keepalive-not-tsfn (Path A
+// shipped 2026-05-25 via real uv_async_t).
 const KEEPALIVE_PERIOD_MS = 50;
 const KEEPALIVE_HELPER_JS = `
 function makeKeepalive(periodMs) {
+  // handle is either an interval Timeout (fallback) or a UvAsyncSlot
+  // (real Path A).  We discriminate on the shape — slots expose
+  // .send()/.ref()/.unref()/.close(); Timeouts do not.
   var handle = null;
+  var isSlot = false;
+  function uvAsync() {
+    var h = (typeof globalThis !== 'undefined') ? globalThis.__edgeNapiHost : null;
+    return (h && h.uvAsync) ? h.uvAsync : null;
+  }
   return {
     ensure: function() {
-      if (handle === null) {
-        // Do NOT call .unref() — we WANT it to keep libuv alive AND
-        // drive loop iterations so reverse-RPC's setImmediate fires.
-        handle = setInterval(function() {}, periodMs);
+      if (handle !== null) return;
+      var rt = uvAsync();
+      if (rt && typeof rt.acquireSlot === 'function') {
+        // Real Path A: uv_async_t with NULL callback.  ref() makes it
+        // a pending handle in the loop.
+        try {
+          handle = rt.acquireSlot(0);
+          handle.ref();
+          isSlot = true;
+          return;
+        } catch (e) {
+          // Slot acquisition can fail if guestMalloc is unavailable or
+          // the memory hasn't been published yet; fall through to the
+          // timer fallback (same shape as pre-real-Path-A behavior).
+          void e;
+          handle = null;
+          isSlot = false;
+        }
       }
+      // Fallback: setInterval.  Libuv sees it as a pending uv_timer_t
+      // and the short period keeps the loop iterating so reverse-RPC
+      // setImmediate deliveries fire.
+      handle = setInterval(function() {}, periodMs);
+      isSlot = false;
     },
     release: function() {
-      if (handle !== null) { clearInterval(handle); handle = null; }
+      if (handle === null) return;
+      if (isSlot) {
+        try { handle.unref(); } catch (e) { void e; }
+        try { handle.close(); } catch (e) { void e; }
+      } else {
+        clearInterval(handle);
+      }
+      handle = null;
+      isSlot = false;
+    },
+    // Expose the slot (or null in fallback mode) so the reverse-RPC
+    // dispatcher in worker.ts can call .send() to wake poll_oneoff
+    // immediately when an inbound cross-context message arrives.
+    slot: function() { return isSlot ? handle : null; },
+    // ref()/unref() pass-through used by Worker.prototype.ref/.unref.
+    // For the timer fallback these are no-ops (we just tear down).
+    ref: function() {
+      if (handle === null) return;
+      if (isSlot) { try { handle.ref(); } catch (e) { void e; } }
+    },
+    unref: function() {
+      if (handle === null) return;
+      if (isSlot) { try { handle.unref(); } catch (e) { void e; } }
     },
   };
 }
@@ -280,18 +338,38 @@ ${KEEPALIVE_HELPER_JS}
 
   // Per-Worker libuv keepalive on the PARENT side.  See the
   // KEEPALIVE_HELPER_JS comment in this file for rationale.
+  //
+  // Real Path A: each keepalive owns a UvAsyncSlot whose .send()
+  // is callable from the reverse-RPC handler in worker.ts to wake the
+  // parent's poll_oneoff the moment an inbound message arrives.  The
+  // slot is published on globalThis.__edgeUvAsyncSlots keyed by
+  // workerId so worker.ts can do the lookup without an import.
   var workerKeepalives = new Map();  // wid → keepalive object
+  if (!globalThis.__edgeUvAsyncSlots) {
+    globalThis.__edgeUvAsyncSlots = new Map();
+  }
   function workerKeepaliveFor(wid) {
     var k = workerKeepalives.get(wid);
     if (k === undefined) {
       k = makeKeepalive(${KEEPALIVE_PERIOD_MS});
       workerKeepalives.set(wid, k);
+      // Wrap ensure() so each engagement re-publishes the slot to the
+      // worker.ts-visible map (slot() returns null in fallback mode,
+      // which is fine — worker.ts treats absent === no wake-up).
+      var origEnsure = k.ensure;
+      k.ensure = function() {
+        origEnsure();
+        var slot = k.slot();
+        if (slot) globalThis.__edgeUvAsyncSlots.set(wid, slot);
+        else globalThis.__edgeUvAsyncSlots.delete(wid);
+      };
     }
     return k;
   }
   function dropWorkerKeepalive(wid) {
     var k = workerKeepalives.get(wid);
     if (k !== undefined) { k.release(); workerKeepalives.delete(wid); }
+    globalThis.__edgeUvAsyncSlots.delete(wid);
   }
 
   // Wrap the Worker constructor to register instances in workerById.
@@ -383,7 +461,24 @@ ${KEEPALIVE_HELPER_JS}
   };
 
   // Libuv keepalive — see KEEPALIVE_HELPER_JS comment for rationale.
+  // Real Path A: the slot from this keepalive is published on
+  // globalThis.__edgeParentPortUvAsyncSlot so the OP_DELIVER_MESSAGE_TO_CHILD
+  // reverse-RPC handler in worker.ts can call .send() to wake poll_oneoff
+  // the moment a parent→child message arrives (otherwise libuv parks for
+  // up to ~50ms in the fallback setInterval period).
   var keepalive = makeKeepalive(${KEEPALIVE_PERIOD_MS});
+  var origEnsure = keepalive.ensure;
+  var origRelease = keepalive.release;
+  keepalive.ensure = function() {
+    origEnsure();
+    var s = keepalive.slot();
+    if (s) globalThis.__edgeParentPortUvAsyncSlot = s;
+    else globalThis.__edgeParentPortUvAsyncSlot = null;
+  };
+  keepalive.release = function() {
+    origRelease();
+    globalThis.__edgeParentPortUvAsyncSlot = null;
+  };
 
   // 'newListener' fires BEFORE the listener is added, so listenerCount
   // would still read 0 at that point — use the EVENT as the trigger.

@@ -12,6 +12,18 @@ export interface UvAsyncRuntime {
   uvAsyncClose(handle: number, closeCb: number): void;
   uvRef(handle: number): void;
   uvUnref(handle: number): void;
+  /**
+   * Factory: allocate a fresh `uv_async_t` (zero-init, registered with
+   * the default loop) and wrap it in a `UvAsyncSlot`.  `cbFuncref` of 0
+   * is the documented NULL-callback path (libuv skips dispatch — see
+   * experiments/e23-real-path-a-discovery/FINDINGS.md, Q4); the wake-up
+   * is what matters for keepalive + loop-iteration drive.
+   *
+   * Added so policy code (which can't `import` TS types) can construct
+   * slots via `globalThis.__edgeNapiHost.uvAsync.acquireSlot(0)` without
+   * needing a separate `__edgeUvAsyncSlot` global for the class itself.
+   */
+  acquireSlot(cbFuncref: number): UvAsyncSlot;
 }
 
 export interface UvAsyncRuntimeWithSize extends UvAsyncRuntime {
@@ -66,7 +78,7 @@ export class UvAsyncSlot {
 
 export function createUvAsyncRuntime(
   instance: WebAssembly.Instance,
-  _guestMalloc: (n: number) => number,
+  guestMalloc: (n: number) => number,
 ): UvAsyncRuntimeWithSize {
   const exp = instance.exports as Record<string, unknown>;
   const bind = (name: string): ((...args: number[]) => number) => {
@@ -74,7 +86,20 @@ export function createUvAsyncRuntime(
     if (typeof fn !== "function") throw new Error(`uv-async: wasm export missing: ${name}`);
     return fn as (...args: number[]) => number;
   };
-  return {
+  // Edge.js's wasm imports shared memory rather than exporting its own,
+  // so `instance.exports.memory` is typically undefined.  Resolve the
+  // WebAssembly.Memory lazily at acquireSlot() time from the
+  // host-published `__edgeNapiHost.wasmMemory` (set in bindInstance),
+  // with the export as a fallback for builds that DO export memory.
+  const resolveMemory = (): WebAssembly.Memory => {
+    const exported = exp.memory as WebAssembly.Memory | undefined;
+    if (exported) return exported;
+    const host = (globalThis as { __edgeNapiHost?: { wasmMemory?: WebAssembly.Memory } })
+      .__edgeNapiHost;
+    if (host?.wasmMemory) return host.wasmMemory;
+    throw new Error("uv-async: WebAssembly.Memory not resolvable (no exp.memory, no __edgeNapiHost.wasmMemory)");
+  };
+  const rt: UvAsyncRuntimeWithSize = {
     uvDefaultLoop: bind("uv_default_loop") as () => number,
     uvAsyncInit: bind("uv_async_init"),
     uvAsyncSend: bind("uv_async_send"),
@@ -82,5 +107,9 @@ export function createUvAsyncRuntime(
     uvRef: (handle) => void bind("uv_ref")(handle),
     uvUnref: (handle) => void bind("uv_unref")(handle),
     uvHandleSize: bind("uv_handle_size"),
+    acquireSlot(cbFuncref: number): UvAsyncSlot {
+      return new UvAsyncSlot(rt, resolveMemory(), guestMalloc, cbFuncref);
+    },
   };
+  return rt;
 }

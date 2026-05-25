@@ -60,6 +60,43 @@ type TsfnDispatcher = { handle: number; queue: Array<() => void>; nonBlockingCal
 let tsfnDispatcher: TsfnDispatcher | null = null;
 let tsfnInstallAttempted = false;
 
+// Real Path A wake-up helpers.  The worker-threads-per-thread policy
+// publishes per-Worker `UvAsyncSlot` instances on
+// `globalThis.__edgeUvAsyncSlots` (parent side, Map<workerId, slot>)
+// and a single `globalThis.__edgeParentPortUvAsyncSlot` on the child
+// side.  When a reverse-RPC handler queues a delivery via
+// `dispatchOnLibuvTick`, we also call `.send()` so libuv's
+// `uv_async_send` fires `uv__async_io` which writes the wake-pipe wfd
+// — `poll_oneoff` returns immediately and the next `uv_run` iteration
+// runs the queued `setImmediate` callback.  Without this poke, a
+// `_start` parked in `poll_oneoff` would only resume on the next
+// keepalive interval tick (~50ms in the fallback path) or the next
+// libuv timer expiration.
+//
+// Both helpers swallow errors: if the slot was closed or torn down
+// mid-flight (a Worker exited, removeAllListeners was called) the
+// dispatcher's setImmediate still fires correctly via the
+// existing setInterval keepalive fallback (which the policy keeps in
+// place when uvAsync isn't available).  See
+// `policies/worker-threads-per-thread.ts` for the slot lifecycle.
+type UvAsyncSlotLike = { send(): void };
+function pokeWorkerSlot(workerId: number): void {
+  const slots = (globalThis as { __edgeUvAsyncSlots?: Map<number, UvAsyncSlotLike> })
+    .__edgeUvAsyncSlots;
+  if (!slots) return;
+  const slot = slots.get(workerId);
+  if (!slot) return;
+  try { slot.send(); }
+  catch (e) { void e; /* slot may have been closed; setImmediate path still drains */ }
+}
+function pokeParentPortSlot(): void {
+  const slot = (globalThis as { __edgeParentPortUvAsyncSlot?: UvAsyncSlotLike | null })
+    .__edgeParentPortUvAsyncSlot;
+  if (!slot) return;
+  try { slot.send(); }
+  catch (e) { void e; }
+}
+
 function dispatchOnLibuvTick(label: string, fn: () => void): void {
   const wrapped = () => {
     try { fn(); }
@@ -666,6 +703,16 @@ self.addEventListener("message", (e: MessageEvent) => {
             .__edgeDispatchMessageFromChild;
           if (typeof dispatch === "function") {
             dispatchOnLibuvTick("OP_DELIVER_MESSAGE_FROM_CHILD", () => dispatch(workerId, bytes));
+            // Real Path A wake-up: nudge the worker-specific uv_async_t
+            // so a `poll_oneoff` blocked in `_start` returns immediately
+            // and runs the setImmediate-queued dispatch above.  The slot
+            // is published by the worker-threads-per-thread policy
+            // patch when a 'message' listener is registered on the
+            // matching Worker instance.  Absent slot = fallback
+            // setInterval keepalive in play (or no listener yet); the
+            // existing setImmediate path still works, just with up-to-
+            // 50ms latency.
+            pokeWorkerSlot(workerId);
           } else {
             post("log", { text: `[runtime] OP_DELIVER_MESSAGE_FROM_CHILD #${workerId}: no dispatcher registered`, level: "warn" });
           }
@@ -702,6 +749,12 @@ self.addEventListener("message", (e: MessageEvent) => {
             .__edgeDispatchMessageToChild;
           if (typeof dispatch === "function") {
             dispatchOnLibuvTick("OP_DELIVER_MESSAGE_TO_CHILD", () => dispatch(bytes));
+            // Real Path A wake-up: nudge the child's parentPort
+            // uv_async_t slot (published by the worker-threads policy
+            // when a 'message' listener is attached to parentPort) so
+            // `poll_oneoff` returns immediately rather than waiting for
+            // the next libuv timer tick.
+            pokeParentPortSlot();
           } else {
             post("log", { text: `[runtime] OP_DELIVER_MESSAGE_TO_CHILD: no dispatcher registered`, level: "warn" });
           }
