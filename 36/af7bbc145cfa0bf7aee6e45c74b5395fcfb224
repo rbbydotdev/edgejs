@@ -1,0 +1,45 @@
+browser-target/src/policies/worker-threads-per-thread.ts
+  s_92c1b47c0d6ee8::t_d3f1694891250e 508,512-515
+  s_92c1b47c0d6ee8::t_8ca77352132372 467-469,472-477
+  s_92c1b47c0d6ee8::t_606f169a8b2035 706-731,743,746-749
+  s_92c1b47c0d6ee8::t_a15aed582cf9cd 313-349,365,368-373
+  s_92c1b47c0d6ee8::t_bb5d1770b76fbd 350-359
+  s_92c1b47c0d6ee8::t_92b7d469f055e9 378-386,395-399,402-407,422-425
+  s_92c1b47c0d6ee8::t_a7f6a124b5f5dc 442-444,448
+  s_92c1b47c0d6ee8::t_37621a9eadeffc 732-737
+  s_92c1b47c0d6ee8::t_49acfaf96e4d3a 883-889,891-895
+  s_92c1b47c0d6ee8::t_09f0c580a60c69 451-452,455-465,481-483
+  s_92c1b47c0d6ee8::t_e7e417a5e60816 890,896-901
+  s_92c1b47c0d6ee8::t_bb20410fec581b 627-659
+tests/js/e33-port-cross-child-to-parent.stdout
+  s_92c1b47c0d6ee8::t_07e15faf94ef1a 1-4
+tests/js/e33-port-cross-child-to-parent.harness-args
+  s_92c1b47c0d6ee8::t_e9636ff3730cd8 1
+tests/js/e33-port-parent-via-kept-port.stdout
+  s_92c1b47c0d6ee8::t_5300b3f392b5f5 1-8
+tests/js/e33-port-parent-via-kept-port.js
+  s_92c1b47c0d6ee8::t_358f017b596093 1-160
+tests/js/e33-port-cross-child-to-parent.js
+  s_92c1b47c0d6ee8::t_8f3e950596871f 2-5,16-19,48-112,114-116,120-121,125,148,153
+  s_92c1b47c0d6ee8::t_4cc1c8ad84231e 21-28,33-36
+  s_92c1b47c0d6ee8::t_41943bb6fc58d1 135-140
+  s_92c1b47c0d6ee8::t_ba58e29149dc74 1,6-15,20,29-32,37-47,113,117-119,122-124,126-134,141-147,149-152,154-175
+tests/js/e33-port-parent-via-kept-port.harness-args
+  s_92c1b47c0d6ee8::t_20ff103fe9d039 1
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.1",
+  "base_commit_sha": "36af7bbc145cfa0bf7aee6e45c74b5395fcfb224",
+  "prompts": {},
+  "sessions": {
+    "s_92c1b47c0d6ee8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "dca99c1c-d946-4444-9a53-9ba89db5d748",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
