@@ -1,0 +1,15 @@
+id_returned:PASS
+entry_exists:PASS
+entry_has_port:PASS
+entry_has_deliver_fn:PASS
+port_identity_preserved:PASS
+neutered_marker:PASS
+postMessage_throws:PASS
+postMessage_msg_mentions_transferred:PASS
+postMessage_swapped:PASS
+start_no_op:PASS
+hasRef_returns_false:PASS
+ref_returns_port:PASS
+unref_returns_port:PASS
+close_no_throw:PASS
+deliver_reached_sibling:PASS

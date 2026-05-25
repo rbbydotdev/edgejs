@@ -31,6 +31,42 @@ import {
   type UnpackHooks,
 } from "./cross-context-marshal";
 
+// Duck-type detector for edge.js MessagePort instances.  Used to
+// catch ports that appear in the value tree but aren't listed in
+// transferList — per spec, that should throw DataCloneError
+// synchronously on the sender side (e33 item 5).
+//
+// The shape check requires ALL of postMessage/start/close/ref/unref/
+// hasRef as own-instance functions.  Browser MessagePort has them
+// too, which is fine — sending one cross-worker without transfer
+// is also invalid.  Worker class has postMessage but lacks start/
+// ref/unref/hasRef so it's not falsely matched.
+function isPortShape(v: unknown): boolean {
+  if (v == null || typeof v !== "object") return false;
+  const o = v as Record<string, unknown>;
+  return (
+    typeof o.postMessage === "function"
+    && typeof o.start === "function"
+    && typeof o.close === "function"
+    && typeof o.ref === "function"
+    && typeof o.unref === "function"
+    && typeof o.hasRef === "function"
+  );
+}
+
+/** Construct a DataCloneError compatible with both Node and browser
+ *  consumers.  Uses DOMException when available (browser/DedicatedWorker
+ *  scope), falls back to a plain Error with .name set.  Either way,
+ *  user code can `e.name === 'DataCloneError'` and check the message. */
+function makeDataCloneError(msg: string): Error {
+  if (typeof DOMException !== "undefined") {
+    return new DOMException(msg, "DataCloneError");
+  }
+  const e = new Error(msg);
+  (e as Error & { name: string }).name = "DataCloneError";
+  return e;
+}
+
 /** Pack a value for cross-worker delivery.
  *
  *  @param value          The user payload.
@@ -73,16 +109,32 @@ export function packPostMessage(
   const hooks: PackHooks = {
     encodeObject(v) {
       const id = portIdByObj.get(v);
-      if (id === undefined) return null;
-      const buf = new Uint8Array(5);
-      buf[0] = 16; // MARSHAL_TAG_PORT_REF (avoid import cycle in the literal)
-      new DataView(buf.buffer).setUint32(1, id, true);
-      return buf;
+      if (id !== undefined) {
+        const buf = new Uint8Array(5);
+        buf[0] = 16; // MARSHAL_TAG_PORT_REF (avoid import cycle in the literal)
+        new DataView(buf.buffer).setUint32(1, id, true);
+        return buf;
+      }
+      // Item 5 (e33): MessagePort in value tree but NOT in transferList
+      // is invalid per spec — throw DataCloneError synchronously on the
+      // sender side rather than producing bytes that throw "marshal:
+      // identity reference collected" on the receiver later.
+      if (isPortShape(v)) {
+        throw makeDataCloneError(
+          "MessagePort included in value but not in transferList; " +
+          "add it to the transferList argument to transfer it.",
+        );
+      }
+      return null;
     },
   };
   try {
     return packValue(value, "host", new IdentityMap(), hooks);
   } catch (e) {
+    // Preserve DataCloneError from the encodeObject hook (item 5) —
+    // re-throwing as a generic Error would lose the .name that callers
+    // pattern-match on (per spec).
+    if (e instanceof Error && e.name === "DataCloneError") throw e;
     const msg = (e as Error)?.message ?? String(e);
     throw new Error(
       `worker_threads postMessage: failed to clone value — ${msg}. ` +

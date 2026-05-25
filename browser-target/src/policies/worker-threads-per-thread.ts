@@ -286,9 +286,38 @@ ${KEEPALIVE_HELPER_JS}
   if (!globalThis.__edgePortStubsByGlobalId) {
     globalThis.__edgePortStubsByGlobalId = new Map();
   }
+  // Item 4 (e33): after transfer, the sender's port must become
+  // unusable per spec.  We can't fully destroy the C++ port object
+  // because our routing uses it as the delivery channel (calling
+  // port.postMessage internally queues on the kept sibling), so we
+  // capture the original methods BEFORE neutering and stash a
+  // delivery function alongside the now-neutered port.
+  function __edgeNeuterPort(port) {
+    if (port.__edgeNeutered) return;
+    try { Object.defineProperty(port, '__edgeNeutered', { value: true }); }
+    catch (e) { void e; }
+    var neutered = function() {
+      throw new Error('MessagePort: this port has been transferred to another worker and is no longer usable');
+    };
+    try { port.postMessage = neutered; } catch (e) { void e; }
+    try { port.start = function() {}; } catch (e) { void e; }
+    // ref/unref/hasRef: Node treats neutered ports as if unref'd —
+    // they don't keep the loop alive.  Be tolerant.
+    try { port.ref = function() { return port; }; } catch (e) { void e; }
+    try { port.unref = function() { return port; }; } catch (e) { void e; }
+    try { port.hasRef = function() { return false; }; } catch (e) { void e; }
+    try { port.close = function() {}; } catch (e) { void e; }
+    // Listener APIs (on/once/off/emit) stay intact — they're just
+    // never invoked since no messages will arrive after transfer.
+  }
   function __edgeAllocPortId(port) {
     var id = globalThis.__edgePortIdNext++;
-    globalThis.__edgePortsByGlobalId.set(id, port);
+    var origPostMessage = port.postMessage.bind(port);
+    globalThis.__edgePortsByGlobalId.set(id, {
+      port: port,
+      deliver: origPostMessage,
+    });
+    __edgeNeuterPort(port);
     return id;
   }
   // Build a stub matching Node MessagePort surface.  Backed by Node's
@@ -358,9 +387,12 @@ ${KEEPALIVE_HELPER_JS}
     // sibling, which fires onmessage on the parent-side kept port (the
     // sibling of what was transferred to child).
     if (data && typeof data === 'object' && data.__edgePortMsg === true) {
-      var localPort = globalThis.__edgePortsByGlobalId.get(data.targetPortId);
-      if (localPort && typeof localPort.postMessage === 'function') {
-        try { localPort.postMessage(data.payload); }
+      // Item 4 (e33): __edgePortsByGlobalId now stores
+      // { port, deliver } so we can route past the neutered public
+      // postMessage and still reach the C++ binding's enqueue path.
+      var entry = globalThis.__edgePortsByGlobalId.get(data.targetPortId);
+      if (entry && typeof entry.deliver === 'function') {
+        try { entry.deliver(data.payload); }
         catch (e) { void e; }
       }
       return;
@@ -536,9 +568,28 @@ ${KEEPALIVE_HELPER_JS}
   if (!globalThis.__edgePortStubsByGlobalId) {
     globalThis.__edgePortStubsByGlobalId = new Map();
   }
+  function __edgeNeuterPortChild(port) {
+    if (port.__edgeNeutered) return;
+    try { Object.defineProperty(port, '__edgeNeutered', { value: true }); }
+    catch (e) { void e; }
+    var neutered = function() {
+      throw new Error('MessagePort: this port has been transferred to another worker and is no longer usable');
+    };
+    try { port.postMessage = neutered; } catch (e) { void e; }
+    try { port.start = function() {}; } catch (e) { void e; }
+    try { port.ref = function() { return port; }; } catch (e) { void e; }
+    try { port.unref = function() { return port; }; } catch (e) { void e; }
+    try { port.hasRef = function() { return false; }; } catch (e) { void e; }
+    try { port.close = function() {}; } catch (e) { void e; }
+  }
   function __edgeAllocPortIdChild(port) {
     var id = globalThis.__edgePortIdNext++;
-    globalThis.__edgePortsByGlobalId.set(id, port);
+    var origPostMessage = port.postMessage.bind(port);
+    globalThis.__edgePortsByGlobalId.set(id, {
+      port: port,
+      deliver: origPostMessage,
+    });
+    __edgeNeuterPortChild(port);
     return id;
   }
   // Child-side stub factory.  EventEmitter is already in scope on this

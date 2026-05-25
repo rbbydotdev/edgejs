@@ -1,0 +1,7 @@
+A_threw:PASS
+A_name_is_DataCloneError:PASS
+A_message_mentions_transferList:PASS
+B_threw:PASS
+B_name_is_DataCloneError:PASS
+C_did_not_throw:PASS
+C_bytes_returned:PASS
