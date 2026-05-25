@@ -724,12 +724,10 @@ export function createNapiHost(opts: NapiHostOptions): NapiHost {
         }
       }
 
-      // Expose host state for the worker_threads policy.  `uvAsync` is
-      // the load-bearing field — the raw uv_async_t wasm-export wrapper
-      // that backs the libuv-pending-handle keepalive (real Path A).
-      // Other fields (envs / context / imports / wasmMemory / guestMalloc)
-      // are kept for diagnostic and probe access.
-      // `uvAsync` is only populated when the guest exposes a malloc —
+      // Expose just what the worker_threads policy + uv-async wrapper
+      // consume: `uvAsync` (real-Path-A keepalive primitive) and
+      // `wasmMemory` (for the lazy DataView fallback in uv-async.ts).
+      // uvAsync is only populated when the guest exposes a malloc —
       // without one, we can't allocate the 64B uv_async_t handle.
       const uvAsync: UvAsyncRuntimeWithSize | undefined =
         typeof wasmMallocImpl === "function"
@@ -737,19 +735,11 @@ export function createNapiHost(opts: NapiHostOptions): NapiHost {
           : undefined;
       (globalThis as {
         __edgeNapiHost?: {
-          envs: Map<number, Env>;
-          context: Context;
-          imports: Record<string, Record<string, Function>>;
           wasmMemory: WebAssembly.Memory;
-          guestMalloc?: (n: number) => number;
           uvAsync?: UvAsyncRuntimeWithSize;
         };
       }).__edgeNapiHost = {
-        envs,
-        context,
-        imports: napiModule.imports as Record<string, Record<string, Function>>,
         wasmMemory: opts.memory,
-        guestMalloc: typeof wasmMallocImpl === "function" ? wasmMallocImpl : undefined,
         uvAsync,
       };
     },

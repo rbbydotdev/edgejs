@@ -1,21 +1,33 @@
-// E23 — Real Path A discovery probe.
+// E23 — Real Path A: callback funcref probe.
 //
-// Strategy: monkey-patch `browser-target/src/worker.ts` with a probe
-// block that runs after `bindInstance(...)` (before `_start`) AND
-// once after `_start` has progressed past `unofficial_napi_create_env`
-// (piggybacks on the existing `tryInstallTsfnDispatch` site, which is
-// invoked from `dispatchOnLibuvTick` once the env exists).
+// E23 already confirmed uv_async_init / uv_async_send are callable from
+// host JS during _start's JSPI suspension.  This probe answers Q4:
+// "which funcref do we pass as `cb`?"
 //
-// The probe captures:
-//   - uv_default_loop() pointer (before _start vs during _start)
-//   - uv_handle_size(UV_ASYNC=1)  (UV_ASYNC is first non-zero entry)
-//   - guestMalloc allocates a uv_async_t slot
-//   - host-side call to uv_async_send on that handle after _start runs
-//     (verifies JSPI re-entry safety)
-//   - funcref index 0 lookup (to see if a null-trampoline exists)
+// Strategy: pass cb=0 (NULL).  libuv's uv__io_poll has an explicit
+// `if (h->async_cb == NULL) continue;` guard at
+// deps/libuv-wasix/src/unix/async.c:205-206, so a NULL cb is the
+// documented "skip dispatch" sentinel.  This means we never need a
+// real funcref — the wake-up itself is what matters (the message
+// payload flows through the existing reverse-RPC funcref dispatch at
+// browser-target/src/host-worker/callback-dispatch.ts:320-360, which
+// the wasm microtask checkpoint drains after uv_run yields).
 //
-// Logs are scraped via the playwright runner.  After the probe, the
-// worker.ts edits are reverted.
+// What the probe verifies:
+//   1. uv_async_init(loop, handle, /*cb=*/0) returns 0.
+//   2. uv_async_send(handle) returns 0.
+//   3. _start runs uv_run, sees pending=1 on our handle, hits the
+//      NULL-cb skip path, and continues without trapping.
+//   4. _start exits cleanly (exit=0).
+//
+// If (3) traps, the NULL-cb hypothesis is wrong — and we fall back to
+// growing the table by 1 with a JS-defined WebAssembly.Function of
+// signature `(externref) -> ()` ... but that's much more invasive,
+// so we want to confirm NULL works first.
+//
+// The probe also tests an EARLY-fire scenario where uv_async_send is
+// called BEFORE _start enters uv_run.  pending=1 is latched on the
+// handle pre-poll; uv__io_poll dispatches it on the first iteration.
 
 import { readFileSync, writeFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
@@ -26,7 +38,16 @@ const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, "..", "..");
 const workerPath = resolve(repoRoot, "browser-target", "src", "worker.ts");
 
-const PROBE_MARKER = "// e23 uv-probe insertion";
+const PROBE_MARKER = "// e23-cb probe insertion";
+
+// Inserted right after `napi.bindInstance(...)` / "emnapi bound" log.
+// At this point _start has NOT yet been invoked; the libuv default
+// loop has been initialized by __wasm_call_ctors and the loop's own
+// internal async (wq_async) is live, but our handle is brand-new.
+//
+// We pass cb=0 and uv_async_send the handle.  _start will then begin,
+// enter uv_run, and process the pending async during uv__io_poll.
+// The NULL-cb guard should fire and we continue cleanly.
 const PROBE_BLOCK_AFTER_BIND = `
   ${PROBE_MARKER} after-bind
   try {
@@ -35,180 +56,64 @@ const PROBE_BLOCK_AFTER_BIND = `
     const uvHandleSize = exp["uv_handle_size"] as undefined | ((t: number) => number);
     const uvAsyncInit = exp["uv_async_init"] as undefined | ((l: number, h: number, cb: number) => number);
     const uvAsyncSend = exp["uv_async_send"] as undefined | ((h: number) => number);
-    const itab = exp["__indirect_function_table"] as WebAssembly.Table | undefined;
     const guestMalloc = exp["unofficial_napi_guest_malloc"] as undefined | ((n: number) => number);
-    post("log", { text: \`[e23] exports: uv_default_loop=\${typeof uvDefaultLoop} uv_handle_size=\${typeof uvHandleSize} uv_async_init=\${typeof uvAsyncInit} uv_async_send=\${typeof uvAsyncSend} itab=\${itab?'yes':'no'} guestMalloc=\${typeof guestMalloc}\`, level: "info" });
-    if (uvHandleSize) {
-      const sizeAsync = uvHandleSize(1); // UV_ASYNC = 1
-      post("log", { text: \`[e23] uv_handle_size(UV_ASYNC=1)=\${sizeAsync}\`, level: "info" });
-      const sizeUnknown = uvHandleSize(0); // UV_UNKNOWN_HANDLE
-      const sizeTimer  = uvHandleSize(13); // UV_TIMER (sanity reference)
-      post("log", { text: \`[e23] uv_handle_size(UNKNOWN=0)=\${sizeUnknown} uv_handle_size(TIMER=13)=\${sizeTimer}\`, level: "info" });
-    }
-    if (uvDefaultLoop) {
-      const loopBefore = uvDefaultLoop();
-      post("log", { text: \`[e23] uv_default_loop() BEFORE _start = \${loopBefore}\`, level: "info" });
-      (globalThis as { __e23LoopBefore?: number }).__e23LoopBefore = loopBefore;
-    }
-    if (itab) {
-      const len = itab.length;
-      post("log", { text: \`[e23] indirect_function_table length=\${len}\`, level: "info" });
-      try {
-        const slot0 = itab.get(0);
-        post("log", { text: \`[e23] itab.get(0) type=\${typeof slot0}\`, level: "info" });
-      } catch (e) {
-        post("log", { text: \`[e23] itab.get(0) threw: \${(e as Error).message}\`, level: "info" });
-      }
-      // Sweep a small range to find any plausible no-op callback funcrefs
-      // that we could pass to uv_async_init as cb.
-      let firstFunc = -1;
-      let firstNonNull = -1;
-      for (let i = 0; i < Math.min(len, 200); i++) {
-        try {
-          const f = itab.get(i);
-          if (f && firstNonNull === -1) firstNonNull = i;
-          if (typeof f === "function" && firstFunc === -1) { firstFunc = i; break; }
-        } catch { /* ignore */ }
-      }
-      post("log", { text: \`[e23] itab firstFunction-in-200=\${firstFunc} firstNonNull-in-200=\${firstNonNull}\`, level: "info" });
-    }
-    // Try uv_async_init+send PRE-_start (no JSPI activation needed; the
-    // loop has been created during static init / __wasm_call_ctors).
-    if (uvDefaultLoop && uvHandleSize && uvAsyncInit && uvAsyncSend && guestMalloc) {
-      const loopPtr = uvDefaultLoop();
-      const size = uvHandleSize(1);
-      const handlePtr = guestMalloc(size);
-      post("log", { text: \`[e23] pre-start: guestMalloc(\${size})=\${handlePtr}\`, level: "info" });
-      // Zero handle slot.
-      try {
-        const mem = (instance.exports as { memory: WebAssembly.Memory }).memory;
-        if (mem && handlePtr) {
-          new Uint8Array(mem.buffer, handlePtr, size).fill(0);
-        }
-      } catch (e) {
-        post("log", { text: \`[e23] pre-start: mem zero threw: \${(e as Error).message}\`, level: "warn" });
-      }
-      // Test 1: cb = funcref index 1 (something callable; signature might
-      // not match, but uv_async_init only stores the pointer — doesn't
-      // call it.  Call only happens when uv__io_poll picks the pipe.)
-      try {
-        const rc = uvAsyncInit(loopPtr, handlePtr, 1);
-        post("log", { text: \`[e23] pre-start: uv_async_init(loop, handle, cb=1) rc=\${rc}\`, level: "info" });
-      } catch (e) {
-        post("log", { text: \`[e23] pre-start: uv_async_init(cb=1) threw: \${(e as Error).message}\`, level: "warn" });
-      }
-      try {
-        const sendRc = uvAsyncSend(handlePtr);
-        post("log", { text: \`[e23] pre-start: uv_async_send(handle) rc=\${sendRc}\`, level: "info" });
-      } catch (e) {
-        post("log", { text: \`[e23] pre-start: uv_async_send threw: \${(e as Error).message}\`, level: "warn" });
-      }
-      // Stash for later use in after-tsfn block.
-      (globalThis as { __e23Handle?: number }).__e23Handle = handlePtr;
-    }
-    (globalThis as { __e23Exports?: unknown }).__e23Exports = { uvDefaultLoop, uvHandleSize, uvAsyncInit, uvAsyncSend, itab, guestMalloc };
-    // Schedule a delayed call to uv_async_send from host JS while _start
-    // is suspended.  This tests JSPI re-entry safety from host JS into
-    // a wasm export that doesn't itself suspend.  We re-init a fresh
-    // handle so any pre-start init state is independent.
-    // Stash memory reference for cross-scope access from setTimeout
-    // below.  Memory is the *imported* shared memory in this build, so we
-    // grab it from the napi host's recorded ref (set during bindInstance).
-    (globalThis as { __e23Memory?: WebAssembly.Memory }).__e23Memory = (globalThis as { __edgeNapiHost?: { wasmMemory: WebAssembly.Memory } }).__edgeNapiHost?.wasmMemory;
-    setTimeout(() => {
-      try {
-        const ex = (globalThis as { __e23Exports?: { uvDefaultLoop?: () => number; uvHandleSize?: (t: number) => number; uvAsyncInit?: (l: number, h: number, cb: number) => number; uvAsyncSend?: (h: number) => number; guestMalloc?: (n: number) => number } }).__e23Exports;
-        const mem2 = (globalThis as { __e23Memory?: WebAssembly.Memory }).__e23Memory;
-        if (!ex || !ex.uvDefaultLoop || !ex.uvHandleSize || !ex.uvAsyncInit || !ex.uvAsyncSend || !ex.guestMalloc || !mem2) {
-          post("log", { text: "[e23] during-start: missing exports/memory", level: "warn" });
-          return;
-        }
-        const loopPtr2 = ex.uvDefaultLoop();
-        const loopBefore = (globalThis as { __e23LoopBefore?: number }).__e23LoopBefore;
-        post("log", { text: \`[e23] during-start: uv_default_loop()=\${loopPtr2} matches BEFORE? \${loopPtr2 === loopBefore}\`, level: "info" });
-        const size2 = ex.uvHandleSize(1);
-        const handle2 = ex.guestMalloc(size2);
-        new Uint8Array(mem2.buffer, handle2, size2).fill(0);
-        const initRc = ex.uvAsyncInit(loopPtr2, handle2, 1);
-        post("log", { text: \`[e23] during-start: uv_async_init rc=\${initRc} (handle=\${handle2})\`, level: "info" });
-        const sendRc = ex.uvAsyncSend(handle2);
-        post("log", { text: \`[e23] during-start: uv_async_send rc=\${sendRc} -- HOST CALLED WASM EXPORT WHILE _start SUSPENDED, no trap\`, level: "info" });
-      } catch (e) {
-        post("log", { text: \`[e23] during-start: threw \${(e as Error).message}\`, level: "warn" });
-      }
-    }, 150);
-  } catch (probeErr) {
-    post("log", { text: \`[e23] probe-after-bind threw: \${(probeErr as Error).message}\`, level: "warn" });
-  }
-`;
-
-const PROBE_BLOCK_AFTER_TSFN = `
-  ${PROBE_MARKER} after-tsfn
-  try {
-    const ex = (globalThis as { __e23Exports?: { uvDefaultLoop?: () => number; uvHandleSize?: (t: number) => number; uvAsyncInit?: (l: number, h: number, cb: number) => number; uvAsyncSend?: (h: number) => number; guestMalloc?: (n: number) => number; itab?: WebAssembly.Table } }).__e23Exports;
-    if (!ex) {
-      post("log", { text: \`[e23] after-tsfn: no __e23Exports\`, level: "warn" });
+    const mem = (exp["memory"] || (globalThis as { __edgeNapiHost?: { wasmMemory: WebAssembly.Memory } }).__edgeNapiHost?.wasmMemory) as WebAssembly.Memory | undefined;
+    if (!uvDefaultLoop || !uvHandleSize || !uvAsyncInit || !uvAsyncSend || !guestMalloc || !mem) {
+      post("log", { text: \`[e23-cb] missing exports: uvDefaultLoop=\${typeof uvDefaultLoop} init=\${typeof uvAsyncInit} send=\${typeof uvAsyncSend} malloc=\${typeof guestMalloc} mem=\${mem?'yes':'no'}\`, level: "warn" });
     } else {
-      const loopDuring = ex.uvDefaultLoop?.();
-      const loopBefore = (globalThis as { __e23LoopBefore?: number }).__e23LoopBefore;
-      post("log", { text: \`[e23] uv_default_loop() DURING _start = \${loopDuring}; matches BEFORE? \${loopDuring === loopBefore}\`, level: "info" });
-
-      const size = ex.uvHandleSize?.(1) ?? 0;
-      const handlePtr = ex.guestMalloc?.(size) ?? 0;
-      post("log", { text: \`[e23] guestMalloc(\${size}) -> \${handlePtr}\`, level: "info" });
-      // Zero the region.
-      try {
-        const mem = (globalThis as { __edgeNapiHost?: { wasmMemory: WebAssembly.Memory } }).__edgeNapiHost?.wasmMemory;
-        if (mem && handlePtr) {
-          const u8 = new Uint8Array(mem.buffer, handlePtr, size);
-          u8.fill(0);
+      // === TEST: cb = 0 (NULL).  libuv's async.c:205 skips dispatch
+      // when async_cb is NULL.  Verifies _start can drain pending
+      // async with no cb invocation.
+      const loop = uvDefaultLoop();
+      const size = uvHandleSize(1); // UV_ASYNC
+      const handle = guestMalloc(size);
+      new Uint8Array(mem.buffer, handle, size).fill(0);
+      const initRc = uvAsyncInit(loop, handle, 0);
+      post("log", { text: \`[e23-cb] (pre-start) uv_async_init(loop=\${loop}, handle=\${handle}, cb=0) rc=\${initRc}\`, level: "info" });
+      const sendRc = uvAsyncSend(handle);
+      post("log", { text: \`[e23-cb] (pre-start) uv_async_send(handle) rc=\${sendRc}\`, level: "info" });
+      // Stash for verification after _start finishes.
+      (globalThis as { __e23cbHandle?: number; __e23cbExports?: unknown }).__e23cbHandle = handle;
+      (globalThis as { __e23cbExports?: unknown }).__e23cbExports = { uvAsyncSend, uvAsyncInit, uvHandleSize, uvDefaultLoop, guestMalloc };
+      (globalThis as { __e23cbMemory?: WebAssembly.Memory }).__e23cbMemory = mem;
+      // === Secondary: schedule a delayed uv_async_send during _start's
+      // JSPI-suspended window.  Tests the more realistic "wake-up
+      // message arrives mid-flight" scenario.  We allocate a SECOND
+      // handle so we can distinguish pre-start vs during-start.
+      setTimeout(() => {
+        try {
+          const ex = (globalThis as { __e23cbExports?: { uvAsyncInit: (l: number, h: number, cb: number) => number; uvAsyncSend: (h: number) => number; uvHandleSize: (t: number) => number; uvDefaultLoop: () => number; guestMalloc: (n: number) => number } }).__e23cbExports;
+          const m = (globalThis as { __e23cbMemory?: WebAssembly.Memory }).__e23cbMemory;
+          if (!ex || !m) {
+            post("log", { text: "[e23-cb] (during-start) missing exports/memory", level: "warn" });
+            return;
+          }
+          const sz2 = ex.uvHandleSize(1);
+          const h2 = ex.guestMalloc(sz2);
+          new Uint8Array(m.buffer, h2, sz2).fill(0);
+          const rc2 = ex.uvAsyncInit(ex.uvDefaultLoop(), h2, 0);
+          const sd2 = ex.uvAsyncSend(h2);
+          post("log", { text: \`[e23-cb] (during-start) cb=0 init rc=\${rc2} send rc=\${sd2} handle=\${h2}\`, level: "info" });
+        } catch (e) {
+          post("log", { text: \`[e23-cb] (during-start) threw \${(e as Error).message}\`, level: "warn" });
         }
-      } catch { /* ignore */ }
-
-      // Try uv_async_init with cb=0 (null funcref) — likely fails, but
-      // see what happens.  In libuv the cb may legitimately be NULL.
-      try {
-        const rc = ex.uvAsyncInit?.(loopDuring ?? 0, handlePtr, 0);
-        post("log", { text: \`[e23] uv_async_init(loop, handle, cb=0) rc=\${rc}\`, level: "info" });
-      } catch (e) {
-        post("log", { text: \`[e23] uv_async_init(cb=0) threw: \${(e as Error).message}\`, level: "warn" });
-      }
-
-      // Try uv_async_send on the handle (even if init returned non-zero,
-      // it might have partially set things up; we want to see if the
-      // export call itself trips JSPI).
-      try {
-        const sendRc = ex.uvAsyncSend?.(handlePtr);
-        post("log", { text: \`[e23] uv_async_send(handle) rc=\${sendRc}  (call from host JS while _start suspended did NOT trap)\`, level: "info" });
-      } catch (e) {
-        post("log", { text: \`[e23] uv_async_send threw: \${(e as Error).message}\`, level: "warn" });
-      }
+      }, 80);
     }
   } catch (probeErr) {
-    post("log", { text: \`[e23] probe-after-tsfn threw: \${(probeErr as Error).message}\`, level: "warn" });
+    post("log", { text: \`[e23-cb] probe-after-bind threw: \${(probeErr as Error).message}\`, level: "warn" });
   }
 `;
 
 function patchWorker() {
   const src = readFileSync(workerPath, "utf8");
   if (src.includes(PROBE_MARKER)) {
-    throw new Error("worker.ts already has probe markers — refusing to patch twice");
+    throw new Error("worker.ts already has e23-cb probe markers — refusing to patch twice");
   }
-  // Insert after-bind probe right after the `napi.bindInstance` post log.
   const bindAnchor = `post("log", { text: "emnapi bound; running _start…", level: "info" });`;
   if (!src.includes(bindAnchor)) {
     throw new Error("could not find bindInstance anchor in worker.ts");
   }
-  // Insert after-tsfn probe inside `tryInstallTsfnDispatch` once it
-  // succeeds — gives us a wasm-export-callable site after _start has
-  // suspended at least once on a JSPI import.
-  const tsfnAnchor = `post("log", { text: \`[runtime] TSFN dispatch installed (handle=\${handle}); reverse-RPC dispatches route via napi_call_threadsafe_function\`, level: "info" });`;
-  if (!src.includes(tsfnAnchor)) {
-    throw new Error("could not find tsfn install anchor in worker.ts");
-  }
-  const patched = src
-    .replace(bindAnchor, `${bindAnchor}\n${PROBE_BLOCK_AFTER_BIND}`)
-    .replace(tsfnAnchor, `${tsfnAnchor}\n${PROBE_BLOCK_AFTER_TSFN}`);
+  const patched = src.replace(bindAnchor, `${bindAnchor}\n${PROBE_BLOCK_AFTER_BIND}`);
   writeFileSync(workerPath, patched, "utf8");
 }
 
@@ -216,53 +121,45 @@ function revertWorker(original) {
   writeFileSync(workerPath, original, "utf8");
 }
 
+// Test script: chain a couple of timers so _start stays alive long
+// enough for the during-start setTimeout(80ms) to fire and for uv_run
+// to make multiple iterations.
 const PROBE_TEST_SCRIPT = `
-// Stay alive long enough for TSFN dispatch to install (which only
-// happens when dispatchOnLibuvTick is first invoked — a reverse-RPC
-// from a napi callback).  Need at least one napi callback round-trip;
-// process.nextTick chains and a setTimeout exercise both edges.
-process.nextTick(() => {
-  console.log('e23 probe: nextTick fired');
-});
+process.nextTick(() => { console.log('e23-cb: nextTick'); });
 setTimeout(() => {
-  console.log('e23 probe: setTimeout fired');
-  setTimeout(() => { console.log('e23 probe: 2nd timer'); process.exit(0); }, 100);
-}, 100);
+  console.log('e23-cb: t1');
+  setTimeout(() => { console.log('e23-cb: t2'); process.exit(0); }, 200);
+}, 150);
 `;
 
 async function runProbe() {
-  console.log("[e23] reading worker.ts…");
+  console.log("[e23-cb] reading worker.ts…");
   const original = readFileSync(workerPath, "utf8");
 
   let viteProc = null;
   let browser = null;
-  let allLogs = [];
   try {
-    console.log("[e23] patching worker.ts with probe blocks…");
+    console.log("[e23-cb] patching worker.ts…");
     patchWorker();
-    console.log("[e23] starting vite…");
+    console.log("[e23-cb] starting vite…");
     viteProc = await startVite();
-    console.log("[e23] launching chromium…");
+    console.log("[e23-cb] launching chromium…");
     browser = await launchChromium();
     const page = await browser.newPage();
     page.on("console", (msg) => {
       const t = msg.text();
-      allLogs.push(t);
-      if (/\[e23\]|_start ran/.test(t)) {
+      if (/\[e23-cb\]|_start ran|e23-cb:/.test(t)) {
         console.log("  >", t);
       }
     });
     page.on("pageerror", (err) => {
-      allLogs.push("pageerror: " + err.message);
       console.log("  ! pageerror:", err.message);
     });
     const enc = encodeURIComponent(PROBE_TEST_SCRIPT);
     const url = "http://localhost:" + VITE_PORT + "/?script=" + enc;
-    console.log("[e23] navigating to", url.slice(0, 80) + "…");
+    console.log("[e23-cb] navigating…");
     await page.goto(url, { waitUntil: "domcontentloaded", timeout: 15_000 });
-    // Wait up to 25s for _start sentinel (matches the test runner's
-    // SENTINEL_RE pattern).  Scrape DOM #log innerText (logs are span
-    // children of <div id="log">), not page console events.
+
     const SENTINEL = /_start ran \d+ ms/;
     const deadline = Date.now() + 25_000;
     let lastLog = "";
@@ -274,26 +171,25 @@ async function runProbe() {
       if (SENTINEL.test(lastLog)) break;
       await new Promise(r => setTimeout(r, 200));
     }
-    // Extract all e23-tagged lines.
-    const probeLines = lastLog.split("\n").filter(l => l.includes("[e23]"));
-    console.log("\n=== E23 PROBE OUTPUT ===");
+    const probeLines = lastLog.split("\n").filter(l => l.includes("[e23-cb]"));
+    console.log("\n=== E23-CB PROBE OUTPUT ===");
     for (const l of probeLines) console.log(l);
-    console.log("=== END E23 PROBE ===\n");
-    const sentinelMatch = lastLog.match(/_start ran[^\n]+/);
-    console.log("[e23] sentinel:", sentinelMatch ? sentinelMatch[0] : "(not seen — wasm may have hung)");
+    const sentinel = lastLog.match(/_start ran[^\n]+/);
+    console.log("[e23-cb] sentinel:", sentinel ? sentinel[0] : "(not seen — wasm may have hung)");
+    console.log("=== END E23-CB PROBE ===\n");
     if (!probeLines.length) {
-      console.log("[e23] (no probe lines captured; first 60 chars of last log block):");
+      console.log("[e23-cb] (no probe lines; first 2KB of log):");
       console.log(lastLog.slice(0, 2000));
     }
   } finally {
     if (browser) await browser.close().catch(() => {});
     if (viteProc) killProc(viteProc);
-    console.log("[e23] reverting worker.ts…");
+    console.log("[e23-cb] reverting worker.ts…");
     revertWorker(original);
   }
 }
 
 runProbe().catch((e) => {
-  console.error("[e23] FATAL:", e);
+  console.error("[e23-cb] FATAL:", e);
   process.exitCode = 1;
 });

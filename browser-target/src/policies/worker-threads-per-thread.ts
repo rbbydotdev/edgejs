@@ -88,23 +88,13 @@ import type { Policy } from "./index";
 // experiments/e23-real-path-a-discovery/FINDINGS.md (Q4) for the
 // NULL-cb confirmation.
 //
-// FALLBACK: if `uvAsync` isn't available at the moment the keepalive
-// is engaged (shouldn't happen in practice — `uvAsync` is wired in
-// `napi.bindInstance` which runs before `_start`, and policy patches
-// only run from within user JS evaluated AFTER `_start` boots edge),
-// we fall back to a 50ms `setInterval`.  Same shape as the
-// pre-real-Path-A behavior; kept as a safety net.
-//
 // Resolves #!~debt worker-threads-uses-js-keepalive-not-tsfn (Path A
 // shipped 2026-05-25 via real uv_async_t).
-const KEEPALIVE_PERIOD_MS = 50;
 const KEEPALIVE_HELPER_JS = `
-function makeKeepalive(periodMs) {
-  // handle is either an interval Timeout (fallback) or a UvAsyncSlot
-  // (real Path A).  We discriminate on the shape — slots expose
-  // .send()/.ref()/.unref()/.close(); Timeouts do not.
+function makeKeepalive() {
+  // Real Path A only: uv_async_t with NULL callback.  ref() makes it
+  // a pending handle in libuv's loop; uv_async_send wakes poll_oneoff.
   var handle = null;
-  var isSlot = false;
   function uvAsync() {
     var h = (typeof globalThis !== 'undefined') ? globalThis.__edgeNapiHost : null;
     return (h && h.uvAsync) ? h.uvAsync : null;
@@ -113,54 +103,24 @@ function makeKeepalive(periodMs) {
     ensure: function() {
       if (handle !== null) return;
       var rt = uvAsync();
-      if (rt && typeof rt.acquireSlot === 'function') {
-        // Real Path A: uv_async_t with NULL callback.  ref() makes it
-        // a pending handle in the loop.
-        try {
-          handle = rt.acquireSlot(0);
-          handle.ref();
-          isSlot = true;
-          return;
-        } catch (e) {
-          // Slot acquisition can fail if guestMalloc is unavailable or
-          // the memory hasn't been published yet; fall through to the
-          // timer fallback (same shape as pre-real-Path-A behavior).
-          void e;
-          handle = null;
-          isSlot = false;
-        }
+      if (!rt || typeof rt.acquireSlot !== 'function') {
+        throw new Error('worker-threads keepalive: __edgeNapiHost.uvAsync unavailable');
       }
-      // Fallback: setInterval.  Libuv sees it as a pending uv_timer_t
-      // and the short period keeps the loop iterating so reverse-RPC
-      // setImmediate deliveries fire.
-      handle = setInterval(function() {}, periodMs);
-      isSlot = false;
+      handle = rt.acquireSlot(0);
+      handle.ref();
     },
     release: function() {
       if (handle === null) return;
-      if (isSlot) {
-        try { handle.unref(); } catch (e) { void e; }
-        try { handle.close(); } catch (e) { void e; }
-      } else {
-        clearInterval(handle);
-      }
+      try { handle.unref(); } catch (e) { void e; }
+      try { handle.close(); } catch (e) { void e; }
       handle = null;
-      isSlot = false;
     },
-    // Expose the slot (or null in fallback mode) so the reverse-RPC
-    // dispatcher in worker.ts can call .send() to wake poll_oneoff
-    // immediately when an inbound cross-context message arrives.
-    slot: function() { return isSlot ? handle : null; },
-    // ref()/unref() pass-through used by Worker.prototype.ref/.unref.
-    // For the timer fallback these are no-ops (we just tear down).
-    ref: function() {
-      if (handle === null) return;
-      if (isSlot) { try { handle.ref(); } catch (e) { void e; } }
-    },
-    unref: function() {
-      if (handle === null) return;
-      if (isSlot) { try { handle.unref(); } catch (e) { void e; } }
-    },
+    // Expose the slot so the reverse-RPC dispatcher in worker.ts can
+    // call .send() to wake poll_oneoff immediately when an inbound
+    // cross-context message arrives.
+    slot: function() { return handle; },
+    ref: function() { if (handle !== null) { try { handle.ref(); } catch (e) { void e; } } },
+    unref: function() { if (handle !== null) { try { handle.unref(); } catch (e) { void e; } } },
   };
 }
 `;
@@ -351,17 +311,14 @@ ${KEEPALIVE_HELPER_JS}
   function workerKeepaliveFor(wid) {
     var k = workerKeepalives.get(wid);
     if (k === undefined) {
-      k = makeKeepalive(${KEEPALIVE_PERIOD_MS});
+      k = makeKeepalive();
       workerKeepalives.set(wid, k);
       // Wrap ensure() so each engagement re-publishes the slot to the
-      // worker.ts-visible map (slot() returns null in fallback mode,
-      // which is fine — worker.ts treats absent === no wake-up).
+      // worker.ts-visible map.
       var origEnsure = k.ensure;
       k.ensure = function() {
         origEnsure();
-        var slot = k.slot();
-        if (slot) globalThis.__edgeUvAsyncSlots.set(wid, slot);
-        else globalThis.__edgeUvAsyncSlots.delete(wid);
+        globalThis.__edgeUvAsyncSlots.set(wid, k.slot());
       };
     }
     return k;
@@ -464,16 +421,13 @@ ${KEEPALIVE_HELPER_JS}
   // Real Path A: the slot from this keepalive is published on
   // globalThis.__edgeParentPortUvAsyncSlot so the OP_DELIVER_MESSAGE_TO_CHILD
   // reverse-RPC handler in worker.ts can call .send() to wake poll_oneoff
-  // the moment a parent→child message arrives (otherwise libuv parks for
-  // up to ~50ms in the fallback setInterval period).
-  var keepalive = makeKeepalive(${KEEPALIVE_PERIOD_MS});
+  // the moment a parent→child message arrives.
+  var keepalive = makeKeepalive();
   var origEnsure = keepalive.ensure;
   var origRelease = keepalive.release;
   keepalive.ensure = function() {
     origEnsure();
-    var s = keepalive.slot();
-    if (s) globalThis.__edgeParentPortUvAsyncSlot = s;
-    else globalThis.__edgeParentPortUvAsyncSlot = null;
+    globalThis.__edgeParentPortUvAsyncSlot = keepalive.slot();
   };
   keepalive.release = function() {
     origRelease();
