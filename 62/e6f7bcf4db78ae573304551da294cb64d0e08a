@@ -1,0 +1,54 @@
+browser-target/src/policies/worker-threads-per-thread.ts
+  s_92c1b47c0d6ee8::t_afdc67f2f29fc9 473-477,484-494
+  s_92c1b47c0d6ee8::t_e5b915478152c9 447-451,454
+  s_92c1b47c0d6ee8::t_227e2ee3778e87 923,926
+  s_92c1b47c0d6ee8::t_6a504178a3fac9 786
+  s_92c1b47c0d6ee8::t_f171310fbc5c91 795-807,823-826
+  s_92c1b47c0d6ee8::t_b4453c2058351b 350-351,354-356,360-362
+  s_92c1b47c0d6ee8::t_e067f964d43837 841,850,854-858
+  s_92c1b47c0d6ee8::t_5bea6059c0d113 758-759,763-765
+  s_92c1b47c0d6ee8::t_55808a417b2d73 932,940-952
+  s_92c1b47c0d6ee8::t_9c820f3f327344 526-530,533,537-541
+browser-target/src/host-worker/marshal-postmessage.ts
+  s_92c1b47c0d6ee8::t_d429469b4e193a 157-159,163
+  s_92c1b47c0d6ee8::t_f31f2be8c7b749 70-78,87-89,94,96-98,107-111,116-122
+tests/js/e33-port-cross-child-AB.harness-args
+  s_92c1b47c0d6ee8::t_98b414429717c0 1
+tests/js/e33-port-cross-child-AB.js
+  s_92c1b47c0d6ee8::t_e311128798f1e7 10-11,14,23,27-31,36,38-41,44-48,53-55,58-59,62-63,67-69,79,86-87,89-90,92-93,95,105,114
+  s_92c1b47c0d6ee8::t_a1a52f1aedd8a1 8,12-13,25-26,42-43,56-57,60,64-66,71-73,75-76,81-82,84-85,88,96-97,99-102,108-111,113,115-116
+  s_92c1b47c0d6ee8::t_b3faa3aac02e77 1-7,9,15-22,24,32-35,37,49-52,61,70,74,77-78,80,83,91,94,98,103-104,106-107,112
+tests/js/e33-port-chain-ABC.harness-args
+  s_92c1b47c0d6ee8::t_d0679c3bea68fe 1
+tests/js/e33-port-cross-child-AB.stdout
+  s_92c1b47c0d6ee8::t_016058e3a24b8c 1-6
+tests/js/e33-port-chain-ABC.js
+  s_92c1b47c0d6ee8::t_ce2012616b335d 54-55
+  s_92c1b47c0d6ee8::t_ebe75a06f3f98d 13,15-25
+  s_92c1b47c0d6ee8::t_af4ebe917c23a5 1-12,14,26-53,56-125
+browser-target/src/worker.ts
+  s_92c1b47c0d6ee8::t_44961e4bd57d77 484-486
+  s_92c1b47c0d6ee8::t_496e93b7a193a9 457,461
+tests/js/e33-port-chain-ABC.stdout
+  s_92c1b47c0d6ee8::t_2f6d314e65d43d 1-7
+browser-target/src/host-worker/cross-context-marshal.ts
+  s_92c1b47c0d6ee8::t_d64a2d5911e719 678,680,682,684,691
+  s_92c1b47c0d6ee8::t_4198e98750fd2c 216-221
+  s_92c1b47c0d6ee8::t_3f3110cbb72606 175,179-190
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.1",
+  "base_commit_sha": "62e6f7bcf4db78ae573304551da294cb64d0e08a",
+  "prompts": {},
+  "sessions": {
+    "s_92c1b47c0d6ee8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "dca99c1c-d946-4444-9a53-9ba89db5d748",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
