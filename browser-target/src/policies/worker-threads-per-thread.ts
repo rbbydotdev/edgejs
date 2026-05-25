@@ -144,9 +144,35 @@ const PRE_PATCH = `
   if (!binding || typeof binding.Worker !== 'function') return;
 
   // Phase 1 exit-dispatcher (carried forward).
+  // Phase 3c (e33+): dispatcher now accepts an optional errorBytes
+  // third arg.  When present, an unpacked Error object is emitted on
+  // the Worker as 'error' BEFORE the 'exit' callback fires — matches
+  // Node's documented event order.
   if (typeof globalThis.__edgeDispatchUserWorkerExit !== 'function') {
     var exitMap = new Map();
-    var disp = function(workerId, code) {
+    var disp = function(workerId, code, errorBytes) {
+      // Emit 'error' first if errorBytes present (item 3c).  The
+      // POST_PATCH's EdgeWorkerInstanceTracker registers each Worker
+      // instance in globalThis.__edgeWorkersById; look up there to find
+      // the Worker we should fire 'error' on.
+      if (errorBytes && errorBytes.byteLength > 0
+          && globalThis.__edgeWorkersById
+          && typeof globalThis.__edgeUnpackPostMessage === 'function') {
+        var w = globalThis.__edgeWorkersById.get(workerId);
+        if (w && typeof w.emit === 'function') {
+          try {
+            var payload = globalThis.__edgeUnpackPostMessage(errorBytes);
+            // Reconstruct a real Error from the unpacked {name, message, stack} —
+            // user code does instanceof Error checks.
+            var err = new Error(payload && payload.message ? payload.message : 'uncaught exception in worker');
+            if (payload) {
+              if (payload.name) try { err.name = payload.name; } catch (e) { void e; }
+              if (payload.stack) try { err.stack = payload.stack; } catch (e) { void e; }
+            }
+            w.emit('error', err);
+          } catch (e) { void e; }
+        }
+      }
       var cb = exitMap.get(workerId);
       if (cb) {
         exitMap.delete(workerId);
@@ -469,7 +495,11 @@ ${KEEPALIVE_HELPER_JS}
   // Worker instance registry keyed by workerId.  Used by the
   // child→parent dispatcher (__edgeDispatchMessageFromChild) to find
   // the right Worker on which to emit('message').
+  // Phase 3c (e33+): also exposed on globalThis.__edgeWorkersById so
+  // the exit dispatcher (in PRE_PATCH scope) can emit 'error' events
+  // on the right Worker before exit fires.
   var workerById = new Map();
+  globalThis.__edgeWorkersById = workerById;
   globalThis.__edgeDispatchMessageFromChild = function(workerId, bytes) {
     var data;
     try {
@@ -525,6 +555,22 @@ ${KEEPALIVE_HELPER_JS}
       }
       if (stub && typeof stub.emit === 'function') {
         stub.emit('message', data.payload);
+      }
+      return;
+    }
+    // Phase 3c (e33+): __edgeWorkerError envelope from a child that
+    // hit uncaughtException / unhandledRejection.  Emit 'error' on
+    // the Worker.  The 'exit' event will follow via the normal
+    // user-worker-exit chain when the child calls process.exit(1).
+    if (data && typeof data === 'object' && data.__edgeWorkerError === true) {
+      var wErr = workerById.get(workerId);
+      if (wErr && typeof wErr.emit === 'function') {
+        var err3c = new Error((data.error && data.error.message) || 'uncaught exception in worker');
+        if (data.error) {
+          if (data.error.name) try { err3c.name = data.error.name; } catch (e) { void e; }
+          if (data.error.stack) try { err3c.stack = data.error.stack; } catch (e) { void e; }
+        }
+        wErr.emit('error', err3c);
       }
       return;
     }
@@ -1021,6 +1067,36 @@ ${KEEPALIVE_HELPER_JS}
   };
 
   module.exports.parentPort = parentPort;
+  // Phase 3c (e33+): catch uncaught exceptions / unhandled rejections in
+  // the child and forward to parent via the existing exit channel.
+  // Without this, edge.js's eval-script (-e flag) catches top-level
+  // throws and returns cleanly (exit 0), losing both error context
+  // AND the non-zero exit code Node spec requires.
+  //
+  // Approach: install process.on uncaughtException + unhandledRejection
+  // handlers that pack the Error and send a special envelope to parent
+  // via __edgePostMessageFromWorker, then process.exit(1).  Parent's
+  // __edgeDispatchMessageFromChild already routes envelopes; we add a
+  // __edgeWorkerError tag handled symmetrically with __edgeWorkerTerminate.
+  if (typeof process !== 'undefined' && typeof process.on === 'function') {
+    var sendErrorAndExit = function(err) {
+      try {
+        var payload = {
+          name: (err && err.name) || 'Error',
+          message: (err && err.message) || String(err),
+          stack: (err && err.stack) || '',
+        };
+        var bytes = globalThis.__edgePackPostMessage({
+          __edgeWorkerError: true,
+          error: payload,
+        });
+        globalThis.__edgePostMessageFromWorker(bytes);
+      } catch (e) { void e; }
+      try { process.exit(1); } catch (e) { void e; }
+    };
+    process.on('uncaughtException', sendErrorAndExit);
+    process.on('unhandledRejection', sendErrorAndExit);
+  }
   // Phase 3a (e33+): expose workerData on require('worker_threads').
   // Bytes were stashed on globalThis.__edgeUserWorkerDataBytes by
   // worker.ts's edge-user-worker-bootstrap handler.  Unmarshal via the

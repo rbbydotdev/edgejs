@@ -1124,7 +1124,8 @@ async function spawnUserWorker(
     }
     if (d?.kind === "user-worker-exit") {
       if (typeof d.workerId !== "number" || typeof d.exitCode !== "number") return;
-      handleUserWorkerExit(d.workerId, d.exitCode);
+      const errBytes = (d as { errorBytes?: Uint8Array | null }).errorBytes;
+      handleUserWorkerExit(d.workerId, d.exitCode, errBytes ?? null);
     }
   });
   const entry: UserWorkerEntry = {
@@ -1257,7 +1258,7 @@ function attachHostWorkerMessageHandlers(handle: HostWorkerHandle): void {
 // posts `user-worker-exit` directly to main (us — its Worker spawner);
 // we look up the parent host worker, forward via postMessage, and
 // terminate the child's pair.
-function handleUserWorkerExit(workerId: number, exitCode: number): void {
+function handleUserWorkerExit(workerId: number, exitCode: number, errorBytes?: Uint8Array | null): void {
   const entry = userWorkers.get(workerId);
   if (!entry) return;
   if (entry.exited) return;
@@ -1284,6 +1285,10 @@ function handleUserWorkerExit(workerId: number, exitCode: number): void {
     kind: "deliver-user-worker-exit",
     workerId,
     exitCode,
+    // Phase 3c (e33+): forward error info if the child threw an uncaught
+    // exception.  Parent host re-includes in the reverse-RPC payload to
+    // the parent wasm, which fires 'error' before 'exit' per Node spec.
+    errorBytes: errorBytes ?? null,
   });
   // Terminate the child workers — they've exited from user code's POV.
   entry.childWasmWorker.terminate();

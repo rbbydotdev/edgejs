@@ -562,11 +562,20 @@ self.addEventListener("message", (e: MessageEvent) => {
           const dv = new DataView(args.buffer, args.byteOffset, args.byteLength);
           const workerId = dv.getUint32(0, true);
           const exitCode = dv.getUint32(4, true);
-          type ExitDispatcher = (workerId: number, code: number) => void;
+          // Phase 3c (e33+): extended payload [u32 wid][u32 code][u32 errLen][bytes err].
+          // Old 8-byte messages still parse (errLen would be missing → undefined → treat as 0).
+          let errorBytes: Uint8Array | null = null;
+          if (args.byteLength >= 12) {
+            const errLen = dv.getUint32(8, true);
+            if (errLen > 0 && args.byteLength >= 12 + errLen) {
+              errorBytes = new Uint8Array(args.buffer.slice(args.byteOffset + 12, args.byteOffset + 12 + errLen));
+            }
+          }
+          type ExitDispatcher = (workerId: number, code: number, errorBytes?: Uint8Array | null) => void;
           const dispatch = (globalThis as { __edgeDispatchUserWorkerExit?: ExitDispatcher })
             .__edgeDispatchUserWorkerExit;
           if (typeof dispatch === "function") {
-            dispatchOnLibuvTick("OP_DELIVER_USER_WORKER_EXIT", () => dispatch(workerId, exitCode));
+            dispatchOnLibuvTick("OP_DELIVER_USER_WORKER_EXIT", () => dispatch(workerId, exitCode, errorBytes));
           } else {
             post("log", { text: `[runtime] OP_DELIVER_USER_WORKER_EXIT #${workerId}: no dispatcher registered`, level: "warn" });
           }
@@ -1387,10 +1396,29 @@ async function runEdgeWithEmnapi() {
     // uncaught exceptions).  If it returned cleanly without proc_exit,
     // use 0.
     const effectiveCode = exitCode ?? (threwMsg ? 1 : 0);
+    // Phase 3c (e33+): if the child threw an uncaught exception, also
+    // pack the error info so the parent can emit a Node-spec
+    // 'error' event on the Worker BEFORE the 'exit' event.  Pre-fix
+    // behavior: only 'exit' fired (with non-zero code), no 'error',
+    // so user error handlers never ran.  Pack via packPostMessage so
+    // the same cross-context-marshal handles all the Error fields
+    // (name/message/stack/etc).  Empty/null when no throw.
+    let errorBytes: Uint8Array | null = null;
+    if (threwMsg !== null) {
+      try {
+        const errPayload = {
+          name: "Error",
+          message: threwMsg.split("\n")[0] || "uncaught exception",
+          stack: threwMsg,
+        };
+        errorBytes = packPostMessage(errPayload);
+      } catch (e) { void e; }
+    }
     self.postMessage({
       kind: "user-worker-exit",
       workerId: userWorkerMode.workerId,
       exitCode: effectiveCode,
+      errorBytes,
     });
   }
   if (blWatcher) {

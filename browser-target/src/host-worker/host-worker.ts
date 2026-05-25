@@ -307,15 +307,25 @@ function handleMainSpawnReply(data: { requestId: number; workerId?: number; erro
 // the reverse-RPC into our wasm runtime, which has a handler registered
 // for OP_DELIVER_USER_WORKER_EXIT that invokes the user-supplied
 // `worker.on('exit', cb)` callback.
-function deliverUserWorkerExit(workerId: number, exitCode: number): void {
+function deliverUserWorkerExit(workerId: number, exitCode: number, errorBytes: Uint8Array | null): void {
   if (!reverseClient) {
     log(`deliver-user-worker-exit: reverseClient not attached (workerId=${workerId})`, "warn");
     return;
   }
-  const payload = new Uint8Array(8);
+  // Phase 3c (e33+): payload format is now [u32 workerId][u32 exitCode]
+  // [u32 errBytesLen][bytes errBytes].  errBytesLen=0 means no error.
+  // Parent wasm's reverse-RPC handler reads len at offset 8 and parses
+  // accordingly.  Backward-compatible by virtue of always writing the
+  // 12-byte minimum header (8 + 4-byte zero-length).
+  const errLen = errorBytes ? errorBytes.byteLength : 0;
+  const payload = new Uint8Array(12 + errLen);
   const dv = new DataView(payload.buffer);
   dv.setUint32(0, workerId, true);
   dv.setUint32(4, exitCode, true);
+  dv.setUint32(8, errLen, true);
+  if (errorBytes && errLen > 0) {
+    payload.set(errorBytes, 12);
+  }
   // Fire-and-forget — wasm's handler queues the callback for invocation
   // on its event loop; we don't need the reply value here.
   void reverseClient.call(OP_DELIVER_USER_WORKER_EXIT, hostWorkerId, 0, payload)
@@ -1171,6 +1181,9 @@ self.addEventListener("message", (e: MessageEvent) => {
     kind: "deliver-user-worker-exit";
     workerId: number;
     exitCode: number;
+    // Phase 3c (e33+): optional packed Error info — when present,
+    // parent wasm emits 'error' on the Worker before 'exit'.
+    errorBytes?: Uint8Array | null;
   } | {
     kind: "deliver-message-to-child";
     bytes: Uint8Array;
@@ -1188,7 +1201,7 @@ self.addEventListener("message", (e: MessageEvent) => {
     return;
   }
   if (data?.kind === "deliver-user-worker-exit") {
-    deliverUserWorkerExit(data.workerId, data.exitCode);
+    deliverUserWorkerExit(data.workerId, data.exitCode, data.errorBytes ?? null);
     return;
   }
   if (data?.kind === "deliver-message-to-child") {
