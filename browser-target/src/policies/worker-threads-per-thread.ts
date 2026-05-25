@@ -315,8 +315,30 @@ ${KEEPALIVE_HELPER_JS}
         return stub;
       },
       listenerCount: function(ev) { return (listeners[ev] || []).length; },
-      postMessage: function() {
-        throw new Error('edge.js: transferred MessagePort.postMessage not yet routable (e33 step 3)');
+      postMessage: function(payload) {
+        // Phase 4 (e33) step 3: route the user payload back to the
+        // sibling port (which lives in the worker that did the
+        // transfer) via the existing cross-worker bus, wrapped in an
+        // __edgePortMsg envelope.  Receiver side detects the envelope
+        // and dispatches to its local port instead of normal
+        // Worker/parentPort emit('message').
+        var envelope = {
+          __edgePortMsg: true,
+          targetPortId: globalPortId,
+          payload: payload,
+        };
+        var bytes = globalThis.__edgePackPostMessage(envelope);
+        if (typeof globalThis.__edgePostMessageFromWorker === 'function') {
+          // We're inside a user-worker (child).
+          globalThis.__edgePostMessageFromWorker(bytes);
+        } else if (typeof globalThis.__edgePostMessageToWorker === 'function') {
+          // Parent-side stub (forwarded port).  Route via to-worker;
+          // requires knowing which child owns the sibling, which the
+          // current MVP doesn't track.  Throw for now.
+          throw new Error('edge.js: parent-side stub.postMessage not yet routable (e33 MVP)');
+        } else {
+          throw new Error('edge.js: stub.postMessage has no cross-worker transport available');
+        }
       },
       start: function() {},
       close: function() {
@@ -354,6 +376,20 @@ ${KEEPALIVE_HELPER_JS}
       });
     } catch (e) {
       w.emit('messageerror', e);
+      return;
+    }
+    // Phase 4 (e33) step 3: detect port-message envelope.  Format:
+    //   { __edgePortMsg: true, targetPortId: N, payload: <any> }
+    // When found, route to the local port registered under targetPortId
+    // by calling port.postMessage(payload) — this enqueues onto the C++
+    // sibling, which fires onmessage on the parent-side kept port (the
+    // sibling of what was transferred to child).
+    if (data && typeof data === 'object' && data.__edgePortMsg === true) {
+      var localPort = globalThis.__edgePortsByGlobalId.get(data.targetPortId);
+      if (localPort && typeof localPort.postMessage === 'function') {
+        try { localPort.postMessage(data.payload); }
+        catch (e) { void e; }
+      }
       return;
     }
     w.emit('message', data);
@@ -560,8 +596,30 @@ ${KEEPALIVE_HELPER_JS}
         return stub;
       },
       listenerCount: function(ev) { return (listeners[ev] || []).length; },
-      postMessage: function() {
-        throw new Error('edge.js: transferred MessagePort.postMessage not yet routable (e33 step 3)');
+      postMessage: function(payload) {
+        // Phase 4 (e33) step 3: route the user payload back to the
+        // sibling port (which lives in the worker that did the
+        // transfer) via the existing cross-worker bus, wrapped in an
+        // __edgePortMsg envelope.  Receiver side detects the envelope
+        // and dispatches to its local port instead of normal
+        // Worker/parentPort emit('message').
+        var envelope = {
+          __edgePortMsg: true,
+          targetPortId: globalPortId,
+          payload: payload,
+        };
+        var bytes = globalThis.__edgePackPostMessage(envelope);
+        if (typeof globalThis.__edgePostMessageFromWorker === 'function') {
+          // We're inside a user-worker (child).
+          globalThis.__edgePostMessageFromWorker(bytes);
+        } else if (typeof globalThis.__edgePostMessageToWorker === 'function') {
+          // Parent-side stub (forwarded port).  Route via to-worker;
+          // requires knowing which child owns the sibling, which the
+          // current MVP doesn't track.  Throw for now.
+          throw new Error('edge.js: parent-side stub.postMessage not yet routable (e33 MVP)');
+        } else {
+          throw new Error('edge.js: stub.postMessage has no cross-worker transport available');
+        }
       },
       start: function() {},
       close: function() {
