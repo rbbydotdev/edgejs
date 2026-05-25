@@ -177,9 +177,16 @@ const PRE_PATCH = `
     }
     var bootstrapScript = 'process.argv[1] = ' + JSON.stringify(srcPath) +
                           '; require(' + JSON.stringify(srcPath) + ');';
+    // Phase 3a (e33+): the outer constructor wrapper (EdgeWorkerInstanceTracker
+    // below) stashes the user's options.workerData here before super()
+    // runs, so we can pass it through the spawn payload to the child.
+    // The binding-level args don't include workerData (lib delivers it
+    // via the LOAD_SCRIPT messagePort message in Node, which our
+    // messagePort stub drops — see Phase 3a notes in policy header).
+    var wdBytes = globalThis.__edgePendingWorkerData || undefined;
     var workerId;
     try {
-      workerId = globalThis.__edgeSpawnNodeWorker(bootstrapScript, undefined);
+      workerId = globalThis.__edgeSpawnNodeWorker(bootstrapScript, wdBytes);
     } catch (e) {
       throw new Error('Worker spawn failed: ' + ((e && e.message) || e));
     }
@@ -591,7 +598,30 @@ ${KEEPALIVE_HELPER_JS}
   var OrigWorker = module.exports.Worker;
   class EdgeWorkerInstanceTracker extends OrigWorker {
     constructor(filename, options) {
-      super(filename, options);
+      // Phase 3a (e33+): grab options.workerData BEFORE super() runs.
+      // super() triggers lib's Worker constructor → binding.Worker (=
+      // our EdgeWorkerImpl) which spawns the child.  EdgeWorkerImpl
+      // reads globalThis.__edgePendingWorkerData and passes those
+      // bytes to __edgeSpawnNodeWorker.  The bytes land on the child
+      // as globalThis.__edgeUserWorkerDataBytes; the child-side
+      // WORKER_THREADS_POST_PATCH unmarshals + exposes as
+      // require('worker_threads').workerData.
+      //
+      // Using globalThis as a thread-local since class-field stash
+      // can't be used before super().  Cleared in finally to avoid
+      // leaking to nested constructs.
+      try {
+        var __wd = options && options.workerData;
+        if (__wd !== undefined) {
+          try { globalThis.__edgePendingWorkerData = globalThis.__edgePackPostMessage(__wd); }
+          catch (e) { globalThis.__edgePendingWorkerData = null; throw e; }
+        } else {
+          globalThis.__edgePendingWorkerData = null;
+        }
+        super(filename, options);
+      } finally {
+        globalThis.__edgePendingWorkerData = null;
+      }
       var h = this[kHandle];
       if (h && typeof h.__edgeWorkerId === 'number') {
         var wid = h.__edgeWorkerId;
@@ -959,7 +989,21 @@ ${KEEPALIVE_HELPER_JS}
   };
 
   module.exports.parentPort = parentPort;
-  // workerData: deferred to phase 2.x.  See the policy header comment.
+  // Phase 3a (e33+): expose workerData on require('worker_threads').
+  // Bytes were stashed on globalThis.__edgeUserWorkerDataBytes by
+  // worker.ts's edge-user-worker-bootstrap handler.  Unmarshal via the
+  // same packPostMessage/unpackPostMessage round-trip used for
+  // postMessage — handles all structured-cloneable types.  Default is
+  // undefined when no workerData was passed (matches Node).
+  var __wdBytes = globalThis.__edgeUserWorkerDataBytes;
+  if (__wdBytes && __wdBytes.byteLength > 0) {
+    try {
+      module.exports.workerData = globalThis.__edgeUnpackPostMessage(__wdBytes);
+    } catch (e) {
+      module.exports.workerData = undefined;
+      void e;
+    }
+  }
 })();
 `;
 
