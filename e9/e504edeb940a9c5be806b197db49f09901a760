@@ -1,0 +1,23 @@
+browser-target/src/policies/index.ts
+  s_92c1b47c0d6ee8::t_7cafbf60e84845 206-214
+tests/js/e33-phase3d-policy-is-default.js
+  s_92c1b47c0d6ee8::t_e5b83b153f5f35 1-21
+tests/js/e33-phase3d-policy-is-default.stdout
+  s_92c1b47c0d6ee8::t_c374c6963c6e5a 1-6
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.1",
+  "base_commit_sha": "e9e504edeb940a9c5be806b197db49f09901a760",
+  "prompts": {},
+  "sessions": {
+    "s_92c1b47c0d6ee8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "dca99c1c-d946-4444-9a53-9ba89db5d748",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
