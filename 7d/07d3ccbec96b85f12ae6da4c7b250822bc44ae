@@ -1,0 +1,39 @@
+tests/js/e33-followup-child-policy-inherits.harness-args
+  s_92c1b47c0d6ee8::t_06a4d4688a8f4d 1
+browser-target/src/main.ts
+  s_92c1b47c0d6ee8::t_48cdc28c497a0c 1048-1058
+  s_92c1b47c0d6ee8::t_73b5aceb605190 1414-1415
+  s_92c1b47c0d6ee8::t_f530a35851de7b 1101-1106
+tests/js/e33-followup-child-policy-inherits.stdout
+  s_92c1b47c0d6ee8::t_4ac1127723dc99 2,5-6
+  s_92c1b47c0d6ee8::t_69f3237605290e 7-8
+  s_92c1b47c0d6ee8::t_fa4e045e8165b9 1,3-4,9-10
+browser-target/src/worker.ts
+  s_92c1b47c0d6ee8::t_17ff3cab019d98 1535,1540,1547-1554
+browser-target/src/napi-host/unofficial.ts
+  s_92c1b47c0d6ee8::t_dd2e58d760cbac 843-853,859
+  s_92c1b47c0d6ee8::t_3fd5d9354f4e62 854-858
+tests/js/e33-followup-child-policy-inherits.js
+  s_92c1b47c0d6ee8::t_871a75877011b1 1-14,20,26-27,33-43,45-46,51-54
+  s_92c1b47c0d6ee8::t_8e99dd6a1c3117 15-19,32
+  s_92c1b47c0d6ee8::t_ab33896e07fb07 49-50
+  s_92c1b47c0d6ee8::t_bdae9c3874b4c7 30-31
+  s_92c1b47c0d6ee8::t_f81720062d795e 44,47-48
+  s_92c1b47c0d6ee8::t_a7b2b6a7ca200a 21-25,28-29
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.1",
+  "base_commit_sha": "7d07d3ccbec96b85f12ae6da4c7b250822bc44ae",
+  "prompts": {},
+  "sessions": {
+    "s_92c1b47c0d6ee8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "dca99c1c-d946-4444-9a53-9ba89db5d748",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
