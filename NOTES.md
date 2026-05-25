@@ -384,6 +384,19 @@ the browser-target tree.
   This is a multi-day project on the order of the v2 cutover itself.
   Deferred until explicitly scoped as a follow-up.
 
+  **Why not a hybrid (TSFN dispatch + setInterval keepalive)?**
+  Considered + rejected (2026-05-25).  TSFN's dispatch enqueues a
+  `setImmediate` internally — that's the same primitive our existing
+  `dispatchOnLibuvTick` helper in `worker.ts` already uses.  Routing
+  delivery through `napi_call_threadsafe_function` instead of our
+  inline `setImmediate` wrap would replace one setImmediate-based
+  abstraction with another, requiring TSFN handle creation from JS
+  (significant plumbing — see Path A research agent's report) for
+  zero observable improvement.  The real differentiator IS the
+  keepalive (libuv-pending-handle status), which TSFN can't deliver
+  on wasi-libc.  The C++ binding is the load-bearing fix; the hybrid
+  is busywork.
+
   Observable warts the current shortcut doesn't close: (i) the
   keepalive timer is visible under `process._getActiveHandles()` as a
   generic Timeout, not as a MessagePort/Worker handle;  (ii) ~50ms
