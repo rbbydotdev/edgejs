@@ -234,7 +234,31 @@ const PRE_PATCH = `
   }
 
   EdgeWorkerImpl.prototype.startThread = function() {};
-  EdgeWorkerImpl.prototype.stopThread = function() {};
+  // Phase 3b (e33+): worker.terminate() flows lib → kHandle.stopThread().
+  // Was previously a no-op (terminate silently did nothing).  Now we
+  // envelope-signal the child via the existing cross-worker bus; the
+  // child's __edgeDispatchMessageToChild recognizes
+  // {__edgeWorkerTerminate: true} as the first dispatch check and
+  // calls process.exit(1).  Exit signal flows through the existing
+  // user-worker-exit pipeline → parent's onexit → lib's terminate
+  // Promise resolves with code 1.
+  //
+  // Spoofing limitation: user code that sends worker.postMessage with
+  // a value containing __edgeWorkerTerminate=true would also trigger
+  // termination.  Documented as known limitation; a dedicated control
+  // channel (separate RPC op routed through main without going through
+  // the data path) is the spec-correct followup.  In-band MVP fits
+  // real user-facing terminate semantics in 99% of cases.
+  EdgeWorkerImpl.prototype.stopThread = function() {
+    var wid = this.__edgeWorkerId;
+    if (typeof wid !== 'number') return;
+    if (typeof globalThis.__edgePostMessageToWorker !== 'function') return;
+    if (typeof globalThis.__edgePackPostMessage !== 'function') return;
+    try {
+      var bytes = globalThis.__edgePackPostMessage({ __edgeWorkerTerminate: true });
+      globalThis.__edgePostMessageToWorker(wid, bytes);
+    } catch (e) { void e; }
+  };
 
   binding.Worker = EdgeWorkerImpl;
 })();
@@ -957,6 +981,14 @@ ${KEEPALIVE_HELPER_JS}
       });
     } catch (e) {
       parentPort.emit('messageerror', e);
+      return;
+    }
+    // Phase 3b (e33+): handle terminate signal FIRST.  Parent's
+    // EdgeWorkerImpl.stopThread sends {__edgeWorkerTerminate: true}
+    // via the cross-worker bus when user calls worker.terminate().
+    // Exit code 1 matches Node's terminate semantics.
+    if (data && typeof data === 'object' && data.__edgeWorkerTerminate === true) {
+      try { process.exit(1); } catch (e) { void e; }
       return;
     }
     // Items 1+2+3 (e33) — triage same as parent dispatcher.
