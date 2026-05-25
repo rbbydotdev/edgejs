@@ -1,0 +1,19 @@
+experiments/e33-cross-worker-port-transfer/README.md
+  s_92c1b47c0d6ee8::t_62c4b538e899f5 1-136
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.1",
+  "base_commit_sha": "a6fe71a1813eb8e7c7f761f2bf4be3627fc1bc0a",
+  "prompts": {},
+  "sessions": {
+    "s_92c1b47c0d6ee8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "dca99c1c-d946-4444-9a53-9ba89db5d748",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
