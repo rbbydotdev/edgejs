@@ -203,6 +203,15 @@ export const defaultBrowserPolicies: Policy[] = [
   processMethodsWasmState,
   inboundHttpsViaSW,
   outboundThrow,
+  // Phase 3d (e33+): worker-threads-per-thread promoted to default now
+  // that 3a (workerData) + 3b (terminate) + 3c (error event) are all
+  // shipping.  Workers are product-critical (per libuv-integration
+  // session's "ERR_BROWSER_NO_WORKER_THREADS is not an option"
+  // constraint).  All previously-opt-in tests now work without an
+  // explicit ?policies= URL param; harness-args sidecars that still
+  // pin the policy explicitly are harmless (extraPolicies appends to
+  // defaults).
+  workerThreadsPerThread,
 ];
 
 /**

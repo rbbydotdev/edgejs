@@ -1,0 +1,6 @@
+has_allocPortId:PASS
+has_makePortStub:PASS
+has_siblingMap:PASS
+has_isLikelyMessagePort:PASS
+has_workersById:PASS
+MC_wrapped:PASS
