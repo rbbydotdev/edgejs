@@ -1,0 +1,19 @@
+browser-target/src/policies/buffer-wasm-aliased.ts
+  s_7bec0ecbfcdcd0::t_fea6a2daf81bae 261-309,312,316
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "06715979c4ee9ff4ebd39839ac8054db39db4a35",
+  "prompts": {},
+  "sessions": {
+    "s_7bec0ecbfcdcd0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d560d5ae-265f-44ae-89c4-d35659b3ab9e",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
