@@ -1,0 +1,83 @@
+experiments/e36-async-wfd-probe/probe.mjs
+  s_92c1b47c0d6ee8::t_e26e4c544e474d 1-162
+tests/js/e34-keepalive-no-heartbeat.js
+  s_92c1b47c0d6ee8::t_a4efe3e8f26b70 1-37
+browser-target/src/policies/worker-threads-per-thread.ts
+  s_92c1b47c0d6ee8::t_e5342612ab4a95 131-149,152,159-162,164-165,168-171,173-178
+experiments/e40-cpp-debugger/README.md
+  s_92c1b47c0d6ee8::t_6a45e6e73c6874 1-126
+experiments/e35-uv-async-keepalive-probe/FINDINGS.md
+  s_92c1b47c0d6ee8::t_c687c9be2802d5 24-64
+  s_92c1b47c0d6ee8::t_a0d8865a6b53eb 1-23
+experiments/e36-async-wfd-probe/FINDINGS.md
+  s_92c1b47c0d6ee8::t_16fa5fedd13c0f 1-116
+experiments/e40-cpp-debugger/FINDINGS.md
+  s_92c1b47c0d6ee8::t_c3e13681199fc2 1-137
+experiments/e36-async-wfd-probe/probe-wake-verifies.mjs
+  s_92c1b47c0d6ee8::t_483ed2b67d4067 1-128
+tests/js/e34-keepalive-no-heartbeat.stdout
+  s_92c1b47c0d6ee8::t_7b12aa5fba80d9 1-3
+experiments/e36-async-wfd-probe/probe-pipe-write.mjs
+  s_92c1b47c0d6ee8::t_93bce79554bf77 1-132
+experiments/e37-uvrun-blocks/FINDINGS.md
+  s_92c1b47c0d6ee8::t_011bb220c35ac0 1-67
+experiments/e39-double-fire/probe.mjs
+  s_92c1b47c0d6ee8::t_a0b7f8be4ce4bd 1-15,17-18,20,24-26,28,30-65
+  s_92c1b47c0d6ee8::t_a6832f8f0b87d1 16,19,21-23,27,29
+experiments/e39-double-fire/FINDINGS.md
+  s_92c1b47c0d6ee8::t_99adc212eb4b9c 1-98
+wasix/build-wasix.sh
+  s_92c1b47c0d6ee8::t_68ef8cd1cccdaf 95-96,98-102,104-105,117-118
+  s_92c1b47c0d6ee8::t_ffd8cadc496319 36-43
+  s_92c1b47c0d6ee8::t_dad93584aef34c 133-144
+  s_92c1b47c0d6ee8::t_039b34cd9401ba 92-94,97,103
+experiments/e38-polloneoff-trace/probe.mjs
+  s_92c1b47c0d6ee8::t_5a0c2d688352e5 1-156
+experiments/e38-polloneoff-trace/FINDINGS.md
+  s_92c1b47c0d6ee8::t_d5fd43dc58cfe7 1-86
+browser-target/scripts/debug-runner.mjs
+  s_92c1b47c0d6ee8::t_847bb3d18eeec6 1-102
+browser-target/src/napi-host/uv-async.ts
+  s_92c1b47c0d6ee8::t_a986e941a44e2f 47,55-62
+  s_92c1b47c0d6ee8::t_8de2df4be5657d 110-141,151-152
+experiments/e35-uv-async-keepalive-probe/README.md
+  s_92c1b47c0d6ee8::t_3014ec8d40faad 1-77
+experiments/e37-uvrun-blocks/README.md
+  s_92c1b47c0d6ee8::t_0a1271b001c769 1-47
+experiments/e35-uv-async-keepalive-probe/probe.mjs
+  s_92c1b47c0d6ee8::t_af1e2de39d3212 1-225
+experiments/e40-cpp-debugger/test-uvrun-block.js
+  s_92c1b47c0d6ee8::t_9494a04e3fa3a5 1-42
+browser-target/src/napi-host/unofficial.ts
+  s_92c1b47c0d6ee8::t_29e5a65e7ba22f 330-343
+experiments/e35-uv-async-keepalive-probe/PHASE2-SYNTHESIS.md
+  s_92c1b47c0d6ee8::t_f341e028c979ef 1-108
+experiments/e35-uv-async-keepalive-probe/PHASE1-SYNTHESIS.md
+  s_92c1b47c0d6ee8::t_f53f19e0504bcb 1-95
+experiments/e37-uvrun-blocks/probe.mjs
+  s_92c1b47c0d6ee8::t_0d6246252d3987 133,138
+  s_92c1b47c0d6ee8::t_af97950a45b9eb 46-47,49-60
+  s_92c1b47c0d6ee8::t_952e310995101d 87-91,93-94
+  s_92c1b47c0d6ee8::t_99adac886ff83b 1-45,48,61-86,92,95-132,134-136,139-142,144-154
+  s_92c1b47c0d6ee8::t_b6f3ecd9961d34 137,143
+experiments/e38-polloneoff-trace/README.md
+  s_92c1b47c0d6ee8::t_a97a45d1aa5838 1-50
+.gitignore
+  s_92c1b47c0d6ee8::t_5ec8d444e154cf 34
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.1",
+  "base_commit_sha": "1eff1dfa5814fba1889aaa40537053ef183f5702",
+  "prompts": {},
+  "sessions": {
+    "s_92c1b47c0d6ee8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "dca99c1c-d946-4444-9a53-9ba89db5d748",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
