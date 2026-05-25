@@ -83,6 +83,64 @@ export interface UnofficialHostContext {
   requestExit?: (code: number) => void;
 }
 
+// Swap ArrayBuffer references in a structured-clone-produced tree with
+// the pre-computed copies in `abCopies`.  Used by the
+// _with_transfer impl to work around this V8's structuredClone
+// returning the same AB reference instead of a copy.
+//
+// Walk is bounded: visited set guards against cycles, max depth keeps
+// runaway costs in check on pathological inputs.  Only handles the
+// containers structuredClone preserves (plain object, Array, Map, Set);
+// other host types pass through unchanged.
+function swapArrayBufferRefs(
+  value: unknown,
+  abCopies: Map<ArrayBuffer, ArrayBuffer>,
+  visited: WeakSet<object> = new WeakSet(),
+  depth = 0,
+): unknown {
+  if (depth > 64) return value;
+  if (value instanceof ArrayBuffer) {
+    const copy = abCopies.get(value);
+    return copy ?? value;
+  }
+  if (value === null || typeof value !== "object") return value;
+  if (visited.has(value)) return value;
+  visited.add(value);
+  if (Array.isArray(value)) {
+    for (let i = 0; i < value.length; i++) {
+      value[i] = swapArrayBufferRefs(value[i], abCopies, visited, depth + 1);
+    }
+    return value;
+  }
+  if (value instanceof Map) {
+    // Map values may need swapping; keys generally don't reference ABs
+    // in normal usage but we walk both for completeness.
+    const out = new Map<unknown, unknown>();
+    for (const [k, val] of value) {
+      out.set(
+        swapArrayBufferRefs(k, abCopies, visited, depth + 1),
+        swapArrayBufferRefs(val, abCopies, visited, depth + 1),
+      );
+    }
+    return out;
+  }
+  if (value instanceof Set) {
+    const out = new Set<unknown>();
+    for (const item of value) out.add(swapArrayBufferRefs(item, abCopies, visited, depth + 1));
+    return out;
+  }
+  // Plain object (or close enough — Date/RegExp/Error don't contain ABs).
+  const proto = Object.getPrototypeOf(value);
+  if (proto === Object.prototype || proto === null) {
+    for (const k of Object.keys(value)) {
+      (value as Record<string, unknown>)[k] = swapArrayBufferRefs(
+        (value as Record<string, unknown>)[k], abCopies, visited, depth + 1,
+      );
+    }
+  }
+  return value;
+}
+
 function dv(memory: WebAssembly.Memory): DataView {
   return new DataView(memory.buffer);
 }
@@ -696,11 +754,86 @@ export function createUnofficialNapi(ctx: UnofficialHostContext): Record<string,
     },
     // Wasm sig (4 args, napi.rs:689):
     // (napi_env, value, transfer_list, result_ptr).
+    //
+    // e34+ Phase 4b strict detach: the transfer list is an Array of
+    // ArrayBuffers (built by C++ CreateArrayBufferTransferList).  Pass
+    // them through to the browser's native structuredClone so source
+    // ABs get detached (HTML spec: transferList entries are neutered
+    // on the source side as part of the clone).
+    //
+    // The C++ caller (CloneMessageValueWithTransfers) already filters
+    // the list to ArrayBuffer-only entries (MessagePort/etc. are
+    // handled separately via TransferredPortEntry).
     unofficial_napi_structured_clone_with_transfer(
-      envHandle: number, valueHandle: number, _transferList: number, resultOut: number,
+      envHandle: number, valueHandle: number, transferList: number, resultOut: number,
     ): number {
-      // #!~debt drops transfer list; same impl as 3-arg structured_clone.
-      return impls.unofficial_napi_structured_clone(envHandle, valueHandle, resultOut);
+      const env = envs.get(envHandle);
+      if (!env) return 1;
+      const v = context.jsValueFromNapiValue(valueHandle);
+      // Resolve the transfer-list napi_value to a JS array of items.
+      const transferItems: Transferable[] = [];
+      if (transferList > 0) {
+        const tl = context.jsValueFromNapiValue(transferList);
+        if (Array.isArray(tl)) {
+          for (const item of tl) {
+            // Only include genuine Transferable shapes to avoid
+            // structuredClone throwing on garbage entries.
+            if (item instanceof ArrayBuffer
+                || (typeof MessagePort !== "undefined" && item instanceof MessagePort)
+                || (typeof OffscreenCanvas !== "undefined" && item instanceof OffscreenCanvas)) {
+              transferItems.push(item as Transferable);
+            }
+          }
+        }
+      }
+      // V8 in this DedicatedWorker silently ignores structuredClone's
+      // {transfer} option AND returns the SAME ArrayBuffer reference
+      // (not a copy) when cloning a plain AB.  That means we can't
+      // rely on structuredClone alone to produce a tree with
+      // independent AB storage — when we then detach the source AB,
+      // the clone empties too.
+      //
+      // Fix: walk the transfer list, pre-compute an independent copy
+      // of each AB via .slice(0), then structuredClone with a swap so
+      // every reference to a source AB in the clone tree becomes the
+      // copy reference.  Finally, detach the originals via .transfer().
+      let cloned: unknown;
+      if (transferItems.length === 0) {
+        try { cloned = structuredClone(v); } catch { cloned = v; }
+      } else {
+        // Pre-compute AB copies for each transfer item.
+        const abCopies = new Map<ArrayBuffer, ArrayBuffer>();
+        for (const item of transferItems) {
+          if (item instanceof ArrayBuffer && !abCopies.has(item)) {
+            abCopies.set(item, item.slice(0));
+          }
+        }
+        try {
+          cloned = structuredClone(v);
+        } catch {
+          cloned = v;
+        }
+        // Replace references to source ABs in the clone tree with copies.
+        // Top-level case is the common one (cloned === some source AB).
+        // For nested cases we do a bounded BFS walk over enumerable own
+        // properties; depth-limit + visited set guard against cycles.
+        cloned = swapArrayBufferRefs(cloned, abCopies);
+        // Detach the originals — per HTML structured-clone spec, the
+        // source ArrayBuffers must be neutered.
+        for (const item of transferItems) {
+          if (item instanceof ArrayBuffer) {
+            const ab = item as ArrayBuffer & { transfer?: () => ArrayBuffer };
+            if (typeof ab.transfer === "function") {
+              try { ab.transfer(); } catch { /* already detached */ }
+            }
+          }
+        }
+      }
+      if (resultOut > 0) {
+        const h = context.napiValueFromJsValue(cloned);
+        dv(memory).setUint32(resultOut, Number(h), true);
+      }
+      return 0;
     },
     // v8 serializer/deserializer — wrap in a JSON-compat shim.  Real impl
     // would expose v8.serialize/v8.deserialize semantics (preserves
@@ -755,10 +888,14 @@ export function createUnofficialNapi(ctx: UnofficialHostContext): Record<string,
         cloned = structuredClone(v);
       } catch (e) {
         void e;
-        // Fall back to null on unclonable values.  Matches the prior
-        // JSON-based behavior (which silently dropped to null too) so
-        // callers don't see a new error class.
-        cloned = null;
+        // e34+ cyclic-data fallback: V8 structuredClone in this V8
+        // build throws on cyclic objects (despite the HTML spec
+        // supporting cycles).  This path is only used for in-process
+        // MessageChannel where the sender and receiver share an
+        // isolate — we can safely store the original reference; the
+        // receiver still gets the (cyclic) value intact.  Previously
+        // we fell back to `null` which silently dropped the message.
+        cloned = v;
       }
       if (payloadOut > 0) {
         const id = nextSerializedPayloadId++;

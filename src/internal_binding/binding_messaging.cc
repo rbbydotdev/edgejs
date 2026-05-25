@@ -1012,28 +1012,72 @@ napi_value RestoreTransferredPortsInValue(napi_env env,
                                           ReceivedTransferredPortState* state,
                                           std::vector<ValueTransformPair>* seen_pairs);
 
-napi_value CloneArrayEntriesForStructuredClone(napi_env env,
-                                               napi_value array,
-                                               bool allow_host_object_transfer) {
+// e34+ cycle detection: the recursive walker now threads a seen-map
+// keyed by source napi_value so that:
+//   1. Circular references no longer overflow the wasm stack — a
+//      revisited node returns the previously-allocated clone.
+//   2. Shared subgraphs are preserved as identity-shared in the
+//      output (matches HTML structured-clone semantics).
+//
+// The map is allocated by the public entry-point wrappers below, then
+// passed to the *Impl helpers that do the actual recursion.  Insertion
+// happens BEFORE recursing into children so a self-referencing object
+// resolves to its (still-being-populated) clone.
+napi_value PrepareTransferableDataForStructuredCloneImpl(
+    napi_env env, napi_value value, bool allow_host_object_transfer,
+    std::vector<std::pair<napi_value, napi_value>>* seen);
+
+// Identity comparison via napi_strict_equals (vs. raw pointer comparison
+// on napi_value).  emnapi creates a fresh napi_value handle each time a
+// JS value is fetched from a property/element, so the same JS object can
+// hold MULTIPLE napi_value handles — a pointer-keyed map would miss
+// cycles entirely.  Strict-equals walks the list comparing underlying
+// V8 identity, which is O(n) per lookup but correct for the typical
+// (small) tree sizes that hit this path.
+inline napi_value FindCachedClone(
+    napi_env env,
+    const std::vector<std::pair<napi_value, napi_value>>* seen,
+    napi_value query) {
+  for (const auto& p : *seen) {
+    bool eq = false;
+    if (napi_strict_equals(env, p.first, query, &eq) == napi_ok && eq) {
+      return p.second;
+    }
+  }
+  return nullptr;
+}
+
+napi_value CloneArrayEntriesForStructuredCloneImpl(
+    napi_env env, napi_value array, bool allow_host_object_transfer,
+    std::vector<std::pair<napi_value, napi_value>>* seen) {
+  napi_value cached = FindCachedClone(env, seen, array);
+  if (cached != nullptr) return cached;
+
   uint32_t length = 0;
   if (napi_get_array_length(env, array, &length) != napi_ok) return nullptr;
 
   napi_value out = nullptr;
   if (napi_create_array_with_length(env, length, &out) != napi_ok || out == nullptr) return nullptr;
 
+  // Insert BEFORE recursing — cycles resolve to the partial clone.
+  seen->emplace_back(array, out);
+
   for (uint32_t i = 0; i < length; ++i) {
     napi_value item = nullptr;
     if (napi_get_element(env, array, i, &item) != napi_ok) return nullptr;
-    napi_value cloned = PrepareTransferableDataForStructuredClone(env, item, allow_host_object_transfer);
+    napi_value cloned = PrepareTransferableDataForStructuredCloneImpl(env, item, allow_host_object_transfer, seen);
     if (cloned == nullptr) return nullptr;
     if (napi_set_element(env, out, i, cloned) != napi_ok) return nullptr;
   }
   return out;
 }
 
-napi_value CloneObjectPropertiesForStructuredClone(napi_env env,
-                                                   napi_value object,
-                                                   bool allow_host_object_transfer) {
+napi_value CloneObjectPropertiesForStructuredCloneImpl(
+    napi_env env, napi_value object, bool allow_host_object_transfer,
+    std::vector<std::pair<napi_value, napi_value>>* seen) {
+  napi_value cached = FindCachedClone(env, seen, object);
+  if (cached != nullptr) return cached;
+
   napi_value keys = nullptr;
   if (napi_get_property_names(env, object, &keys) != napi_ok || keys == nullptr) return nullptr;
 
@@ -1043,12 +1087,14 @@ napi_value CloneObjectPropertiesForStructuredClone(napi_env env,
   napi_value out = nullptr;
   if (napi_create_object(env, &out) != napi_ok || out == nullptr) return nullptr;
 
+  seen->emplace_back(object, out);
+
   for (uint32_t i = 0; i < length; ++i) {
     napi_value key = nullptr;
     if (napi_get_element(env, keys, i, &key) != napi_ok || key == nullptr) return nullptr;
     napi_value item = nullptr;
     if (napi_get_property(env, object, key, &item) != napi_ok) return nullptr;
-    napi_value cloned = PrepareTransferableDataForStructuredClone(env, item, allow_host_object_transfer);
+    napi_value cloned = PrepareTransferableDataForStructuredCloneImpl(env, item, allow_host_object_transfer, seen);
     if (cloned == nullptr) return nullptr;
     if (napi_set_property(env, out, key, cloned) != napi_ok) return nullptr;
   }
@@ -1056,9 +1102,9 @@ napi_value CloneObjectPropertiesForStructuredClone(napi_env env,
   return out;
 }
 
-napi_value PrepareTransferableDataForStructuredClone(napi_env env,
-                                                     napi_value value,
-                                                     bool allow_host_object_transfer) {
+napi_value PrepareTransferableDataForStructuredCloneImpl(
+    napi_env env, napi_value value, bool allow_host_object_transfer,
+    std::vector<std::pair<napi_value, napi_value>>* seen) {
   if (value == nullptr || IsNullOrUndefinedValue(env, value) || IsStructuredClonePassThroughValue(env, value)) {
     return value;
   }
@@ -1084,12 +1130,34 @@ napi_value PrepareTransferableDataForStructuredClone(napi_env env,
 
   bool is_array = false;
   if (napi_is_array(env, value, &is_array) == napi_ok && is_array) {
-    return CloneArrayEntriesForStructuredClone(env, value, allow_host_object_transfer);
+    return CloneArrayEntriesForStructuredCloneImpl(env, value, allow_host_object_transfer, seen);
   }
   if (!IsPlainObjectContainer(env, value)) {
     return value;
   }
-  return CloneObjectPropertiesForStructuredClone(env, value, allow_host_object_transfer);
+  return CloneObjectPropertiesForStructuredCloneImpl(env, value, allow_host_object_transfer, seen);
+}
+
+// Public entry points — allocate a fresh seen-map per top-level call.
+napi_value CloneArrayEntriesForStructuredClone(napi_env env,
+                                               napi_value array,
+                                               bool allow_host_object_transfer) {
+  std::vector<std::pair<napi_value, napi_value>> seen;
+  return CloneArrayEntriesForStructuredCloneImpl(env, array, allow_host_object_transfer, &seen);
+}
+
+napi_value CloneObjectPropertiesForStructuredClone(napi_env env,
+                                                   napi_value object,
+                                                   bool allow_host_object_transfer) {
+  std::vector<std::pair<napi_value, napi_value>> seen;
+  return CloneObjectPropertiesForStructuredCloneImpl(env, object, allow_host_object_transfer, &seen);
+}
+
+napi_value PrepareTransferableDataForStructuredClone(napi_env env,
+                                                     napi_value value,
+                                                     bool allow_host_object_transfer) {
+  std::vector<std::pair<napi_value, napi_value>> seen;
+  return PrepareTransferableDataForStructuredCloneImpl(env, value, allow_host_object_transfer, &seen);
 }
 
 napi_value CreateBlobHandleFromCloneData(napi_env env, napi_value blob_data) {
@@ -1209,7 +1277,28 @@ napi_value CreateCryptoKeyObjectFromCloneData(napi_env env, napi_value data) {
   return EdgeCryptoCreateKeyObjectFromCloneData(env, data);
 }
 
+// Receive-side companion to PrepareTransferableDataForStructuredClone:
+// walks the deserialized value and rehydrates any clone-marker shapes
+// back into their original handle types (BlobHandle, SocketAddress,
+// etc.).  Mutates `value` in place.
+//
+// e34+ cycle detection (mirrors the sender-side walker): without a
+// visited set, an in-place rewrite of a cyclic structure recurses
+// forever and traps the wasm.  We use a vector + napi_strict_equals
+// since emnapi creates fresh napi_value handles per property fetch
+// (same JS object can map to multiple napi handles).
+napi_value RestoreTransferableDataAfterStructuredCloneImpl(
+    napi_env env, napi_value value,
+    std::vector<napi_value>* seen);
+
 napi_value RestoreTransferableDataAfterStructuredClone(napi_env env, napi_value value) {
+  std::vector<napi_value> seen;
+  return RestoreTransferableDataAfterStructuredCloneImpl(env, value, &seen);
+}
+
+napi_value RestoreTransferableDataAfterStructuredCloneImpl(
+    napi_env env, napi_value value,
+    std::vector<napi_value>* seen) {
   if (value == nullptr || IsNullOrUndefinedValue(env, value) || IsStructuredClonePassThroughValue(env, value)) {
     return value;
   }
@@ -1217,7 +1306,7 @@ napi_value RestoreTransferableDataAfterStructuredClone(napi_env env, napi_value 
   napi_value transferable_data = nullptr;
   napi_value deserialize_info = nullptr;
   if (IsJSTransferableCloneMarker(env, value, &transferable_data, &deserialize_info)) {
-    napi_value restored_data = RestoreTransferableDataAfterStructuredClone(env, transferable_data);
+    napi_value restored_data = RestoreTransferableDataAfterStructuredCloneImpl(env, transferable_data, seen);
     if (restored_data == nullptr) return nullptr;
     return DeserializeJSTransferableCloneMarker(env, restored_data, deserialize_info);
   }
@@ -1249,6 +1338,13 @@ napi_value RestoreTransferableDataAfterStructuredClone(napi_env env, napi_value 
 
   if (!IsObjectLike(env, value)) return value;
 
+  // Cycle guard.
+  for (const napi_value s : *seen) {
+    bool eq = false;
+    if (napi_strict_equals(env, s, value, &eq) == napi_ok && eq) return value;
+  }
+  seen->push_back(value);
+
   bool is_array = false;
   if (napi_is_array(env, value, &is_array) == napi_ok && is_array) {
     uint32_t length = 0;
@@ -1256,7 +1352,7 @@ napi_value RestoreTransferableDataAfterStructuredClone(napi_env env, napi_value 
     for (uint32_t i = 0; i < length; ++i) {
       napi_value item = nullptr;
       if (napi_get_element(env, value, i, &item) != napi_ok) return nullptr;
-      napi_value restored = RestoreTransferableDataAfterStructuredClone(env, item);
+      napi_value restored = RestoreTransferableDataAfterStructuredCloneImpl(env, item, seen);
       if (restored == nullptr || napi_set_element(env, value, i, restored) != napi_ok) return nullptr;
     }
     return value;
@@ -1274,7 +1370,7 @@ napi_value RestoreTransferableDataAfterStructuredClone(napi_env env, napi_value 
     if (napi_get_element(env, keys, i, &key) != napi_ok || key == nullptr) return nullptr;
     napi_value item = nullptr;
     if (napi_get_property(env, value, key, &item) != napi_ok) return nullptr;
-    napi_value restored = RestoreTransferableDataAfterStructuredClone(env, item);
+    napi_value restored = RestoreTransferableDataAfterStructuredCloneImpl(env, item, seen);
     if (restored == nullptr || napi_set_property(env, value, key, restored) != napi_ok) return nullptr;
   }
   return value;
@@ -2745,10 +2841,17 @@ napi_value CloneMessageValue(napi_env env, napi_value value, napi_value transfer
   clone_input = PrepareTransferableDataForStructuredClone(env, clone_input, false);
   if (clone_input == nullptr) return nullptr;
 
+  // e34+ Phase 4b strict detach: forward the ArrayBuffer transfer list
+  // through to structured_clone so source ABs become detached on the
+  // sender side (HTML structured-clone spec).  Previously this passed
+  // nullptr unconditionally, so ABs in transferList stayed usable
+  // after postMessage — a real divergence from Node.
+  napi_value arraybuffer_transfer_list = CreateArrayBufferTransferList(env, transfer_arg);
+
   auto clone_prepared_value = [&](napi_value prepared_value) -> napi_value {
     napi_value cloned = nullptr;
     const napi_status clone_status =
-        unofficial_napi_structured_clone(env, prepared_value, nullptr, &cloned);
+        unofficial_napi_structured_clone(env, prepared_value, arraybuffer_transfer_list, &cloned);
     if (clone_status != napi_ok || cloned == nullptr) {
       bool has_pending = false;
       if (napi_is_exception_pending(env, &has_pending) == napi_ok && has_pending) {

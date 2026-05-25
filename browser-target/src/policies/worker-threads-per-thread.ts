@@ -247,18 +247,50 @@ const PRE_PATCH = `
     var evalCode = (globalThis.__edgePendingEvalCode === true || typeof globalThis.__edgePendingEvalCode === 'string')
       ? globalThis.__edgePendingEvalCode
       : null;
-    var bootstrapScript;
+    var userBootstrap;
     if (typeof evalCode === 'string') {
       // url is the code string itself when options.eval is true.
-      bootstrapScript = evalCode;
+      userBootstrap = evalCode;
     } else {
       var srcPath = urlToSrcPath(url);
       if (typeof srcPath !== 'string' || srcPath.length === 0) {
         return new origWorkerImpl(url, _env, _execArgv, _resourceLimits, _trackUnmanagedFds, _isInternal, _name);
       }
-      bootstrapScript = 'process.argv[1] = ' + JSON.stringify(srcPath) +
-                        '; require(' + JSON.stringify(srcPath) + ');';
+      userBootstrap = 'process.argv[1] = ' + JSON.stringify(srcPath) +
+                      '; require(' + JSON.stringify(srcPath) + ');';
     }
+    // e34+ task #11: top-level sync throws used to be eaten by edge.js's
+    // -e evaluator (exit 0, no 'error').  Wrap the user bootstrap with
+    // a try/catch that sends a WORKER_ERROR control envelope to the
+    // parent and exits non-zero — same shape the policy's
+    // uncaughtException handler uses, but works WITHOUT depending on
+    // require('worker_threads') having run first (user code may throw
+    // before reaching that require).
+    //
+    // The wrapper does its own __edgePackPostMessage / control send
+    // rather than emitting 'uncaughtException', so it works in either
+    // ordering.  If require('worker_threads') WAS reached, the policy's
+    // uncaughtException handler is also installed — but since this
+    // wrapper catches BEFORE the throw propagates to V8's uncaught
+    // path, only one error fires (this wrapper's).
+    var wrappedBootstrap =
+      'try {\\n' + userBootstrap + '\\n} catch (__edgeBootErr) {\\n' +
+      '  try {\\n' +
+      '    var __k = globalThis.__edgePmKind ? globalThis.__edgePmKind.WORKER_ERROR : 0x03;\\n' +
+      '    var __info = {\\n' +
+      '      name: (__edgeBootErr && __edgeBootErr.name) || "Error",\\n' +
+      '      message: (__edgeBootErr && __edgeBootErr.message) || String(__edgeBootErr),\\n' +
+      '      stack: (__edgeBootErr && __edgeBootErr.stack) || "",\\n' +
+      '    };\\n' +
+      '    if (typeof globalThis.__edgePackPostMessage === "function" &&\\n' +
+      '        typeof globalThis.__edgePostControlFromWorker === "function") {\\n' +
+      '      var __b = globalThis.__edgePackPostMessage(__info);\\n' +
+      '      globalThis.__edgePostControlFromWorker(__k, __b);\\n' +
+      '    }\\n' +
+      '  } catch (__edgeSendErr) { void __edgeSendErr; }\\n' +
+      '  try { process.exit(1); } catch (__edgeExitErr) { void __edgeExitErr; throw __edgeBootErr; }\\n' +
+      '}';
+    var bootstrapScript = wrappedBootstrap;
     // Phase 3a (e33+): the outer constructor wrapper (EdgeWorkerInstanceTracker
     // below) stashes the user's options.workerData here before super()
     // runs, so we can pass it through the spawn payload to the child.

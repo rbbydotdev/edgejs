@@ -1,0 +1,7 @@
+error_received:PASS
+error_is_Error:PASS
+error_message_matches:PASS
+error_has_stack:PASS
+exit_fired:PASS
+exit_code_nonzero:PASS
+error_before_or_equal_exit:PASS
