@@ -1,0 +1,113 @@
+diff --git a/browser-target/src/napi-host/unofficial.ts b/browser-target/src/napi-host/unofficial.ts
+index 1abc1b96..4a4421a6 100644
+--- a/browser-target/src/napi-host/unofficial.ts
++++ b/browser-target/src/napi-host/unofficial.ts
+@@ -24,14 +24,18 @@ import type { ModuleOverride } from "../policies";
+ // globalThis.TextEncoder/Decoder mid-boot with a polyfill that goes
+ // through V8 string ops we don't host — same root cause as #14.
+ // See NOTES.md 2026-05-20 "uv_cwd EIO: attempt #6".
+-const encoder = new TextEncoder();
+ const decoder = new TextDecoder();
+ 
+ // Host-owned payload store for unofficial_napi_{serialize,deserialize,release}_value.
+-// See implementation comments above unofficial_napi_serialize_value for why this
+-// exists (napi handle scopes don't survive across callbacks; MessagePort queue
+-// payloads need cross-callback lifetime — e31 finding).
+-const serializedPayloadStore = new Map<number, Uint8Array>();
++// Stores cloned JS values (via browser-native structuredClone) keyed by an
++// opaque ID.  See implementation comments above unofficial_napi_serialize_value
++// for why this exists (napi handle scopes don't survive across callbacks;
++// MessagePort queue payloads need cross-callback lifetime — e31 finding).
++// Values are kept as cloned JS objects (not bytes) because browsers don't
++// expose a "serialize structuredClone to bytes" API; storing the cloned
++// object directly is both simpler and lossless across structured-cloneable
++// types — e32.
++const serializedPayloadStore = new Map<number, unknown>();
+ let nextSerializedPayloadId = 1;
+ 
+ export interface UnofficialHostContext {
+@@ -714,29 +718,51 @@ export function createUnofficialNapi(ctx: UnofficialHostContext): Record<string,
+     // The "payload" handle returned here is stored by C++ (e.g. in the
+     // MessagePort queue) and may be passed back to
+     // `unofficial_napi_deserialize_value` from a DIFFERENT napi callback
+-    // scope.  Returning a raw napi_value handle to a freshly-created
+-    // ArrayBuffer doesn't survive that lifecycle: emnapi handle scopes
+-    // close at callback boundaries, freeing the AB handle long before
+-    // deserialize fires.  Result: every MessageChannel payload arrived
+-    // as `null` (e31 finding).
++    // scope.  Two problems we used to have:
+     //
+-    // Fix: store the encoded bytes in a host-owned Map keyed by an
+-    // opaque ID.  Return the ID as the payload handle.  Release deletes
+-    // from the Map.  This bypasses napi handle scoping entirely; the
+-    // payload lives as long as C++ holds the ID.
++    //   1. Returning a napi_value handle didn't survive napi handle
++    //      scoping — handle was freed before deserialize fired.  Fixed
++    //      by storing on a host-owned Map keyed by opaque ID (e31).
++    //
++    //   2. JSON serialization lost everything beyond primitives + plain
++    //      objects: ArrayBuffer/TypedArray/Map/Set/Date/RegExp arrived as
++    //      `{}` or `null`.  transferList silently no-op'd.  Fixed by
++    //      using browser-native `structuredClone()` which handles all
++    //      structured-cloneable types AND transferList detach semantics
++    //      (e32).
++    //
++    // The stored value is the cloned JS object itself, not bytes.  Bypasses
++    // a serialize-to-bytes step entirely — no public "serialize structured
++    // clone to bytes" API in browsers; storing the cloned object directly
++    // is both simpler and lossless.  C++ never inspects the payload
++    // contents (just stores the opaque ID), so it doesn't care.
++    //
++    // The signature exposed to wasm has no transferList parameter —
++    // upstream `unofficial_napi_serialize_value` is (env, value,
++    // payload_out).  Per-payload transferList plumbing through the napi
++    // boundary is the next experiment (e33+); for now, transferList is
++    // ignored at this layer.  The C++ caller in binding_messaging.cc
++    // pre-processes transferList via PrepareTransferableDataForStructuredClone
++    // so most transfer semantics happen above us anyway.
+     unofficial_napi_serialize_value(
+       envHandle: number, valueHandle: number, payloadOut: number,
+     ): number {
+       const env = envs.get(envHandle);
+       if (!env) return 1;
+       const v = context.jsValueFromNapiValue(valueHandle);
+-      // JSON.stringify(undefined) returns undefined (not a string).
+-      // Preserve undefined by encoding a sentinel; null stays null.
+-      const json = v === undefined ? '__edgeSerialUndefined__' : JSON.stringify(v);
+-      const bytes = encoder.encode(json);
++      let cloned: unknown;
++      try {
++        cloned = structuredClone(v);
++      } catch (e) {
++        void e;
++        // Fall back to null on unclonable values.  Matches the prior
++        // JSON-based behavior (which silently dropped to null too) so
++        // callers don't see a new error class.
++        cloned = null;
++      }
+       if (payloadOut > 0) {
+         const id = nextSerializedPayloadId++;
+-        serializedPayloadStore.set(id, bytes);
++        serializedPayloadStore.set(id, cloned);
+         dv(memory).setUint32(payloadOut, id, true);
+       }
+       return 0;
+@@ -747,14 +773,10 @@ export function createUnofficialNapi(ctx: UnofficialHostContext): Record<string,
+     ): number {
+       const env = envs.get(envHandle);
+       if (!env) return 1;
+-      const bytes = serializedPayloadStore.get(payloadHandle);
+-      let value: unknown = null;
+-      if (bytes) {
+-        try {
+-          const text = decoder.decode(bytes);
+-          value = text === '__edgeSerialUndefined__' ? undefined : JSON.parse(text);
+-        } catch { /* leave null */ }
+-      }
++      // `has` distinguishes "stored undefined" from "missing id".
++      const value = serializedPayloadStore.has(payloadHandle)
++        ? serializedPayloadStore.get(payloadHandle)
++        : null;
+       if (resultOut > 0) {
+         const h = context.napiValueFromJsValue(value);
+         dv(memory).setUint32(resultOut, Number(h), true);
