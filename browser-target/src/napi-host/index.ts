@@ -30,6 +30,7 @@ import {
 import { createInstanceProxy } from "./instance-proxy";
 import { createUnofficialNapi } from "./unofficial";
 import { buildMicrotaskOpsImports, createMicrotaskOpsState, installHostPromiseRejectListeners, type MicrotaskOpsState } from "./microtask-ops";
+import { createUvAsyncRuntime, type UvAsyncRuntimeWithSize } from "./uv-async";
 import type { ModuleOverride } from "../policies";
 export type { ModuleOverride };
 export type { Context, Env } from "./emnapi";
@@ -732,12 +733,30 @@ export function createNapiHost(opts: NapiHostOptions): NapiHost {
       // (to allocate that pointer).  See worker-threads-uses-js-keepalive-
       // not-tsfn in NOTES.md for why the dispatch primitive is wired but
       // the libuv-pending-handle behavior still relies on a JS keepalive.
-      (globalThis as { __edgeNapiHost?: unknown }).__edgeNapiHost = {
+      //
+      // `uvAsync` is the raw uv_async_t wasm-export wrapper used by the
+      // upcoming real-Path-A MessagePort.  Only populated when the guest
+      // exposes a malloc — without one, we can't allocate the 64B handle.
+      const uvAsync: UvAsyncRuntimeWithSize | undefined =
+        typeof wasmMallocImpl === "function"
+          ? createUvAsyncRuntime(realInstance, wasmMallocImpl)
+          : undefined;
+      (globalThis as {
+        __edgeNapiHost?: {
+          envs: Map<number, Env>;
+          context: Context;
+          imports: Record<string, Record<string, Function>>;
+          wasmMemory: WebAssembly.Memory;
+          guestMalloc?: (n: number) => number;
+          uvAsync?: UvAsyncRuntimeWithSize;
+        };
+      }).__edgeNapiHost = {
         envs,
         context,
         imports: napiModule.imports as Record<string, Record<string, Function>>,
         wasmMemory: opts.memory,
         guestMalloc: typeof wasmMallocImpl === "function" ? wasmMallocImpl : undefined,
+        uvAsync,
       };
     },
   };

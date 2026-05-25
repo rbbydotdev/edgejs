@@ -1,0 +1,8 @@
+{
+  "name": "e23-real-path-a-discovery-experiment",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "probe": "node probe.mjs"
+  }
+}
