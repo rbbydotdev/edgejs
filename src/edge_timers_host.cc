@@ -5,6 +5,7 @@
 #include "edge_environment.h"
 #include "edge_runtime.h"
 #include "edge_worker_env.h"
+#include "unofficial_napi.h"
 
 namespace {
 
@@ -108,32 +109,59 @@ double CallTimersCallback(TimersHostState* st, double now) {
   napi_value recv = nullptr;
   if (!GetProcessReceiver(st->env, &recv) || recv == nullptr) return 0;
 
-  napi_value result = nullptr;
-  napi_status call_status = napi_ok;
-  do {
-    result = nullptr;
-    call_status = EdgeMakeCallbackWithFlags(st->env,
-                                            recv,
-                                            cb,
-                                            1,
-                                            &now_value,
-                                            &result,
-                                            kEdgeMakeCallbackSkipTaskQueues);
-    if (call_status == napi_ok && result != nullptr) break;
+  // Per-timer dispatch: processTimers fires ONE timer per call and
+  // returns either a number (next-expiry — we're done) or null/undefined
+  // ("more pending — drain microtasks and re-enter"). Between iterations
+  // we yield to V8 via the wasm-only-stack Suspending import so any
+  // microtasks queued by the just-fired timer drain before the next one.
+  //
+  // Stack-safety: the call chain to this site is _start (wasm) →
+  // RunEventLoopUntilQuiescent (wasm) → uv_run (wasm/libuv) →
+  // uv__run_timers (wasm/libuv) → Environment::OnTimer (wasm/C++) →
+  // EdgeTimersHostCallTimersCallback (wasm/C++) → here. After
+  // EdgeMakeCallback returns, all JS frames have unwound — we have a
+  // wasm-only stack as JSPI v2 requires. See
+  // experiments/e29-uv-run-once/FINDINGS.md.
+  while (CanCallTimersCallback(st->env)) {
+    napi_value result = nullptr;
+    const napi_status call_status = EdgeMakeCallbackWithFlags(st->env,
+                                                              recv,
+                                                              cb,
+                                                              1,
+                                                              &now_value,
+                                                              &result,
+                                                              kEdgeMakeCallbackNone);
 
-    bool pending = false;
-    if (napi_is_exception_pending(st->env, &pending) == napi_ok && pending) {
+    if (call_status != napi_ok) {
+      bool pending = false;
+      if (napi_is_exception_pending(st->env, &pending) == napi_ok && pending) {
+        return 0;
+      }
+      // No exception, no success — bail to avoid an infinite loop.
       return 0;
     }
-  } while (result == nullptr && CanCallTimersCallback(st->env));
+    if (result == nullptr) return 0;
 
-  if (result == nullptr) return 0;
+    napi_valuetype type = napi_undefined;
+    if (napi_typeof(st->env, result, &type) != napi_ok) return 0;
 
-  double next = 0;
-  if (napi_get_value_double(st->env, result, &next) != napi_ok || !std::isfinite(next)) {
-    return 0;
+    if (type == napi_null || type == napi_undefined) {
+      // processTimers signaled "more pending" — drain V8 microtasks
+      // (wasm-only stack here) then iterate to fire the next timer.
+      const napi_status yield_status =
+          unofficial_napi_yield_for_microtasks(st->env);
+      if (yield_status != napi_ok) return 0;
+      continue;
+    }
+
+    // type is napi_number — processTimers returned the next-expiry deadline.
+    double next = 0;
+    if (napi_get_value_double(st->env, result, &next) != napi_ok || !std::isfinite(next)) {
+      return 0;
+    }
+    return next;
   }
-  return next;
+  return 0;
 }
 
 void SetMethod(napi_env env, napi_value obj, const char* name, napi_callback cb) {

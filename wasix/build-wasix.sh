@@ -40,7 +40,19 @@ optimize_wasm() {
   cp "${input}" "${output}"
 }
 
-"${PROJECT_ROOT}/wasix/setup-wasix-deps.sh"
+if [[ "${SKIP_DEPS_UPDATE:-0}" == "1" ]]; then
+  echo "SKIP_DEPS_UPDATE=1: skipping wasix/setup-wasix-deps.sh"
+elif [[ -d "${PROJECT_ROOT}/deps/libuv-wasix/.git" && -d "${PROJECT_ROOT}/deps/openssl-wasix/.git" ]]; then
+  # Deps already present — skip the fetch/checkout dance. The setup script
+  # tries `git remote set-url ... https://...` then `git fetch`, but a
+  # global `url.git@github.com:.insteadof https://github.com/` rewrite in
+  # the user's gitconfig silently undoes the HTTPS switch, causing SSH
+  # auth failures. If you actually need to update deps, run the setup
+  # script directly with SKIP_DEPS_UPDATE unset and ensure SSH is set up.
+  echo "Deps already present at ${PROJECT_ROOT}/deps/{libuv-wasix,openssl-wasix} — skipping setup. Set SKIP_DEPS_UPDATE=0 to force."
+else
+  "${PROJECT_ROOT}/wasix/setup-wasix-deps.sh"
+fi
 
 if [[ -f "${BUILD_DIR}/CMakeCache.txt" ]]; then
   rm -f "${BUILD_DIR}/CMakeCache.txt"
@@ -96,4 +108,7 @@ else
   exit 1
 fi
 
+cp "${BUILD_DIR}/edgejs.wasm" "${PROJECT_ROOT}/browser-target/edgejs.wasm"
+
 echo "Built WASIX targets at ${BUILD_DIR}/edge.wasm and ${BUILD_DIR}/edgejs.wasm"
+echo "Deployed to ${PROJECT_ROOT}/browser-target/edgejs.wasm (read by Vite/browser-test-runner)"

@@ -1,0 +1,13 @@
+diff --git a/src/edge_timers_host.cc b/src/edge_timers_host.cc
+index b1a1cb8c..b45156fc 100644
+--- a/src/edge_timers_host.cc
++++ b/src/edge_timers_host.cc
+@@ -118,7 +118,7 @@ double CallTimersCallback(TimersHostState* st, double now) {
+                                             1,
+                                             &now_value,
+                                             &result,
+-                                            kEdgeMakeCallbackSkipTaskQueues);
++                                            kEdgeMakeCallbackNone);
+     if (call_status == napi_ok && result != nullptr) break;
+ 
+     bool pending = false;
