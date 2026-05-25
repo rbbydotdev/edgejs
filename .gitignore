@@ -31,3 +31,4 @@ benchmarks/results/baselines/**/*.txt
 # Clone with: git clone --depth 1 https://github.com/toyobayashi/emnapi.git vendor/emnapi
 # See NOTES.md "vendored-emnapi-flag" for usage.
 /vendor/
+browser-target/edgejs-debug.wasm

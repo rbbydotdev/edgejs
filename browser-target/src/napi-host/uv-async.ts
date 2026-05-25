@@ -44,6 +44,7 @@ export class UvAsyncSlot {
     wasmMemory: WebAssembly.Memory,
     guestMalloc: (n: number) => number,
     cbFuncref: number,
+    loopOverride?: number,
   ) {
     this.rt = rt;
     this.wasmMemory = wasmMemory;
@@ -51,7 +52,14 @@ export class UvAsyncSlot {
     if (!this.handle) throw new Error("UvAsyncSlot: guestMalloc returned null");
     // Re-read buffer each time; memory.grow can detach prior views.
     new Uint8Array(this.wasmMemory.buffer, this.handle, UV_ASYNC_SIZE).fill(0);
-    const rc = rt.uvAsyncInit(rt.uvDefaultLoop(), this.handle, cbFuncref);
+    // e40 — register on the env's loop, not uv_default_loop().  Edge.js
+    // creates a fresh heap-allocated uv_loop_t per env (see
+    // Environment::EnsureEventLoop) and drives uv_run against THAT loop,
+    // not the default.  Registering on uv_default_loop() puts our
+    // handle on a loop nobody iterates.  See
+    // experiments/e40-cpp-debugger/FINDINGS.md.
+    const loop = loopOverride && loopOverride > 0 ? loopOverride : rt.uvDefaultLoop();
+    const rc = rt.uvAsyncInit(loop, this.handle, cbFuncref);
     if (rc !== 0) throw new Error(`uv_async_init failed: rc=${rc}`);
   }
 
@@ -99,6 +107,38 @@ export function createUvAsyncRuntime(
     if (host?.wasmMemory) return host.wasmMemory;
     throw new Error("uv-async: WebAssembly.Memory not resolvable (no exp.memory, no __edgeNapiHost.wasmMemory)");
   };
+  // e40+ — resolve the env's loop pointer via napi_get_uv_event_loop
+  // and cache it.  Edge.js's Environment::EnsureEventLoop allocates a
+  // fresh uv_loop_t per env (not uv_default_loop), and uv_run is driven
+  // against THAT loop.  Our keepalive must register handles on the same
+  // loop, else uv_run sees an empty loop and exits immediately.
+  //
+  // Called lazily on first acquireSlot — the env may not exist yet at
+  // createUvAsyncRuntime time (env creation happens via the wasm
+  // `unofficial_napi_create_env` call which publishes `__edgeNapiHost.envHandle`).
+  const napiGetUvEventLoop = exp.napi_get_uv_event_loop as
+    | ((env: number, loopOut: number) => number)
+    | undefined;
+  let cachedEnvLoop = 0;
+  const resolveEnvLoop = (): number => {
+    if (cachedEnvLoop > 0) return cachedEnvLoop;
+    if (typeof napiGetUvEventLoop !== "function") return 0;
+    const host = (globalThis as { __edgeNapiHost?: { envHandle?: number } }).__edgeNapiHost;
+    const envHandle = host?.envHandle;
+    if (!envHandle || envHandle <= 0) return 0;
+    // Use a tiny scratch alloc for the uv_loop_t* output parameter.
+    const outPtr = guestMalloc(4);
+    if (!outPtr) return 0;
+    const rc = napiGetUvEventLoop(envHandle, outPtr);
+    if (rc !== 0) return 0;
+    const mem = (exp.memory as WebAssembly.Memory | undefined)
+      ?? (globalThis as { __edgeNapiHost?: { wasmMemory?: WebAssembly.Memory } }).__edgeNapiHost?.wasmMemory;
+    if (!mem) return 0;
+    const loopPtr = new DataView(mem.buffer).getUint32(outPtr, true);
+    cachedEnvLoop = loopPtr;
+    return loopPtr;
+  };
+
   const rt: UvAsyncRuntimeWithSize = {
     uvDefaultLoop: bind("uv_default_loop") as () => number,
     uvAsyncInit: bind("uv_async_init"),
@@ -108,7 +148,8 @@ export function createUvAsyncRuntime(
     uvUnref: (handle) => void bind("uv_unref")(handle),
     uvHandleSize: bind("uv_handle_size"),
     acquireSlot(cbFuncref: number): UvAsyncSlot {
-      return new UvAsyncSlot(rt, resolveMemory(), guestMalloc, cbFuncref);
+      const envLoop = resolveEnvLoop();
+      return new UvAsyncSlot(rt, resolveMemory(), guestMalloc, cbFuncref, envLoop);
     },
   };
   return rt;

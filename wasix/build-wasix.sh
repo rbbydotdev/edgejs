@@ -33,7 +33,14 @@ optimize_wasm() {
   local input="$1"
   local output="$2"
   if command -v wasm-opt >/dev/null 2>&1; then
-    wasm-opt --emit-exnref -o "${output}" "${input}"
+    # EDGE_DEBUG_BUILD=1 preserves DWARF debug info through wasm-opt so
+    # Chrome DevTools can step through C++ source.  Default-on strips
+    # debug info for the production-shape wasm.
+    local wasm_opt_args="--emit-exnref"
+    if [[ "${EDGE_DEBUG_BUILD:-0}" == "1" ]]; then
+      wasm_opt_args="-g --emit-exnref"
+    fi
+    wasm-opt ${wasm_opt_args} -o "${output}" "${input}"
     return
   fi
   echo "warning: wasm-opt not found in PATH; copying ${input} to ${output}" >&2
@@ -82,6 +89,20 @@ if [[ ! -f "${OPENSSL_WASIX_DIR}/libcrypto.a" || ! -f "${OPENSSL_WASIX_DIR}/libs
   )
 fi
 
+# EDGE_DEBUG_BUILD=1: build with DWARF debug info into a SEPARATE
+# build dir so prod + debug coexist.  Used by Chrome DevTools wasm
+# debugging — see experiments/e40-cpp-debugger/README.md.
+EDGE_DEBUG_BUILD_CMAKE_ARGS=()
+if [[ "${EDGE_DEBUG_BUILD:-0}" == "1" ]]; then
+  BUILD_DIR="${PROJECT_ROOT}/build-wasix-debug"
+  EDGE_DEBUG_BUILD_CMAKE_ARGS=(
+    -DCMAKE_BUILD_TYPE=Debug
+    -DCMAKE_C_FLAGS_DEBUG="-g3 -O0"
+    -DCMAKE_CXX_FLAGS_DEBUG="-g3 -O0"
+  )
+  echo "EDGE_DEBUG_BUILD=1: building with DWARF debug info into ${BUILD_DIR}"
+fi
+
 cmake \
   -S "${PROJECT_ROOT}" \
   -B "${BUILD_DIR}" \
@@ -93,7 +114,8 @@ cmake \
   -DCMAKE_TOOLCHAIN_FILE="${TOOLCHAIN_FILE}" \
   -DEDGE_NAPI_PROVIDER=imports \
   -DEDGE_BUILD_CLI=ON \
-  -DBUILD_TESTING=OFF
+  -DBUILD_TESTING=OFF \
+  "${EDGE_DEBUG_BUILD_CMAKE_ARGS[@]}"
 
 cmake --build "${BUILD_DIR}" -j4
 
@@ -108,7 +130,15 @@ else
   exit 1
 fi
 
-cp "${BUILD_DIR}/edgejs.wasm" "${PROJECT_ROOT}/browser-target/edgejs.wasm"
-
-echo "Built WASIX targets at ${BUILD_DIR}/edge.wasm and ${BUILD_DIR}/edgejs.wasm"
-echo "Deployed to ${PROJECT_ROOT}/browser-target/edgejs.wasm (read by Vite/browser-test-runner)"
+# Deploy: debug build goes to edgejs-debug.wasm so prod isn't disturbed.
+# Production build goes to the default edgejs.wasm.
+if [[ "${EDGE_DEBUG_BUILD:-0}" == "1" ]]; then
+  cp "${BUILD_DIR}/edgejs.wasm" "${PROJECT_ROOT}/browser-target/edgejs-debug.wasm"
+  echo "Built WASIX targets at ${BUILD_DIR}/edge.wasm and ${BUILD_DIR}/edgejs.wasm"
+  echo "Deployed DEBUG build to ${PROJECT_ROOT}/browser-target/edgejs-debug.wasm"
+  echo "Use scripts/debug-runner.mjs to launch Chrome with DevTools attached."
+else
+  cp "${BUILD_DIR}/edgejs.wasm" "${PROJECT_ROOT}/browser-target/edgejs.wasm"
+  echo "Built WASIX targets at ${BUILD_DIR}/edge.wasm and ${BUILD_DIR}/edgejs.wasm"
+  echo "Deployed to ${PROJECT_ROOT}/browser-target/edgejs.wasm (read by Vite/browser-test-runner)"
+fi

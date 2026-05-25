@@ -128,73 +128,54 @@ function __edgeParsePortMsgPayload(controlBytes) {
 // experiments/e23-real-path-a-discovery/FINDINGS.md (Q4) for the
 // NULL-cb confirmation.
 //
-// Resolves #!~debt worker-threads-uses-js-keepalive-not-tsfn (Path A
-// shipped 2026-05-25 via real uv_async_t).
-// Keepalive — two-layer design (e34+ task #19 root-causing the
-// previous uv_async_t-only approach):
+// Keepalive — Real Path A: pure uv_async_t handle (cb=NULL).  No
+// heartbeats.  uv_ref makes the handle pending on the env's libuv
+// loop; uv_run blocks in poll_oneoff until either (a) the host calls
+// slot.send() — which writes 1 byte to the async pipe wfd →
+// wasi-shim's pipeRegistry bumps the wake counter → poll_oneoff's
+// race-of-waiters resolves and the loop iterates — or (b) the
+// keepalive is released (slot.close()).
 //
-//   1. setInterval(100ms) — uv_timer_t pending handle that uv_run
-//      reliably treats as keeping the loop alive.  This is the proven
-//      keepalive primitive Node itself uses.  Investigation found that
-//      uv_async_t with NULL callback does NOT reliably keep uv_run
-//      from returning in our wasi/wasix libuv build (loop quiescence
-//      check appears to skip async handles when there's nothing else
-//      pending), so the prior path silently let the child exit despite
-//      a registered message listener.
+// e40 (2026-05-26) ROOT-CAUSED the prior failure: acquireSlot was
+// registering the handle on uv_default_loop() while edge.js's
+// Environment uses a fresh heap-allocated uv_loop_t per env (see
+// Environment::EnsureEventLoop in src/edge_environment.cc).
+// Different loops → keepalive engaged on a loop nobody iterates →
+// _start exits in ~140ms despite alive=1 on the wrong loop.  Fixed
+// in uv-async.ts: acquireSlot now resolves the env's loop via
+// napi_get_uv_event_loop and registers handles there.  See
+// experiments/e40-cpp-debugger/FINDINGS.md.
 //
-//   2. uv_async_t slot (kept, OPTIONAL) — gives ~O(0) wake latency
-//      when a cross-worker message arrives mid-tick.  Reverse-RPC
-//      handler in worker.ts calls slot.send() which interrupts
-//      poll_oneoff via uv_async_send's pipe write.  If acquireSlot
-//      fails or isn't available, the setInterval tick (≤100ms) is
-//      the fallback wake.  Correctness doesn't depend on the slot
-//      working; only latency does.
+// Resolves #!~debt worker-threads-uses-js-keepalive-not-tsfn.
 const KEEPALIVE_HELPER_JS = `
 function makeKeepalive() {
-  var timerHandle = null;       // setInterval id — the actual loop keepalive
-  var slot = null;              // uv_async_t for low-latency wake
+  var handle = null;
   function uvAsync() {
     var h = (typeof globalThis !== 'undefined') ? globalThis.__edgeNapiHost : null;
     return (h && h.uvAsync) ? h.uvAsync : null;
   }
   return {
     ensure: function() {
-      if (timerHandle === null) {
-        timerHandle = setInterval(function() {}, 100);
+      if (handle !== null) return;
+      var rt = uvAsync();
+      if (!rt || typeof rt.acquireSlot !== 'function') {
+        throw new Error('worker-threads keepalive: __edgeNapiHost.uvAsync unavailable');
       }
-      // Best-effort slot for low-latency wake-up.  If unavailable,
-      // setInterval still provides correctness (up to 100ms latency).
-      if (slot === null) {
-        var rt = uvAsync();
-        if (rt && typeof rt.acquireSlot === 'function') {
-          try { slot = rt.acquireSlot(0); slot.ref(); }
-          catch (e) { void e; slot = null; }
-        }
-      }
+      handle = rt.acquireSlot(0);  // cb=NULL (libuv skips dispatch)
+      handle.ref();
     },
     release: function() {
-      if (timerHandle !== null) {
-        try { clearInterval(timerHandle); } catch (e) { void e; }
-        timerHandle = null;
-      }
-      if (slot !== null) {
-        try { slot.unref(); } catch (e) { void e; }
-        try { slot.close(); } catch (e) { void e; }
-        slot = null;
-      }
+      if (handle === null) return;
+      try { handle.unref(); } catch (e) { void e; }
+      try { handle.close(); } catch (e) { void e; }
+      handle = null;
     },
-    slot: function() { return slot; },
-    ref: function() {
-      if (timerHandle === null) timerHandle = setInterval(function() {}, 100);
-      if (slot !== null) { try { slot.ref(); } catch (e) { void e; } }
-    },
-    unref: function() {
-      if (timerHandle !== null) {
-        try { clearInterval(timerHandle); } catch (e) { void e; }
-        timerHandle = null;
-      }
-      if (slot !== null) { try { slot.unref(); } catch (e) { void e; } }
-    },
+    // Expose the slot so the reverse-RPC dispatcher in worker.ts can
+    // call .send() to wake poll_oneoff the moment an inbound
+    // cross-context message arrives.
+    slot: function() { return handle; },
+    ref: function() { if (handle !== null) { try { handle.ref(); } catch (e) { void e; } } },
+    unref: function() { if (handle !== null) { try { handle.unref(); } catch (e) { void e; } } },
   };
 }
 `;

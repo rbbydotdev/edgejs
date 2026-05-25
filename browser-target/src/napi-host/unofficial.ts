@@ -327,6 +327,20 @@ export function createUnofficialNapi(ctx: UnofficialHostContext): Record<string,
       const envHandle = envBridgeAddress !== undefined ? envBridgeAddress : Number(env.id);
       envs.set(envHandle, env);
 
+      // e40+ — publish the envHandle so the policy's uv_async_t
+      // keepalive can fetch the env's loop pointer (via
+      // napi_get_uv_event_loop) and register handles there instead
+      // of on uv_default_loop().  edge.js's Environment::EnsureEventLoop
+      // creates a fresh heap-allocated uv_loop_t per env (not the
+      // default loop), so registering on uv_default_loop() puts our
+      // keepalive on the WRONG loop and uv_run sees an empty loop.
+      // See experiments/e40-cpp-debugger/FINDINGS.md.
+      (globalThis as { __edgeNapiHost?: { envHandle?: number } }).__edgeNapiHost =
+        Object.assign(
+          (globalThis as { __edgeNapiHost?: object }).__edgeNapiHost ?? {},
+          { envHandle },
+        );
+
       const scope = context.openScope(env);
       scopeToEnv.set(Number(scope.id), envHandle);
 
