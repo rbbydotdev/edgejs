@@ -1,0 +1,8 @@
+received_truthy:PASS
+received_not_same_ref_as_source:PASS
+received_payload_not_same_ref:PASS
+received_self_cycle_preserved:PASS
+received_tag_copied:PASS
+received_payload_count:PASS
+source_tag_unaffected:PASS
+source_payload_unaffected:PASS

@@ -130,37 +130,71 @@ function __edgeParsePortMsgPayload(controlBytes) {
 //
 // Resolves #!~debt worker-threads-uses-js-keepalive-not-tsfn (Path A
 // shipped 2026-05-25 via real uv_async_t).
+// Keepalive — two-layer design (e34+ task #19 root-causing the
+// previous uv_async_t-only approach):
+//
+//   1. setInterval(100ms) — uv_timer_t pending handle that uv_run
+//      reliably treats as keeping the loop alive.  This is the proven
+//      keepalive primitive Node itself uses.  Investigation found that
+//      uv_async_t with NULL callback does NOT reliably keep uv_run
+//      from returning in our wasi/wasix libuv build (loop quiescence
+//      check appears to skip async handles when there's nothing else
+//      pending), so the prior path silently let the child exit despite
+//      a registered message listener.
+//
+//   2. uv_async_t slot (kept, OPTIONAL) — gives ~O(0) wake latency
+//      when a cross-worker message arrives mid-tick.  Reverse-RPC
+//      handler in worker.ts calls slot.send() which interrupts
+//      poll_oneoff via uv_async_send's pipe write.  If acquireSlot
+//      fails or isn't available, the setInterval tick (≤100ms) is
+//      the fallback wake.  Correctness doesn't depend on the slot
+//      working; only latency does.
 const KEEPALIVE_HELPER_JS = `
 function makeKeepalive() {
-  // Real Path A only: uv_async_t with NULL callback.  ref() makes it
-  // a pending handle in libuv's loop; uv_async_send wakes poll_oneoff.
-  var handle = null;
+  var timerHandle = null;       // setInterval id — the actual loop keepalive
+  var slot = null;              // uv_async_t for low-latency wake
   function uvAsync() {
     var h = (typeof globalThis !== 'undefined') ? globalThis.__edgeNapiHost : null;
     return (h && h.uvAsync) ? h.uvAsync : null;
   }
   return {
     ensure: function() {
-      if (handle !== null) return;
-      var rt = uvAsync();
-      if (!rt || typeof rt.acquireSlot !== 'function') {
-        throw new Error('worker-threads keepalive: __edgeNapiHost.uvAsync unavailable');
+      if (timerHandle === null) {
+        timerHandle = setInterval(function() {}, 100);
       }
-      handle = rt.acquireSlot(0);
-      handle.ref();
+      // Best-effort slot for low-latency wake-up.  If unavailable,
+      // setInterval still provides correctness (up to 100ms latency).
+      if (slot === null) {
+        var rt = uvAsync();
+        if (rt && typeof rt.acquireSlot === 'function') {
+          try { slot = rt.acquireSlot(0); slot.ref(); }
+          catch (e) { void e; slot = null; }
+        }
+      }
     },
     release: function() {
-      if (handle === null) return;
-      try { handle.unref(); } catch (e) { void e; }
-      try { handle.close(); } catch (e) { void e; }
-      handle = null;
+      if (timerHandle !== null) {
+        try { clearInterval(timerHandle); } catch (e) { void e; }
+        timerHandle = null;
+      }
+      if (slot !== null) {
+        try { slot.unref(); } catch (e) { void e; }
+        try { slot.close(); } catch (e) { void e; }
+        slot = null;
+      }
     },
-    // Expose the slot so the reverse-RPC dispatcher in worker.ts can
-    // call .send() to wake poll_oneoff immediately when an inbound
-    // cross-context message arrives.
-    slot: function() { return handle; },
-    ref: function() { if (handle !== null) { try { handle.ref(); } catch (e) { void e; } } },
-    unref: function() { if (handle !== null) { try { handle.unref(); } catch (e) { void e; } } },
+    slot: function() { return slot; },
+    ref: function() {
+      if (timerHandle === null) timerHandle = setInterval(function() {}, 100);
+      if (slot !== null) { try { slot.ref(); } catch (e) { void e; } }
+    },
+    unref: function() {
+      if (timerHandle !== null) {
+        try { clearInterval(timerHandle); } catch (e) { void e; }
+        timerHandle = null;
+      }
+      if (slot !== null) { try { slot.unref(); } catch (e) { void e; } }
+    },
   };
 }
 `;
@@ -183,11 +217,29 @@ const PRE_PATCH = `
   try { binding = internalBinding('worker'); } catch (e) { void e; return; }
   if (!binding || typeof binding.Worker !== 'function') return;
 
-  // Phase 1 exit-dispatcher (carried forward).
-  // Phase 3c (e33+): dispatcher now accepts an optional errorBytes
-  // third arg.  When present, an unpacked Error object is emitted on
-  // the Worker as 'error' BEFORE the 'exit' callback fires — matches
-  // Node's documented event order.
+  // Exit dispatcher.  Two independent paths fire 'error' on a Worker,
+  // covering distinct failure modes — they never both fire for the
+  // same incident:
+  //
+  //   A. JS-level throw in user code (sync OR async):
+  //      → fix #1 wrapper / process.on(uncaughtException) handler
+  //      → __edgePostControlFromWorker(WORKER_ERROR, ...)
+  //      → parent's __edgeDispatchControlFromChild emits 'error'
+  //      → child calls process.exit(1); exit channel carries
+  //        exitCode=1, errorBytes=null
+  //      → THIS dispatcher emits only 'exit' (errorBytes null).
+  //
+  //   B. Wasm-level throw (wasm trap, ExitSignal-less abort):
+  //      → worker.ts catches in the host wrapper around _start, packs
+  //        threwMsg into errorBytes, posts user-worker-exit message
+  //      → THIS dispatcher receives errorBytes != null, emits
+  //        'error' first (the Error reconstructed from the packed
+  //        info) then 'exit'.  No control envelope is involved
+  //        because wasm is already dead by the time host catches.
+  //
+  // The two paths are not consolidatable without restructuring the
+  // host-side exit reporting to call into wasm again (which can't
+  // happen — wasm is dead in case B).
   if (typeof globalThis.__edgeDispatchUserWorkerExit !== 'function') {
     var exitMap = new Map();
     var disp = function(workerId, code, errorBytes) {
@@ -261,20 +313,32 @@ const PRE_PATCH = `
     }
     // e34+ task #11: top-level sync throws used to be eaten by edge.js's
     // -e evaluator (exit 0, no 'error').  Wrap the user bootstrap with
-    // a try/catch that sends a WORKER_ERROR control envelope to the
-    // parent and exits non-zero — same shape the policy's
-    // uncaughtException handler uses, but works WITHOUT depending on
-    // require('worker_threads') having run first (user code may throw
-    // before reaching that require).
+    // a try/catch that mirrors Node's spec order:
     //
-    // The wrapper does its own __edgePackPostMessage / control send
-    // rather than emitting 'uncaughtException', so it works in either
-    // ordering.  If require('worker_threads') WAS reached, the policy's
-    // uncaughtException handler is also installed — but since this
-    // wrapper catches BEFORE the throw propagates to V8's uncaught
-    // path, only one error fires (this wrapper's).
+    //   1. Re-emit uncaughtException on process so user-installed
+    //      handlers run FIRST (Node-spec ordering — handlers can recover
+    //      OR log before the worker dies).
+    //   2. If no handler suppressed the error, send WORKER_ERROR control
+    //      envelope to the parent (lights up worker.on('error')).
+    //   3. process.exit(1).
+    //
+    // Re-emission uses process.emit so the policy's own
+    // uncaughtException handler in WORKER_THREADS_POST_PATCH also fires,
+    // BUT we de-dupe by setting a sentinel BEFORE emitting — the
+    // policy handler checks the sentinel and skips if set.  This way
+    // user handlers run, the policy doesn't double-send, and our
+    // wrapper handles the parent notify + exit consistently.
+    //
+    // Works WITHOUT depending on require('worker_threads') having run
+    // first (user code may throw before reaching that require).
     var wrappedBootstrap =
       'try {\\n' + userBootstrap + '\\n} catch (__edgeBootErr) {\\n' +
+      '  try { globalThis.__edgeSyncThrowInFlight = true; } catch (__e) { void __e; }\\n' +
+      '  try {\\n' +
+      '    if (typeof process !== "undefined" && typeof process.emit === "function") {\\n' +
+      '      process.emit("uncaughtException", __edgeBootErr);\\n' +
+      '    }\\n' +
+      '  } catch (__edgeEmitErr) { void __edgeEmitErr; }\\n' +
       '  try {\\n' +
       '    var __k = globalThis.__edgePmKind ? globalThis.__edgePmKind.WORKER_ERROR : 0x03;\\n' +
       '    var __info = {\\n' +
@@ -288,6 +352,7 @@ const PRE_PATCH = `
       '      globalThis.__edgePostControlFromWorker(__k, __b);\\n' +
       '    }\\n' +
       '  } catch (__edgeSendErr) { void __edgeSendErr; }\\n' +
+      '  try { globalThis.__edgeSyncThrowInFlight = false; } catch (__e2) { void __e2; }\\n' +
       '  try { process.exit(1); } catch (__edgeExitErr) { void __edgeExitErr; throw __edgeBootErr; }\\n' +
       '}';
     var bootstrapScript = wrappedBootstrap;
@@ -1175,11 +1240,19 @@ ${CONTROL_HELPERS_JS}
   // __edgeWorkerError tag handled symmetrically with __edgeWorkerTerminate.
   if (typeof process !== 'undefined' && typeof process.on === 'function') {
     var sendErrorAndExit = function(err) {
+      // e34+ task #16 (fix #1) de-dupe: the EdgeWorkerImpl bootstrap
+      // wrapper handles top-level sync throws by:
+      //   1. setting __edgeSyncThrowInFlight = true
+      //   2. emitting 'uncaughtException' so user handlers run
+      //   3. sending WORKER_ERROR + process.exit(1) itself
+      // If THIS handler fires from that re-emit, the wrapper has
+      // already queued the WORKER_ERROR + exit — skip to avoid double
+      // emit on the parent's worker.on('error').  Async throws clear
+      // this sentinel (it's set/cleared synchronously around the
+      // sync-throw path), so async uncaughtException still routes
+      // through here normally.
+      if (globalThis.__edgeSyncThrowInFlight === true) return;
       try {
-        // e34+ spoof-proof control envelope: error info goes out as
-        // KIND_WORKER_ERROR (kind=0x03) with marshaled {name, message,
-        // stack} payload.  Parent's control dispatcher reconstructs an
-        // Error and emits it on the Worker.
         var errInfo = {
           name: (err && err.name) || 'Error',
           message: (err && err.message) || String(err),

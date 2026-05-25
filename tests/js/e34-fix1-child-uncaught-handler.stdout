@@ -1,0 +1,6 @@
+handler_ran_in_child:PASS
+handler_saw_correct_error:PASS
+handler_saw_message:PASS
+parent_error_fired:PASS
+parent_error_message:PASS
+exit_code_one:PASS

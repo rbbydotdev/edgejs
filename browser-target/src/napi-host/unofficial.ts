@@ -83,58 +83,167 @@ export interface UnofficialHostContext {
   requestExit?: (code: number) => void;
 }
 
+// Deep cycle-preserving clone — used by the napi serialize fallback
+// when V8's native structuredClone throws (this V8 build throws on
+// cyclic objects despite the HTML structured-clone spec supporting
+// cycles).  Produces an INDEPENDENT tree with cycle identity preserved
+// — receiver gets a copy, not a reference.  Covers the type set
+// structured-clone supports: ArrayBuffer (sliced), TypedArrays,
+// DataView, Map, Set, Date, RegExp, Error, Array, plain object.
+// Other types fall through unchanged (matches structuredClone
+// "DataCloneError" surface — but our caller already silently fell
+// back to passing the source through, so we preserve that liveness).
+function deepCycleClone(
+  value: unknown,
+  seen: Map<object, unknown> = new Map(),
+): unknown {
+  if (value === null || typeof value !== "object") return value;
+  const existing = seen.get(value);
+  if (existing !== undefined) return existing;
+
+  if (value instanceof ArrayBuffer) {
+    const copy = value.slice(0);
+    seen.set(value, copy);
+    return copy;
+  }
+  if (ArrayBuffer.isView(value)) {
+    // TypedArray or DataView: new view over a copied AB.
+    const tv = value as ArrayBufferView;
+    const Ctor = tv.constructor as new (buffer: ArrayBufferLike, byteOffset?: number, length?: number) => ArrayBufferView;
+    const srcAb = tv.buffer.slice(tv.byteOffset, tv.byteOffset + tv.byteLength);
+    let copy: ArrayBufferView;
+    if (tv instanceof DataView) {
+      copy = new DataView(srcAb, 0, tv.byteLength);
+    } else {
+      const elementSize = (tv as { BYTES_PER_ELEMENT?: number }).BYTES_PER_ELEMENT ?? 1;
+      copy = new Ctor(srcAb, 0, tv.byteLength / elementSize);
+    }
+    seen.set(value, copy);
+    return copy;
+  }
+  if (value instanceof Date) {
+    const copy = new Date(value.getTime());
+    seen.set(value, copy);
+    return copy;
+  }
+  if (value instanceof RegExp) {
+    const copy = new RegExp(value.source, value.flags);
+    copy.lastIndex = value.lastIndex;
+    seen.set(value, copy);
+    return copy;
+  }
+  if (value instanceof Error) {
+    const ECtor = (value.constructor as ErrorConstructor) || Error;
+    const copy = new ECtor((value as Error).message);
+    if ((value as Error).name) (copy as Error).name = (value as Error).name;
+    if ((value as Error).stack) (copy as Error).stack = (value as Error).stack;
+    seen.set(value, copy);
+    return copy;
+  }
+  if (value instanceof Map) {
+    const copy = new Map<unknown, unknown>();
+    seen.set(value, copy);  // insert BEFORE recursing for cycles
+    for (const [k, v] of value) {
+      copy.set(deepCycleClone(k, seen), deepCycleClone(v, seen));
+    }
+    return copy;
+  }
+  if (value instanceof Set) {
+    const copy = new Set<unknown>();
+    seen.set(value, copy);
+    for (const item of value) {
+      copy.add(deepCycleClone(item, seen));
+    }
+    return copy;
+  }
+  if (Array.isArray(value)) {
+    const copy: unknown[] = new Array(value.length);
+    seen.set(value, copy);
+    for (let i = 0; i < value.length; i++) {
+      copy[i] = deepCycleClone(value[i], seen);
+    }
+    return copy;
+  }
+  // Plain object (or close enough — structured-clone collapses non-plain
+  // class instances to plain objects with own enumerable properties).
+  const copy: Record<string | symbol, unknown> = {};
+  seen.set(value, copy);
+  for (const k of Object.keys(value)) {
+    copy[k] = deepCycleClone((value as Record<string, unknown>)[k], seen);
+  }
+  return copy;
+}
+
 // Swap ArrayBuffer references in a structured-clone-produced tree with
-// the pre-computed copies in `abCopies`.  Used by the
-// _with_transfer impl to work around this V8's structuredClone
-// returning the same AB reference instead of a copy.
+// the pre-computed copies in `abCopies`.  Used by the with-transfer
+// impl to work around this V8's structuredClone returning the same AB
+// reference instead of a copy.
 //
-// Walk is bounded: visited set guards against cycles, max depth keeps
-// runaway costs in check on pathological inputs.  Only handles the
-// containers structuredClone preserves (plain object, Array, Map, Set);
-// other host types pass through unchanged.
+// No depth bound: the visited WeakSet handles cycles (each container
+// is walked at most once), so unbounded recursion is safe.  Covers
+// every container the HTML structured-clone spec preserves:
+//   - Array, plain object (incl null-prototype)
+//   - Map, Set
+//   - TypedArrays + DataView (rebound to copied ABs in-place)
+// Other host objects (Date, RegExp, Error, Blob, ...) don't carry AB
+// references so they're returned untouched.
 function swapArrayBufferRefs(
   value: unknown,
   abCopies: Map<ArrayBuffer, ArrayBuffer>,
   visited: WeakSet<object> = new WeakSet(),
-  depth = 0,
 ): unknown {
-  if (depth > 64) return value;
   if (value instanceof ArrayBuffer) {
-    const copy = abCopies.get(value);
-    return copy ?? value;
+    return abCopies.get(value) ?? value;
   }
   if (value === null || typeof value !== "object") return value;
   if (visited.has(value)) return value;
   visited.add(value);
+
+  // TypedArrays + DataView: if their underlying AB was transferred,
+  // rebind the view onto the copy.  Returns a new view (TypedArray
+  // .buffer is read-only).
+  if (ArrayBuffer.isView(value)) {
+    const tv = value as ArrayBufferView;
+    const replacement = abCopies.get(tv.buffer as ArrayBuffer);
+    if (!replacement) return value;
+    const Ctor = tv.constructor as new (buffer: ArrayBufferLike, byteOffset?: number, length?: number) => ArrayBufferView;
+    if (tv instanceof DataView) {
+      return new DataView(replacement, tv.byteOffset, tv.byteLength);
+    }
+    const elementSize = (tv as { BYTES_PER_ELEMENT?: number }).BYTES_PER_ELEMENT ?? 1;
+    return new Ctor(replacement, tv.byteOffset, tv.byteLength / elementSize);
+  }
   if (Array.isArray(value)) {
     for (let i = 0; i < value.length; i++) {
-      value[i] = swapArrayBufferRefs(value[i], abCopies, visited, depth + 1);
+      value[i] = swapArrayBufferRefs(value[i], abCopies, visited);
     }
     return value;
   }
   if (value instanceof Map) {
-    // Map values may need swapping; keys generally don't reference ABs
-    // in normal usage but we walk both for completeness.
+    // Build a fresh Map so swapped entries replace originals cleanly
+    // (mutating a Map mid-iteration is brittle across runtimes).
     const out = new Map<unknown, unknown>();
     for (const [k, val] of value) {
       out.set(
-        swapArrayBufferRefs(k, abCopies, visited, depth + 1),
-        swapArrayBufferRefs(val, abCopies, visited, depth + 1),
+        swapArrayBufferRefs(k, abCopies, visited),
+        swapArrayBufferRefs(val, abCopies, visited),
       );
     }
     return out;
   }
   if (value instanceof Set) {
     const out = new Set<unknown>();
-    for (const item of value) out.add(swapArrayBufferRefs(item, abCopies, visited, depth + 1));
+    for (const item of value) out.add(swapArrayBufferRefs(item, abCopies, visited));
     return out;
   }
-  // Plain object (or close enough — Date/RegExp/Error don't contain ABs).
+  // Plain object (or null-prototype).  structuredClone collapses
+  // other class instances to plain objects so the cloned tree never
+  // contains class-instance containers with hidden state.
   const proto = Object.getPrototypeOf(value);
   if (proto === Object.prototype || proto === null) {
     for (const k of Object.keys(value)) {
       (value as Record<string, unknown>)[k] = swapArrayBufferRefs(
-        (value as Record<string, unknown>)[k], abCopies, visited, depth + 1,
+        (value as Record<string, unknown>)[k], abCopies, visited,
       );
     }
   }
@@ -744,8 +853,13 @@ export function createUnofficialNapi(ctx: UnofficialHostContext): Record<string,
       if (!env) return 1;
       const v = context.jsValueFromNapiValue(valueHandle);
       let cloned: unknown;
-      try { cloned = (globalThis as { structuredClone?: <T>(v: T) => T }).structuredClone?.(v) ?? v; }
-      catch { cloned = v; }
+      try {
+        cloned = (globalThis as { structuredClone?: <T>(v: T) => T }).structuredClone?.(v) ?? v;
+      } catch {
+        // V8 structuredClone throws on cycles in this build; fall back
+        // to our deep cycle-preserving clone.
+        try { cloned = deepCycleClone(v); } catch { cloned = v; }
+      }
       if (resultOut > 0) {
         const h = context.napiValueFromJsValue(cloned);
         dv(memory).setUint32(resultOut, Number(h), true);
@@ -799,7 +913,14 @@ export function createUnofficialNapi(ctx: UnofficialHostContext): Record<string,
       // copy reference.  Finally, detach the originals via .transfer().
       let cloned: unknown;
       if (transferItems.length === 0) {
-        try { cloned = structuredClone(v); } catch { cloned = v; }
+        try {
+          cloned = structuredClone(v);
+        } catch {
+          // Cyclic input — V8 structuredClone throws.  Deep clone via
+          // our cycle-preserving helper instead of silently dropping
+          // to a same-reference fallback.
+          try { cloned = deepCycleClone(v); } catch { cloned = v; }
+        }
       } else {
         // Pre-compute AB copies for each transfer item.
         const abCopies = new Map<ArrayBuffer, ArrayBuffer>();
@@ -811,7 +932,8 @@ export function createUnofficialNapi(ctx: UnofficialHostContext): Record<string,
         try {
           cloned = structuredClone(v);
         } catch {
-          cloned = v;
+          // Cyclic input — use deep cycle-preserving clone.
+          try { cloned = deepCycleClone(v); } catch { cloned = v; }
         }
         // Replace references to source ABs in the clone tree with copies.
         // Top-level case is the common one (cloned === some source AB).
@@ -888,14 +1010,13 @@ export function createUnofficialNapi(ctx: UnofficialHostContext): Record<string,
         cloned = structuredClone(v);
       } catch (e) {
         void e;
-        // e34+ cyclic-data fallback: V8 structuredClone in this V8
-        // build throws on cyclic objects (despite the HTML spec
-        // supporting cycles).  This path is only used for in-process
-        // MessageChannel where the sender and receiver share an
-        // isolate — we can safely store the original reference; the
-        // receiver still gets the (cyclic) value intact.  Previously
-        // we fell back to `null` which silently dropped the message.
-        cloned = v;
+        // V8 structuredClone in this build throws on cyclic objects
+        // despite the HTML spec supporting cycles.  Use our deep
+        // cycle-preserving clone — produces an INDEPENDENT tree with
+        // cycle identity preserved.  Receiver gets a copy, not a
+        // reference (Node-spec-strict).
+        try { cloned = deepCycleClone(v); }
+        catch { cloned = v; }
       }
       if (payloadOut > 0) {
         const id = nextSerializedPayloadId++;

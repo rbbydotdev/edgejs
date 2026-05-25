@@ -20,18 +20,19 @@ let receivedMessage = null;
 let receivedError = null;
 let receivedExit = null;
 
-// Use a manual setInterval keepalive in the child to sidestep a
-// pre-existing flake in the policy's parentPort.on('message')
-// keepalive ensure() path (separate from this test's concerns).
+// Child relies on the policy's parentPort.on('message') keepalive —
+// fix #19 (task #19) switched the keepalive to setInterval-based
+// uv_timer_t so registering a message listener now reliably holds the
+// loop open per Node spec.  No manual setInterval needed.
 const childCode = `
   var wt = require('worker_threads');
-  var keepalive = setInterval(function() {}, 100);
   wt.parentPort.on('message', function(m) {
     // Echo the message right back so the parent can confirm the value
     // round-tripped intact AND that the child did NOT terminate
     // (which would happen if __edgeWorkerTerminate was misinterpreted).
     wt.parentPort.postMessage({ echoed: m, alive: true });
-    clearInterval(keepalive);
+    // Remove listener so the loop can drain naturally.
+    wt.parentPort.removeAllListeners('message');
   });
 `;
 
