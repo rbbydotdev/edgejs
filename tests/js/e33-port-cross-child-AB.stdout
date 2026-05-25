@@ -1,0 +1,6 @@
+stub_to_parent:PASS
+origin_is_A:PASS
+forwardedTo_B:PASS
+A_received_B_via_direct:PASS
+A_exit_0:PASS
+B_exit_0:PASS

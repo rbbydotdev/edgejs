@@ -1,0 +1,7 @@
+stub_at_parent:PASS
+origin_is_A:PASS
+parent_forwardedTo_B:PASS
+A_received_C_via_chain:PASS
+A_exit_0:PASS
+B_exit_0:PASS
+C_exit_0:PASS

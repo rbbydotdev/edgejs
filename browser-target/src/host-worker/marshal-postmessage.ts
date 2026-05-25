@@ -67,6 +67,15 @@ function makeDataCloneError(msg: string): Error {
   return e;
 }
 
+/** Result returned by an `assignPortId` callback.  A bare number
+ *  defaults originWorkerId to 0 (parent — for backward compatibility
+ *  with simpler callers).  Use the object form to carry an explicit
+ *  origin (required for items 2-full and 3 cross-child routing). */
+export type AssignPortIdResult =
+  | number
+  | { id: number; originWorkerId: number }
+  | null;
+
 /** Pack a value for cross-worker delivery.
  *
  *  @param value          The user payload.
@@ -75,23 +84,18 @@ function makeDataCloneError(msg: string): Error {
  *                        Currently only MessagePort-shaped objects are
  *                        supported; entries the caller can't ID-map are
  *                        ignored (fall through to default encoding).
- *  @param assignPortId   Optional callback that returns a port-ID for a
- *                        transferable.  Called once per entry in
- *                        transferList.  Returning null skips that entry
- *                        (it'll fall through to default encoding, which
- *                        likely throws if it's a class instance).
- *                        Defaults to a stub allocator that throws —
- *                        callers MUST provide this when transferList
- *                        is non-empty.
+ *  @param assignPortId   Optional callback that returns a port-ID +
+ *                        originWorkerId for a transferable.  Returning
+ *                        null skips that entry.
  */
 export function packPostMessage(
   value: unknown,
   transferList?: unknown[],
-  assignPortId?: (port: object) => number | null,
+  assignPortId?: (port: object) => AssignPortIdResult,
 ): Uint8Array {
-  // Build a map: each transferable object → its port-ID (assigned by
-  // the caller).  The map lookup powers the encodeObject hook.
-  const portIdByObj = new Map<object, number>();
+  // Build a map: each transferable object → { id, originWorkerId }.
+  // The map lookup powers the encodeObject hook below.
+  const portEntryByObj = new Map<object, { id: number; originWorkerId: number }>();
   if (transferList && transferList.length > 0) {
     if (assignPortId === undefined) {
       throw new Error(
@@ -100,19 +104,22 @@ export function packPostMessage(
     }
     for (const entry of transferList) {
       if (entry === null || typeof entry !== "object") continue;
-      const id = assignPortId(entry as object);
-      if (id !== null) {
-        portIdByObj.set(entry as object, id);
-      }
+      const r = assignPortId(entry as object);
+      if (r === null || r === undefined) continue;
+      const normalized =
+        typeof r === "number" ? { id: r, originWorkerId: 0 } : r;
+      portEntryByObj.set(entry as object, normalized);
     }
   }
   const hooks: PackHooks = {
     encodeObject(v) {
-      const id = portIdByObj.get(v);
-      if (id !== undefined) {
-        const buf = new Uint8Array(5);
-        buf[0] = 16; // MARSHAL_TAG_PORT_REF (avoid import cycle in the literal)
-        new DataView(buf.buffer).setUint32(1, id, true);
+      const entry = portEntryByObj.get(v);
+      if (entry !== undefined) {
+        const buf = new Uint8Array(9);
+        buf[0] = 16; // MARSHAL_TAG_PORT_REF
+        const dv = new DataView(buf.buffer);
+        dv.setUint32(1, entry.id, true);
+        dv.setUint32(5, entry.originWorkerId, true);
         return buf;
       }
       // Item 5 (e33): MessagePort in value tree but NOT in transferList
@@ -147,13 +154,13 @@ export function packPostMessage(
  *
  *  @param bytes        Wire bytes from a matching pack call.
  *  @param decodePort   Optional factory that materializes a port stub
- *                      for a given port-ID.  Required if the bytes
- *                      contain MARSHAL_TAG_PORT_REF entries (otherwise
- *                      decoder throws).
+ *                      for a given (portId, originWorkerId).  Required
+ *                      if the bytes contain MARSHAL_TAG_PORT_REF
+ *                      entries (otherwise decoder throws).
  */
 export function unpackPostMessage(
   bytes: Uint8Array,
-  decodePort?: (portId: number) => unknown,
+  decodePort?: (portId: number, originWorkerId: number) => unknown,
 ): unknown {
   const hooks: UnpackHooks | undefined =
     decodePort !== undefined ? { decodePort } : undefined;

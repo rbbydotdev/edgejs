@@ -454,11 +454,11 @@ function installPostMessageGlobals(): void {
   type PackFn = (
     value: unknown,
     transferList?: unknown[],
-    assignPortId?: (port: object) => number | null,
+    assignPortId?: (port: object) => number | { id: number; originWorkerId: number } | null,
   ) => Uint8Array;
   type UnpackFn = (
     bytes: Uint8Array,
-    decodePort?: (portId: number) => unknown,
+    decodePort?: (portId: number, originWorkerId: number) => unknown,
   ) => unknown;
   (globalThis as { __edgePackPostMessage?: PackFn }).__edgePackPostMessage =
     packPostMessage;
@@ -481,6 +481,9 @@ self.addEventListener("message", (e: MessageEvent) => {
     fsSnapshotSab = data.sab;
   } else if (data?.kind === "edge-host-rpc-sab" && data.requestSab && data.replySab) {
     hostWorkerId = data.hostWorkerId ?? 0;
+    // Expose to JS land (policy patches use this to set originWorkerId
+    // when allocating port-IDs — items 2-full and 3 of e33).
+    (globalThis as { __edgeHostWorkerId?: number }).__edgeHostWorkerId = hostWorkerId;
     const requestRing = attachHostRing(data.requestSab, HOST_RPC_RING_CONFIG);
     const replyRing = attachHostRing(data.replySab, HOST_RPC_RING_CONFIG);
     hostRpcClient = new RpcClient(requestRing, replyRing);

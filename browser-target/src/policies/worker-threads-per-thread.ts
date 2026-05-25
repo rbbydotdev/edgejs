@@ -347,14 +347,19 @@ ${KEEPALIVE_HELPER_JS}
     };
   }
   function __edgeAllocPortId(port, destinationWorkerId) {
-    // Item 2 (e33): if this is an already-transferred stub being
-    // re-transferred (e.g. parent received port from child A, now
+    // Items 2-full + 3 (e33): if this is an already-transferred stub
+    // being re-transferred (e.g. parent received port from child A, now
     // forwarding to child B), reuse the existing port-ID rather than
     // allocate a fresh one.  The original entry (wherever it was first
-    // registered) is the source of truth for routing.
+    // registered) is the source of truth for routing.  Also record
+    // where we sent it so the dispatcher can forward envelopes from
+    // the original entry-owner that arrive HERE.
     if (port.__edgePortStub === true && typeof port.__edgeGlobalPortId === 'number') {
       var existingId = port.__edgeGlobalPortId;
       if (!port.__edgeNeutered) __edgeNeuterPort(port);
+      if (typeof destinationWorkerId === 'number') {
+        try { port.__edgeForwardedTo = destinationWorkerId; } catch (e) { void e; }
+      }
       return existingId;
     }
     var id = globalThis.__edgePortIdNext++;
@@ -439,13 +444,14 @@ ${KEEPALIVE_HELPER_JS}
     try {
       // Phase 4 (e33): plumb decodePort so MARSHAL_TAG_PORT_REF in
       // child-to-parent messages materializes a stub on parent side.
-      // Item 2: pass workerId as originWorkerId so the stub knows
-      // which child worker owns the sibling — stub.postMessage routes
-      // via __edgePostMessageToWorker(workerId, ...).
-      data = globalThis.__edgeUnpackPostMessage(bytes, function(globalPortId) {
+      // Items 2-full + 3: originWorkerId now comes from the WIRE (the
+      // original allocator's hostWorkerId encoded into the PORT_REF),
+      // not from the sender's workerId.  This means re-transferred
+      // stubs carry the right routing target through arbitrary chains.
+      data = globalThis.__edgeUnpackPostMessage(bytes, function(globalPortId, originWid) {
         var existing = globalThis.__edgePortStubsByGlobalId.get(globalPortId);
         if (existing) return existing;
-        return globalThis.__edgeMakePortStub(globalPortId, workerId);
+        return globalThis.__edgeMakePortStub(globalPortId, originWid);
       });
     } catch (e) {
       var wErr = workerById.get(workerId);
@@ -464,15 +470,28 @@ ${KEEPALIVE_HELPER_JS}
     // fires normally).  entry.deliver bypasses the now-neutered public
     // postMessage (item 4).
     if (data && typeof data === 'object' && data.__edgePortMsg === true) {
-      // Items 1+2 (e33): same dual-path as child dispatcher.
-      // (a) we own the port (have an entry) → deliver via C++ sibling
-      // (b) we hold a stub (forwarded port from another worker) → emit
+      // Items 1+2+3 (e33) — triage by what WE hold for this port-ID:
+      // (a) entry → we own the port, deliver via C++ sibling
+      // (b) stub w/ __edgeForwardedTo → we passed this stub on, forward
+      //     to the new owner (items 2-full + 3 chain hop)
+      // (c) stub without forward → we're the destination, emit
       var entry = globalThis.__edgePortsByGlobalId.get(data.targetPortId);
       if (entry && typeof entry.deliver === 'function') {
         try { entry.deliver(data.payload); } catch (e) { void e; }
         return;
       }
       var stub = globalThis.__edgePortStubsByGlobalId.get(data.targetPortId);
+      if (stub && typeof stub.__edgeForwardedTo === 'number') {
+        // Re-emit the envelope toward the next hop.
+        var fwdEnv = {
+          __edgePortMsg: true,
+          targetPortId: data.targetPortId,
+          payload: data.payload,
+        };
+        var fwdBytes = globalThis.__edgePackPostMessage(fwdEnv);
+        globalThis.__edgePostMessageToWorker(stub.__edgeForwardedTo, fwdBytes);
+        return;
+      }
       if (stub && typeof stub.emit === 'function') {
         stub.emit('message', data.payload);
       }
@@ -504,15 +523,22 @@ ${KEEPALIVE_HELPER_JS}
             throw new TypeError('worker.postMessage: transferList entry ' + ti + ' is not a transferable (only MessagePort supported in phase 4 MVP)');
           }
         }
+        // Items 1-3 (e33): map each transferable port to
+        // { id, originWorkerId }.  For fresh ports we own, origin is
+        // our hostWorkerId (0 = parent).  For already-transferred
+        // stubs being re-transferred, carry forward their existing
+        // origin so the receiver routes to the ORIGINAL allocator.
         var idByPort = new Map();
         var childWid = h.__edgeWorkerId;
+        var ourOrigin = (typeof globalThis.__edgeHostWorkerId === 'number') ? globalThis.__edgeHostWorkerId : 0;
         for (var pi = 0; pi < transferList.length; pi++) {
           var p = transferList[pi];
           if (!idByPort.has(p)) {
-            // Item 1 (e33): pass childWorkerId so __edgeAllocPortId can
-            // rewire the sibling's postMessage to envelope-route TO
-            // that specific worker.
-            idByPort.set(p, globalThis.__edgeAllocPortId(p, childWid));
+            var newId = globalThis.__edgeAllocPortId(p, childWid);
+            var origin = (p.__edgePortStub === true && typeof p.__edgeOriginWorkerId === 'number')
+              ? p.__edgeOriginWorkerId
+              : ourOrigin;
+            idByPort.set(p, { id: newId, originWorkerId: origin });
           }
         }
         assignPortId = function(obj) {
@@ -729,10 +755,14 @@ ${KEEPALIVE_HELPER_JS}
     };
   }
   function __edgeAllocPortIdChild(port, destinationWorkerId) {
-    // Item 2 (e33) — child-side stub re-transfer: reuse existing ID.
+    // Items 2-full + 3 (e33) — child-side stub re-transfer: reuse
+    // existing ID, record forward target for dispatcher routing.
     if (port.__edgePortStub === true && typeof port.__edgeGlobalPortId === 'number') {
       var existingId = port.__edgeGlobalPortId;
       if (!port.__edgeNeutered) __edgeNeuterPortChild(port);
+      if (typeof destinationWorkerId === 'number') {
+        try { port.__edgeForwardedTo = destinationWorkerId; } catch (e) { void e; }
+      }
       return existingId;
     }
     var id = globalThis.__edgePortIdNext++;
@@ -753,7 +783,7 @@ ${KEEPALIVE_HELPER_JS}
   // patch (lib's require('events') ran at the top of WORKER_THREADS_POST_PATCH
   // for parentPort construction).  Use it directly — same battle-tested
   // EE code path that parentPort uses.
-  function __edgeMakePortStubChild(globalPortId) {
+  function __edgeMakePortStubChild(globalPortId, originWorkerId) {
     var stub = new EventEmitter();
     stub.postMessage = function(payload) {
       var envelope = {
@@ -762,10 +792,20 @@ ${KEEPALIVE_HELPER_JS}
         payload: payload,
       };
       var bytes = globalThis.__edgePackPostMessage(envelope);
-      if (typeof globalThis.__edgePostMessageFromWorker === 'function') {
+      // Items 2-full + 3: route based on the port's ORIGIN worker (the
+      // worker that owns the entry).  If origin is a specific child
+      // worker (originWorkerId > 0 AND not us), use toWorker; if origin
+      // is parent (0) or we don't have a destination, fall back to
+      // fromWorker (which routes via parent → main → destination).
+      var ourId = (typeof globalThis.__edgeHostWorkerId === 'number') ? globalThis.__edgeHostWorkerId : -1;
+      if (typeof originWorkerId === 'number' && originWorkerId !== 0 && originWorkerId !== ourId
+          && typeof globalThis.__edgePostMessageToWorker === 'function') {
+        // Cross-child: send directly to the origin worker.
+        globalThis.__edgePostMessageToWorker(originWorkerId, bytes);
+      } else if (typeof globalThis.__edgePostMessageFromWorker === 'function') {
+        // origin == parent (0), or origin is ourselves, or no
+        // toWorker: route up to parent.
         globalThis.__edgePostMessageFromWorker(bytes);
-      } else if (typeof globalThis.__edgePostMessageToWorker === 'function') {
-        throw new Error('edge.js: parent-side stub.postMessage not yet routable (e33 MVP)');
       } else {
         throw new Error('edge.js: stub.postMessage has no cross-worker transport available');
       }
@@ -780,6 +820,10 @@ ${KEEPALIVE_HELPER_JS}
     stub.hasRef = function() { return true; };
     Object.defineProperty(stub, '__edgePortStub', { value: true });
     Object.defineProperty(stub, '__edgeGlobalPortId', { value: globalPortId });
+    if (originWorkerId !== undefined) {
+      try { Object.defineProperty(stub, '__edgeOriginWorkerId', { value: originWorkerId }); }
+      catch (e) { void e; }
+    }
     globalThis.__edgePortStubsByGlobalId.set(globalPortId, stub);
     return stub;
   }
@@ -794,7 +838,7 @@ ${KEEPALIVE_HELPER_JS}
   // user code rarely instanceof-checks parentPort.
   var parentPort = new EventEmitter();
   parentPort.postMessage = function(value, transferList) {
-    // Phase 4 (e33): honor transferList symmetric with parent side.
+    // Items 1-3 (e33): mirror parent-side allocation w/ originWorkerId.
     var assignPortId = null;
     if (transferList && transferList.length > 0) {
       for (var ti = 0; ti < transferList.length; ti++) {
@@ -803,10 +847,15 @@ ${KEEPALIVE_HELPER_JS}
         }
       }
       var idByPort = new Map();
+      var ourOrigin = (typeof globalThis.__edgeHostWorkerId === 'number') ? globalThis.__edgeHostWorkerId : 0;
       for (var pi = 0; pi < transferList.length; pi++) {
         var p = transferList[pi];
         if (!idByPort.has(p)) {
-          idByPort.set(p, __edgeAllocPortIdChild(p));
+          var newId = __edgeAllocPortIdChild(p);
+          var origin = (p.__edgePortStub === true && typeof p.__edgeOriginWorkerId === 'number')
+            ? p.__edgeOriginWorkerId
+            : ourOrigin;
+          idByPort.set(p, { id: newId, originWorkerId: origin });
         }
       }
       assignPortId = function(obj) {
@@ -871,22 +920,16 @@ ${KEEPALIVE_HELPER_JS}
   globalThis.__edgeDispatchMessageToChild = function(bytes) {
     var data;
     try {
-      data = globalThis.__edgeUnpackPostMessage(bytes, function(globalPortId) {
+      data = globalThis.__edgeUnpackPostMessage(bytes, function(globalPortId, originWid) {
         var existing = globalThis.__edgePortStubsByGlobalId.get(globalPortId);
         if (existing) return existing;
-        return __edgeMakePortStubChild(globalPortId);
+        return __edgeMakePortStubChild(globalPortId, originWid);
       });
     } catch (e) {
       parentPort.emit('messageerror', e);
       return;
     }
-    // Items 1+2 (e33): __edgePortMsg envelope — could be addressed to:
-    //   (a) a stub we hold (parent-side sibling-rewired postMessage,
-    //       OR another worker forwarding through us) — emit on stub
-    //   (b) an entry we own (we're the original owner; the C++ port
-    //       is here and the sibling needs to receive) — call deliver
-    // Check entry first since we're the authoritative deliverer when
-    // we own the port; stub-emit is for forwarding scenarios.
+    // Items 1+2+3 (e33) — triage same as parent dispatcher.
     if (data && typeof data === 'object' && data.__edgePortMsg === true) {
       var entry = globalThis.__edgePortsByGlobalId.get(data.targetPortId);
       if (entry && typeof entry.deliver === 'function') {
@@ -894,6 +937,19 @@ ${KEEPALIVE_HELPER_JS}
         return;
       }
       var stub = globalThis.__edgePortStubsByGlobalId.get(data.targetPortId);
+      if (stub && typeof stub.__edgeForwardedTo === 'number') {
+        // Forward to the next hop along the chain.  Child-side
+        // forwarding routes via toWorker if available; else back
+        // through parent (which will continue the routing).
+        var fwdEnv = { __edgePortMsg: true, targetPortId: data.targetPortId, payload: data.payload };
+        var fwdBytes = globalThis.__edgePackPostMessage(fwdEnv);
+        if (typeof globalThis.__edgePostMessageToWorker === 'function') {
+          globalThis.__edgePostMessageToWorker(stub.__edgeForwardedTo, fwdBytes);
+        } else if (typeof globalThis.__edgePostMessageFromWorker === 'function') {
+          globalThis.__edgePostMessageFromWorker(fwdBytes);
+        }
+        return;
+      }
       if (stub && typeof stub.emit === 'function') {
         stub.emit('message', data.payload);
       }

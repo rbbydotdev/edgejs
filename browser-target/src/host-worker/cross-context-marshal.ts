@@ -172,15 +172,22 @@ export const MARSHAL_TAG_SET = 14;
  *  flagsBits packs the JS flag characters (g/i/m/s/u/y/d/v) into one
  *  byte.  `lastIndex` is not preserved across the round-trip. */
 export const MARSHAL_TAG_REGEXP = 15;
-/** Cross-worker MessagePort transfer reference — [u32 portId].
+/** Cross-worker MessagePort transfer reference — [u32 portId][u32 originWorkerId].
  *  The pack-side caller marks specific values as transferable ports
  *  via a `PackHooks.encodeObject` callback (e.g. via the transferList
  *  in `packPostMessage`).  The unpack-side caller provides a
- *  `UnpackHooks.decodePort(id)` factory that materializes a port stub
- *  bound to the given ID.  Same wire format on both sides; the ID
- *  scheme is the caller's contract.  Added in e33 to replace the
- *  prior OBJECT_BYREF fallback for MessagePort instances (which threw
- *  "marshal: identity reference collected" on cross-isolate receive). */
+ *  `UnpackHooks.decodePort(id, originWorkerId)` factory that
+ *  materializes a port stub bound to the given ID + origin.
+ *
+ *  originWorkerId is the wasm-host worker ID that originally allocated
+ *  the port (i.e., owns the entry).  0 = parent.  Carried through
+ *  re-transfers verbatim — when worker A transfers a port to parent
+ *  and parent then re-transfers to worker B, B's stub keeps
+ *  originWorkerId=A so B can route messages directly to A without
+ *  needing a main-thread registry.  (Items 2-full and 3 of e33.)
+ *
+ *  Wire layout: 9 bytes total — 1 byte tag + 4 byte little-endian
+ *  portId + 4 byte little-endian originWorkerId. */
 export const MARSHAL_TAG_PORT_REF = 16;
 /** Circular back-ref within the current pack frame.  [u32 frameId].
  *  frameId is the index of an already-emitted object in the
@@ -206,8 +213,12 @@ export interface PackHooks {
 export interface UnpackHooks {
   /** Called when MARSHAL_TAG_PORT_REF is decoded.  Caller returns the
    *  materialized value (typically a JS-side MessagePort stub).  If not
-   *  provided, decoder throws. */
-  decodePort?: (portId: number) => unknown;
+   *  provided, decoder throws.
+   *
+   *  `originWorkerId` is the wasm-host worker ID that originally
+   *  allocated the port (0 = parent).  Receiver uses this to route
+   *  messages directly to the owner without main-thread state. */
+  decodePort?: (portId: number, originWorkerId: number) => unknown;
 }
 
 // ─── RegExp flag bits ───────────────────────────────────────────────
@@ -664,19 +675,20 @@ function unpackValueWith(
       return { value: entry.obj, byteLength: 9 };
     }
     case MARSHAL_TAG_PORT_REF: {
-      const dv = new DataView(buf.buffer, buf.byteOffset + offset + 1, 4);
+      const dv = new DataView(buf.buffer, buf.byteOffset + offset + 1, 8);
       const portId = dv.getUint32(0, true);
+      const originWorkerId = dv.getUint32(4, true);
       if (frame.hooks.decodePort === undefined) {
-        throw new Error(`marshal: MARSHAL_TAG_PORT_REF (portId=${portId}) decoded without a decodePort hook`);
+        throw new Error(`marshal: MARSHAL_TAG_PORT_REF (portId=${portId}, origin=${originWorkerId}) decoded without a decodePort hook`);
       }
-      const stub = frame.hooks.decodePort(portId);
+      const stub = frame.hooks.decodePort(portId, originWorkerId);
       // Stubs are typically objects — register in byFrameId for any
       // future circular refs through them.  Skip if the factory
       // returned a primitive.
       if (stub !== null && typeof stub === "object") {
         frame.byFrameId.push(stub as object);
       }
-      return { value: stub, byteLength: 5 };
+      return { value: stub, byteLength: 9 };
     }
     case MARSHAL_TAG_DATE: {
       const dv = new DataView(buf.buffer, buf.byteOffset + offset + 1, 8);
