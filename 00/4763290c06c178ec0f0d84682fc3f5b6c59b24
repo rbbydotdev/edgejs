@@ -1,0 +1,29 @@
+tests/js/e32-messagechannel-structured-clone.js
+  s_92c1b47c0d6ee8::t_4e330a8e68bb70 1-14,16-20,22,24-26,28-37,40-46,50,53,55
+  s_92c1b47c0d6ee8::t_dba71d35863993 15,21,23,27,38-39,47-49,51-52,54
+browser-target/src/napi-host/unofficial.ts
+  s_92c1b47c0d6ee8::t_abdcc47b03ea9b 721,723-746,753-762,765,776-779
+  s_92c1b47c0d6ee8::t_a6589268cddecb 30-38
+experiments/e32-structured-clone-fidelity/patch.diff
+  ai_agent 1-113
+experiments/e32-structured-clone-fidelity/FINDINGS.md
+  s_92c1b47c0d6ee8::t_c4dafcff87aee3 1-110
+tests/js/e32-messagechannel-structured-clone.stdout
+  s_92c1b47c0d6ee8::t_df1afc0f7bf24f 1-8
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.1",
+  "base_commit_sha": "004763290c06c178ec0f0d84682fc3f5b6c59b24",
+  "prompts": {},
+  "sessions": {
+    "s_92c1b47c0d6ee8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "dca99c1c-d946-4444-9a53-9ba89db5d748",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
