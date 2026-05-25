@@ -1,0 +1,24 @@
+tests/js/e33-port-bidirectional-roundtrip.js
+  s_92c1b47c0d6ee8::t_889cd11a063200 1-132
+tests/js/e33-port-bidirectional-roundtrip.stdout
+  s_92c1b47c0d6ee8::t_06a3c01d6a5094 1-2
+browser-target/src/policies/worker-threads-per-thread.ts
+  s_92c1b47c0d6ee8::t_5d04b54195969d 318-341,599-622
+  s_92c1b47c0d6ee8::t_326c5869af59d8 381-394
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.1",
+  "base_commit_sha": "cac00be26a618bc7b2e8b7f6d1914179e7c47937",
+  "prompts": {},
+  "sessions": {
+    "s_92c1b47c0d6ee8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "dca99c1c-d946-4444-9a53-9ba89db5d748",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
