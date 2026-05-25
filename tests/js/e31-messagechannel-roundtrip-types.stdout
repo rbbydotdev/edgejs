@@ -1,0 +1,9 @@
+A:start
+R[0]:string sent="hello" got="hello" match=true
+R[1]:number sent=42 got=42 match=true
+R[2]:boolean sent=true got=true match=true
+R[3]:null sent=null got=null match=true
+R[4]:undefined sent="UNDEFINED" got="UNDEFINED" match=true
+R[5]:object sent={"a":1,"b":"x"} got={"a":1,"b":"x"} match=true
+R[6]:array sent=[1,2,3] got=[1,2,3] match=true
+DONE

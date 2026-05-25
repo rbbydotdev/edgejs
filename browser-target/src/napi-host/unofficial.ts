@@ -27,6 +27,13 @@ import type { ModuleOverride } from "../policies";
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
+// Host-owned payload store for unofficial_napi_{serialize,deserialize,release}_value.
+// See implementation comments above unofficial_napi_serialize_value for why this
+// exists (napi handle scopes don't survive across callbacks; MessagePort queue
+// payloads need cross-callback lifetime — e31 finding).
+const serializedPayloadStore = new Map<number, Uint8Array>();
+let nextSerializedPayloadId = 1;
+
 export interface UnofficialHostContext {
   context: Context;
   memory: WebAssembly.Memory;
@@ -703,18 +710,34 @@ export function createUnofficialNapi(ctx: UnofficialHostContext): Record<string,
       return 0;
     },
     // Wasm sig (3 args, napi.rs:713): (napi_env, value, payload_out_ptr).
+    //
+    // The "payload" handle returned here is stored by C++ (e.g. in the
+    // MessagePort queue) and may be passed back to
+    // `unofficial_napi_deserialize_value` from a DIFFERENT napi callback
+    // scope.  Returning a raw napi_value handle to a freshly-created
+    // ArrayBuffer doesn't survive that lifecycle: emnapi handle scopes
+    // close at callback boundaries, freeing the AB handle long before
+    // deserialize fires.  Result: every MessageChannel payload arrived
+    // as `null` (e31 finding).
+    //
+    // Fix: store the encoded bytes in a host-owned Map keyed by an
+    // opaque ID.  Return the ID as the payload handle.  Release deletes
+    // from the Map.  This bypasses napi handle scoping entirely; the
+    // payload lives as long as C++ holds the ID.
     unofficial_napi_serialize_value(
       envHandle: number, valueHandle: number, payloadOut: number,
     ): number {
       const env = envs.get(envHandle);
       if (!env) return 1;
       const v = context.jsValueFromNapiValue(valueHandle);
-      const bytes = encoder.encode(JSON.stringify(v ?? null));
+      // JSON.stringify(undefined) returns undefined (not a string).
+      // Preserve undefined by encoding a sentinel; null stays null.
+      const json = v === undefined ? '__edgeSerialUndefined__' : JSON.stringify(v);
+      const bytes = encoder.encode(json);
       if (payloadOut > 0) {
-        const ab = new ArrayBuffer(bytes.length);
-        new Uint8Array(ab).set(bytes);
-        const h = context.napiValueFromJsValue(ab);
-        dv(memory).setUint32(payloadOut, Number(h), true);
+        const id = nextSerializedPayloadId++;
+        serializedPayloadStore.set(id, bytes);
+        dv(memory).setUint32(payloadOut, id, true);
       }
       return 0;
     },
@@ -724,10 +747,13 @@ export function createUnofficialNapi(ctx: UnofficialHostContext): Record<string,
     ): number {
       const env = envs.get(envHandle);
       if (!env) return 1;
-      const buf = context.jsValueFromNapiValue(payloadHandle) as ArrayBuffer | undefined;
+      const bytes = serializedPayloadStore.get(payloadHandle);
       let value: unknown = null;
-      if (buf) {
-        try { value = JSON.parse(decoder.decode(new Uint8Array(buf))); } catch { /* leave null */ }
+      if (bytes) {
+        try {
+          const text = decoder.decode(bytes);
+          value = text === '__edgeSerialUndefined__' ? undefined : JSON.parse(text);
+        } catch { /* leave null */ }
       }
       if (resultOut > 0) {
         const h = context.napiValueFromJsValue(value);
@@ -736,7 +762,9 @@ export function createUnofficialNapi(ctx: UnofficialHostContext): Record<string,
       return 0;
     },
     // Wasm sig (1 arg, napi.rs:737): (payload) → void.
-    unofficial_napi_release_serialized_value(_payload: number): void { /* no-op */ },
+    unofficial_napi_release_serialized_value(payload: number): void {
+      serializedPayloadStore.delete(payload);
+    },
 
     // Contextify (vm.*) — minimal pass-through.  Run-script is the most
     // load-bearing: edge uses it for sourceText eval.  We use Function() so
