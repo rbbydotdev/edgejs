@@ -1,0 +1,42 @@
+browser-target/src/main.ts
+  s_92c1b47c0d6ee8::t_66aec81171a29e 1261
+  s_92c1b47c0d6ee8::t_022a5eaa49e5f5 1127-1128
+  s_92c1b47c0d6ee8::t_37f1b507b73630 1288-1291
+tests/js/e33-phase3c-error-event.js
+  s_92c1b47c0d6ee8::t_844fd077834121 1-15,18-19,38-39,47,54-67
+  s_92c1b47c0d6ee8::t_e5e09d2d5f3ae3 40-46,48-53
+  s_92c1b47c0d6ee8::t_efb80f9b8c2e1a 16-17,20-37
+tests/js/e33-phase3c-error-event.harness-args
+  s_92c1b47c0d6ee8::t_f3027abf7c67b8 1
+tests/js/e33-phase3c-error-event.stdout
+  s_92c1b47c0d6ee8::t_e45eadc2878709 1-7
+browser-target/src/worker.ts
+  s_92c1b47c0d6ee8::t_63071bd41290e5 565-574,578
+  s_92c1b47c0d6ee8::t_c7d6502a2fe6ba 1399-1416,1421
+browser-target/src/host-worker/host-worker.ts
+  s_92c1b47c0d6ee8::t_01cd0dc25ff1c9 310,315-321,325-328
+  s_92c1b47c0d6ee8::t_97c67831dc78d3 1184-1186
+  s_92c1b47c0d6ee8::t_f0023e28bad1ff 1204
+browser-target/src/policies/worker-threads-per-thread.ts
+  s_92c1b47c0d6ee8::t_421ea311a79384 498-500,502
+  s_92c1b47c0d6ee8::t_172816de6807a8 1070-1071,1075,1077,1079-1099
+  s_92c1b47c0d6ee8::t_16f1c143eec368 1072-1074,1076,1078
+  s_92c1b47c0d6ee8::t_32db77b1384209 561-576
+  s_92c1b47c0d6ee8::t_01f024da2fb3fd 147-150,153-175
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.1",
+  "base_commit_sha": "279a2c3967256a05c7b8ad9cdfb128e73af8501e",
+  "prompts": {},
+  "sessions": {
+    "s_92c1b47c0d6ee8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "dca99c1c-d946-4444-9a53-9ba89db5d748",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
