@@ -1,0 +1,36 @@
+browser-target/src/host-worker/cross-context-marshal.ts
+  s_92c1b47c0d6ee8::t_8d28f120e4f639 368-374
+  s_92c1b47c0d6ee8::t_1797f34eafa36d 175-184,192-211
+  s_92c1b47c0d6ee8::t_5b86841ee7b0f2 609,611
+  s_92c1b47c0d6ee8::t_e79976c3b20200 666-680
+  s_92c1b47c0d6ee8::t_b00e3ee623075d 422-432
+  s_92c1b47c0d6ee8::t_d2f0283e0f949f 590,592-593
+  s_92c1b47c0d6ee8::t_775bd4b9fc6ad8 347-348,350-351
+tests/js/e33-marshal-port-ref-same-isolate.stdout
+  s_92c1b47c0d6ee8::t_ad430e83791e85 2-12
+  s_92c1b47c0d6ee8::t_34db494885d19f 1
+tests/js/e33-marshal-port-ref-same-isolate.js
+  s_92c1b47c0d6ee8::t_38886c02f33fac 1-23,28-53,55-85
+  s_92c1b47c0d6ee8::t_b670951b21592b 24-27
+  s_92c1b47c0d6ee8::t_2bff3b0ad28c33 54
+browser-target/src/worker.ts
+  s_92c1b47c0d6ee8::t_a37c501bc6f3de 450-463,465
+browser-target/src/host-worker/marshal-postmessage.ts
+  s_92c1b47c0d6ee8::t_71d3c6aad6ea81 18-24,26-32,34-82,84,94-108
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.1",
+  "base_commit_sha": "cb8efe41b3f57a2c1a96074751c4fbce7909041c",
+  "prompts": {},
+  "sessions": {
+    "s_92c1b47c0d6ee8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "dca99c1c-d946-4444-9a53-9ba89db5d748",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
