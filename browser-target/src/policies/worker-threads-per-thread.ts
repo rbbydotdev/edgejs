@@ -256,6 +256,86 @@ ${KEEPALIVE_HELPER_JS}
   if (typeof globalThis.__edgePostMessageToWorker !== 'function') return;
   if (typeof Worker !== 'function' || typeof kHandle === 'undefined') return;
 
+  // Phase 4 (e33): MessagePort transfer infra shared between parent and
+  // child sides.  Detect MessagePort by duck-typing the methods the
+  // edge.js binding installs.  Worker has postMessage too but lacks
+  // start/ref/unref/hasRef as own methods, so the combined check is
+  // specific enough.
+  function __edgeIsLikelyMessagePort(v) {
+    return v != null && typeof v === 'object'
+      && typeof v.postMessage === 'function'
+      && typeof v.start === 'function'
+      && typeof v.close === 'function'
+      && typeof v.ref === 'function'
+      && typeof v.unref === 'function'
+      && typeof v.hasRef === 'function';
+  }
+  if (typeof globalThis.__edgePortIdNext !== 'number') {
+    globalThis.__edgePortIdNext = 1;
+  }
+  if (!globalThis.__edgePortsByGlobalId) {
+    globalThis.__edgePortsByGlobalId = new Map();
+  }
+  if (!globalThis.__edgePortStubsByGlobalId) {
+    globalThis.__edgePortStubsByGlobalId = new Map();
+  }
+  function __edgeAllocPortId(port) {
+    var id = globalThis.__edgePortIdNext++;
+    globalThis.__edgePortsByGlobalId.set(id, port);
+    return id;
+  }
+  // Build a plain-object stub matching Node MessagePort surface.
+  // Bidirectional routing (real postMessage) is e33 step 3; here the
+  // stub throws so incomplete use is loud not silent.
+  function __edgeMakePortStub(globalPortId) {
+    var listeners = { message: [], messageerror: [], close: [] };
+    var stub = {
+      on: function(ev, cb) {
+        if (!listeners[ev]) listeners[ev] = [];
+        listeners[ev].push(cb);
+        return stub;
+      },
+      once: function(ev, cb) { return stub.on(ev, cb); },
+      off: function(ev, cb) {
+        var ls = listeners[ev] || [];
+        var i = ls.indexOf(cb);
+        if (i >= 0) ls.splice(i, 1);
+        return stub;
+      },
+      emit: function(ev) {
+        var args = Array.prototype.slice.call(arguments, 1);
+        var ls = listeners[ev] || [];
+        for (var i = 0; i < ls.length; i++) {
+          try { ls[i].apply(null, args); } catch (e) { void e; }
+        }
+        return ls.length > 0;
+      },
+      removeAllListeners: function(ev) {
+        if (ev) listeners[ev] = []; else listeners = { message: [], messageerror: [], close: [] };
+        return stub;
+      },
+      listenerCount: function(ev) { return (listeners[ev] || []).length; },
+      postMessage: function() {
+        throw new Error('edge.js: transferred MessagePort.postMessage not yet routable (e33 step 3)');
+      },
+      start: function() {},
+      close: function() {
+        var ports = globalThis.__edgePortStubsByGlobalId;
+        if (ports) ports.delete(globalPortId);
+      },
+      ref: function() { return stub; },
+      unref: function() { return stub; },
+      hasRef: function() { return true; },
+    };
+    Object.defineProperty(stub, '__edgePortStub', { value: true });
+    Object.defineProperty(stub, '__edgeGlobalPortId', { value: globalPortId });
+    globalThis.__edgePortStubsByGlobalId.set(globalPortId, stub);
+    return stub;
+  }
+  globalThis.__edgeIsLikelyMessagePort = __edgeIsLikelyMessagePort;
+  globalThis.__edgeAllocPortId = __edgeAllocPortId;
+  globalThis.__edgeMakePortStub = __edgeMakePortStub;
+
   // Worker instance registry keyed by workerId.  Used by the
   // child→parent dispatcher (__edgeDispatchMessageFromChild) to find
   // the right Worker on which to emit('message').
@@ -264,12 +344,15 @@ ${KEEPALIVE_HELPER_JS}
     var w = workerById.get(workerId);
     if (!w) return;
     var data;
-    try { data = globalThis.__edgeUnpackPostMessage(bytes); }
-    catch (e) {
-      // Best-effort: emit 'messageerror' so user code can react to a
-      // failed unmarshal.  Phase 1 doesn't surface messageerror via the
-      // existing kPublicPort chain, but emitting on Worker directly
-      // matches Node's documented behavior closely enough.
+    try {
+      // Phase 4 (e33): plumb decodePort so MARSHAL_TAG_PORT_REF in
+      // child-to-parent messages materializes a stub on parent side.
+      data = globalThis.__edgeUnpackPostMessage(bytes, function(globalPortId) {
+        var existing = globalThis.__edgePortStubsByGlobalId.get(globalPortId);
+        if (existing) return existing;
+        return globalThis.__edgeMakePortStub(globalPortId);
+      });
+    } catch (e) {
       w.emit('messageerror', e);
       return;
     }
@@ -280,17 +363,35 @@ ${KEEPALIVE_HELPER_JS}
   // lib/internal/worker.js) routes through this[kPublicPort] which is
   // a real MessageChannel port we don't actually wire across the
   // wasm boundary.  Our replacement marshals + sends via the host RPC.
-  // Transfer lists are accepted but currently ignored (phase 4).
+  //
+  // Phase 4 (e33): honor transferList for MessagePort entries.  Each
+  // port gets a globally-unique ID; the marshal layer emits
+  // MARSHAL_TAG_PORT_REF for it.  Receiver materializes a stub.
+  // Bidirectional stub routing is e33 step 3.
   var origPostMessage = Worker.prototype.postMessage;
   Worker.prototype.postMessage = function(value, transferList) {
     var h = this[kHandle];
     if (h && typeof h.__edgeWorkerId === 'number') {
-      var bytes = globalThis.__edgePackPostMessage(value);
+      var assignPortId = null;
+      if (transferList && transferList.length > 0) {
+        for (var ti = 0; ti < transferList.length; ti++) {
+          if (!globalThis.__edgeIsLikelyMessagePort(transferList[ti])) {
+            throw new TypeError('worker.postMessage: transferList entry ' + ti + ' is not a transferable (only MessagePort supported in phase 4 MVP)');
+          }
+        }
+        var idByPort = new Map();
+        for (var pi = 0; pi < transferList.length; pi++) {
+          var p = transferList[pi];
+          if (!idByPort.has(p)) {
+            idByPort.set(p, globalThis.__edgeAllocPortId(p));
+          }
+        }
+        assignPortId = function(obj) {
+          return idByPort.has(obj) ? idByPort.get(obj) : null;
+        };
+      }
+      var bytes = globalThis.__edgePackPostMessage(value, transferList, assignPortId);
       globalThis.__edgePostMessageToWorker(h.__edgeWorkerId, bytes);
-      // Phase 4: structured-clone transferList support.  For now silently
-      // drop — the test suite doesn't exercise transfer (E16 marshal
-      // covers by-value typed arrays and ArrayBuffers, which copy).
-      void transferList;
       return;
     }
     return origPostMessage.apply(this, arguments);
@@ -405,6 +506,81 @@ ${KEEPALIVE_HELPER_JS}
   try { EventEmitter = require('events'); }
   catch (e) { return; }
 
+  // Phase 4 (e33): port-transfer helpers (mirror POST_PATCH).
+  // Re-installed on the child side since worker isolates have their
+  // own globals.  Idempotent — these are no-ops if already installed.
+  function __edgeIsLikelyMessagePortChild(v) {
+    return v != null && typeof v === 'object'
+      && typeof v.postMessage === 'function'
+      && typeof v.start === 'function'
+      && typeof v.close === 'function'
+      && typeof v.ref === 'function'
+      && typeof v.unref === 'function'
+      && typeof v.hasRef === 'function';
+  }
+  if (typeof globalThis.__edgePortIdNext !== 'number') {
+    globalThis.__edgePortIdNext = 1;
+  }
+  if (!globalThis.__edgePortsByGlobalId) {
+    globalThis.__edgePortsByGlobalId = new Map();
+  }
+  if (!globalThis.__edgePortStubsByGlobalId) {
+    globalThis.__edgePortStubsByGlobalId = new Map();
+  }
+  function __edgeAllocPortIdChild(port) {
+    var id = globalThis.__edgePortIdNext++;
+    globalThis.__edgePortsByGlobalId.set(id, port);
+    return id;
+  }
+  function __edgeMakePortStubChild(globalPortId) {
+    var listeners = { message: [], messageerror: [], close: [] };
+    var stub = {
+      on: function(ev, cb) {
+        if (!listeners[ev]) listeners[ev] = [];
+        listeners[ev].push(cb);
+        return stub;
+      },
+      once: function(ev, cb) { return stub.on(ev, cb); },
+      off: function(ev, cb) {
+        var ls = listeners[ev] || [];
+        var i = ls.indexOf(cb);
+        if (i >= 0) ls.splice(i, 1);
+        return stub;
+      },
+      emit: function(ev) {
+        var args = Array.prototype.slice.call(arguments, 1);
+        var ls = listeners[ev] || [];
+        for (var i = 0; i < ls.length; i++) {
+          try { ls[i].apply(null, args); } catch (e) { void e; }
+        }
+        return ls.length > 0;
+      },
+      removeAllListeners: function(ev) {
+        if (ev) listeners[ev] = []; else listeners = { message: [], messageerror: [], close: [] };
+        return stub;
+      },
+      listenerCount: function(ev) { return (listeners[ev] || []).length; },
+      postMessage: function() {
+        throw new Error('edge.js: transferred MessagePort.postMessage not yet routable (e33 step 3)');
+      },
+      start: function() {},
+      close: function() {
+        var ports = globalThis.__edgePortStubsByGlobalId;
+        if (ports) ports.delete(globalPortId);
+      },
+      ref: function() { return stub; },
+      unref: function() { return stub; },
+      hasRef: function() { return true; },
+    };
+    Object.defineProperty(stub, '__edgePortStub', { value: true });
+    Object.defineProperty(stub, '__edgeGlobalPortId', { value: globalPortId });
+    globalThis.__edgePortStubsByGlobalId.set(globalPortId, stub);
+    return stub;
+  }
+  globalThis.__edgeIsLikelyMessagePort = __edgeIsLikelyMessagePortChild;
+  globalThis.__edgeAllocPortId = __edgeAllocPortIdChild;
+  globalThis.__edgeMakePortStub = __edgeMakePortStubChild;
+
   // Construct a port-like EventEmitter.  postMessage / start / unref /
   // ref / close mirror Node's MessagePort surface that user code uses.
   // We don't extend MessagePort because the real Node class has
@@ -412,9 +588,27 @@ ${KEEPALIVE_HELPER_JS}
   // user code rarely instanceof-checks parentPort.
   var parentPort = new EventEmitter();
   parentPort.postMessage = function(value, transferList) {
-    var bytes = globalThis.__edgePackPostMessage(value);
+    // Phase 4 (e33): honor transferList symmetric with parent side.
+    var assignPortId = null;
+    if (transferList && transferList.length > 0) {
+      for (var ti = 0; ti < transferList.length; ti++) {
+        if (!__edgeIsLikelyMessagePortChild(transferList[ti])) {
+          throw new TypeError('parentPort.postMessage: transferList entry ' + ti + ' is not a transferable (only MessagePort supported in phase 4 MVP)');
+        }
+      }
+      var idByPort = new Map();
+      for (var pi = 0; pi < transferList.length; pi++) {
+        var p = transferList[pi];
+        if (!idByPort.has(p)) {
+          idByPort.set(p, __edgeAllocPortIdChild(p));
+        }
+      }
+      assignPortId = function(obj) {
+        return idByPort.has(obj) ? idByPort.get(obj) : null;
+      };
+    }
+    var bytes = globalThis.__edgePackPostMessage(value, transferList, assignPortId);
     globalThis.__edgePostMessageFromWorker(bytes);
-    void transferList;
   };
 
   // Libuv keepalive — see KEEPALIVE_HELPER_JS comment for rationale.
@@ -465,10 +659,18 @@ ${KEEPALIVE_HELPER_JS}
 
   // Wire the dispatcher.  Reverse RPC from parent → child fires this
   // global; we unmarshal and emit on parentPort.
+  //
+  // Phase 4 (e33): plumb decodePort so MARSHAL_TAG_PORT_REF entries
+  // materialize as stubs on the child side.
   globalThis.__edgeDispatchMessageToChild = function(bytes) {
     var data;
-    try { data = globalThis.__edgeUnpackPostMessage(bytes); }
-    catch (e) {
+    try {
+      data = globalThis.__edgeUnpackPostMessage(bytes, function(globalPortId) {
+        var existing = globalThis.__edgePortStubsByGlobalId.get(globalPortId);
+        if (existing) return existing;
+        return __edgeMakePortStubChild(globalPortId);
+      });
+    } catch (e) {
       parentPort.emit('messageerror', e);
       return;
     }

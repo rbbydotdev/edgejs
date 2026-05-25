@@ -1,0 +1,12 @@
+payload:PASS
+port_exists:PASS
+port_is_stub:PASS
+port_id_preserved:PASS
+port_has_postMessage:PASS
+port_has_on:PASS
+port_has_start:PASS
+port_has_close:PASS
+port_has_ref:PASS
+port_has_unref:PASS
+port_has_hasRef:PASS
+child_exit_0:PASS
