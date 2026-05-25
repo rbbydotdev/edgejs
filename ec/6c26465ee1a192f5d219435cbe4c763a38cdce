@@ -1,0 +1,19 @@
+browser-target/scripts/_runner-common.mjs
+  s_92c1b47c0d6ee8::t_eca385528343ef 42-50,54-63
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.1",
+  "base_commit_sha": "ec6c26465ee1a192f5d219435cbe4c763a38cdce",
+  "prompts": {},
+  "sessions": {
+    "s_92c1b47c0d6ee8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "dca99c1c-d946-4444-9a53-9ba89db5d748",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
