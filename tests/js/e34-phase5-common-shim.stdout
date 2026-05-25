@@ -1,0 +1,8 @@
+shim_loaded:PASS
+mustCall_is_fn:PASS
+mustCallAtLeast_is_fn:PASS
+mustNotCall_is_fn:PASS
+mustCall_invoked_once:PASS
+mustCallAtLeast_twice:PASS
+mustNotCall_throws:PASS
+child_mustCall_exit_zero:PASS

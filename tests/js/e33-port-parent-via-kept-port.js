@@ -68,9 +68,14 @@ const childBootstrap = `
         },
         listenerCount: function(ev) { return (listeners[ev] || []).length; },
         postMessage: function(payload) {
-          var env = { __edgePortMsg: true, targetPortId: portId, payload: payload };
-          var b = globalThis.__edgePackPostMessage(env);
-          globalThis.__edgePostMessageFromWorker(b);
+          // e34+ spoof-proof control envelope: PORT_MSG rides kind=0x01
+          // at the worker.ts bus layer, with format
+          // [u32 targetPortId][marshaled payload bytes].
+          var payloadBytes = globalThis.__edgePackPostMessage(payload);
+          var ctrl = new Uint8Array(4 + payloadBytes.byteLength);
+          new DataView(ctrl.buffer).setUint32(0, portId, true);
+          ctrl.set(payloadBytes, 4);
+          globalThis.__edgePostControlFromWorker(globalThis.__edgePmKind.PORT_MSG, ctrl);
         },
         start: function() {}, close: function() {},
         ref: function() { return stub; }, unref: function() { return stub; },
@@ -90,13 +95,8 @@ const childBootstrap = `
       if (existing) return existing;
       return globalThis.__edgeMakePortStub(portId);
     });
-    // Envelope path (item 1: parent sending via kept port to our stub)
-    if (data && data.__edgePortMsg === true) {
-      var s = globalThis.__edgePortStubsByGlobalId.get(data.targetPortId);
-      if (s && typeof s.emit === 'function') s.emit('message', data.payload);
-      return;
-    }
-    // Initial message with transferred port reference
+    // User-data path now strictly user-only — initial init message with
+    // transferred port reference arrives here.
     if (data && data.type === 'init' && data.transferredPort) {
       stub = data.transferredPort;
       stub.on('message', function(m) {
@@ -107,6 +107,17 @@ const childBootstrap = `
         setTimeout(function() { process.exit(0); }, 200);
       });
     }
+  };
+  // e34+ spoof-proof: PORT_MSG envelopes (item 1: parent sending via
+  // kept port to our stub) arrive on the control dispatcher.
+  globalThis.__edgeDispatchControlToChild = function(kind, controlBytes) {
+    if (kind !== globalThis.__edgePmKind.PORT_MSG) return;
+    var dv = new DataView(controlBytes.buffer, controlBytes.byteOffset, controlBytes.byteLength);
+    var targetPortId = dv.getUint32(0, true);
+    var payloadBytes = controlBytes.subarray(4);
+    var payload = globalThis.__edgeUnpackPostMessage(payloadBytes);
+    var s = globalThis.__edgePortStubsByGlobalId.get(targetPortId);
+    if (s && typeof s.emit === 'function') s.emit('message', payload);
   };
 `;
 

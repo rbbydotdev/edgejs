@@ -24,11 +24,14 @@ let errorReceived = null;
 globalThis.__edgeDispatchUserWorkerExit = (_w, c) => { exitCode = c; };
 globalThis.__edgeDispatchMessageFromChild = (_w, bytes) => {
   const data = globalThis.__edgeUnpackPostMessage(bytes);
-  if (data && data.__edgeWorkerError === true) {
-    errorReceived = data.error;
-    return;
-  }
   if (data && data.kind === 'report') childReport = data;
+};
+// e34+ spoof-proof: WORKER_ERROR rides the dedicated control kind byte,
+// not user data, so install __edgeDispatchControlFromChild.
+globalThis.__edgeDispatchControlFromChild = (_w, kind, controlBytes) => {
+  if (kind === globalThis.__edgePmKind.WORKER_ERROR) {
+    errorReceived = globalThis.__edgeUnpackPostMessage(controlBytes);
+  }
 };
 
 // Bootstrap: reports workerData, demonstrates postMessage from child,

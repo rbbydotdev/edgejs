@@ -19,22 +19,19 @@ globalThis.__edgeDispatchUserWorkerExit = (wid, code) => {
   exitTimestamp = Date.now();
 };
 
-// Mirror the policy's child→parent dispatcher: detect __edgeWorkerError
-// envelope and capture the unpacked Error.  In a real `new Worker()`
-// flow this happens inside __edgeDispatchMessageFromChild via the
-// policy patch; here we replicate it since the test uses
-// __edgeSpawnNodeWorker directly (no Worker instance).
-globalThis.__edgeDispatchMessageFromChild = (wid, bytes) => {
+// e34+ spoof-proof control envelope: child sends WORKER_ERROR via the
+// dedicated control kind byte (kind=0x03), never as user data, so this
+// test installs __edgeDispatchControlFromChild rather than detecting
+// inside __edgeDispatchMessageFromChild.
+globalThis.__edgeDispatchControlFromChild = (wid, kind, controlBytes) => {
   void wid;
-  const data = globalThis.__edgeUnpackPostMessage(bytes);
-  if (data && data.__edgeWorkerError === true) {
-    const e = data.error || {};
-    const err = new Error(e.message || 'uncaught');
-    if (e.name) err.name = e.name;
-    if (e.stack) err.stack = e.stack;
-    receivedError = err;
-    errorTimestamp = Date.now();
-  }
+  if (kind !== globalThis.__edgePmKind.WORKER_ERROR) return;
+  const e = globalThis.__edgeUnpackPostMessage(controlBytes) || {};
+  const err = new Error(e.message || 'uncaught');
+  if (e.name) err.name = e.name;
+  if (e.stack) err.stack = e.stack;
+  receivedError = err;
+  errorTimestamp = Date.now();
 };
 
 // Child bootstrap throws ASYNCHRONOUSLY so process.on uncaughtException

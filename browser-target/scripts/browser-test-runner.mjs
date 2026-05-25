@@ -78,7 +78,7 @@ async function runOne(browser, t) {
   if (existsSync(t.skipPath)) {
     return { status: "skip", reason: read(t.skipPath).trim() || "(no reason)" };
   }
-  const script = readFileSync(t.jsPath, "utf8");
+  let script = readFileSync(t.jsPath, "utf8");
   const expectedOut = existsSync(t.stdoutPath) ? read(t.stdoutPath) : "";
   // .harness-args sidecar: appended as URL query params.  Two accepted
   // syntaxes (mix is fine, one per line OR multiple per line):
@@ -88,7 +88,14 @@ async function runOne(browser, t) {
   // Blank lines and # comments ignored.  The `--k v` form matches the
   // existing node-harness harness-args convention so sidecars are
   // shareable between the two runners.
+  //
+  // Special key `prelude=<stem>` (also `--prelude <stem>`): reads
+  // `tests/js/lib/<stem>.js` and PREPENDS it to the test source
+  // before URL-encoding.  Used by ported node tests to load the
+  // common.mustCall shim from `lib/common-shim.js`.  The prelude is
+  // not surfaced as a URL param — it's source-level concatenation.
   let extraParams = "";
+  const preludeStems = [];
   if (existsSync(t.harnessArgsPath)) {
     const tokens = read(t.harnessArgsPath)
       .split("\n")
@@ -101,7 +108,8 @@ async function runOne(browser, t) {
         const k = t.slice(2);
         const next = tokens[i + 1];
         if (next !== undefined && !next.startsWith("--") && next.indexOf("=") < 0) {
-          extraParams += `&${encodeURIComponent(k)}=${encodeURIComponent(next)}`;
+          if (k === "prelude") preludeStems.push(next);
+          else extraParams += `&${encodeURIComponent(k)}=${encodeURIComponent(next)}`;
           i++;
         } else {
           extraParams += `&${encodeURIComponent(k)}=1`;
@@ -110,9 +118,17 @@ async function runOne(browser, t) {
         const eq = t.indexOf("=");
         const k = t.slice(0, eq);
         const v = t.slice(eq + 1);
-        extraParams += `&${encodeURIComponent(k)}=${encodeURIComponent(v)}`;
+        if (k === "prelude") preludeStems.push(v);
+        else extraParams += `&${encodeURIComponent(k)}=${encodeURIComponent(v)}`;
       }
     }
+  }
+  for (const stem of preludeStems) {
+    const preludePath = resolve(testsDir, "lib", `${stem}.js`);
+    if (!existsSync(preludePath)) {
+      return { status: "err", reason: `prelude not found: ${preludePath}` };
+    }
+    script = read(preludePath) + "\n;\n" + script;
   }
   const url = `http://localhost:${VITE_PORT}/?script=${encodeURIComponent(script)}${extraParams}`;
 

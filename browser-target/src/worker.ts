@@ -397,8 +397,37 @@ function installSpawnNodeWorkerGlobal(): void {
 // pack/unpack is done by the policy patch (worker-threads-per-thread)
 // which calls these AFTER marshaling, so we keep these globals tiny
 // and bytes-only.
+//
+// SPOOF-PROOF CONTROL ENVELOPE (e34+): byte 0 of the transported
+// payload is a "kind" tag that worker.ts owns end-to-end.  User data
+// always goes out as KIND_USER_DATA=0x00, so a user payload containing
+// fields like `__edgeWorkerTerminate: true` can NEVER reach the
+// control path — the dispatcher gates on byte 0, not on the
+// unmarshaled object.  Control senders use a distinct kind value:
+//
+//   0x00  KIND_USER_DATA      [marshaled user value bytes]
+//   0x01  KIND_PORT_MSG       [u32 targetPortId LE][marshaled payload]
+//   0x02  KIND_TERMINATE      (empty)
+//   0x03  KIND_WORKER_ERROR   [marshaled error info]
+//
+// Receiver branches on byte 0 BEFORE handing payload to the policy
+// dispatcher, which keeps the marshal layer purely about user data.
+const KIND_USER_DATA = 0x00;
+const KIND_PORT_MSG = 0x01;
+const KIND_TERMINATE = 0x02;
+const KIND_WORKER_ERROR = 0x03;
+
 type PostMessageToWorker = (workerId: number, bytes: Uint8Array) => void;
 type PostMessageFromWorker = (bytes: Uint8Array) => void;
+type PostControlToWorker = (workerId: number, kind: number, controlBytes: Uint8Array) => void;
+type PostControlFromWorker = (kind: number, controlBytes: Uint8Array) => void;
+
+function prependKindByte(kind: number, bytes: Uint8Array): Uint8Array {
+  const out = new Uint8Array(1 + bytes.byteLength);
+  out[0] = kind;
+  out.set(bytes, 1);
+  return out;
+}
 
 function installPostMessageGlobals(): void {
   // Parent-side: send a message to a specific child by workerId.
@@ -406,11 +435,12 @@ function installPostMessageGlobals(): void {
     if (!hostRpcSyncClient) {
       throw new Error("__edgePostMessageToWorker: host RPC sync client not attached");
     }
-    const payload = new Uint8Array(4 + 4 + bytes.byteLength);
+    const tagged = prependKindByte(KIND_USER_DATA, bytes);
+    const payload = new Uint8Array(4 + 4 + tagged.byteLength);
     const dv = new DataView(payload.buffer);
     dv.setUint32(0, workerId, true);
-    dv.setUint32(4, bytes.byteLength, true);
-    payload.set(bytes, 8);
+    dv.setUint32(4, tagged.byteLength, true);
+    payload.set(tagged, 8);
     const reply = hostRpcSyncClient.callSync(
       OP_WORKER_POST_MESSAGE_TO_CHILD, hostWorkerId, 0, payload,
     );
@@ -421,6 +451,32 @@ function installPostMessageGlobals(): void {
   };
   (globalThis as { __edgePostMessageToWorker?: PostMessageToWorker }).__edgePostMessageToWorker = toWorker;
 
+  // Parent-side control sender — same bus, distinct kind byte the
+  // dispatcher routes to __edgeDispatchControlToChild instead of the
+  // user 'message' path.
+  const toControlWorker: PostControlToWorker = (workerId, kind, controlBytes) => {
+    if (!hostRpcSyncClient) {
+      throw new Error("__edgePostControlToWorker: host RPC sync client not attached");
+    }
+    if (kind === KIND_USER_DATA) {
+      throw new Error("__edgePostControlToWorker: kind 0x00 is reserved for user data");
+    }
+    const tagged = prependKindByte(kind, controlBytes);
+    const payload = new Uint8Array(4 + 4 + tagged.byteLength);
+    const dv = new DataView(payload.buffer);
+    dv.setUint32(0, workerId, true);
+    dv.setUint32(4, tagged.byteLength, true);
+    payload.set(tagged, 8);
+    const reply = hostRpcSyncClient.callSync(
+      OP_WORKER_POST_MESSAGE_TO_CHILD, hostWorkerId, 0, payload,
+    );
+    if (reply.status !== REPLY_STATUS_OK) {
+      const msg = new TextDecoder().decode(reply.payload) || `post-control-to-worker status=${reply.status}`;
+      throw new Error("__edgePostControlToWorker: " + msg);
+    }
+  };
+  (globalThis as { __edgePostControlToWorker?: PostControlToWorker }).__edgePostControlToWorker = toControlWorker;
+
   // Child-side: send a message back to the parent.  No workerId here —
   // main derives the routing target from the source host's id via the
   // userWorkers registry.
@@ -428,10 +484,11 @@ function installPostMessageGlobals(): void {
     if (!hostRpcSyncClient) {
       throw new Error("__edgePostMessageFromWorker: host RPC sync client not attached");
     }
-    const payload = new Uint8Array(4 + bytes.byteLength);
+    const tagged = prependKindByte(KIND_USER_DATA, bytes);
+    const payload = new Uint8Array(4 + tagged.byteLength);
     const dv = new DataView(payload.buffer);
-    dv.setUint32(0, bytes.byteLength, true);
-    payload.set(bytes, 4);
+    dv.setUint32(0, tagged.byteLength, true);
+    payload.set(tagged, 4);
     const reply = hostRpcSyncClient.callSync(
       OP_WORKER_POST_MESSAGE_TO_PARENT, hostWorkerId, 0, payload,
     );
@@ -441,6 +498,39 @@ function installPostMessageGlobals(): void {
     }
   };
   (globalThis as { __edgePostMessageFromWorker?: PostMessageFromWorker }).__edgePostMessageFromWorker = fromWorker;
+
+  // Child-side control sender — same routing as fromWorker but tagged.
+  const fromControlWorker: PostControlFromWorker = (kind, controlBytes) => {
+    if (!hostRpcSyncClient) {
+      throw new Error("__edgePostControlFromWorker: host RPC sync client not attached");
+    }
+    if (kind === KIND_USER_DATA) {
+      throw new Error("__edgePostControlFromWorker: kind 0x00 is reserved for user data");
+    }
+    const tagged = prependKindByte(kind, controlBytes);
+    const payload = new Uint8Array(4 + tagged.byteLength);
+    const dv = new DataView(payload.buffer);
+    dv.setUint32(0, tagged.byteLength, true);
+    payload.set(tagged, 4);
+    const reply = hostRpcSyncClient.callSync(
+      OP_WORKER_POST_MESSAGE_TO_PARENT, hostWorkerId, 0, payload,
+    );
+    if (reply.status !== REPLY_STATUS_OK) {
+      const msg = new TextDecoder().decode(reply.payload) || `post-control-to-parent status=${reply.status}`;
+      throw new Error("__edgePostControlFromWorker: " + msg);
+    }
+  };
+  (globalThis as { __edgePostControlFromWorker?: PostControlFromWorker }).__edgePostControlFromWorker = fromControlWorker;
+
+  // Expose kind constants so the policy patch can name them rather than
+  // hardcoding magic numbers.  Kept as a plain object instead of
+  // individual globals to keep the global namespace tidy.
+  (globalThis as { __edgePmKind?: Record<string, number> }).__edgePmKind = {
+    USER_DATA: KIND_USER_DATA,
+    PORT_MSG: KIND_PORT_MSG,
+    TERMINATE: KIND_TERMINATE,
+    WORKER_ERROR: KIND_WORKER_ERROR,
+  };
 
   // Phase 2: expose marshal pack/unpack as globals so the policy
   // patch's JS string (which runs in this wasm runtime's V8 realm)
@@ -611,25 +701,38 @@ self.addEventListener("message", (e: MessageEvent) => {
           }
           // The marshaled bytes view aliases the args buffer; copy so
           // the dispatcher (which may queue) owns its own memory.
-          const bytes = new Uint8Array(bytesLen);
-          bytes.set(new Uint8Array(args.buffer, args.byteOffset + 8, bytesLen));
+          // Includes the kind tag byte at position 0 (spoof-proof
+          // control envelope, see installPostMessageGlobals).
+          if (bytesLen < 1) {
+            return {
+              payload: new TextEncoder().encode("deliver-message-from-child: missing kind byte"),
+              status: REPLY_STATUS_INVALID_ARGS,
+            };
+          }
+          const tagged = new Uint8Array(bytesLen);
+          tagged.set(new Uint8Array(args.buffer, args.byteOffset + 8, bytesLen));
+          const kind = tagged[0];
+          const bytes = tagged.subarray(1);
           type FromChildDispatcher = (workerId: number, bytes: Uint8Array) => void;
-          const dispatch = (globalThis as { __edgeDispatchMessageFromChild?: FromChildDispatcher })
-            .__edgeDispatchMessageFromChild;
-          if (typeof dispatch === "function") {
-            dispatchOnLibuvTick("OP_DELIVER_MESSAGE_FROM_CHILD", () => dispatch(workerId, bytes));
-            // Real Path A wake-up: nudge the worker-specific uv_async_t
-            // so a `poll_oneoff` blocked in `_start` returns immediately
-            // and runs the setImmediate-queued dispatch above.  The slot
-            // is published by the worker-threads-per-thread policy
-            // patch when a 'message' listener is registered on the
-            // matching Worker instance.  Absent slot = fallback
-            // setInterval keepalive in play (or no listener yet); the
-            // existing setImmediate path still works, just with up-to-
-            // 50ms latency.
-            pokeWorkerSlot(workerId);
+          type FromChildControlDispatcher = (workerId: number, kind: number, controlBytes: Uint8Array) => void;
+          if (kind === 0x00) {
+            const dispatch = (globalThis as { __edgeDispatchMessageFromChild?: FromChildDispatcher })
+              .__edgeDispatchMessageFromChild;
+            if (typeof dispatch === "function") {
+              dispatchOnLibuvTick("OP_DELIVER_MESSAGE_FROM_CHILD", () => dispatch(workerId, bytes));
+              pokeWorkerSlot(workerId);
+            } else {
+              post("log", { text: `[runtime] OP_DELIVER_MESSAGE_FROM_CHILD #${workerId}: no dispatcher registered`, level: "warn" });
+            }
           } else {
-            post("log", { text: `[runtime] OP_DELIVER_MESSAGE_FROM_CHILD #${workerId}: no dispatcher registered`, level: "warn" });
+            const cdispatch = (globalThis as { __edgeDispatchControlFromChild?: FromChildControlDispatcher })
+              .__edgeDispatchControlFromChild;
+            if (typeof cdispatch === "function") {
+              dispatchOnLibuvTick("OP_DELIVER_CONTROL_FROM_CHILD", () => cdispatch(workerId, kind, bytes));
+              pokeWorkerSlot(workerId);
+            } else {
+              post("log", { text: `[runtime] OP_DELIVER_MESSAGE_FROM_CHILD #${workerId}: no control dispatcher (kind=0x${kind.toString(16)})`, level: "warn" });
+            }
           }
           return { payload: new Uint8Array(0), status: REPLY_STATUS_OK };
         } catch (e) {
@@ -657,21 +760,38 @@ self.addEventListener("message", (e: MessageEvent) => {
               status: REPLY_STATUS_INVALID_ARGS,
             };
           }
-          const bytes = new Uint8Array(bytesLen);
-          bytes.set(new Uint8Array(args.buffer, args.byteOffset + 4, bytesLen));
+          // Spoof-proof envelope: byte 0 is the kind tag, rest is the
+          // tagged payload (user data or control format).
+          if (bytesLen < 1) {
+            return {
+              payload: new TextEncoder().encode("deliver-message-to-child: missing kind byte"),
+              status: REPLY_STATUS_INVALID_ARGS,
+            };
+          }
+          const tagged = new Uint8Array(bytesLen);
+          tagged.set(new Uint8Array(args.buffer, args.byteOffset + 4, bytesLen));
+          const kind = tagged[0];
+          const bytes = tagged.subarray(1);
           type ToChildDispatcher = (bytes: Uint8Array) => void;
-          const dispatch = (globalThis as { __edgeDispatchMessageToChild?: ToChildDispatcher })
-            .__edgeDispatchMessageToChild;
-          if (typeof dispatch === "function") {
-            dispatchOnLibuvTick("OP_DELIVER_MESSAGE_TO_CHILD", () => dispatch(bytes));
-            // Real Path A wake-up: nudge the child's parentPort
-            // uv_async_t slot (published by the worker-threads policy
-            // when a 'message' listener is attached to parentPort) so
-            // `poll_oneoff` returns immediately rather than waiting for
-            // the next libuv timer tick.
-            pokeParentPortSlot();
+          type ToChildControlDispatcher = (kind: number, controlBytes: Uint8Array) => void;
+          if (kind === 0x00) {
+            const dispatch = (globalThis as { __edgeDispatchMessageToChild?: ToChildDispatcher })
+              .__edgeDispatchMessageToChild;
+            if (typeof dispatch === "function") {
+              dispatchOnLibuvTick("OP_DELIVER_MESSAGE_TO_CHILD", () => dispatch(bytes));
+              pokeParentPortSlot();
+            } else {
+              post("log", { text: `[runtime] OP_DELIVER_MESSAGE_TO_CHILD: no dispatcher registered`, level: "warn" });
+            }
           } else {
-            post("log", { text: `[runtime] OP_DELIVER_MESSAGE_TO_CHILD: no dispatcher registered`, level: "warn" });
+            const cdispatch = (globalThis as { __edgeDispatchControlToChild?: ToChildControlDispatcher })
+              .__edgeDispatchControlToChild;
+            if (typeof cdispatch === "function") {
+              dispatchOnLibuvTick("OP_DELIVER_CONTROL_TO_CHILD", () => cdispatch(kind, bytes));
+              pokeParentPortSlot();
+            } else {
+              post("log", { text: `[runtime] OP_DELIVER_MESSAGE_TO_CHILD: no control dispatcher (kind=0x${kind.toString(16)})`, level: "warn" });
+            }
           }
           return { payload: new Uint8Array(0), status: REPLY_STATUS_OK };
         } catch (e) {

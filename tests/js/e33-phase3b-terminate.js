@@ -30,10 +30,13 @@ const spawnedAt = Date.now();
 const workerId = globalThis.__edgeSpawnNodeWorker(childBootstrap);
 
 // Wait briefly for child to boot, then "terminate" by sending the
-// envelope ourselves (mirrors what EdgeWorkerImpl.stopThread does).
+// control envelope ourselves (mirrors what EdgeWorkerImpl.stopThread
+// does after the e34+ spoof-proof refactor: TERMINATE rides the
+// dedicated control kind byte at the worker.ts bus layer, NOT user
+// data, so a worker.postMessage of any user value can never trigger
+// it).
 setTimeout(() => {
-  const bytes = globalThis.__edgePackPostMessage({ __edgeWorkerTerminate: true });
-  globalThis.__edgePostMessageToWorker(workerId, bytes);
+  globalThis.__edgePostControlToWorker(workerId, globalThis.__edgePmKind.TERMINATE, new Uint8Array(0));
 }, 500);
 
 setTimeout(() => {

@@ -64,6 +64,46 @@ import type { Policy } from "./index";
 // to default once phase 3 (terminate + error events) is in.  Users opt
 // in via `?policies=worker-threads-per-thread`.
 
+// Spoof-proof control envelope (e34+): wire-format helpers shared
+// between parent and child sides.  The worker.ts layer prefixes every
+// payload byte stream with a "kind" byte (KIND_USER_DATA=0x00 or a
+// control kind != 0x00).  User data NEVER touches the kind byte —
+// worker.ts owns it end-to-end — so user payloads can no longer
+// trigger __edgeWorkerTerminate / __edgeWorkerError / __edgePortMsg
+// behavior via property-name spoofing.
+//
+// Control-payload formats (bytes that follow the kind tag):
+//
+//   KIND_PORT_MSG (0x01):
+//     [u32 LE: targetPortId]
+//     [bytes: marshaled payload via packPostMessage]
+//   KIND_TERMINATE (0x02):
+//     (empty)
+//   KIND_WORKER_ERROR (0x03):
+//     [bytes: marshaled {name, message, stack} via packPostMessage]
+//
+// Senders use __edgePostControlToWorker / __edgePostControlFromWorker
+// installed in worker.ts.  Receivers register __edgeDispatchControlToChild
+// / __edgeDispatchControlFromChild here (in the policy) and parse the
+// control payload according to the kind byte.
+const CONTROL_HELPERS_JS = `
+function __edgeMakePortMsgPayload(targetPortId, payloadBytes) {
+  var out = new Uint8Array(4 + payloadBytes.byteLength);
+  var dv = new DataView(out.buffer);
+  dv.setUint32(0, targetPortId, true);
+  out.set(payloadBytes, 4);
+  return out;
+}
+function __edgeParsePortMsgPayload(controlBytes) {
+  if (controlBytes.byteLength < 4) return null;
+  var dv = new DataView(controlBytes.buffer, controlBytes.byteOffset, controlBytes.byteLength);
+  var targetPortId = dv.getUint32(0, true);
+  // subarray view — caller may pass straight to unpackPostMessage.
+  var payloadBytes = controlBytes.subarray(4);
+  return { targetPortId: targetPortId, payloadBytes: payloadBytes };
+}
+`;
+
 // Libuv-keepalive helper shared by both the parent-side per-Worker
 // keepalive and the child-side parentPort keepalive.
 //
@@ -197,12 +237,28 @@ const PRE_PATCH = `
 
   var origWorkerImpl = binding.Worker;
   function EdgeWorkerImpl(url, _env, _execArgv, _resourceLimits, _trackUnmanagedFds, _isInternal, _name) {
-    var srcPath = urlToSrcPath(url);
-    if (typeof srcPath !== 'string' || srcPath.length === 0) {
-      return new origWorkerImpl(url, _env, _execArgv, _resourceLimits, _trackUnmanagedFds, _isInternal, _name);
+    // Phase 5 (e34+): eval-mode Worker support.  EdgeWorkerInstanceTracker
+    // stashes options.eval===true + the user code string here before
+    // super() runs.  When set, we synthesize the bootstrap directly from
+    // the code rather than treating url as a path to require().
+    //
+    // Cleared in finally on the tracker side to avoid leaking to nested
+    // constructs.  We snapshot locally before any other work.
+    var evalCode = (globalThis.__edgePendingEvalCode === true || typeof globalThis.__edgePendingEvalCode === 'string')
+      ? globalThis.__edgePendingEvalCode
+      : null;
+    var bootstrapScript;
+    if (typeof evalCode === 'string') {
+      // url is the code string itself when options.eval is true.
+      bootstrapScript = evalCode;
+    } else {
+      var srcPath = urlToSrcPath(url);
+      if (typeof srcPath !== 'string' || srcPath.length === 0) {
+        return new origWorkerImpl(url, _env, _execArgv, _resourceLimits, _trackUnmanagedFds, _isInternal, _name);
+      }
+      bootstrapScript = 'process.argv[1] = ' + JSON.stringify(srcPath) +
+                        '; require(' + JSON.stringify(srcPath) + ');';
     }
-    var bootstrapScript = 'process.argv[1] = ' + JSON.stringify(srcPath) +
-                          '; require(' + JSON.stringify(srcPath) + ');';
     // Phase 3a (e33+): the outer constructor wrapper (EdgeWorkerInstanceTracker
     // below) stashes the user's options.workerData here before super()
     // runs, so we can pass it through the spawn payload to the child.
@@ -261,28 +317,19 @@ const PRE_PATCH = `
 
   EdgeWorkerImpl.prototype.startThread = function() {};
   // Phase 3b (e33+): worker.terminate() flows lib → kHandle.stopThread().
-  // Was previously a no-op (terminate silently did nothing).  Now we
-  // envelope-signal the child via the existing cross-worker bus; the
-  // child's __edgeDispatchMessageToChild recognizes
-  // {__edgeWorkerTerminate: true} as the first dispatch check and
-  // calls process.exit(1).  Exit signal flows through the existing
-  // user-worker-exit pipeline → parent's onexit → lib's terminate
-  // Promise resolves with code 1.
-  //
-  // Spoofing limitation: user code that sends worker.postMessage with
-  // a value containing __edgeWorkerTerminate=true would also trigger
-  // termination.  Documented as known limitation; a dedicated control
-  // channel (separate RPC op routed through main without going through
-  // the data path) is the spec-correct followup.  In-band MVP fits
-  // real user-facing terminate semantics in 99% of cases.
+  // e34+ spoof-proof envelope: terminate now uses the dedicated control
+  // channel (kind=0x02, empty payload).  User data can NEVER reach byte 0
+  // since worker.ts owns it — so worker.postMessage with any user payload
+  // cannot trigger termination.  Exit signal still flows through the
+  // existing user-worker-exit pipeline → parent's onexit → lib's
+  // terminate Promise resolves with code 1.
   EdgeWorkerImpl.prototype.stopThread = function() {
     var wid = this.__edgeWorkerId;
     if (typeof wid !== 'number') return;
-    if (typeof globalThis.__edgePostMessageToWorker !== 'function') return;
-    if (typeof globalThis.__edgePackPostMessage !== 'function') return;
+    if (typeof globalThis.__edgePostControlToWorker !== 'function') return;
+    if (!globalThis.__edgePmKind) return;
     try {
-      var bytes = globalThis.__edgePackPostMessage({ __edgeWorkerTerminate: true });
-      globalThis.__edgePostMessageToWorker(wid, bytes);
+      globalThis.__edgePostControlToWorker(wid, globalThis.__edgePmKind.TERMINATE, new Uint8Array(0));
     } catch (e) { void e; }
   };
 
@@ -304,6 +351,7 @@ const PRE_PATCH = `
 // `internal/worker.js` module evaluation.
 const POST_PATCH = `
 ${KEEPALIVE_HELPER_JS}
+${CONTROL_HELPERS_JS}
 ;(function postEdgeWorkerThreadsPatch() {
   // Defensive — these globals come from the wasm runtime's worker.ts
   // (installPostMessageGlobals); if the policy is enabled but the
@@ -386,18 +434,15 @@ ${KEEPALIVE_HELPER_JS}
     // calling entry.deliver, NOT from any user code).  We just rewire
     // postMessage to route via envelope instead of via C++.
     sibling.postMessage = function(payload) {
-      var envelope = {
-        __edgePortMsg: true,
-        targetPortId: transferredPortId,
-        payload: payload,
-      };
-      var bytes = globalThis.__edgePackPostMessage(envelope);
+      // e34+ spoof-proof control envelope: targetPortId + marshaled
+      // payload, routed via __edgePostControlToWorker/FromWorker.
+      var payloadBytes = globalThis.__edgePackPostMessage(payload);
+      var controlBytes = __edgeMakePortMsgPayload(transferredPortId, payloadBytes);
+      var k = globalThis.__edgePmKind ? globalThis.__edgePmKind.PORT_MSG : 0x01;
       if (typeof destinationWorkerId === 'number') {
-        // Parent → specific child worker
-        globalThis.__edgePostMessageToWorker(destinationWorkerId, bytes);
-      } else if (typeof globalThis.__edgePostMessageFromWorker === 'function') {
-        // Child → parent (no explicit workerId needed; routed via main)
-        globalThis.__edgePostMessageFromWorker(bytes);
+        globalThis.__edgePostControlToWorker(destinationWorkerId, k, controlBytes);
+      } else if (typeof globalThis.__edgePostControlFromWorker === 'function') {
+        globalThis.__edgePostControlFromWorker(k, controlBytes);
       } else {
         throw new Error('edge.js: sibling-rewired port has no cross-worker transport');
       }
@@ -448,24 +493,18 @@ ${KEEPALIVE_HELPER_JS}
   function __edgeMakePortStub(globalPortId, originWorkerId) {
     var stub = new EventEmitter();
     stub.postMessage = function(payload) {
-      var envelope = {
-        __edgePortMsg: true,
-        targetPortId: globalPortId,
-        payload: payload,
-      };
-      var bytes = globalThis.__edgePackPostMessage(envelope);
-      if (typeof originWorkerId === 'number' && typeof globalThis.__edgePostMessageToWorker === 'function') {
+      // e34+ spoof-proof control envelope.
+      var payloadBytes = globalThis.__edgePackPostMessage(payload);
+      var controlBytes = __edgeMakePortMsgPayload(globalPortId, payloadBytes);
+      var k = globalThis.__edgePmKind ? globalThis.__edgePmKind.PORT_MSG : 0x01;
+      if (typeof originWorkerId === 'number' && typeof globalThis.__edgePostControlToWorker === 'function') {
         // Parent → specific child worker (originator of the port).
-        globalThis.__edgePostMessageToWorker(originWorkerId, bytes);
-      } else if (typeof globalThis.__edgePostMessageFromWorker === 'function') {
+        globalThis.__edgePostControlToWorker(originWorkerId, k, controlBytes);
+      } else if (typeof globalThis.__edgePostControlFromWorker === 'function') {
         // Child → parent via existing bus.
-        globalThis.__edgePostMessageFromWorker(bytes);
-      } else if (typeof globalThis.__edgePostMessageToWorker === 'function') {
-        // Parent-side stub with no recorded origin.  Happens if a
-        // received port has no originWorkerId attached — log and drop
-        // rather than throw, since silent message-drop is recoverable
-        // for tests; if needed, callers can detect via
-        // stub.__edgeOriginWorkerId.
+        globalThis.__edgePostControlFromWorker(k, controlBytes);
+      } else if (typeof globalThis.__edgePostControlToWorker === 'function') {
+        // Parent-side stub with no recorded origin.
         throw new Error('edge.js: parent-side stub.postMessage without originWorkerId (item 2)');
       } else {
         throw new Error('edge.js: stub.postMessage has no cross-worker transport available');
@@ -505,10 +544,8 @@ ${KEEPALIVE_HELPER_JS}
     try {
       // Phase 4 (e33): plumb decodePort so MARSHAL_TAG_PORT_REF in
       // child-to-parent messages materializes a stub on parent side.
-      // Items 2-full + 3: originWorkerId now comes from the WIRE (the
-      // original allocator's hostWorkerId encoded into the PORT_REF),
-      // not from the sender's workerId.  This means re-transferred
-      // stubs carry the right routing target through arbitrary chains.
+      // originWorkerId comes from the WIRE so re-transferred stubs
+      // carry the right routing target through arbitrary chains.
       data = globalThis.__edgeUnpackPostMessage(bytes, function(globalPortId, originWid) {
         var existing = globalThis.__edgePortStubsByGlobalId.get(globalPortId);
         if (existing) return existing;
@@ -519,65 +556,74 @@ ${KEEPALIVE_HELPER_JS}
       if (wErr) wErr.emit('messageerror', e);
       return;
     }
-    // Phase 4 (e33) step 3: detect port-message envelope FIRST — it
-    // doesn't require a registered Worker instance (the test path uses
-    // __edgeSpawnNodeWorker directly without the EdgeWorkerInstanceTracker
-    // wrapper, so workerById won't have it; envelope routing must still
-    // work).
-    //
-    // Format: { __edgePortMsg: true, targetPortId: N, payload: <any> }
-    // When found, look up the local port entry and call entry.deliver
-    // to enqueue on the C++ sibling (whose user-registered on('message')
-    // fires normally).  entry.deliver bypasses the now-neutered public
-    // postMessage (item 4).
-    if (data && typeof data === 'object' && data.__edgePortMsg === true) {
-      // Items 1+2+3 (e33) — triage by what WE hold for this port-ID:
-      // (a) entry → we own the port, deliver via C++ sibling
-      // (b) stub w/ __edgeForwardedTo → we passed this stub on, forward
-      //     to the new owner (items 2-full + 3 chain hop)
-      // (c) stub without forward → we're the destination, emit
-      var entry = globalThis.__edgePortsByGlobalId.get(data.targetPortId);
-      if (entry && typeof entry.deliver === 'function') {
-        try { entry.deliver(data.payload); } catch (e) { void e; }
-        return;
-      }
-      var stub = globalThis.__edgePortStubsByGlobalId.get(data.targetPortId);
-      if (stub && typeof stub.__edgeForwardedTo === 'number') {
-        // Re-emit the envelope toward the next hop.
-        var fwdEnv = {
-          __edgePortMsg: true,
-          targetPortId: data.targetPortId,
-          payload: data.payload,
-        };
-        var fwdBytes = globalThis.__edgePackPostMessage(fwdEnv);
-        globalThis.__edgePostMessageToWorker(stub.__edgeForwardedTo, fwdBytes);
-        return;
-      }
-      if (stub && typeof stub.emit === 'function') {
-        stub.emit('message', data.payload);
-      }
-      return;
-    }
-    // Phase 3c (e33+): __edgeWorkerError envelope from a child that
-    // hit uncaughtException / unhandledRejection.  Emit 'error' on
-    // the Worker.  The 'exit' event will follow via the normal
-    // user-worker-exit chain when the child calls process.exit(1).
-    if (data && typeof data === 'object' && data.__edgeWorkerError === true) {
-      var wErr = workerById.get(workerId);
-      if (wErr && typeof wErr.emit === 'function') {
-        var err3c = new Error((data.error && data.error.message) || 'uncaught exception in worker');
-        if (data.error) {
-          if (data.error.name) try { err3c.name = data.error.name; } catch (e) { void e; }
-          if (data.error.stack) try { err3c.stack = data.error.stack; } catch (e) { void e; }
-        }
-        wErr.emit('error', err3c);
-      }
-      return;
-    }
-    // Regular Worker.on('message') path — needs the Worker registry.
+    // User-data path is now spoof-proof — control envelopes (port-msg,
+    // terminate, worker-error) ride a separate kind byte at the
+    // worker.ts layer and route through __edgeDispatchControlFromChild
+    // below.  Anything reaching THIS dispatcher is unambiguously user
+    // data and goes straight to Worker.on('message').
     var w = workerById.get(workerId);
     if (!w) return;
     w.emit('message', data);
+  };
+
+  // e34+ control dispatcher (parent side).  Called by worker.ts when
+  // the inbound payload's kind byte is non-zero.  kind comes from
+  // __edgePmKind.PORT_MSG / WORKER_ERROR.  controlBytes is the payload
+  // after the kind byte was stripped by worker.ts.
+  globalThis.__edgeDispatchControlFromChild = function(workerId, kind, controlBytes) {
+    var KK = globalThis.__edgePmKind || { PORT_MSG: 0x01, TERMINATE: 0x02, WORKER_ERROR: 0x03 };
+    if (kind === KK.PORT_MSG) {
+      var pm = __edgeParsePortMsgPayload(controlBytes);
+      if (!pm) return;
+      var payload;
+      try {
+        payload = globalThis.__edgeUnpackPostMessage(pm.payloadBytes, function(globalPortId, originWid) {
+          var existing = globalThis.__edgePortStubsByGlobalId.get(globalPortId);
+          if (existing) return existing;
+          return globalThis.__edgeMakePortStub(globalPortId, originWid);
+        });
+      } catch (e) {
+        return;
+      }
+      // Triage: (a) entry → we own port; (b) stub forwarded → forward;
+      // (c) stub here → emit.
+      var entry = globalThis.__edgePortsByGlobalId.get(pm.targetPortId);
+      if (entry && typeof entry.deliver === 'function') {
+        try { entry.deliver(payload); } catch (e) { void e; }
+        return;
+      }
+      var stub = globalThis.__edgePortStubsByGlobalId.get(pm.targetPortId);
+      if (stub && typeof stub.__edgeForwardedTo === 'number') {
+        // Forward to next hop via control envelope (re-encode the
+        // payload bytes — they may include port refs that the stub
+        // factory just materialized, but we're sending bytes as-is
+        // since the wire format already encoded them).
+        var fwdControl = __edgeMakePortMsgPayload(pm.targetPortId, pm.payloadBytes);
+        globalThis.__edgePostControlToWorker(stub.__edgeForwardedTo, KK.PORT_MSG, fwdControl);
+        return;
+      }
+      if (stub && typeof stub.emit === 'function') {
+        stub.emit('message', payload);
+      }
+      return;
+    }
+    if (kind === KK.WORKER_ERROR) {
+      var errInfo;
+      try { errInfo = globalThis.__edgeUnpackPostMessage(controlBytes); }
+      catch (e) { return; }
+      var wErr2 = workerById.get(workerId);
+      if (wErr2 && typeof wErr2.emit === 'function') {
+        var err3c = new Error((errInfo && errInfo.message) || 'uncaught exception in worker');
+        if (errInfo) {
+          if (errInfo.name) try { err3c.name = errInfo.name; } catch (e) { void e; }
+          if (errInfo.stack) try { err3c.stack = errInfo.stack; } catch (e) { void e; }
+        }
+        wErr2.emit('error', err3c);
+      }
+      return;
+    }
+    // KIND_TERMINATE doesn't make sense parent-side (children get
+    // terminated by parents, not vice versa).  Ignore silently.
   };
 
   // Replace Worker.prototype.postMessage.  Lib's version (line 442 of
@@ -688,9 +734,19 @@ ${KEEPALIVE_HELPER_JS}
         } else {
           globalThis.__edgePendingWorkerData = null;
         }
+        // Phase 5 (e34+): if eval-mode, stash the code so EdgeWorkerImpl
+        // synthesizes the bootstrap directly instead of treating filename
+        // as a path.  Node's lib/internal/worker.js validates options.eval
+        // before reaching the binding, so trusting it here is safe.
+        if (options && options.eval === true && typeof filename === 'string') {
+          globalThis.__edgePendingEvalCode = filename;
+        } else {
+          globalThis.__edgePendingEvalCode = null;
+        }
         super(filename, options);
       } finally {
         globalThis.__edgePendingWorkerData = null;
+        globalThis.__edgePendingEvalCode = null;
       }
       var h = this[kHandle];
       if (h && typeof h.__edgeWorkerId === 'number') {
@@ -784,6 +840,7 @@ const WORKER_THREADS_POST_PATCH = `
 })();
 
 ${KEEPALIVE_HELPER_JS}
+${CONTROL_HELPERS_JS}
 ;(function postEdgeWorkerThreadsParentPortPatch() {
   if (globalThis.__edgeIsUserWorker !== true) return;
   if (typeof globalThis.__edgePostMessageFromWorker !== 'function') return;
@@ -840,17 +897,15 @@ ${KEEPALIVE_HELPER_JS}
     try { Object.defineProperty(sibling, '__edgeTransferredPortId', { value: transferredPortId }); }
     catch (e) { void e; }
     sibling.postMessage = function(payload) {
-      var envelope = {
-        __edgePortMsg: true,
-        targetPortId: transferredPortId,
-        payload: payload,
-      };
-      var bytes = globalThis.__edgePackPostMessage(envelope);
+      // e34+ spoof-proof control envelope.
+      var payloadBytes = globalThis.__edgePackPostMessage(payload);
+      var controlBytes = __edgeMakePortMsgPayload(transferredPortId, payloadBytes);
+      var k = globalThis.__edgePmKind ? globalThis.__edgePmKind.PORT_MSG : 0x01;
       if (typeof destinationWorkerId === 'number') {
-        globalThis.__edgePostMessageToWorker(destinationWorkerId, bytes);
+        globalThis.__edgePostControlToWorker(destinationWorkerId, k, controlBytes);
       } else {
         // Child-side: route up to parent
-        globalThis.__edgePostMessageFromWorker(bytes);
+        globalThis.__edgePostControlFromWorker(k, controlBytes);
       }
     };
   }
@@ -886,26 +941,18 @@ ${KEEPALIVE_HELPER_JS}
   function __edgeMakePortStubChild(globalPortId, originWorkerId) {
     var stub = new EventEmitter();
     stub.postMessage = function(payload) {
-      var envelope = {
-        __edgePortMsg: true,
-        targetPortId: globalPortId,
-        payload: payload,
-      };
-      var bytes = globalThis.__edgePackPostMessage(envelope);
-      // Items 2-full + 3: route based on the port's ORIGIN worker (the
-      // worker that owns the entry).  If origin is a specific child
-      // worker (originWorkerId > 0 AND not us), use toWorker; if origin
-      // is parent (0) or we don't have a destination, fall back to
-      // fromWorker (which routes via parent → main → destination).
+      // e34+ spoof-proof control envelope.
+      var payloadBytes = globalThis.__edgePackPostMessage(payload);
+      var controlBytes = __edgeMakePortMsgPayload(globalPortId, payloadBytes);
+      var k = globalThis.__edgePmKind ? globalThis.__edgePmKind.PORT_MSG : 0x01;
+      // Route based on the port's ORIGIN worker.  Cross-child sends
+      // directly to origin via toWorker; otherwise route up to parent.
       var ourId = (typeof globalThis.__edgeHostWorkerId === 'number') ? globalThis.__edgeHostWorkerId : -1;
       if (typeof originWorkerId === 'number' && originWorkerId !== 0 && originWorkerId !== ourId
-          && typeof globalThis.__edgePostMessageToWorker === 'function') {
-        // Cross-child: send directly to the origin worker.
-        globalThis.__edgePostMessageToWorker(originWorkerId, bytes);
-      } else if (typeof globalThis.__edgePostMessageFromWorker === 'function') {
-        // origin == parent (0), or origin is ourselves, or no
-        // toWorker: route up to parent.
-        globalThis.__edgePostMessageFromWorker(bytes);
+          && typeof globalThis.__edgePostControlToWorker === 'function') {
+        globalThis.__edgePostControlToWorker(originWorkerId, k, controlBytes);
+      } else if (typeof globalThis.__edgePostControlFromWorker === 'function') {
+        globalThis.__edgePostControlFromWorker(k, controlBytes);
       } else {
         throw new Error('edge.js: stub.postMessage has no cross-worker transport available');
       }
@@ -1017,6 +1064,8 @@ ${KEEPALIVE_HELPER_JS}
   //
   // Phase 4 (e33): plumb decodePort so MARSHAL_TAG_PORT_REF entries
   // materialize as stubs on the child side.
+  // e34+ user-data path is now spoof-proof: control envelopes flow
+  // through __edgeDispatchControlToChild below, never through here.
   globalThis.__edgeDispatchMessageToChild = function(bytes) {
     var data;
     try {
@@ -1029,41 +1078,55 @@ ${KEEPALIVE_HELPER_JS}
       parentPort.emit('messageerror', e);
       return;
     }
-    // Phase 3b (e33+): handle terminate signal FIRST.  Parent's
-    // EdgeWorkerImpl.stopThread sends {__edgeWorkerTerminate: true}
-    // via the cross-worker bus when user calls worker.terminate().
-    // Exit code 1 matches Node's terminate semantics.
-    if (data && typeof data === 'object' && data.__edgeWorkerTerminate === true) {
+    parentPort.emit('message', data);
+  };
+
+  // e34+ control dispatcher (child side).  Called by worker.ts when
+  // the inbound payload's kind byte is non-zero.
+  globalThis.__edgeDispatchControlToChild = function(kind, controlBytes) {
+    var KK = globalThis.__edgePmKind || { PORT_MSG: 0x01, TERMINATE: 0x02, WORKER_ERROR: 0x03 };
+    if (kind === KK.TERMINATE) {
+      // Parent's EdgeWorkerImpl.stopThread fires this; exit(1) matches
+      // Node's terminate semantics.  Spoof-proof: user data CAN'T
+      // reach this path because the kind byte is set by worker.ts,
+      // not by user payloads.
       try { process.exit(1); } catch (e) { void e; }
       return;
     }
-    // Items 1+2+3 (e33) — triage same as parent dispatcher.
-    if (data && typeof data === 'object' && data.__edgePortMsg === true) {
-      var entry = globalThis.__edgePortsByGlobalId.get(data.targetPortId);
-      if (entry && typeof entry.deliver === 'function') {
-        try { entry.deliver(data.payload); } catch (e) { void e; }
+    if (kind === KK.PORT_MSG) {
+      var pm = __edgeParsePortMsgPayload(controlBytes);
+      if (!pm) return;
+      var payload;
+      try {
+        payload = globalThis.__edgeUnpackPostMessage(pm.payloadBytes, function(globalPortId, originWid) {
+          var existing = globalThis.__edgePortStubsByGlobalId.get(globalPortId);
+          if (existing) return existing;
+          return __edgeMakePortStubChild(globalPortId, originWid);
+        });
+      } catch (e) {
         return;
       }
-      var stub = globalThis.__edgePortStubsByGlobalId.get(data.targetPortId);
+      var entry = globalThis.__edgePortsByGlobalId.get(pm.targetPortId);
+      if (entry && typeof entry.deliver === 'function') {
+        try { entry.deliver(payload); } catch (e) { void e; }
+        return;
+      }
+      var stub = globalThis.__edgePortStubsByGlobalId.get(pm.targetPortId);
       if (stub && typeof stub.__edgeForwardedTo === 'number') {
-        // Forward to the next hop along the chain.  Child-side
-        // forwarding routes via toWorker if available; else back
-        // through parent (which will continue the routing).
-        var fwdEnv = { __edgePortMsg: true, targetPortId: data.targetPortId, payload: data.payload };
-        var fwdBytes = globalThis.__edgePackPostMessage(fwdEnv);
-        if (typeof globalThis.__edgePostMessageToWorker === 'function') {
-          globalThis.__edgePostMessageToWorker(stub.__edgeForwardedTo, fwdBytes);
-        } else if (typeof globalThis.__edgePostMessageFromWorker === 'function') {
-          globalThis.__edgePostMessageFromWorker(fwdBytes);
+        var fwdControl = __edgeMakePortMsgPayload(pm.targetPortId, pm.payloadBytes);
+        if (typeof globalThis.__edgePostControlToWorker === 'function') {
+          globalThis.__edgePostControlToWorker(stub.__edgeForwardedTo, KK.PORT_MSG, fwdControl);
+        } else if (typeof globalThis.__edgePostControlFromWorker === 'function') {
+          globalThis.__edgePostControlFromWorker(KK.PORT_MSG, fwdControl);
         }
         return;
       }
       if (stub && typeof stub.emit === 'function') {
-        stub.emit('message', data.payload);
+        stub.emit('message', payload);
       }
       return;
     }
-    parentPort.emit('message', data);
+    // WORKER_ERROR is child→parent only; ignore if received here.
   };
 
   module.exports.parentPort = parentPort;
@@ -1081,16 +1144,18 @@ ${KEEPALIVE_HELPER_JS}
   if (typeof process !== 'undefined' && typeof process.on === 'function') {
     var sendErrorAndExit = function(err) {
       try {
-        var payload = {
+        // e34+ spoof-proof control envelope: error info goes out as
+        // KIND_WORKER_ERROR (kind=0x03) with marshaled {name, message,
+        // stack} payload.  Parent's control dispatcher reconstructs an
+        // Error and emits it on the Worker.
+        var errInfo = {
           name: (err && err.name) || 'Error',
           message: (err && err.message) || String(err),
           stack: (err && err.stack) || '',
         };
-        var bytes = globalThis.__edgePackPostMessage({
-          __edgeWorkerError: true,
-          error: payload,
-        });
-        globalThis.__edgePostMessageFromWorker(bytes);
+        var errBytes = globalThis.__edgePackPostMessage(errInfo);
+        var KK = globalThis.__edgePmKind || { WORKER_ERROR: 0x03 };
+        globalThis.__edgePostControlFromWorker(KK.WORKER_ERROR, errBytes);
       } catch (e) { void e; }
       try { process.exit(1); } catch (e) { void e; }
     };
