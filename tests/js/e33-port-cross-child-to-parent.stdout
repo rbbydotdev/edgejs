@@ -1,0 +1,4 @@
+stub_received:PASS
+stub_has_origin:PASS
+child_reply_via_stub:PASS
+child_exit_0:PASS

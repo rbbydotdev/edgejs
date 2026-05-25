@@ -310,20 +310,80 @@ ${KEEPALIVE_HELPER_JS}
     // Listener APIs (on/once/off/emit) stay intact — they're just
     // never invoked since no messages will arrive after transfer.
   }
-  function __edgeAllocPortId(port) {
+  // Item 1 (e33): track MessageChannel sibling pairs so that when one
+  // side is transferred, the kept side's postMessage can be rewired to
+  // envelope-route to the transferred-away stub.  Populated by the
+  // MessageChannel wrap installed in the worker_threads patch.
+  if (!globalThis.__edgePortSiblingMap) {
+    globalThis.__edgePortSiblingMap = new WeakMap();
+  }
+  function __edgeRewireSiblingForTransfer(sibling, transferredPortId, destinationWorkerId) {
+    if (sibling.__edgeSiblingRewired) return;
+    try { Object.defineProperty(sibling, '__edgeSiblingRewired', { value: true }); }
+    catch (e) { void e; }
+    try { Object.defineProperty(sibling, '__edgeTransferredPortId', { value: transferredPortId }); }
+    catch (e) { void e; }
+    // Keep onmessage paths intact (the C++ binding still queues
+    // INCOMING messages from the now-orphaned local sibling-of-
+    // transferred port — but those come from the envelope dispatcher
+    // calling entry.deliver, NOT from any user code).  We just rewire
+    // postMessage to route via envelope instead of via C++.
+    sibling.postMessage = function(payload) {
+      var envelope = {
+        __edgePortMsg: true,
+        targetPortId: transferredPortId,
+        payload: payload,
+      };
+      var bytes = globalThis.__edgePackPostMessage(envelope);
+      if (typeof destinationWorkerId === 'number') {
+        // Parent → specific child worker
+        globalThis.__edgePostMessageToWorker(destinationWorkerId, bytes);
+      } else if (typeof globalThis.__edgePostMessageFromWorker === 'function') {
+        // Child → parent (no explicit workerId needed; routed via main)
+        globalThis.__edgePostMessageFromWorker(bytes);
+      } else {
+        throw new Error('edge.js: sibling-rewired port has no cross-worker transport');
+      }
+    };
+  }
+  function __edgeAllocPortId(port, destinationWorkerId) {
+    // Item 2 (e33): if this is an already-transferred stub being
+    // re-transferred (e.g. parent received port from child A, now
+    // forwarding to child B), reuse the existing port-ID rather than
+    // allocate a fresh one.  The original entry (wherever it was first
+    // registered) is the source of truth for routing.
+    if (port.__edgePortStub === true && typeof port.__edgeGlobalPortId === 'number') {
+      var existingId = port.__edgeGlobalPortId;
+      if (!port.__edgeNeutered) __edgeNeuterPort(port);
+      return existingId;
+    }
     var id = globalThis.__edgePortIdNext++;
     var origPostMessage = port.postMessage.bind(port);
     globalThis.__edgePortsByGlobalId.set(id, {
       port: port,
       deliver: origPostMessage,
+      destinationWorkerId: destinationWorkerId,
     });
     __edgeNeuterPort(port);
+    // Item 1: rewire sibling's postMessage so parent→child via the kept
+    // port reaches the transferred port's stub on the other side.
+    var sibling = globalThis.__edgePortSiblingMap.get(port);
+    if (sibling) {
+      __edgeRewireSiblingForTransfer(sibling, id, destinationWorkerId);
+    }
     return id;
   }
   // Build a stub matching Node MessagePort surface.  Backed by Node's
   // EventEmitter for listener semantics; postMessage envelopes through
-  // the cross-worker bus (e33 step 3).
-  function __edgeMakePortStub(globalPortId) {
+  // the cross-worker bus.
+  //
+  // originWorkerId (item 2 e33): when this stub is materialized on the
+  // PARENT side from a message sent by a child worker, originWorkerId
+  // is that child's worker ID — so stub.postMessage routes via
+  // __edgePostMessageToWorker(originWorkerId, bytes).  On the CHILD
+  // side, originWorkerId is undefined and stub.postMessage routes via
+  // __edgePostMessageFromWorker (i.e., back to parent).
+  function __edgeMakePortStub(globalPortId, originWorkerId) {
     var stub = new EventEmitter();
     stub.postMessage = function(payload) {
       var envelope = {
@@ -332,13 +392,19 @@ ${KEEPALIVE_HELPER_JS}
         payload: payload,
       };
       var bytes = globalThis.__edgePackPostMessage(envelope);
-      if (typeof globalThis.__edgePostMessageFromWorker === 'function') {
-        // Child: send back to parent via existing bus.
+      if (typeof originWorkerId === 'number' && typeof globalThis.__edgePostMessageToWorker === 'function') {
+        // Parent → specific child worker (originator of the port).
+        globalThis.__edgePostMessageToWorker(originWorkerId, bytes);
+      } else if (typeof globalThis.__edgePostMessageFromWorker === 'function') {
+        // Child → parent via existing bus.
         globalThis.__edgePostMessageFromWorker(bytes);
       } else if (typeof globalThis.__edgePostMessageToWorker === 'function') {
-        // Parent-side stub (port received from a child).  Routing
-        // needs sibling-tracking we don't yet do.  Throw loudly.
-        throw new Error('edge.js: parent-side stub.postMessage not yet routable (e33 MVP)');
+        // Parent-side stub with no recorded origin.  Happens if a
+        // received port has no originWorkerId attached — log and drop
+        // rather than throw, since silent message-drop is recoverable
+        // for tests; if needed, callers can detect via
+        // stub.__edgeOriginWorkerId.
+        throw new Error('edge.js: parent-side stub.postMessage without originWorkerId (item 2)');
       } else {
         throw new Error('edge.js: stub.postMessage has no cross-worker transport available');
       }
@@ -353,6 +419,10 @@ ${KEEPALIVE_HELPER_JS}
     stub.hasRef = function() { return true; };
     Object.defineProperty(stub, '__edgePortStub', { value: true });
     Object.defineProperty(stub, '__edgeGlobalPortId', { value: globalPortId });
+    if (originWorkerId !== undefined) {
+      try { Object.defineProperty(stub, '__edgeOriginWorkerId', { value: originWorkerId }); }
+      catch (e) { void e; }
+    }
     globalThis.__edgePortStubsByGlobalId.set(globalPortId, stub);
     return stub;
   }
@@ -365,38 +435,52 @@ ${KEEPALIVE_HELPER_JS}
   // the right Worker on which to emit('message').
   var workerById = new Map();
   globalThis.__edgeDispatchMessageFromChild = function(workerId, bytes) {
-    var w = workerById.get(workerId);
-    if (!w) return;
     var data;
     try {
       // Phase 4 (e33): plumb decodePort so MARSHAL_TAG_PORT_REF in
       // child-to-parent messages materializes a stub on parent side.
+      // Item 2: pass workerId as originWorkerId so the stub knows
+      // which child worker owns the sibling — stub.postMessage routes
+      // via __edgePostMessageToWorker(workerId, ...).
       data = globalThis.__edgeUnpackPostMessage(bytes, function(globalPortId) {
         var existing = globalThis.__edgePortStubsByGlobalId.get(globalPortId);
         if (existing) return existing;
-        return globalThis.__edgeMakePortStub(globalPortId);
+        return globalThis.__edgeMakePortStub(globalPortId, workerId);
       });
     } catch (e) {
-      w.emit('messageerror', e);
+      var wErr = workerById.get(workerId);
+      if (wErr) wErr.emit('messageerror', e);
       return;
     }
-    // Phase 4 (e33) step 3: detect port-message envelope.  Format:
-    //   { __edgePortMsg: true, targetPortId: N, payload: <any> }
-    // When found, route to the local port registered under targetPortId
-    // by calling port.postMessage(payload) — this enqueues onto the C++
-    // sibling, which fires onmessage on the parent-side kept port (the
-    // sibling of what was transferred to child).
+    // Phase 4 (e33) step 3: detect port-message envelope FIRST — it
+    // doesn't require a registered Worker instance (the test path uses
+    // __edgeSpawnNodeWorker directly without the EdgeWorkerInstanceTracker
+    // wrapper, so workerById won't have it; envelope routing must still
+    // work).
+    //
+    // Format: { __edgePortMsg: true, targetPortId: N, payload: <any> }
+    // When found, look up the local port entry and call entry.deliver
+    // to enqueue on the C++ sibling (whose user-registered on('message')
+    // fires normally).  entry.deliver bypasses the now-neutered public
+    // postMessage (item 4).
     if (data && typeof data === 'object' && data.__edgePortMsg === true) {
-      // Item 4 (e33): __edgePortsByGlobalId now stores
-      // { port, deliver } so we can route past the neutered public
-      // postMessage and still reach the C++ binding's enqueue path.
+      // Items 1+2 (e33): same dual-path as child dispatcher.
+      // (a) we own the port (have an entry) → deliver via C++ sibling
+      // (b) we hold a stub (forwarded port from another worker) → emit
       var entry = globalThis.__edgePortsByGlobalId.get(data.targetPortId);
       if (entry && typeof entry.deliver === 'function') {
-        try { entry.deliver(data.payload); }
-        catch (e) { void e; }
+        try { entry.deliver(data.payload); } catch (e) { void e; }
+        return;
+      }
+      var stub = globalThis.__edgePortStubsByGlobalId.get(data.targetPortId);
+      if (stub && typeof stub.emit === 'function') {
+        stub.emit('message', data.payload);
       }
       return;
     }
+    // Regular Worker.on('message') path — needs the Worker registry.
+    var w = workerById.get(workerId);
+    if (!w) return;
     w.emit('message', data);
   };
 
@@ -421,10 +505,14 @@ ${KEEPALIVE_HELPER_JS}
           }
         }
         var idByPort = new Map();
+        var childWid = h.__edgeWorkerId;
         for (var pi = 0; pi < transferList.length; pi++) {
           var p = transferList[pi];
           if (!idByPort.has(p)) {
-            idByPort.set(p, globalThis.__edgeAllocPortId(p));
+            // Item 1 (e33): pass childWorkerId so __edgeAllocPortId can
+            // rewire the sibling's postMessage to envelope-route TO
+            // that specific worker.
+            idByPort.set(p, globalThis.__edgeAllocPortId(p, childWid));
           }
         }
         assignPortId = function(obj) {
@@ -536,6 +624,39 @@ ${KEEPALIVE_HELPER_JS}
 // is a no-op — parentPort stays null, matching Node's main-thread
 // semantics.
 const WORKER_THREADS_POST_PATCH = `
+;(function postEdgeWorkerThreadsMessageChannelWrap() {
+  // Item 1 (e33): wrap MessageChannel so we can track sibling pairs
+  // (port1 ↔ port2 from the same channel) in a WeakMap.  When a port
+  // is later transferred, the kept sibling's postMessage gets rewired
+  // to envelope-route to the transferred port's stub instead of
+  // queuing on the now-orphaned C++ sibling.
+  //
+  // Runs on BOTH parent and child isolates (no __edgeIsUserWorker
+  // gate), since either side may create channels.  Idempotent via the
+  // __edgeWrapped marker.
+  if (!globalThis.__edgePortSiblingMap) {
+    globalThis.__edgePortSiblingMap = new WeakMap();
+  }
+  try {
+    var origMC = module.exports.MessageChannel;
+    if (origMC && origMC.__edgeWrapped !== true) {
+      var siblingMap = globalThis.__edgePortSiblingMap;
+      var EdgeMessageChannel = function EdgeMessageChannel() {
+        var ch = new origMC();
+        try { siblingMap.set(ch.port1, ch.port2); } catch (e) { void e; }
+        try { siblingMap.set(ch.port2, ch.port1); } catch (e) { void e; }
+        return ch;
+      };
+      // Preserve prototype chain so instanceof MessageChannel still works
+      // (lib code does some prototype probes).
+      EdgeMessageChannel.prototype = origMC.prototype;
+      try { Object.defineProperty(EdgeMessageChannel, '__edgeWrapped', { value: true }); }
+      catch (e) { void e; }
+      module.exports.MessageChannel = EdgeMessageChannel;
+    }
+  } catch (e) { void e; }
+})();
+
 ${KEEPALIVE_HELPER_JS}
 ;(function postEdgeWorkerThreadsParentPortPatch() {
   if (globalThis.__edgeIsUserWorker !== true) return;
@@ -582,14 +703,50 @@ ${KEEPALIVE_HELPER_JS}
     try { port.hasRef = function() { return false; }; } catch (e) { void e; }
     try { port.close = function() {}; } catch (e) { void e; }
   }
-  function __edgeAllocPortIdChild(port) {
+  // Item 1 (e33): sibling tracking mirror on child side.
+  if (!globalThis.__edgePortSiblingMap) {
+    globalThis.__edgePortSiblingMap = new WeakMap();
+  }
+  function __edgeRewireSiblingForTransferChild(sibling, transferredPortId, destinationWorkerId) {
+    if (sibling.__edgeSiblingRewired) return;
+    try { Object.defineProperty(sibling, '__edgeSiblingRewired', { value: true }); }
+    catch (e) { void e; }
+    try { Object.defineProperty(sibling, '__edgeTransferredPortId', { value: transferredPortId }); }
+    catch (e) { void e; }
+    sibling.postMessage = function(payload) {
+      var envelope = {
+        __edgePortMsg: true,
+        targetPortId: transferredPortId,
+        payload: payload,
+      };
+      var bytes = globalThis.__edgePackPostMessage(envelope);
+      if (typeof destinationWorkerId === 'number') {
+        globalThis.__edgePostMessageToWorker(destinationWorkerId, bytes);
+      } else {
+        // Child-side: route up to parent
+        globalThis.__edgePostMessageFromWorker(bytes);
+      }
+    };
+  }
+  function __edgeAllocPortIdChild(port, destinationWorkerId) {
+    // Item 2 (e33) — child-side stub re-transfer: reuse existing ID.
+    if (port.__edgePortStub === true && typeof port.__edgeGlobalPortId === 'number') {
+      var existingId = port.__edgeGlobalPortId;
+      if (!port.__edgeNeutered) __edgeNeuterPortChild(port);
+      return existingId;
+    }
     var id = globalThis.__edgePortIdNext++;
     var origPostMessage = port.postMessage.bind(port);
     globalThis.__edgePortsByGlobalId.set(id, {
       port: port,
       deliver: origPostMessage,
+      destinationWorkerId: destinationWorkerId,
     });
     __edgeNeuterPortChild(port);
+    var sibling = globalThis.__edgePortSiblingMap.get(port);
+    if (sibling) {
+      __edgeRewireSiblingForTransferChild(sibling, id, destinationWorkerId);
+    }
     return id;
   }
   // Child-side stub factory.  EventEmitter is already in scope on this
@@ -721,6 +878,25 @@ ${KEEPALIVE_HELPER_JS}
       });
     } catch (e) {
       parentPort.emit('messageerror', e);
+      return;
+    }
+    // Items 1+2 (e33): __edgePortMsg envelope — could be addressed to:
+    //   (a) a stub we hold (parent-side sibling-rewired postMessage,
+    //       OR another worker forwarding through us) — emit on stub
+    //   (b) an entry we own (we're the original owner; the C++ port
+    //       is here and the sibling needs to receive) — call deliver
+    // Check entry first since we're the authoritative deliverer when
+    // we own the port; stub-emit is for forwarding scenarios.
+    if (data && typeof data === 'object' && data.__edgePortMsg === true) {
+      var entry = globalThis.__edgePortsByGlobalId.get(data.targetPortId);
+      if (entry && typeof entry.deliver === 'function') {
+        try { entry.deliver(data.payload); } catch (e) { void e; }
+        return;
+      }
+      var stub = globalThis.__edgePortStubsByGlobalId.get(data.targetPortId);
+      if (stub && typeof stub.emit === 'function') {
+        stub.emit('message', data.payload);
+      }
       return;
     }
     parentPort.emit('message', data);
