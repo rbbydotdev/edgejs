@@ -384,18 +384,27 @@ the browser-target tree.
   This is a multi-day project on the order of the v2 cutover itself.
   Deferred until explicitly scoped as a follow-up.
 
-  **Why not a hybrid (TSFN dispatch + setInterval keepalive)?**
-  Considered + rejected (2026-05-25).  TSFN's dispatch enqueues a
-  `setImmediate` internally — that's the same primitive our existing
-  `dispatchOnLibuvTick` helper in `worker.ts` already uses.  Routing
-  delivery through `napi_call_threadsafe_function` instead of our
-  inline `setImmediate` wrap would replace one setImmediate-based
-  abstraction with another, requiring TSFN handle creation from JS
-  (significant plumbing — see Path A research agent's report) for
-  zero observable improvement.  The real differentiator IS the
-  keepalive (libuv-pending-handle status), which TSFN can't deliver
-  on wasi-libc.  The C++ binding is the load-bearing fix; the hybrid
-  is busywork.
+  **Hybrid Path A — TSFN dispatch + setInterval keepalive (SHIPPED
+  2026-05-25):** `dispatchOnLibuvTick` in `browser-target/src/worker.ts`
+  lazy-installs a `napi_threadsafe_function` on the first reverse-RPC
+  dispatch and routes subsequent dispatches through
+  `napi_call_threadsafe_function`.  Install requires (i) an env
+  registered in `__edgeNapiHost.envs` (created by
+  `unofficial_napi_create_env` early in `_start`), (ii) `wasmMallocImpl`
+  for the result-pointer alloc, and (iii) the v2 Context's
+  `napiValueFromJsValue` for the callback + name handles.  On status≠0
+  or any missing precondition, `tsfnInstallAttempted` is latched true
+  and dispatch stays on `setImmediate` permanently.
+
+  Observable behavior: identical to the pre-hybrid path.  TSFN's
+  internal enqueue/drain uses `setImmediate` itself, so the user-
+  visible tick is the same.  What the hybrid buys is a Path-A-shaped
+  abstraction surface — reverse-RPC delivery goes through Node's
+  threadsafe-function primitive, matching what a future real
+  uv_async_t-backed binding would expose.  When the C++ binding lands
+  (see #113), only `napi_call_threadsafe_function`'s implementation
+  needs to gain libuv awareness; the worker-side dispatch shape stays
+  the same.
 
   Observable warts the current shortcut doesn't close: (i) the
   keepalive timer is visible under `process._getActiveHandles()` as a

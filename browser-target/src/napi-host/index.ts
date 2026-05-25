@@ -722,6 +722,23 @@ export function createNapiHost(opts: NapiHostOptions): NapiHost {
           v2InitEnvHolder.value = env;
         }
       }
+
+      // Expose host state for the hybrid Path A TSFN dispatch in
+      // worker.ts (`tryInstallTsfnDispatch`).  We only need a small
+      // surface — envs map (first env handle), the v2 Context (for
+      // napiValueFromJsValue), the napi import namespace (for
+      // napi_create_threadsafe_function / napi_call_threadsafe_function),
+      // wasm memory (to read the result pointer), and the guest malloc
+      // (to allocate that pointer).  See worker-threads-uses-js-keepalive-
+      // not-tsfn in NOTES.md for why the dispatch primitive is wired but
+      // the libuv-pending-handle behavior still relies on a JS keepalive.
+      (globalThis as { __edgeNapiHost?: unknown }).__edgeNapiHost = {
+        envs,
+        context,
+        imports: napiModule.imports as Record<string, Record<string, Function>>,
+        wasmMemory: opts.memory,
+        guestMalloc: typeof wasmMallocImpl === "function" ? wasmMallocImpl : undefined,
+      };
     },
   };
   activeNapiHost = host;
