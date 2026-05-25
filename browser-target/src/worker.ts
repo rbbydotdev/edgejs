@@ -29,56 +29,35 @@ declare const self: DedicatedWorkerGlobalScope;
 // can't shadow them mid-run.
 const nowMs = performance.now.bind(performance);
 
-// Reverse-RPC dispatcher.  Runs the user-facing dispatch callback OUTSIDE
-// the reverse-RPC handler's try/catch so a `process.exit` thrown from the
-// user's event handler propagates through `_start`'s normal exit-signal
-// path instead of being swallowed as a generic error.  Resolves
-// worker-threads-reverse-rpc-exit-fragility for every reverse-RPC
-// delivery channel (exit, message-to-child, message-from-child).
+// Reverse-RPC dispatcher.  Wraps the user-facing dispatch callback in
+// `setImmediate` so it runs OUTSIDE the reverse-RPC handler's try/catch
+// — `process.exit` thrown from the user's event handler then propagates
+// through `_start`'s normal exit-signal path instead of being swallowed
+// as a generic error.  Resolves worker-threads-reverse-rpc-exit-fragility
+// for every reverse-RPC delivery channel (exit, message-to-child,
+// message-from-child).
 //
-// Two execution paths:
+// The libuv-pending-handle status for worker-threads message channels
+// comes from `uv_async_t` slots managed by
+// `policies/worker-threads-per-thread.ts`.  Real Path A: when a
+// reverse-RPC delivery is queued the corresponding slot is also poked
+// via `pokeWorkerSlot` / `pokeParentPortSlot` — `uv_async_send` fires
+// `uv__async_io` which writes the wake-pipe wfd, `poll_oneoff` returns
+// immediately, and the next `uv_run` iteration runs the queued
+// `setImmediate` callback.  `OP_DELIVER_USER_WORKER_EXIT` doesn't share
+// that wake path — exit delivery happens after the child's libuv loop
+// has already drained.
 //
-//   1. **TSFN path** (after `tryInstallTsfnDispatch()` wires the
-//      handle on first dispatch).  v2 emnapi's `napi_threadsafe_function` enqueues + drains
-//      via `setImmediate` internally; calling `napi_call_threadsafe_function`
-//      with mode=0 (non-blocking) coalesces multiple sends and fires the
-//      registered JS callback once libuv's check phase runs.  This is the
-//      "real" Path A dispatch — uses Node's primitive, drops our manual
-//      setImmediate wrap.
-//
-//   2. **setImmediate fallback** (before TSFN handle is ready, or if
-//      TSFN setup fails).  Direct `setImmediate(fn)` — same semantics
-//      modulo the napi indirection, used for the bootstrap window AND for
-//      `OP_DELIVER_USER_WORKER_EXIT` which doesn't need the TSFN queue.
-//
-// The setInterval keepalive in `policies/worker-threads-per-thread.ts`
-// stays in EITHER path: TSFN's `_emnapi_runtime_keepalive_push` is an
-// empty stub on wasi-libc (Emscripten-only), so we can't drop the JS
-// keepalive on the cutover.  See NOTES.md
-// `worker-threads-uses-js-keepalive-not-tsfn`.
-type TsfnDispatcher = { handle: number; queue: Array<() => void>; nonBlockingCall: (h: number) => number };
-let tsfnDispatcher: TsfnDispatcher | null = null;
-let tsfnInstallAttempted = false;
-
-// Real Path A wake-up helpers.  The worker-threads-per-thread policy
-// publishes per-Worker `UvAsyncSlot` instances on
-// `globalThis.__edgeUvAsyncSlots` (parent side, Map<workerId, slot>)
-// and a single `globalThis.__edgeParentPortUvAsyncSlot` on the child
-// side.  When a reverse-RPC handler queues a delivery via
-// `dispatchOnLibuvTick`, we also call `.send()` so libuv's
-// `uv_async_send` fires `uv__async_io` which writes the wake-pipe wfd
-// — `poll_oneoff` returns immediately and the next `uv_run` iteration
-// runs the queued `setImmediate` callback.  Without this poke, a
-// `_start` parked in `poll_oneoff` would only resume on the next
-// keepalive interval tick (~50ms in the fallback path) or the next
-// libuv timer expiration.
-//
-// Both helpers swallow errors: if the slot was closed or torn down
-// mid-flight (a Worker exited, removeAllListeners was called) the
-// dispatcher's setImmediate still fires correctly via the
-// existing setInterval keepalive fallback (which the policy keeps in
-// place when uvAsync isn't available).  See
-// `policies/worker-threads-per-thread.ts` for the slot lifecycle.
+// Wake-up helpers.  The worker-threads-per-thread policy publishes
+// per-Worker `UvAsyncSlot` instances on `globalThis.__edgeUvAsyncSlots`
+// (parent side, Map<workerId, slot>) and a single
+// `globalThis.__edgeParentPortUvAsyncSlot` on the child side.  Both
+// helpers swallow errors: if the slot was closed or torn down
+// mid-flight (Worker exit, `removeAllListeners`) the dispatcher's
+// `setImmediate` still fires; the policy's `setInterval` fallback
+// covers any deployment where `uvAsync` wasn't available at keepalive
+// setup time.  See `policies/worker-threads-per-thread.ts` for the
+// slot lifecycle.
 type UvAsyncSlotLike = { send(): void };
 function pokeWorkerSlot(workerId: number): void {
   const slots = (globalThis as { __edgeUvAsyncSlots?: Map<number, UvAsyncSlotLike> })
@@ -98,27 +77,12 @@ function pokeParentPortSlot(): void {
 }
 
 function dispatchOnLibuvTick(label: string, fn: () => void): void {
-  const wrapped = () => {
+  setImmediate(() => {
     try { fn(); }
     catch (err) {
       post("log", { text: `[runtime] ${label} dispatch threw: ${(err as Error).message}`, level: "warn" });
     }
-  };
-  // First call (after `_start` has run `unofficial_napi_create_env`)
-  // is the earliest moment TSFN install can succeed; attempt it once.
-  if (tsfnDispatcher === null && !tsfnInstallAttempted) {
-    tsfnInstallAttempted = true;
-    tryInstallTsfnDispatch();
-  }
-  // TSFN path: push the closure, ask emnapi to drain on next tick.
-  if (tsfnDispatcher !== null) {
-    tsfnDispatcher.queue.push(wrapped);
-    const status = tsfnDispatcher.nonBlockingCall(tsfnDispatcher.handle);
-    if (status === 0) return;
-    // Fall through on non-OK status (queue full at max_queue_size, etc.).
-    post("log", { text: `[runtime] ${label} TSFN call status=${status}; falling back to setImmediate`, level: "warn" });
-  }
-  setImmediate(wrapped);
+  });
 }
 
 function post(kind: string, payload: Record<string, unknown> = {}) {
@@ -487,80 +451,6 @@ function installPostMessageGlobals(): void {
     packPostMessage;
   (globalThis as { __edgeUnpackPostMessage?: (b: Uint8Array) => unknown }).__edgeUnpackPostMessage =
     unpackPostMessage;
-}
-
-// Wire `tsfnDispatcher` after edge.js's `_start` has run far enough for
-// `unofficial_napi_create_env` to have fired (so the napi-host has an
-// env and the wasm guest allocator is callable).  Reverse-RPC dispatches
-// then route through emnapi v2's `napi_threadsafe_function` enqueue/drain
-// instead of our inline `setImmediate(fn)`.
-//
-// What this DOESN'T do: replace the `setInterval` keepalive in
-// `policies/worker-threads-per-thread.ts`.  TSFN's
-// `_emnapi_runtime_keepalive_push` is empty on wasi-libc (Emscripten-only
-// path); the JS keepalive stays.  This is the hybrid Path A — TSFN for
-// dispatch, JS setInterval for libuv-pending-handle status.  See NOTES.md
-// `worker-threads-uses-js-keepalive-not-tsfn`.
-//
-// Invoked lazily from `dispatchOnLibuvTick` on its first call — by then
-// `_start` has hit `unofficial_napi_create_env` (one of the first wasm
-// calls during edge bootstrap) so an env is registered.  If setup fails
-// (no env, no allocator, or TSFN status≠0) the install is marked
-// attempted and dispatch stays on the setImmediate fallback path.
-function tryInstallTsfnDispatch(): void {
-  type NapiFn = (...args: number[]) => number;
-  const napiHostRef = (globalThis as { __edgeNapiHost?: { envs: Map<number, unknown>; context: unknown; imports: { napi: Record<string, NapiFn> }; wasmMemory: WebAssembly.Memory; guestMalloc?: (n: number) => number } }).__edgeNapiHost;
-  if (!napiHostRef) return;
-  const napiNs = napiHostRef.imports.napi;
-  const create = napiNs["napi_create_threadsafe_function"];
-  const callNonBlocking = napiNs["napi_call_threadsafe_function"];
-  if (typeof create !== "function" || typeof callNonBlocking !== "function") return;
-
-  const envIter = napiHostRef.envs.values().next();
-  if (envIter.done) return;
-  const envObj = envIter.value as { bridge?: { address?: number }; id?: number | bigint };
-  const envHandle = envObj?.bridge?.address ?? Number(envObj?.id ?? 0);
-  if (!envHandle) return;
-
-  const guestMalloc = napiHostRef.guestMalloc;
-  if (typeof guestMalloc !== "function") return;
-
-  const ctxAccess = napiHostRef.context as { napiValueFromJsValue: (v: unknown) => number | bigint };
-  const queue: Array<() => void> = [];
-  const jsCallback = function tsfnDrain(): void {
-    while (queue.length) {
-      const fn = queue.shift();
-      if (fn) {
-        try { fn(); }
-        catch (err) { post("log", { text: `[runtime] tsfn closure threw: ${(err as Error).message}`, level: "warn" }); }
-      }
-    }
-  };
-
-  const funcHandle = Number(ctxAccess.napiValueFromJsValue(jsCallback));
-  const nameHandle = Number(ctxAccess.napiValueFromJsValue("edge.reverse-rpc-dispatch"));
-  const resultPtr = guestMalloc(4);
-  if (!resultPtr) return;
-
-  // napi_create_threadsafe_function arity: 11 (per emnapi v2 plugin).
-  // Args: env, func, async_resource=0, async_resource_name,
-  //   max_queue_size=0 (unlimited), initial_thread_count=1,
-  //   thread_finalize_data=0, thread_finalize_cb=0, context=0,
-  //   call_js_cb=0 (=> drive func directly with no args), result.
-  const status = create(envHandle, funcHandle, 0, nameHandle, 0, 1, 0, 0, 0, 0, resultPtr);
-  if (status !== 0) {
-    post("log", { text: `[runtime] napi_create_threadsafe_function status=${status}; TSFN dispatch unavailable`, level: "warn" });
-    return;
-  }
-  const handle = new DataView(napiHostRef.wasmMemory.buffer).getUint32(resultPtr, true);
-  if (!handle) return;
-
-  tsfnDispatcher = {
-    handle,
-    queue,
-    nonBlockingCall: (h: number) => (callNonBlocking)(h, 0 /* data */, 0 /* napi_tsfn_nonblocking */),
-  };
-  post("log", { text: `[runtime] TSFN dispatch installed (handle=${handle}); reverse-RPC dispatches route via napi_call_threadsafe_function`, level: "info" });
 }
 
 // Worker-threads phase 1: user-worker bootstrap state.  Set when main

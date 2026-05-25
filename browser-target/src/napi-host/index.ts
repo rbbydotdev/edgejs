@@ -724,19 +724,13 @@ export function createNapiHost(opts: NapiHostOptions): NapiHost {
         }
       }
 
-      // Expose host state for the hybrid Path A TSFN dispatch in
-      // worker.ts (`tryInstallTsfnDispatch`).  We only need a small
-      // surface — envs map (first env handle), the v2 Context (for
-      // napiValueFromJsValue), the napi import namespace (for
-      // napi_create_threadsafe_function / napi_call_threadsafe_function),
-      // wasm memory (to read the result pointer), and the guest malloc
-      // (to allocate that pointer).  See worker-threads-uses-js-keepalive-
-      // not-tsfn in NOTES.md for why the dispatch primitive is wired but
-      // the libuv-pending-handle behavior still relies on a JS keepalive.
-      //
-      // `uvAsync` is the raw uv_async_t wasm-export wrapper used by the
-      // upcoming real-Path-A MessagePort.  Only populated when the guest
-      // exposes a malloc — without one, we can't allocate the 64B handle.
+      // Expose host state for the worker_threads policy.  `uvAsync` is
+      // the load-bearing field — the raw uv_async_t wasm-export wrapper
+      // that backs the libuv-pending-handle keepalive (real Path A).
+      // Other fields (envs / context / imports / wasmMemory / guestMalloc)
+      // are kept for diagnostic and probe access.
+      // `uvAsync` is only populated when the guest exposes a malloc —
+      // without one, we can't allocate the 64B uv_async_t handle.
       const uvAsync: UvAsyncRuntimeWithSize | undefined =
         typeof wasmMallocImpl === "function"
           ? createUvAsyncRuntime(realInstance, wasmMallocImpl)

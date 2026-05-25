@@ -356,14 +356,15 @@ the browser-target tree.
   path.  The phase-1 spawn-exit test still uses a polling pattern
   because it bypasses the policy patch — kept as-is for historical
   consistency, but no longer required.
-- `worker-threads-uses-js-keepalive-not-tsfn` — `parentPort` (child
-  side) and `Worker` (parent side) keep libuv alive while there's a
-  'message' listener registered via a 50ms `setInterval` (libuv sees
-  it as a `uv_timer_t` pending handle).  Two roles:  (a) prevents
-  `_start` from returning while listeners are pending;  (b) drives
-  loop iterations so `setImmediate`-queued message deliveries actually
-  fire — without iteration, libuv parks in `poll_oneoff` and
-  `setImmediate` never runs.
+- `worker-threads-uses-js-keepalive-not-tsfn` — historical slug; kept
+  stable for backrefs from
+  `browser-target/src/policies/worker-threads-per-thread.ts` and
+  `browser-target/src/napi-host/emnapi.ts`.  `parentPort` (child side)
+  and `Worker` (parent side) need libuv to stay alive while there's a
+  'message' listener registered, AND need loop iterations to actually
+  drive `setImmediate`-queued reverse-RPC deliveries — without
+  iteration, libuv parks in `poll_oneoff` and `setImmediate` never
+  runs.
 
   **v2-cutover update (2026-05-25):** the original premise — "v2's
   `_emnapi_runtime_keepalive_push` would unblock real TSFN" — turned
@@ -374,44 +375,44 @@ the browser-target tree.
   edge.js doesn't bring.  And `emnapiCtx.refCounter` (the other
   candidate keepalive surface) is gated on `process.once +
   MessageChannel` not being available at `createContext()` time inside
-  the wasm-runtime worker.  Net: even after the v2 cutover, TSFN
-  dispatch runs on the browser worker event loop and has no path into
-  edge's libuv.
+  the wasm-runtime worker.  Net: TSFN dispatch runs on the browser
+  worker event loop and has no path into edge's libuv.
 
-  Migration to real Path A now requires building a **uv_async_t-backed
-  C++ binding inside edge.js** (similar pattern to Node's
-  `src/node_messaging.cc`) that exposes a libuv-integrated MessagePort.
-  This is a multi-day project on the order of the v2 cutover itself.
-  Deferred until explicitly scoped as a follow-up.
+  **Superseded — Real Path A landed (2026-05-25):** the right
+  primitive is a host-managed `uv_async_t` handle exported by the
+  edge.js guest, not TSFN.  `experiments/e23-real-path-a-discovery/
+  FINDINGS.md` documents the discovery: edge.js's wasi-libc libuv
+  exports `uv_async_init` / `uv_async_send` / `uv_ref` / `uv_unref` /
+  `uv_close` / `uv_default_loop`, which is enough surface area to
+  allocate a 64-byte handle in guest memory and drive it from the
+  host JS side.  `browser-target/src/napi-host/uv-async.ts` wraps the
+  exports as an `acquireSlot(cb)` factory; the policy in
+  `policies/worker-threads-per-thread.ts` acquires one slot per
+  Worker / parentPort and calls `.ref()` / `.send()` / `.close()`
+  directly on it; `worker.ts`'s `pokeWorkerSlot` /
+  `pokeParentPortSlot` call `.send()` from the reverse-RPC handlers.
+  Result: every `setImmediate`-queued delivery wakes
+  `poll_oneoff` immediately via `uv__async_io`, the keepalive shows
+  up as a real `uv_async_t` pending handle, and the 50ms
+  `setInterval` wakeup is gone.
 
-  **Hybrid Path A — TSFN dispatch + setInterval keepalive (SHIPPED
-  2026-05-25):** `dispatchOnLibuvTick` in `browser-target/src/worker.ts`
-  lazy-installs a `napi_threadsafe_function` on the first reverse-RPC
-  dispatch and routes subsequent dispatches through
-  `napi_call_threadsafe_function`.  Install requires (i) an env
-  registered in `__edgeNapiHost.envs` (created by
-  `unofficial_napi_create_env` early in `_start`), (ii) `wasmMallocImpl`
-  for the result-pointer alloc, and (iii) the v2 Context's
-  `napiValueFromJsValue` for the callback + name handles.  On status≠0
-  or any missing precondition, `tsfnInstallAttempted` is latched true
-  and dispatch stays on `setImmediate` permanently.
+  The hybrid TSFN-backed dispatch shipped briefly as commit
+  `94bed439` ("hybrid Path A: ship TSFN-backed reverse-RPC dispatch")
+  and was retired in the follow-up cleanup — `dispatchOnLibuvTick`
+  is back to a plain `setImmediate(try/catch)` wrap; `uv_async_send`
+  is what actually wakes the loop now.  See commit `be4cec4c`
+  ("Real Path A: uvAsync keepalive replaces setInterval in worker-
+  threads policy") for the cutover and the cleanup commit immediately
+  after for the dead-code removal.
 
-  Observable behavior: identical to the pre-hybrid path.  TSFN's
-  internal enqueue/drain uses `setImmediate` itself, so the user-
-  visible tick is the same.  What the hybrid buys is a Path-A-shaped
-  abstraction surface — reverse-RPC delivery goes through Node's
-  threadsafe-function primitive, matching what a future real
-  uv_async_t-backed binding would expose.  When the C++ binding lands
-  (see #113), only `napi_call_threadsafe_function`'s implementation
-  needs to gain libuv awareness; the worker-side dispatch shape stays
-  the same.
-
-  Observable warts the current shortcut doesn't close: (i) the
-  keepalive timer is visible under `process._getActiveHandles()` as a
-  generic Timeout, not as a MessagePort/Worker handle;  (ii) ~50ms
-  max delivery latency for incoming messages (vs. immediate on real
-  uv_async_send);  (iii) ~20Hz no-op wakeup cost while listeners are
-  registered.
+  Remaining observable wart: the keepalive shows up under
+  `process._getActiveHandles()` as a `uv_async_t` pending handle,
+  not as a `MessagePort` / `Worker` handle.  We don't synthesize the
+  MessagePort/Worker shape on top of the slot — the slot IS the
+  libuv-visible primitive.  Closing the gap would require a guest-
+  side wrapper that registers as a `MessagePort`-typed handle in
+  edge.js's internal handle table; tracked separately if/when it
+  matters for a real consumer.
 
 - `crypto-randombytes-v2-mirror-gap` (2026-05-25, v2 cutover regression)
   — `crypto.randomBytes(N)` returns all-zero buffers on v2; suite
