@@ -1,0 +1,34 @@
+tests/js/e31-messagechannel-roundtrip-types.stdout
+  ai_agent 1-9
+experiments/e30-bare-host-messagechannel/README.md
+  s_92c1b47c0d6ee8::t_36be72a43626b4 1-115
+tests/js/e31-messagechannel-roundtrip-types.js
+  ai_agent 1-37
+experiments/e31-wasm-messagechannel-roundtrip/patch.diff
+  s_92c1b47c0d6ee8::t_6f3c4109d7897d 1-86
+browser-target/src/napi-host/unofficial.ts
+  s_92c1b47c0d6ee8::t_03e3ef96c57dbf 30-36
+  s_92c1b47c0d6ee8::t_a1bd42b97fd3e8 713-726,733-736,738-740,750,752-756,765-767
+experiments/e31-wasm-messagechannel-roundtrip/FINDINGS.md
+  s_92c1b47c0d6ee8::t_bdcfc468fb97af 1-90
+experiments/e30-bare-host-messagechannel/FINDINGS.md
+  s_92c1b47c0d6ee8::t_bc13dc71ffff7c 1-50
+experiments/e31-wasm-messagechannel-roundtrip/README.md
+  s_92c1b47c0d6ee8::t_8d33ac567ba81e 1-94
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.1",
+  "base_commit_sha": "529ae5914cbe8c876a1ef6f0e30304a6dc8f9e65",
+  "prompts": {},
+  "sessions": {
+    "s_92c1b47c0d6ee8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "dca99c1c-d946-4444-9a53-9ba89db5d748",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
