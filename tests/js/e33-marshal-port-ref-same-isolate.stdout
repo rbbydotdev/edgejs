@@ -1,0 +1,12 @@
+pack_returned:PASS
+top_is_object:PASS
+greeting:PASS
+top_port_is_stub:PASS
+top_port_id_is_100:PASS
+nested_otherPort_is_stub:PASS
+nested_otherPort_id_is_101:PASS
+nested_scalar:PASS
+list_len:PASS
+list_0:PASS
+list_1:PASS
+list_2_is_stub_id_100:PASS

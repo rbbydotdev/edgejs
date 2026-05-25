@@ -447,9 +447,22 @@ function installPostMessageGlobals(): void {
   // can serialize JS values into the wire format
   // `cross-context-marshal.ts` defines.  The policy can't import TS
   // modules; calling these globals is its only path to marshaling.
-  (globalThis as { __edgePackPostMessage?: (v: unknown) => Uint8Array }).__edgePackPostMessage =
+  //
+  // Phase 4 (e33): signatures extended with optional transferList /
+  // portFactory for cross-worker MessagePort transfer.  Existing
+  // phase-2 callers (passing no transfer args) are unaffected.
+  type PackFn = (
+    value: unknown,
+    transferList?: unknown[],
+    assignPortId?: (port: object) => number | null,
+  ) => Uint8Array;
+  type UnpackFn = (
+    bytes: Uint8Array,
+    decodePort?: (portId: number) => unknown,
+  ) => unknown;
+  (globalThis as { __edgePackPostMessage?: PackFn }).__edgePackPostMessage =
     packPostMessage;
-  (globalThis as { __edgeUnpackPostMessage?: (b: Uint8Array) => unknown }).__edgeUnpackPostMessage =
+  (globalThis as { __edgeUnpackPostMessage?: UnpackFn }).__edgeUnpackPostMessage =
     unpackPostMessage;
 }
 

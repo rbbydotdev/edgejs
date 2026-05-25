@@ -172,12 +172,43 @@ export const MARSHAL_TAG_SET = 14;
  *  flagsBits packs the JS flag characters (g/i/m/s/u/y/d/v) into one
  *  byte.  `lastIndex` is not preserved across the round-trip. */
 export const MARSHAL_TAG_REGEXP = 15;
+/** Cross-worker MessagePort transfer reference — [u32 portId].
+ *  The pack-side caller marks specific values as transferable ports
+ *  via a `PackHooks.encodeObject` callback (e.g. via the transferList
+ *  in `packPostMessage`).  The unpack-side caller provides a
+ *  `UnpackHooks.decodePort(id)` factory that materializes a port stub
+ *  bound to the given ID.  Same wire format on both sides; the ID
+ *  scheme is the caller's contract.  Added in e33 to replace the
+ *  prior OBJECT_BYREF fallback for MessagePort instances (which threw
+ *  "marshal: identity reference collected" on cross-isolate receive). */
+export const MARSHAL_TAG_PORT_REF = 16;
 /** Circular back-ref within the current pack frame.  [u32 frameId].
  *  frameId is the index of an already-emitted object in the
  *  pack-frame's `seen` map. */
 export const MARSHAL_TAG_CIRCULAR_REF = 17;
 /** Functions, symbols, bigints — decoder throws. */
 export const MARSHAL_TAG_UNSUPPORTED = 255;
+
+// ─── Pack / unpack hooks ────────────────────────────────────────────
+//
+// Optional callbacks the marshal layer invokes to override default
+// encoding for specific object values, or to materialize values from
+// custom tags on decode.  Used by `marshal-postmessage.ts` to handle
+// MessagePort transfer (e33).
+export interface PackHooks {
+  /** Called for every typeof === "object" value AFTER the circular-ref
+   *  check but BEFORE the typed-shape (Date/Map/Set/RegExp/AB/...)
+   *  and BEFORE the plain-object/BYREF fallback.  Returning a
+   *  Uint8Array overrides the default encoding for this value; returning
+   *  null falls through. */
+  encodeObject?: (value: object) => Uint8Array | null;
+}
+export interface UnpackHooks {
+  /** Called when MARSHAL_TAG_PORT_REF is decoded.  Caller returns the
+   *  materialized value (typically a JS-side MessagePort stub).  If not
+   *  provided, decoder throws. */
+  decodePort?: (portId: number) => unknown;
+}
 
 // ─── RegExp flag bits ───────────────────────────────────────────────
 //
@@ -313,9 +344,11 @@ interface PackFrame {
   nextId: number;
   /** current recursion depth. */
   depth: number;
+  /** caller-supplied hooks (e33: MessagePort transfer encoding). */
+  hooks: PackHooks;
 }
-function newPackFrame(): PackFrame {
-  return { seen: new Map(), nextId: 0, depth: 0 };
+function newPackFrame(hooks?: PackHooks): PackFrame {
+  return { seen: new Map(), nextId: 0, depth: 0, hooks: hooks ?? {} };
 }
 
 /** Pack a single JS value into tag+payload bytes.
@@ -332,8 +365,13 @@ function newPackFrame(): PackFrame {
  *  IdentityMap instances, by-ref is not resolvable and the receiver
  *  throws.  Today's `callback-dispatch.ts` integration uses
  *  by-value. */
-export function packValue(value: unknown, owner: IdentityOwner, idMap: IdentityMap): Uint8Array {
-  return packValueWith(value, owner, idMap, newPackFrame());
+export function packValue(
+  value: unknown,
+  owner: IdentityOwner,
+  idMap: IdentityMap,
+  hooks?: PackHooks,
+): Uint8Array {
+  return packValueWith(value, owner, idMap, newPackFrame(hooks));
 }
 
 function packValueWith(
@@ -380,6 +418,17 @@ function packValueWith(
     }
     const frameId = frame.nextId++;
     frame.seen.set(value as object, frameId);
+
+    // Hook: caller-supplied special-case encoding (e33: MessagePort
+    // transfer).  Runs BEFORE the typed-shape checks so it can override
+    // even types we'd otherwise know how to encode (e.g. transferable
+    // ArrayBuffers in future experiments).
+    if (frame.hooks.encodeObject !== undefined) {
+      const overridden = frame.hooks.encodeObject(value as object);
+      if (overridden !== null) {
+        return overridden;
+      }
+    }
 
     // Date — 9 bytes total.
     if (value instanceof Date) {
@@ -538,9 +587,10 @@ function packValueWith(
  *  same instance built earlier in this frame. */
 interface UnpackFrame {
   byFrameId: object[];
+  hooks: UnpackHooks;
 }
-function newUnpackFrame(): UnpackFrame {
-  return { byFrameId: [] };
+function newUnpackFrame(hooks?: UnpackHooks): UnpackFrame {
+  return { byFrameId: [], hooks: hooks ?? {} };
 }
 
 /**
@@ -556,8 +606,9 @@ export function unpackValue(
   buf: Uint8Array,
   offset: number,
   idMap: IdentityMap,
+  hooks?: UnpackHooks,
 ): { value: unknown; byteLength: number } {
-  return unpackValueWith(buf, offset, idMap, newUnpackFrame());
+  return unpackValueWith(buf, offset, idMap, newUnpackFrame(hooks));
 }
 
 function isSharedBuffer(buf: ArrayBufferLike): boolean {
@@ -611,6 +662,21 @@ function unpackValueWith(
       }
       frame.byFrameId.push(entry.obj);
       return { value: entry.obj, byteLength: 9 };
+    }
+    case MARSHAL_TAG_PORT_REF: {
+      const dv = new DataView(buf.buffer, buf.byteOffset + offset + 1, 4);
+      const portId = dv.getUint32(0, true);
+      if (frame.hooks.decodePort === undefined) {
+        throw new Error(`marshal: MARSHAL_TAG_PORT_REF (portId=${portId}) decoded without a decodePort hook`);
+      }
+      const stub = frame.hooks.decodePort(portId);
+      // Stubs are typically objects — register in byFrameId for any
+      // future circular refs through them.  Skip if the factory
+      // returned a primitive.
+      if (stub !== null && typeof stub === "object") {
+        frame.byFrameId.push(stub as object);
+      }
+      return { value: stub, byteLength: 5 };
     }
     case MARSHAL_TAG_DATE: {
       const dv = new DataView(buf.buffer, buf.byteOffset + offset + 1, 8);
