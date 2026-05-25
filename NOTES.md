@@ -363,17 +363,62 @@ the browser-target tree.
   `_start` from returning while listeners are pending;  (b) drives
   loop iterations so `setImmediate`-queued message deliveries actually
   fire — without iteration, libuv parks in `poll_oneoff` and
-  `setImmediate` never runs.  Emulates emnapi v2 TSFN's
-  `_emnapi_runtime_keepalive_push` mechanism in pure JS.  Migration
-  to real TSFN (or a `uv_async_t`-backed C++ binding — Path A
-  proper) is deferred until either the emnapi v1→v2 cutover lands
-  (see `vendored-emnapi-flag` debt + NOTES followup #4 v-table mode)
-  or someone takes on the C++ binding project.  Observable warts the
-  current shortcut doesn't close: (i) the keepalive timer is visible
-  under `process._getActiveHandles()` as a generic Timeout, not as a
-  MessagePort/Worker handle;  (ii) ~50ms max delivery latency for
-  incoming messages (vs. immediate on real TSFN);  (iii) ~20Hz
-  no-op wakeup cost while listeners are registered.
+  `setImmediate` never runs.
+
+  **v2-cutover update (2026-05-25):** the original premise — "v2's
+  `_emnapi_runtime_keepalive_push` would unblock real TSFN" — turned
+  out to be wrong for our wasi-libc edge.js.  `_emnapi_runtime_keepalive
+  _push` is an empty stub in non-Emscripten builds (`vendor/emnapi/
+  packages/core/dist/emnapi-core.js:605-606`) because the real impl is
+  loaded from Emscripten's virtual `emscripten:runtime` module which
+  edge.js doesn't bring.  And `emnapiCtx.refCounter` (the other
+  candidate keepalive surface) is gated on `process.once +
+  MessageChannel` not being available at `createContext()` time inside
+  the wasm-runtime worker.  Net: even after the v2 cutover, TSFN
+  dispatch runs on the browser worker event loop and has no path into
+  edge's libuv.
+
+  Migration to real Path A now requires building a **uv_async_t-backed
+  C++ binding inside edge.js** (similar pattern to Node's
+  `src/node_messaging.cc`) that exposes a libuv-integrated MessagePort.
+  This is a multi-day project on the order of the v2 cutover itself.
+  Deferred until explicitly scoped as a follow-up.
+
+  Observable warts the current shortcut doesn't close: (i) the
+  keepalive timer is visible under `process._getActiveHandles()` as a
+  generic Timeout, not as a MessagePort/Worker handle;  (ii) ~50ms
+  max delivery latency for incoming messages (vs. immediate on real
+  uv_async_send);  (iii) ~20Hz no-op wakeup cost while listeners are
+  registered.
+
+- `crypto-randombytes-v2-mirror-gap` (2026-05-25, v2 cutover regression)
+  — `crypto.randomBytes(N)` returns all-zero buffers on v2; suite
+  shows 40/1/0/3 vs. v1's 41/0/0/3 baseline.  Diagnosed in a worktree
+  probe (instrumentation removed): edge.js's wasm crypto path allocates
+  a wasm-backed ArrayBuffer via our overridden `napi_create_arraybuffer`
+  (e.g. handle 343, ptr 56297872, foundWab=true) — confirmed wasm-
+  backed.  But the user-visible `new FastBuffer(16)` returns a SEPARATE
+  napi handle (e.g. 336) whose underlying ArrayBuffer is plain JS,
+  NOT shared with wasm memory (`sharesWasmAB=false`).  Each
+  `napi_get_buffer_info(buf=336)` returns a different `dataPtr` /
+  `len` — emnapi v2 appears to allocate a fresh per-call mirror.
+
+  Root cause: in v1 emnapi, the auto-mirror between JS ArrayBuffer and
+  wasm linear memory was bidirectional and per-call (`emnapiNs.syncMemory`
+  fired on both directions); the wasm crypto's writes to the mirror
+  ended up reflected in the JS-side Buffer.  In v2 the mirror
+  semantics are different (the trace shows `syncWasmToJs` running but
+  the JS Buffer still sees zeros — the call-side gets fresh
+  allocations each time, not a stable mirror).
+
+  Workaround paths: (a) extend the existing `patchEmnapiToUseWasmBacked
+  Buffers` to also override `napi_create_buffer_copy` so the FastBuffer-
+  ALLOC path comes back wasm-backed (handle 343-style);  (b) add a
+  post-call sync hook on napi_get_buffer_info / get_arraybuffer_info
+  to copy wasm→JS after the C++ caller writes;  (c) fix Node's
+  FastBuffer construction in lib to allocate from `internalBinding('buffer')
+  .createUnsafeArrayBuffer` (which IS wasm-backed) instead of `new
+  Uint8Array(size)`.  All are 1-day-ish refactors; deferred.
 - `worker-threads-child-sentinel-mangling` — main's child-wasm-worker
   message listener replaces "_start ran" with "_start.ran" in
   forwarded log text so the browser-test-runner's SENTINEL_RE doesn't
