@@ -1,0 +1,26 @@
+browser-target/src/napi-host/index.ts
+  s_7bec0ecbfcdcd0::t_bea3cbb921fab7 727-730
+experiments/e23-real-path-a-discovery/probe.mjs
+  ai_agent 1,3-5,7-14,16-30,41-50,60-62,64-98,100,103,110,116,124-126,128,130-132,136,142,144,146,151,160,162,174-175,177-179,181,187,193
+browser-target/src/policies/worker-threads-per-thread.ts
+  s_7bec0ecbfcdcd0::t_aa2edffff0da30 94-96,106-107,109-110,114-115,118-123
+  s_7bec0ecbfcdcd0::t_61b7e9a399a48a 314,425
+  s_7bec0ecbfcdcd0::t_2475cc5aa83c2c 424,430
+  s_7bec0ecbfcdcd0::t_c3939f701b5def 317,321
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.1",
+  "base_commit_sha": "1858dcf2450fdf1ce8c89a54d842ea4e6d413bf4",
+  "prompts": {},
+  "sessions": {
+    "s_7bec0ecbfcdcd0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d560d5ae-265f-44ae-89c4-d35659b3ab9e",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
