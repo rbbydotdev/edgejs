@@ -1,0 +1,53 @@
+experiments/e28-drop-timer-skip-flag/FINDINGS.md
+  s_92c1b47c0d6ee8::t_97e78847fff10d 1-2,89-182
+  s_92c1b47c0d6ee8::t_6cd80ccec36e54 3-88
+wasix/build-wasix.sh
+  s_92c1b47c0d6ee8::t_518ecd9ece4255 43-55
+  s_92c1b47c0d6ee8::t_ad24af9bb8582a 111-112,114
+experiments/e29-uv-run-once/patch-timers-js.diff
+  s_92c1b47c0d6ee8::t_4c8c56b66be634 1-249
+experiments/e29-uv-run-once/README.md
+  s_92c1b47c0d6ee8::t_8c077ac2220bb8 1-49
+tests/js/e29-canary-within-iteration.stdout
+  s_92c1b47c0d6ee8::t_f2a85341bc7eb6 1
+tests/js/e29-canary-within-iteration.js
+  s_92c1b47c0d6ee8::t_6b13bfd5ebad0b 1-10
+src/edge_timers_host.cc
+  s_92c1b47c0d6ee8::t_725700b28f06a1 8
+  s_92c1b47c0d6ee8::t_fce0fbc057b0ec 112-140,143-155,157-162,164
+experiments/e29-uv-run-once/FINDINGS.md
+  s_92c1b47c0d6ee8::t_b9707a655f823d 105-116
+  s_92c1b47c0d6ee8::t_40d70f3113298d 1-104,117-137
+experiments/e26-verify-ground-truth/README.md
+  s_92c1b47c0d6ee8::t_95c7ff26d7b043 1-46
+experiments/e27-within-iteration-canary/README.md
+  s_92c1b47c0d6ee8::t_44a25a6c52cd5a 1-84
+lib/internal/timers.js
+  s_92c1b47c0d6ee8::t_6aae22ce24ecb8 526-550,553-554,556,558-560,562-563,565-566,568-573,575-576,578,580-584,586-600,602-603,605,607,609,611,613-614,616-625,627-628,630-648,651-669
+experiments/e26-verify-ground-truth/FINDINGS.md
+  ai_agent 1-66
+experiments/e29-uv-run-once/patch-edge-timers-host-cc.diff
+  s_92c1b47c0d6ee8::t_53f64dbf031a28 1-94
+experiments/e28-drop-timer-skip-flag/README.md
+  s_92c1b47c0d6ee8::t_6196ed2e819f55 1-55
+experiments/e28-drop-timer-skip-flag/patch.diff
+  s_92c1b47c0d6ee8::t_c715662768f7e2 1-13
+experiments/e27-within-iteration-canary/FINDINGS.md
+  s_92c1b47c0d6ee8::t_64b9411ebf5849 1-67
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.1",
+  "base_commit_sha": "9cb79911c192d921060f4ebd27786cf78301f976",
+  "prompts": {},
+  "sessions": {
+    "s_92c1b47c0d6ee8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "dca99c1c-d946-4444-9a53-9ba89db5d748",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
