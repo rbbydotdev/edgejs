@@ -39,10 +39,28 @@ export const PRE_START_MARKER = "emnapi bound; running _start";
 // ready to serve.  Resolves with the ChildProcess; caller is
 // responsible for SIGTERMing it at the end.
 export async function startVite() {
+  // Followup e33 (post-buffer-investigation): bump Node's max HTTP
+  // header size from the 16 KB default to 256 KB.  The test harness
+  // delivers user scripts via `?script=<encoded>` URL params; complex
+  // scripts (template literals, special chars) URL-encode to ~1.4x raw
+  // size, so a 7 KB raw test file becomes a ~10 KB URL — close enough
+  // to the 16 KB default that headers (incl. cookies, accept-encoding,
+  // etc) plus the URL overflowed and got HTTP 431.  Vite-served scripts
+  // are a test-harness concern only; production loads scripts via fetch
+  // or imports, not URL params, so this doesn't affect runtime limits.
   const proc = spawn(
     "npm",
     ["run", "dev", "--", "--port", String(VITE_PORT), "--strictPort"],
-    { cwd: browserTarget, stdio: ["ignore", "pipe", "pipe"], detached: false },
+    {
+      cwd: browserTarget,
+      stdio: ["ignore", "pipe", "pipe"],
+      detached: false,
+      env: {
+        ...process.env,
+        // 256 KB — comfortable margin over any realistic test script.
+        NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ""} --max-http-header-size=262144`.trim(),
+      },
+    },
   );
   let resolved = false;
   const deadline = Date.now() + VITE_READY_TIMEOUT_MS;
