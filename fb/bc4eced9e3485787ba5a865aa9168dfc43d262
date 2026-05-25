@@ -1,0 +1,29 @@
+tests/js/e33-phase3b-terminate.harness-args
+  s_92c1b47c0d6ee8::t_dc5f5ac7dffe74 1
+browser-target/src/policies/worker-threads-per-thread.ts
+  s_92c1b47c0d6ee8::t_5aaf09a130ba06 237-245,252-261
+  s_92c1b47c0d6ee8::t_9e405f854ef020 986-993
+  s_92c1b47c0d6ee8::t_67088eb5ab78b1 246-251
+tests/js/e33-phase3b-terminate.js
+  s_92c1b47c0d6ee8::t_867e47e69ae34d 42-47
+  s_92c1b47c0d6ee8::t_6c4721d427a01d 1-18,23,25-41,48-49
+  s_92c1b47c0d6ee8::t_bf0ff8f75e396b 19-22,24
+tests/js/e33-phase3b-terminate.stdout
+  s_92c1b47c0d6ee8::t_bff36424e35600 1-3
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.1",
+  "base_commit_sha": "fbbc4eced9e3485787ba5a865aa9168dfc43d262",
+  "prompts": {},
+  "sessions": {
+    "s_92c1b47c0d6ee8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "dca99c1c-d946-4444-9a53-9ba89db5d748",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
