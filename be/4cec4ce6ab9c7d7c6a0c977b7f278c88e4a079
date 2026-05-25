@@ -1,0 +1,33 @@
+browser-target/src/policies/worker-threads-per-thread.ts
+  s_7bec0ecbfcdcd0::t_341d82e278c260 70-79,81-89,91-99,103-105,107-111,114-124,129-131,133-137,140-162
+  s_7bec0ecbfcdcd0::t_5a850426bf9eca 342,344-345
+  s_7bec0ecbfcdcd0::t_38250e36d188d7 125-128
+  s_7bec0ecbfcdcd0::t_c4261e0bd37218 356-365
+  s_7bec0ecbfcdcd0::t_a28499622c7d64 464-468,470-481
+  s_7bec0ecbfcdcd0::t_2342969c464c12 341,343,346,348-350,372
+browser-target/src/worker.ts
+  s_7bec0ecbfcdcd0::t_24a1969762feb2 86,88-90,95-97
+  s_7bec0ecbfcdcd0::t_4d85ed8be592c3 63-85,87,91-94,98-99
+  s_7bec0ecbfcdcd0::t_26d51a4ebf2ecf 706-715,752-757
+browser-target/src/napi-host/uv-async.ts
+  s_7bec0ecbfcdcd0::t_746f0566c44aa2 89
+  s_7bec0ecbfcdcd0::t_e63933e0d1020a 81,102,110,112,114
+  s_7bec0ecbfcdcd0::t_afaf85d656591c 90-101,111
+  s_7bec0ecbfcdcd0::t_31eea95ee01a3b 15-26
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.1",
+  "base_commit_sha": "be4cec4ce6ab9c7d7c6a0c977b7f278c88e4a079",
+  "prompts": {},
+  "sessions": {
+    "s_7bec0ecbfcdcd0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d560d5ae-265f-44ae-89c4-d35659b3ab9e",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
