@@ -1,0 +1,50 @@
+tests/js/e34-toplevel-sync-throw.js
+  s_92c1b47c0d6ee8::t_3c6398b0a50577 1-42
+tests/js/e34-strict-transfer-detach.stdout
+  s_92c1b47c0d6ee8::t_608a2a8274046d 1-5
+tests/js/e34-circular-ref-clone.stdout
+  s_92c1b47c0d6ee8::t_50f1300b081d15 1-6
+tests/js/e34-toplevel-sync-throw.stdout
+  s_92c1b47c0d6ee8::t_a4963a38c17fbe 1-7
+browser-target/src/policies/worker-threads-per-thread.ts
+  s_92c1b47c0d6ee8::t_b2b10596a345c3 250,253,259-260,262-293
+tests/js/e34-ported-beforeexit-throw-exit.js
+  s_92c1b47c0d6ee8::t_e91a1821ce9f6c 1-44
+src/internal_binding/binding_messaging.cc
+  s_92c1b47c0d6ee8::t_a539c5521526f0 1028,1052,1077,1107
+  s_92c1b47c0d6ee8::t_1e0cf2af0befd8 1078-1079,1090
+  s_92c1b47c0d6ee8::t_d0095c4abb7713 1145,1152,1159
+  s_92c1b47c0d6ee8::t_871da12e61797c 1030-1049,1053-1054,1063
+  s_92c1b47c0d6ee8::t_be16299e5c0ac8 1280-1293,1295-1301,1309,1341-1347,1355,1373
+  s_92c1b47c0d6ee8::t_8cbefcc5f33d0a 2844-2850,2854
+  s_92c1b47c0d6ee8::t_85a70248825817 1015-1027,1029,1050-1051,1055,1062,1068,1075-1076,1080,1097,1105-1106,1133,1138-1144,1146-1151,1153-1158,1160
+tests/js/e34-strict-transfer-detach.js
+  s_92c1b47c0d6ee8::t_2260bbbfba18df 1-36
+tests/js/e34-circular-ref-clone.js
+  s_92c1b47c0d6ee8::t_251a65200a4aa6 1-44
+tests/js/e34-ported-beforeexit-throw-exit.harness-args
+  s_92c1b47c0d6ee8::t_12c53047f4d08e 1
+browser-target/src/napi-host/unofficial.ts
+  s_92c1b47c0d6ee8::t_37e7e83a5619ef 790-794,796-799,801-828
+  s_92c1b47c0d6ee8::t_0d8d98a0e85c90 86-143
+  s_92c1b47c0d6ee8::t_1689a81c37a507 757-766,768,770-788,800,831-836
+  s_92c1b47c0d6ee8::t_547fdfd0040bd3 789,795
+  s_92c1b47c0d6ee8::t_86c8354f1bdbed 829-830
+  s_92c1b47c0d6ee8::t_fa3a97296d5f9f 891-898
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.1",
+  "base_commit_sha": "113390062d84616e07037a930749391d98be46d0",
+  "prompts": {},
+  "sessions": {
+    "s_92c1b47c0d6ee8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "dca99c1c-d946-4444-9a53-9ba89db5d748",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
