@@ -1,0 +1,66 @@
+browser-target/src/policies/worker-threads-per-thread.ts
+  s_92c1b47c0d6ee8::t_4431b8e28e6f69 354
+  s_92c1b47c0d6ee8::t_64045091720be3 547-548,559-590,592,595,597-602,606,610-619,621,625-626
+  s_92c1b47c0d6ee8::t_9d46a5a8017902 241,243
+  s_92c1b47c0d6ee8::t_b25c2af0a72265 737-745,749
+  s_92c1b47c0d6ee8::t_209861de8053b7 843
+  s_92c1b47c0d6ee8::t_6bdbf3356cbedf 67-106
+  s_92c1b47c0d6ee8::t_ec58cf3a1cd043 240,242,244-260
+  s_92c1b47c0d6ee8::t_4aebb16efa43d5 944-949,952-955
+  s_92c1b47c0d6ee8::t_41ccda0dc4e854 1147-1151,1156-1158
+  s_92c1b47c0d6ee8::t_64101f238397ad 1067-1068,1081-1092,1096-1109,1111,1114,1116-1120,1125,1129
+  s_92c1b47c0d6ee8::t_88bb4db4d351b4 900-903,905,908
+  s_92c1b47c0d6ee8::t_7f3ee6683040e5 320-325,329-330,332
+  s_92c1b47c0d6ee8::t_9fc283136a10e9 496-500,502-503,505-507
+  s_92c1b47c0d6ee8::t_7eb70230c8d1c4 437-441,443-445
+tests/js/e33-phase3c-error-event.js
+  s_92c1b47c0d6ee8::t_cf0515c1ce4b3c 22-26,28-34
+tests/js/e33-phase3b-terminate.js
+  s_92c1b47c0d6ee8::t_39b30948d8a3d7 33-37,39
+browser-target/scripts/browser-test-runner.mjs
+  s_92c1b47c0d6ee8::t_e3fd311bacfc8a 81,91-96,98,111-112,121-122,126-131
+browser-target/src/worker.ts
+  s_92c1b47c0d6ee8::t_6eea39e12a1b16 704-715,717-726,728-735
+  s_92c1b47c0d6ee8::t_e99e22e15e6716 400-419,422-430,438-439,442-443,454-479,487-488,490-491,502-533
+  s_92c1b47c0d6ee8::t_822af7a3ab46b4 763-774,776-785,787-794
+tests/js/e34-phase5-eval-mode.stdout
+  s_92c1b47c0d6ee8::t_1d626e9d6c7a74 1-6
+tests/js/e34-phase5-common-shim.js
+  s_92c1b47c0d6ee8::t_21bbd88dbffcdb 1-67
+tests/js/lib/common-shim.js
+  s_92c1b47c0d6ee8::t_58454e372b8136 1-121
+tests/js/e34-phase5-eval-mode.js
+  s_92c1b47c0d6ee8::t_e06c6656b8aa01 1-51
+tests/js/e34-spoof-proof-control.stdout
+  s_92c1b47c0d6ee8::t_507cd7d6840fb4 2,5
+  s_92c1b47c0d6ee8::t_c52a483d4830fe 1,3-4
+tests/js/e33-phase3-integration.js
+  s_92c1b47c0d6ee8::t_bf0c045eb4dab5 29-34
+tests/js/e33-port-parent-via-kept-port.js
+  s_92c1b47c0d6ee8::t_e1d1b664ec40d6 71-78
+  s_92c1b47c0d6ee8::t_244fdfda939960 98-99,111-120
+tests/js/e34-phase5-common-shim.harness-args
+  s_92c1b47c0d6ee8::t_4ebe0fd793dd25 1
+tests/js/e34-phase5-common-shim.stdout
+  s_92c1b47c0d6ee8::t_49792d65bd0d22 1-8
+tests/js/e34-spoof-proof-control.js
+  s_92c1b47c0d6ee8::t_07f871f7a3d466 1-22,26-27,29-30,33,35-58,64,67-72,75
+  s_92c1b47c0d6ee8::t_80820bc592bf62 59-63,65-66,73-74
+  s_92c1b47c0d6ee8::t_27c1f85bfc8c6a 23-25,28,31-32,34
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.1",
+  "base_commit_sha": "d27fca6912a004195ff4ed436e069e41a476041f",
+  "prompts": {},
+  "sessions": {
+    "s_92c1b47c0d6ee8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "dca99c1c-d946-4444-9a53-9ba89db5d748",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
