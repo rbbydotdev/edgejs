@@ -1,0 +1,27 @@
+tests/js/e33-worker-postmessage-port-transfer.stdout
+  s_92c1b47c0d6ee8::t_717af430b9ca56 1-12
+browser-target/src/policies/worker-threads-per-thread.ts
+  s_92c1b47c0d6ee8::t_dc1f021e9e7ea4 347-355,366-370,375-393
+  s_92c1b47c0d6ee8::t_abf920091117fd 509-583,591-610
+  s_92c1b47c0d6ee8::t_876823402e2cf9 662-664,667-673
+  s_92c1b47c0d6ee8::t_62ee6e29d46b24 259-338
+tests/js/e33-worker-postmessage-port-transfer.js
+  s_92c1b47c0d6ee8::t_032ba11c717911 1-48,68-136
+  s_92c1b47c0d6ee8::t_6fe42ae7d8d980 49-67
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.1",
+  "base_commit_sha": "6b803beb14d9e4f6368ed5005ed37a8a37c4f48d",
+  "prompts": {},
+  "sessions": {
+    "s_92c1b47c0d6ee8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "dca99c1c-d946-4444-9a53-9ba89db5d748",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
