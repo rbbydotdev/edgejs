@@ -258,11 +258,61 @@ const PRIMORDIALS_PRE_PATCH = `
 })();
 `;
 
+// ────────────────────────────────────────────────────────────────────
+// TERTIARY PATCH — re-route internal/crypto/random.js buffer alloc.
+//
+// `randomBytes(size)` in `lib/internal/crypto/random.js` does
+// `const buf = new FastBuffer(size)` directly — bypassing
+// `createUnsafeBuffer` and therefore bypassing the wasm-aliased
+// `createUnsafeArrayBuffer` path.  On emnapi v2 that means `buf.buffer`
+// is a plain JS `ArrayBuffer` that doesn't share storage with wasm
+// linear memory; the wasm crypto code writes random bytes to its
+// mirror, the JS side reads zeros.  See NOTES.md
+// `crypto-randombytes-v2-mirror-gap` for the full diagnosis.
+//
+// Fix: post-patch `internal/crypto/random.js` to swap `module.exports
+// .randomBytes` / `randomFillSync` with versions that allocate via
+// `internal/buffer.createUnsafeBuffer` — which goes through our patched
+// path and returns a wasm-backed FastBuffer.  Same approach for the
+// internal `randomCache` initializer.
+//
+// V1 didn't need this because v1 emnapi auto-mirrored both directions
+// per-call; v2 lost the auto-write-back so the structural fix has to
+// happen at allocation time.
+const RANDOM_POST_PATCH = `
+;(function applyWasmAliasedRandom() {
+  if (typeof module === 'undefined' || !module || !module.exports) return;
+  var exp = module.exports;
+  if (typeof exp.randomBytes !== 'function') return;
+  var bufMod;
+  try { bufMod = require('internal/buffer'); } catch (_e) { return; }
+  var createUnsafeBuffer = bufMod && bufMod.createUnsafeBuffer;
+  if (typeof createUnsafeBuffer !== 'function') return;
+  var origRandomBytes = exp.randomBytes;
+  var origRandomFillSync = exp.randomFillSync;
+  if (typeof origRandomFillSync !== 'function') return;
+
+  exp.randomBytes = function randomBytes(size, callback) {
+    // Sync path: allocate wasm-backed, fill, return.  Mirrors the
+    // original randomBytes signature; callback (async) path falls
+    // through to the original which uses RandomBytesJob internally.
+    if (callback !== undefined) return origRandomBytes(size, callback);
+    if (typeof size !== 'number' || size < 0) {
+      return origRandomBytes(size);  // let original throw the right ERR_
+    }
+    var buf = createUnsafeBuffer(size | 0);
+    origRandomFillSync(buf, 0, size | 0);
+    return buf;
+  };
+})();
+`;
+
 export const bufferWasmAliased: Policy = {
   name: "buffer-wasm-aliased",
-  description: "Make Buffer storage wasm-memory backed so JS reads and C++ writes share the same bytes; also patches ArrayBuffer.prototype.{byteLength,slice,transfer,detached} to be polymorphic on SAB receivers (downstream consequence — every Buffer.buffer is now the wasm SAB).",
+  description: "Make Buffer storage wasm-memory backed so JS reads and C++ writes share the same bytes; also patches ArrayBuffer.prototype.{byteLength,slice,transfer,detached} to be polymorphic on SAB receivers (downstream consequence — every Buffer.buffer is now the wasm SAB).  Patches internal/crypto/random.js to route randomBytes() allocation through the wasm-backed createUnsafeBuffer (v2 emnapi regression workaround — see NOTES.md crypto-randombytes-v2-mirror-gap).",
   builtinOverrides: {
     "internal/buffer": { post: POST_PATCH },
     "internal/per_context/primordials": { pre: PRIMORDIALS_PRE_PATCH },
+    "internal/crypto/random": { post: RANDOM_POST_PATCH },
   },
 };
