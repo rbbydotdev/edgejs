@@ -33,6 +33,7 @@ const ERRNO_BADF = 8;
 const ERRNO_NOMEM = 48;
 const ERRNO_AGAIN = 6;
 const ERRNO_NOSYS = 52;
+const ERRNO_NOENT = 44;
 
 // WASI oflags bit constants — what path_open / path_open2 pass us via the
 // oflags arg.  We honor CREAT and TRUNC; DIRECTORY/EXCL are passed as
@@ -1408,12 +1409,16 @@ export function createWasiShim(ctx: ShimContext): {
     },
 
     // path_filestat_get — stat a path.  Routes through the FS facade for
-    // anything the adapter recognizes; falls back to a permissive "looks
-    // like dir / looks like file" heuristic so libc directory probes (used
-    // by cwd resolution and bootstrap fixture lookups) still pass.
-    // #!~debt fake-fs-fallback: paths the FS doesn't serve still report
-    // success.  Real impl needs adapters that own the entire path tree
-    // (OPFS for userland, manifest for bundled).
+    // anything the adapter recognizes; falls back to a narrow heuristic
+    // for path roots only (/, "", ".", trailing-slash dirs).
+    //
+    // History (#!~debt fake-fs-fallback, now narrowed): the original
+    // fallback ALSO reported every non-existent path as a 0-byte regular
+    // file so libc directory probes wouldn't fail. That broke Node's
+    // CJS resolver -- tryExtensions('foo') sees foo as a file, returns
+    // 'foo' instead of trying 'foo.js'. Now: if FS says NOENT for a
+    // non-root path, we return NOENT. Adapters are expected to handle
+    // their own directory probes (see bundled.ts stat() directory fix).
     path_filestat_get(_dirfd: number, _flags: number, pathPtr: number, pathLen: number, statPtr: number) {
       const path = readPath(ctx.memory, pathPtr, pathLen);
       const dv = view(ctx.memory);
@@ -1422,10 +1427,12 @@ export function createWasiShim(ctx: ShimContext): {
         writeFileStat(dv, statPtr, fsRes.value);
         return ERRNO_SUCCESS;
       }
-      // Fallback heuristic — see #!~debt above.
+      // Narrow fallback: root-shaped paths get a DIRECTORY stat. Any
+      // other path the adapter doesn't know about gets NOENT.
       const isDir = path === "/" || path === "" || path === "." || path.endsWith("/");
+      if (!isDir) return ERRNO_NOENT;
       writeFileStat(dv, statPtr, {
-        fileType: isDir ? FileType.DIRECTORY : FileType.REGULAR_FILE,
+        fileType: FileType.DIRECTORY,
         size: 0,
         ino: 1,
         atimNs: 0n,

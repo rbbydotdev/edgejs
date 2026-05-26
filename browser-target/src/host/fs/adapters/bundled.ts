@@ -77,7 +77,7 @@ import {
 } from "../types";
 
 /** Prefixes this adapter serves; everything else is NOENT. */
-const PREFIXES = ["/node-lib/", "/node/deps/"];
+const PREFIXES = ["/node-lib/", "/node/deps/", "/test/"];
 
 /** Internal handle bookkeeping. */
 interface OpenedFile {
@@ -106,6 +106,13 @@ function syncFetchBytes(url: string): { status: number; body: Uint8Array | null 
   }
   if (xhr.status === 0) return { status: 0, body: null };
   if (xhr.status >= 400) return { status: xhr.status, body: null };
+  // Vite's dev server has an SPA fallback that returns index.html (200 +
+  // Content-Type: text/html) for any missing path. None of the files we
+  // serve from this adapter are HTML, so treat text/html responses as
+  // NOENT. Without this, /test/parallel/nonexistent.json would parse as
+  // HTML and look "valid" to consumers (e.g. CJS package.json walk).
+  const ct = (xhr.getResponseHeader("content-type") ?? "").toLowerCase();
+  if (ct.startsWith("text/html")) return { status: 404, body: null };
   const buf = xhr.response as ArrayBuffer | null;
   if (!buf) return { status: xhr.status, body: new Uint8Array() };
   return { status: xhr.status, body: new Uint8Array(buf) };
@@ -125,6 +132,9 @@ function syncFetchExists(url: string): { exists: boolean; size: number } {
     return { exists: false, size: 0 };
   }
   if (xhr.status === 0 || xhr.status >= 400) return { exists: false, size: 0 };
+  // Same Vite SPA-fallback guard as syncFetchBytes.
+  const ct = (xhr.getResponseHeader("content-type") ?? "").toLowerCase();
+  if (ct.startsWith("text/html")) return { exists: false, size: 0 };
   const cl = Number(xhr.getResponseHeader("content-length") ?? "0");
   return { exists: true, size: cl };
 }
@@ -150,7 +160,20 @@ export function createBundledFs(opts: BundledOptions = {}): FileSystem {
   let nextHandle = 1;
 
   function isServed(path: string): boolean {
-    return PREFIXES.some((p) => path.startsWith(p));
+    // Match: full prefix (e.g. "/test/common/foo") AND the parent dirs
+    // that lead to the prefix (e.g. "/test", "/" when prefix is "/test/").
+    // Without the parent match, realpath walking up the tree from a
+    // served file hits the parent dir, finds NOENT, and the whole
+    // resolution chain breaks.
+    return PREFIXES.some((p) => {
+      if (path.startsWith(p)) return true;
+      // p ends with "/"; check if path is a parent dir of the prefix
+      // (e.g. p="/test/" → "/test" and "/" should be served as DIRECTORY).
+      const pNoSlash = p.endsWith("/") ? p.slice(0, -1) : p;
+      if (path === pNoSlash) return true;
+      if (path === "/" && p.startsWith("/")) return true;
+      return false;
+    });
   }
 
   /** Best-effort: build a FileStat from the body length, or zeros. */
@@ -254,8 +277,18 @@ export function createBundledFs(opts: BundledOptions = {}): FileSystem {
     stat(path: string, _followSymlinks = true): FsResult<FileStat> {
       if (!isServed(path)) return err(FsErrno.NOENT);
       const probe = probeStat(path);
-      if (!probe.exists) return err(FsErrno.NOENT);
-      return ok(makeFileStat(path, probe.size, FileType.REGULAR_FILE));
+      if (probe.exists) return ok(makeFileStat(path, probe.size, FileType.REGULAR_FILE));
+      // File not found, but the path may name a directory. Node's CJS
+      // loader needs to recognize directories so it can fall back to
+      // `<path>/index.js`. We don't have a listing API, so probe for
+      // a common directory marker -- if `<path>/index.js` or
+      // `<path>/package.json` exists, treat <path> as a directory.
+      const idxProbe = probeStat(path + "/index.js");
+      const pkgProbe = probeStat(path + "/package.json");
+      if (idxProbe.exists || pkgProbe.exists) {
+        return ok(makeFileStat(path, 0, FileType.DIRECTORY));
+      }
+      return err(FsErrno.NOENT);
     },
 
     readdir(_handle: FsHandle): FsResult<DirEntry[]> {
