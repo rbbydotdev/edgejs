@@ -1,0 +1,26 @@
+browser-target/src/host/fs/adapters/bundled.ts
+  s_92c1b47c0d6ee8::t_5fdc920642360d 135-137
+  s_92c1b47c0d6ee8::t_a57e6f42592baa 109-115
+  s_92c1b47c0d6ee8::t_c0e77fc491ce6c 163-176
+  s_92c1b47c0d6ee8::t_5a038cfefb166a 80
+  s_92c1b47c0d6ee8::t_a70ac8418b91e4 280-291
+browser-target/src/wasi-shim.ts
+  s_92c1b47c0d6ee8::t_a78facf5a6a953 36
+  s_92c1b47c0d6ee8::t_65feee23e25a85 1412-1421,1430-1431,1433,1435
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "f512f94aa4c3c56c7801828beed9a2070c5ed19c",
+  "prompts": {},
+  "sessions": {
+    "s_92c1b47c0d6ee8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "dca99c1c-d946-4444-9a53-9ba89db5d748",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
