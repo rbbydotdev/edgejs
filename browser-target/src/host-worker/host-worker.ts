@@ -334,38 +334,114 @@ type ChildProcExecutor = (
   options: Record<string, unknown>,
 ) => ChildProcExecResult | Promise<ChildProcExecResult>;
 
-async function runChildProcessInHostWorker(requestJson: string): Promise<string> {
-  interface Req {
-    command: string;
-    args: string[];
-    env?: Record<string, string>;
-    cwd?: string;
-    input?: number[];
-    timeout?: number;
-    killSignal?: string;
+// Binary frame format (see child-process-via-executor.ts for wire docs).
+function unpackChildProcRequest(buf: Uint8Array): {
+  command: string;
+  args: string[];
+  env?: Record<string, string>;
+  cwd?: string;
+  timeout?: number;
+  killSignal?: string;
+  input?: Uint8Array;
+} | null {
+  if (buf.byteLength < 8) return null;
+  const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+  const headerLen = dv.getUint32(0, true);
+  if (4 + headerLen + 4 > buf.byteLength) return null;
+  let header: Record<string, unknown>;
+  try {
+    header = JSON.parse(new TextDecoder("utf-8").decode(
+      buf.subarray(4, 4 + headerLen),
+    )) as Record<string, unknown>;
+  } catch { return null; }
+  const inputLen = dv.getUint32(4 + headerLen, true);
+  const inputStart = 4 + headerLen + 4;
+  if (inputStart + inputLen > buf.byteLength) return null;
+  let input: Uint8Array | undefined;
+  if (inputLen > 0) {
+    input = new Uint8Array(inputLen);
+    input.set(buf.subarray(inputStart, inputStart + inputLen));
   }
-  const req = JSON.parse(requestJson) as Req;
+  return {
+    command: String(header.command ?? ""),
+    args: Array.isArray(header.args) ? header.args.map(String) : [],
+    env: (header.env && typeof header.env === "object")
+      ? header.env as Record<string, string>
+      : undefined,
+    cwd: typeof header.cwd === "string" ? header.cwd : undefined,
+    timeout: typeof header.timeout === "number" ? header.timeout : undefined,
+    killSignal: typeof header.killSignal === "string" ? header.killSignal : undefined,
+    input,
+  };
+}
+
+function packChildProcReply(result: ChildProcExecResult | { __noExecutor: true }): Uint8Array {
+  if ("__noExecutor" in result) {
+    const headerBytes = new TextEncoder().encode(JSON.stringify({ __noExecutor: true }));
+    const buf = new Uint8Array(4 + headerBytes.byteLength + 8);
+    const dv = new DataView(buf.buffer);
+    dv.setUint32(0, headerBytes.byteLength, true);
+    buf.set(headerBytes, 4);
+    dv.setUint32(4 + headerBytes.byteLength, 0, true);
+    dv.setUint32(4 + headerBytes.byteLength + 4, 0, true);
+    return buf;
+  }
+  const toBytes = (v: Uint8Array | string | number[] | undefined): Uint8Array => {
+    if (v == null) return new Uint8Array(0);
+    if (v instanceof Uint8Array) return v;
+    if (typeof v === "string") return new TextEncoder().encode(v);
+    if (Array.isArray(v)) return new Uint8Array(v);
+    return new TextEncoder().encode(String(v));
+  };
+  const stdoutBytes = toBytes(result.stdout);
+  const stderrBytes = toBytes(result.stderr);
+  const header = {
+    code: typeof result.code === "number" ? result.code : null,
+    signal: result.signal != null ? result.signal : null,
+    error: result.error || null,
+  };
+  const headerBytes = new TextEncoder().encode(JSON.stringify(header));
+  const buf = new Uint8Array(4 + headerBytes.byteLength + 4 + stdoutBytes.byteLength + 4 + stderrBytes.byteLength);
+  const dv = new DataView(buf.buffer);
+  let off = 0;
+  dv.setUint32(off, headerBytes.byteLength, true); off += 4;
+  buf.set(headerBytes, off); off += headerBytes.byteLength;
+  dv.setUint32(off, stdoutBytes.byteLength, true); off += 4;
+  buf.set(stdoutBytes, off); off += stdoutBytes.byteLength;
+  dv.setUint32(off, stderrBytes.byteLength, true); off += 4;
+  buf.set(stderrBytes, off);
+  return buf;
+}
+
+async function runChildProcessInHostWorker(requestBytes: Uint8Array): Promise<Uint8Array> {
+  const req = unpackChildProcRequest(requestBytes);
+  if (!req) {
+    return packChildProcReply({
+      stdout: new Uint8Array(0),
+      stderr: new TextEncoder().encode("malformed run-child-process request"),
+      code: null,
+      signal: null,
+      error: { code: "EINVAL", message: "malformed request" },
+    });
+  }
   const executor = (self as unknown as { __edgeChildProcessExecutor?: ChildProcExecutor })
     .__edgeChildProcessExecutor;
   if (typeof executor !== "function") {
-    return JSON.stringify({ __noExecutor: true });
+    return packChildProcReply({ __noExecutor: true });
   }
-  const inputBytes = Array.isArray(req.input) ? new Uint8Array(req.input) : undefined;
   const opts: Record<string, unknown> = {};
   if (req.env) opts.env = req.env;
   if (req.cwd != null) opts.cwd = req.cwd;
-  if (inputBytes) opts.input = inputBytes;
+  if (req.input) opts.input = req.input;
   if (typeof req.timeout === "number") opts.timeout = req.timeout;
   if (req.killSignal) opts.killSignal = req.killSignal;
 
   // Timeout enforcement: race executor against a timer if req.timeout > 0.
-  // When the timer wins, we return a synthetic "killed by signal" result
-  // (Node's spawnSync sets result.signal = options.killSignal || 'SIGTERM',
-  // result.status = null, result.error = ETIMEDOUT). The executor keeps
-  // running in the background -- we can't synchronously abort an arbitrary
-  // user function; AbortSignal support (task P2) gives the executor a way
-  // to cooperate. Until then this is a leak on timeout, but a bounded one
-  // (the call returns and the wasm thread is freed).
+  // When the timer wins, we return a synthetic kill result. Executor keeps
+  // running in the background -- can't synchronously abort an arbitrary
+  // user function; AbortSignal support (task P2 #44) gives the executor a
+  // way to cooperate. Until then this is a leak on timeout, but a bounded
+  // one (the call returns and the wasm thread is freed).
   const executorPromise = Promise.resolve(executor(req.command, req.args || [], opts));
   let result: ChildProcExecResult;
   if (typeof req.timeout === "number" && req.timeout > 0) {
@@ -388,21 +464,7 @@ async function runChildProcessInHostWorker(requestJson: string): Promise<string>
   } else {
     result = await executorPromise;
   }
-
-  const toNums = (v: Uint8Array | string | number[] | undefined): number[] => {
-    if (v == null) return [];
-    if (typeof v === "string") return Array.from(new TextEncoder().encode(v));
-    if (v instanceof Uint8Array) return Array.from(v);
-    if (Array.isArray(v)) return v;
-    return Array.from(new TextEncoder().encode(String(v)));
-  };
-  return JSON.stringify({
-    stdout: toNums(result.stdout),
-    stderr: toNums(result.stderr),
-    code: typeof result.code === "number" ? result.code : null,
-    signal: result.signal != null ? result.signal : null,
-    error: result.error || null,
-  });
+  return packChildProcReply(result);
 }
 
 // Called when main delivers an exit event from a spawned child.  We fire
@@ -972,12 +1034,18 @@ function registerHandlers(srv: RpcServer): void {
   // init bootScript) -- main thread is never involved per the
   // architectural rule. The host worker's event loop stays free while
   // the wasm worker is blocked on Atomics.wait.
+  //
+  // Binary wire format -- see child-process-via-executor.ts for the
+  // request/reply layout. Replaced JSON-number-arrays encoding to
+  // recover ~6x of slot budget for stdio bytes.
   srv.register(OP_RUN_CHILD_PROCESS, async (_ctx, args) => {
     try {
-      const requestJson = new TextDecoder("utf-8").decode(args);
-      const replyJson = await runChildProcessInHostWorker(requestJson);
+      // Copy out -- args aliases the SAB slot which gets reused.
+      const argsCopy = new Uint8Array(args.byteLength);
+      argsCopy.set(args);
+      const replyBytes = await runChildProcessInHostWorker(argsCopy);
       return {
-        payload: new TextEncoder().encode(replyJson),
+        payload: replyBytes,
         status: REPLY_STATUS_OK,
       };
     } catch (e) {

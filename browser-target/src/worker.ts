@@ -391,30 +391,29 @@ function installSpawnNodeWorkerGlobal(): void {
   (globalThis as { __edgeSpawnNodeWorker?: SpawnNodeWorker }).__edgeSpawnNodeWorker = impl;
 }
 
-// child-process-via-executor (async path) global. Mirrors
-// `__edgeSpawnNodeWorker` shape: pack args, sync RPC to host, parse
-// reply. The host posts to main, main calls the user-installed
-// executor (sync or async), serializes reply. Wasm thread blocks on
-// Atomics.wait inside the sync RPC client the whole time -- no JSPI
-// involvement, no SuspendError risk.
+// child-process-via-executor (async path) global. Sync RPC to the host
+// worker, which runs the user-installed executor (sync OR async) in its
+// own event loop and returns the binary frame back. Wasm thread blocks
+// on Atomics.wait the whole time -- no JSPI involvement.
 //
-// Returns the result JSON string (the policy patch unpacks). On
-// "no executor installed on main" we return a sentinel string the
-// patch recognizes so it can fall back to the default fake shell.
-type SpawnChildProcessSync = (requestJson: string) => string;
+// Payload format: see child-process-via-executor.ts (packRequest /
+// unpackReply). Binary, not JSON-encoded numbers -- ~6x more efficient.
+type SpawnChildProcessSync = (request: Uint8Array) => Uint8Array;
 
 function installSpawnChildProcessGlobal(): void {
-  const impl: SpawnChildProcessSync = (requestJson) => {
+  const impl: SpawnChildProcessSync = (request) => {
     if (!hostRpcSyncClient) {
       throw new Error("__edgeChildProcessSpawnSync: host RPC sync client not attached");
     }
-    const payload = new TextEncoder().encode(requestJson);
-    const reply = hostRpcSyncClient.callSync(OP_RUN_CHILD_PROCESS, hostWorkerId, 0, payload);
+    const reply = hostRpcSyncClient.callSync(OP_RUN_CHILD_PROCESS, hostWorkerId, 0, request);
     if (reply.status !== REPLY_STATUS_OK) {
       const msg = new TextDecoder().decode(reply.payload) || `run-child-process status=${reply.status}`;
       throw new Error("__edgeChildProcessSpawnSync: " + msg);
     }
-    return new TextDecoder().decode(reply.payload);
+    // Copy out -- the reply aliases the SAB slot which gets reused.
+    const out = new Uint8Array(reply.payload.byteLength);
+    out.set(reply.payload);
+    return out;
   };
   (globalThis as { __edgeChildProcessSpawnSync?: SpawnChildProcessSync }).__edgeChildProcessSpawnSync = impl;
 }

@@ -101,48 +101,95 @@ const PRE_PATCH = `
   // sync RPC to the host worker, which runs the user-installed executor
   // (installed via host-worker init bootScript) in its own event loop.
   // Wasm thread blocks on Atomics.wait inside the sync RPC client.
-  // Returns the parsed result object, or null if no executor is
-  // installed (sentinel \`__noExecutor: true\`) so the caller falls back
-  // to the default fake shell.
+  //
+  // WIRE FORMAT (binary frame, replaces the previous JSON-bytes-as-numbers
+  // encoding which was ~6x bloat on stdio data). All integers LE u32.
+  //
+  // Request:
+  //   [u32 headerLen][header utf-8 JSON][u32 inputLen][input bytes]
+  // Header JSON: { command, args, env?, cwd?, timeout?, killSignal? }
+  //
+  // Reply:
+  //   [u32 headerLen][header utf-8 JSON][u32 stdoutLen][stdout][u32 stderrLen][stderr]
+  // Header JSON: { code, signal, error?, __noExecutor? }
+  //
+  // SAB slot size limit (~4 KiB) caps combined payload size. Larger
+  // stdio (> a few KB) needs the shared napi-mem path; documented as
+  // a follow-up. The binary frame at least 6x's the in-slot capacity
+  // vs JSON-encoded number arrays.
+  function packRequest(command, args, opts, inputBytes) {
+    var header = {
+      command: String(command),
+      args: args || [],
+      env: opts && opts.env,
+      cwd: opts && opts.cwd,
+      timeout: opts && typeof opts.timeout === 'number' ? opts.timeout : undefined,
+      killSignal: opts && opts.killSignal,
+    };
+    var headerBytes = new TextEncoder().encode(JSON.stringify(header));
+    var inLen = inputBytes ? inputBytes.byteLength : 0;
+    var totalLen = 4 + headerBytes.byteLength + 4 + inLen;
+    var buf = new Uint8Array(totalLen);
+    var dv = new DataView(buf.buffer);
+    dv.setUint32(0, headerBytes.byteLength, true);
+    buf.set(headerBytes, 4);
+    dv.setUint32(4 + headerBytes.byteLength, inLen, true);
+    if (inLen > 0) buf.set(inputBytes, 4 + headerBytes.byteLength + 4);
+    return buf;
+  }
+
+  function unpackReply(buf) {
+    if (!buf || buf.byteLength < 4) return null;
+    var dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+    var headerLen = dv.getUint32(0, true);
+    if (4 + headerLen + 8 > buf.byteLength) return null;
+    var header;
+    try {
+      header = JSON.parse(new TextDecoder('utf-8').decode(
+        buf.subarray(4, 4 + headerLen)));
+    } catch (e) { void e; return null; }
+    if (header && header.__noExecutor) return { __noExecutor: true };
+    var outLen = dv.getUint32(4 + headerLen, true);
+    var outStart = 4 + headerLen + 4;
+    if (outStart + outLen + 4 > buf.byteLength) return null;
+    var errLen = dv.getUint32(outStart + outLen, true);
+    var errStart = outStart + outLen + 4;
+    if (errStart + errLen > buf.byteLength) return null;
+    // Copy out (the buf is a transient view over the SAB slot).
+    var stdoutBytes = new Uint8Array(outLen);
+    if (outLen > 0) stdoutBytes.set(buf.subarray(outStart, outStart + outLen));
+    var stderrBytes = new Uint8Array(errLen);
+    if (errLen > 0) stderrBytes.set(buf.subarray(errStart, errStart + errLen));
+    return {
+      stdout: stdoutBytes,
+      stderr: stderrBytes,
+      code: typeof header.code === 'number' ? header.code : null,
+      signal: header.signal != null ? header.signal : null,
+      error: header.error || null,
+    };
+  }
+
   function tryAsyncPath(command, args, opts) {
     var g = getGlobalThis();
     var spawnSync = g && g.__edgeChildProcessSpawnSync;
     if (typeof spawnSync !== 'function') return null;
     var input = opts && opts.input;
-    var inputNums = null;
+    var inputBytes = null;
     if (input != null) {
-      if (typeof input === 'string') {
-        inputNums = Array.from(new TextEncoder().encode(input));
-      } else if (input instanceof Uint8Array) {
-        inputNums = Array.from(input);
-      }
+      if (typeof input === 'string') inputBytes = new TextEncoder().encode(input);
+      else if (input instanceof Uint8Array) inputBytes = input;
     }
-    var req = {
-      command: String(command),
-      args: args || [],
-      env: opts && opts.env,
-      cwd: opts && opts.cwd,
-      input: inputNums,
-      timeout: opts && typeof opts.timeout === 'number' ? opts.timeout : undefined,
-      killSignal: opts && opts.killSignal,
-    };
-    var replyJson;
+    var reqBuf = packRequest(command, args, opts, inputBytes);
+    var replyBuf;
     try {
-      replyJson = spawnSync(JSON.stringify(req));
+      replyBuf = spawnSync(reqBuf);
     } catch (e) {
       void e;
       return null; // RPC failed; fall back to fake shell.
     }
-    var parsed;
-    try { parsed = JSON.parse(replyJson); } catch (e) { void e; return null; }
-    if (parsed && parsed.__noExecutor) return null; // host has none.
-    return {
-      stdout: parsed.stdout ? new Uint8Array(parsed.stdout) : '',
-      stderr: parsed.stderr ? new Uint8Array(parsed.stderr) : '',
-      code: typeof parsed.code === 'number' ? parsed.code : null,
-      signal: parsed.signal != null ? parsed.signal : null,
-      error: parsed.error || null,
-    };
+    var parsed = unpackReply(replyBuf);
+    if (parsed && parsed.__noExecutor) return null;
+    return parsed;
   }
 
   // Default executor: a tiny fake shell with a handful of authentic
