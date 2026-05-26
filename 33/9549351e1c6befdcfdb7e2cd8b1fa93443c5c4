@@ -1,0 +1,32 @@
+browser-target/src/host-worker/worker-pool.ts
+  s_92c1b47c0d6ee8::t_2b672b1c4964cd 57-66,69
+  s_92c1b47c0d6ee8::t_c1565824201c91 124
+browser-target/src/main.ts
+  s_92c1b47c0d6ee8::t_1a8328a19bf233 1073-1076
+  s_92c1b47c0d6ee8::t_2714cf7433c36b 1366-1383
+  s_92c1b47c0d6ee8::t_c135e4e63e751d 82-86
+  s_92c1b47c0d6ee8::t_7cd09663ecbfa4 1193-1196
+tests/js/child-process-spawn-async.harness-args
+  s_92c1b47c0d6ee8::t_600e1143e1d81a 2
+browser-target/src/host-worker/host-worker.ts
+  s_92c1b47c0d6ee8::t_8b74e6d1dd0d95 312-329,331-335,337-344,346-350,352-372
+  s_92c1b47c0d6ee8::t_864ea5ab0b517b 102-106
+  s_92c1b47c0d6ee8::t_a19a6203e712fd 1352-1364
+  s_92c1b47c0d6ee8::t_6e32eebb7d4ad0 938-941,945
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "339549351e1c6befdcfdb7e2cd8b1fa93443c5c4",
+  "prompts": {},
+  "sessions": {
+    "s_92c1b47c0d6ee8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "dca99c1c-d946-4444-9a53-9ba89db5d748",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
