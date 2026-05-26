@@ -1,5 +1,12 @@
 # E37 — uv_run block probe: findings
 
+> **Cross-ref:** The symptom captured here (`uv_run` returning despite
+> `alive=1`) is valid, but the root cause was found later in
+> [e40](../e40-cpp-debugger/FINDINGS.md): the keepalive's `alive=1`
+> was being read from `uv_default_loop()`, while `uv_run` was driving a
+> different per-env loop where no handles were registered. Two loops,
+> two different alive states. Fixed in commit 1eff1dfa.
+
 ## Result
 
 ```

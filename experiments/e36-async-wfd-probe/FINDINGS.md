@@ -1,5 +1,14 @@
 # E36 — Async-wfd probe: findings
 
+> **Cross-ref:** The wasi-shim line-1122 bug surfaced here is real, but
+> it was *not* the root cause of the ~140ms child exit that motivated
+> the worker_threads investigation. That bug was found in
+> [e40](../e40-cpp-debugger/FINDINGS.md): keepalive registered on
+> `uv_default_loop()` while `uv_run` drove a fresh per-env loop. The
+> line-1122 patch is necessary-but-insufficient (see also
+> [e38](../e38-polloneoff-trace/FINDINGS.md)) and did not ship as part
+> of the fix in commit 1eff1dfa.
+
 ## What this experiment proved
 
 1. **libuv's async pipe wfd IS in the wasi-shim pipeRegistry range.**

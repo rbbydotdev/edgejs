@@ -1,5 +1,12 @@
 # E39 — unhandled-rejection double-fire (actually: process.exit not honored)
 
+> **Archived:** This probe investigated a hypothesis tied to the
+> wasi-shim line-1122 patch, which did not ship. The actual fix for
+> the ~140ms child exit was the per-env loop registration in
+> [e40](../../e40-cpp-debugger/FINDINGS.md) (commit 1eff1dfa). The
+> process.exit-not-honored observation here is a separate, still-open
+> issue and is preserved for future reference.
+
 ## Reproduction
 
 Baseline (no fix to wasi-shim line 1122):

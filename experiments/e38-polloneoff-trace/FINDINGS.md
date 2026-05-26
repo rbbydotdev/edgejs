@@ -1,5 +1,11 @@
 # E38 — poll_oneoff trace: findings
 
+> **Cross-ref:** The line-1122 fix explored here is necessary-but-
+> insufficient. The actual root cause of the ~140ms child exit is in
+> [e40](../e40-cpp-debugger/FINDINGS.md): keepalive registered on
+> `uv_default_loop()` while `uv_run` drove a fresh per-env loop. The
+> line-1122 patch did not ship as part of the fix in commit 1eff1dfa.
+
 ## What the trace showed
 
 Without the line-1122 fix:

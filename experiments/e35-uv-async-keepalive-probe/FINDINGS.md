@@ -1,5 +1,11 @@
 # E35 — uv_async_t keepalive probe: findings
 
+> **Cross-ref:** This probe validated that libuv's keepalive accounting
+> works as documented. The actual loop-exit bug that motivated the
+> investigation was found in [e40](../e40-cpp-debugger/FINDINGS.md):
+> the keepalive was registered on `uv_default_loop()` while `uv_run`
+> drove a fresh per-env loop. Fixed in commit 1eff1dfa.
+
 Live probe ran end-to-end (Vite + Playwright Chromium with JSPI).
 `probe.mjs` patched `browser-target/src/worker.ts` in place with a
 diagnostic block injected right after `napi.bindInstance`, ran through
