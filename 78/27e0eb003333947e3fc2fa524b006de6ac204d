@@ -1,0 +1,80 @@
+tests/js/child-process-spawn-streaming.js
+  s_92c1b47c0d6ee8::t_440a43cd9cac97 1-38
+browser-target/src/policies/child-process-via-executor.ts
+  s_92c1b47c0d6ee8::t_8cc799fba37da2 614-622,627-631,637-639,641-651
+  s_92c1b47c0d6ee8::t_c35811cfd845b9 873-878
+  s_92c1b47c0d6ee8::t_d893a1853960be 978-979
+  s_92c1b47c0d6ee8::t_b2068055875785 550,553-556
+  s_92c1b47c0d6ee8::t_c13298200f40b8 632-636
+  s_92c1b47c0d6ee8::t_18a3c57b67a8c5 592-613,623-626,640,652,677-723,760-765,768,770-780,782-785,794-804,822-837,842-872,879-969
+  s_92c1b47c0d6ee8::t_c031cfd221f8d5 838-841
+  s_92c1b47c0d6ee8::t_27b800391fb4f4 653-676
+  s_92c1b47c0d6ee8::t_7109ef061d1a8d 805-821
+  s_92c1b47c0d6ee8::t_f593d7750d9803 766-767,769,781,786-789
+  s_92c1b47c0d6ee8::t_ad034a05defda3 582-591
+  s_92c1b47c0d6ee8::t_218f9d5fd97794 58-66,69-70
+  s_92c1b47c0d6ee8::t_22a573c154a111 790-793
+  s_92c1b47c0d6ee8::t_4ca3b7c87104f7 724-759
+browser-target/src/host-worker/rpc-server.ts
+  s_92c1b47c0d6ee8::t_2a210fd60a506f 83-93
+tests/js/child-process-spawn-stdin-stream.js
+  s_92c1b47c0d6ee8::t_bc9a92393fcaa4 1-31
+tests/js/child-process-spawn-streaming.harness-args
+  s_92c1b47c0d6ee8::t_ebc0ed4c2bf1a3 1-2
+browser-target/src/host-worker/rpc-protocol.ts
+  s_92c1b47c0d6ee8::t_f95f84ba4f2999 710-726
+  s_92c1b47c0d6ee8::t_ed84ffac3634a5 672-709
+tests/js/child-process-spawn-stdin-stream.harness-args
+  s_92c1b47c0d6ee8::t_c372adcf396b92 1-2
+tests/js/child-process-async-spawn.stdout
+  s_92c1b47c0d6ee8::t_35797f5acc79d1 1-12
+browser-target/scripts/browser-test-runner.mjs
+  s_92c1b47c0d6ee8::t_4edfc0f4bf7e71 211-214,221
+  s_92c1b47c0d6ee8::t_6ce4c5db3499e3 165-168,173
+browser-target/src/host-worker/rpc-client.ts
+  s_92c1b47c0d6ee8::t_b26e792a459c60 123-129
+browser-target/src/host-worker/host-worker.ts
+  s_92c1b47c0d6ee8::t_b0b1267bd9962b 51-52,55
+  s_92c1b47c0d6ee8::t_753529722d2efb 523-524
+  s_92c1b47c0d6ee8::t_49a4124e553e3b 1417-1435
+  s_92c1b47c0d6ee8::t_b10673ffd0cc1b 421-435,448-451,453-455,507-522,525-549,603-612,614,624-626,637-646,690-717,736-772
+  s_92c1b47c0d6ee8::t_38499b3235032d 550-602,613,615-623
+  s_92c1b47c0d6ee8::t_e3839c93120cf1 436-447,452,456-506
+  s_92c1b47c0d6ee8::t_43a8bcd9ebe31a 724-735
+  s_92c1b47c0d6ee8::t_8706056ce46c02 1436-1477
+  s_92c1b47c0d6ee8::t_ec96c4c49429a9 647-681,689,718-723
+  s_92c1b47c0d6ee8::t_a4aa8b4c6b62af 682-688
+  s_92c1b47c0d6ee8::t_3537236d3b49c5 627-636
+  s_92c1b47c0d6ee8::t_32c4805380664c 53-54
+tests/js/child-process-async-spawn.js
+  s_92c1b47c0d6ee8::t_7510606a9ae707 1-69
+tests/js/child-process-spawn-streaming.stdout
+  s_92c1b47c0d6ee8::t_c341196675b1aa 1-8
+browser-target/src/worker.ts
+  s_92c1b47c0d6ee8::t_6afc3f91b7c827 899-922,924-932
+  s_92c1b47c0d6ee8::t_ea5e0971e607d9 923
+  s_92c1b47c0d6ee8::t_31d22fcb4b8d30 432-433,459-480,483-484
+  s_92c1b47c0d6ee8::t_473584cece4812 108
+  s_92c1b47c0d6ee8::t_48f44b45dd31fd 717
+  s_92c1b47c0d6ee8::t_1f05469e09ad06 421-431,434-458,481-482,485-486
+tests/js/child-process-spawn-stdin-stream.stdout
+  s_92c1b47c0d6ee8::t_dc09595b7c6f73 1-2
+tests/js/child-process-async-spawn.harness-args
+  s_92c1b47c0d6ee8::t_8ef1eef4088be3 1
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "7827e0eb003333947e3fc2fa524b006de6ac204d",
+  "prompts": {},
+  "sessions": {
+    "s_92c1b47c0d6ee8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "dca99c1c-d946-4444-9a53-9ba89db5d748",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
