@@ -417,6 +417,23 @@ const PRE_PATCH = `
       var s0 = options.stdio[0];
       if (s0 && s0.input != null) input = s0.input;
     }
+    // stdout/stderr stdio mode: 'pipe' (capture into result, default),
+    // 'inherit' (write to wasm's process.stdout/stderr), 'ignore' (drop).
+    // For 'inherit' we route the executor's output through process.stdout/stderr
+    // AFTER the executor returns -- bounded buffering, no real-time streaming
+    // (that's P3). Real-time streaming requires async spawn.
+    function stdioModeOf(idx, defaultMode) {
+      if (!Array.isArray(options.stdio) || options.stdio.length <= idx) return defaultMode;
+      var s = options.stdio[idx];
+      if (!s) return defaultMode;
+      if (typeof s === 'string') return s;
+      if (s.type === 'inherit') return 'inherit';
+      if (s.type === 'ignore') return 'ignore';
+      // 'pipe', 'overlapped', 'fd', 'wrap', null -> capture (best effort).
+      return 'pipe';
+    }
+    var stdoutMode = stdioModeOf(1, 'pipe');
+    var stderrMode = stdioModeOf(2, 'pipe');
     // Three-tier executor resolution:
     //   1. wasm-worker sync executor (fast path, no RPC)
     //   2. host-worker async executor via sync RPC (async-capable)
@@ -475,7 +492,30 @@ const PRE_PATCH = `
         error: -38, // ENOSYS
       };
     }
-    return shapeResult(execResult || {}, options);
+    execResult = execResult || {};
+
+    // Apply stdout/stderr stdio modes: 'inherit' writes through to
+    // the wasm's process.stdout / process.stderr; 'ignore' drops the
+    // bytes. 'pipe' passes through to shapeResult (default capture).
+    function applyMode(bytes, mode, fd) {
+      if (bytes == null) return bytes;
+      if (mode === 'ignore') return ''; // drop
+      if (mode === 'inherit') {
+        var stream = (fd === 1 ? process.stdout : process.stderr);
+        if (stream && typeof stream.write === 'function') {
+          try { stream.write(bytes); } catch (e) { void e; }
+        }
+        return ''; // not captured in result
+      }
+      return bytes; // 'pipe' default -- capture
+    }
+    if (stdoutMode !== 'pipe') {
+      execResult.stdout = applyMode(execResult.stdout, stdoutMode, 1);
+    }
+    if (stderrMode !== 'pipe') {
+      execResult.stderr = applyMode(execResult.stderr, stderrMode, 2);
+    }
+    return shapeResult(execResult, options);
   };
 })();
 `;

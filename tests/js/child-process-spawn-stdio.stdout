@@ -1,0 +1,6 @@
+pipe stdout: "pipe-captured" len: 14
+marker-before-inherit
+inherit-output
+inherit result-stdout len: 0
+ignore result-stdout len: 0
+mixed stdout: "stderr-inherit-noop" stderr.len: 0
