@@ -1,0 +1,47 @@
+tests/js/child-process-kill-cooperative.harness-args
+  s_92c1b47c0d6ee8::t_ea8d54eb10bf06 1
+tests/js/child-process-ipc-backpressure.executor.js
+  s_92c1b47c0d6ee8::t_fb13ada6a49272 1-21
+browser-target/src/main.ts
+  s_92c1b47c0d6ee8::t_7faf566f1ebf7b 161,229,680,782,836,888
+tests/js/child-process-kill-cooperative.js
+  s_92c1b47c0d6ee8::t_5a607c9db8506a 1-25
+browser-target/src/host-worker/host-worker.ts
+  s_92c1b47c0d6ee8::t_caa6a70b4292c7 876-890
+  s_92c1b47c0d6ee8::t_aa505edc9482f8 97
+browser-target/src/policies/child-process-via-executor.ts
+  s_92c1b47c0d6ee8::t_240e31ba996b32 1079-1080
+  s_92c1b47c0d6ee8::t_17c31133f81fa8 1029-1046,1050-1078,1081-1095,1097-1123
+tests/js/child-process-ipc-backpressure.stdout
+  s_92c1b47c0d6ee8::t_8413c39b81c5f7 1
+  s_92c1b47c0d6ee8::t_2abb34c08e7934 2
+tests/js/child-process-ipc-backpressure.harness-args
+  s_92c1b47c0d6ee8::t_f683fc463a16da 1
+tests/js/child-process-ipc-backpressure.js
+  s_92c1b47c0d6ee8::t_f384dda650dbf8 1,13-16,18-30
+  s_92c1b47c0d6ee8::t_dd6afc69aeda33 2-12,17
+tests/js/child-process-kill-cooperative.executor.js
+  s_92c1b47c0d6ee8::t_601ae32bee38b8 1-20
+tests/js/child-process-kill-cooperative.stdout
+  s_92c1b47c0d6ee8::t_56c24120248e95 1-3
+browser-target/src/worker.ts
+  s_92c1b47c0d6ee8::t_335a4461754cd3 111-120
+browser-target/src/host-worker/worker-pool.ts
+  s_92c1b47c0d6ee8::t_403c68c92c55de 16
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "1932eb0e630cb409d872a26245c699cee78e1927",
+  "prompts": {},
+  "sessions": {
+    "s_92c1b47c0d6ee8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "dca99c1c-d946-4444-9a53-9ba89db5d748",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
