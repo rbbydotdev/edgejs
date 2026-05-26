@@ -65,8 +65,16 @@ function collectTests(filter) {
         stdoutPath: resolve(testsDir, `${stem}.stdout`),
         skipPath: resolve(testsDir, `${stem}.skip`),
         harnessArgsPath: resolve(testsDir, `${stem}.harness-args`),
+        // Convention-based host-executor sidecar (avoids cramming
+        // base64 JS into harness-args query strings). If present, its
+        // contents are forwarded as `executor64=<b64>` so the host
+        // worker installs the executor via its bootScript. Skip the
+        // `.executor.js` files themselves when listing tests below.
+        executorPath: resolve(testsDir, `${stem}.executor.js`),
       };
-    });
+    })
+    // Don't treat `<stem>.executor.js` sidecars as tests of their own.
+    .filter((t) => !t.stem.endsWith(".executor"));
 }
 
 // Vite + Playwright bootstrap factored out into _runner-common.mjs so
@@ -129,6 +137,16 @@ async function runOne(browser, t) {
       return { status: "err", reason: `prelude not found: ${preludePath}` };
     }
     script = read(preludePath) + "\n;\n" + script;
+  }
+  // Auto-forward `<stem>.executor.js` sidecar as the host-worker
+  // bootScript via `executor64=`. Lets test authors edit a normal JS
+  // file (syntax-highlighted, diff-friendly) instead of maintaining a
+  // base64 blob in harness-args. Encoding happens here so main.ts
+  // doesn't need a second decode path.
+  if (existsSync(t.executorPath)) {
+    const src = read(t.executorPath);
+    const b64 = Buffer.from(src, "utf8").toString("base64");
+    extraParams += `&executor64=${encodeURIComponent(b64)}`;
   }
   const url = `http://localhost:${VITE_PORT}/?script=${encodeURIComponent(script)}${extraParams}`;
 
