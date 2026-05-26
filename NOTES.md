@@ -90,6 +90,20 @@ Inline `#!~debt` markers point here. Resolved entries live in
 [ARCHIVE.md](./ARCHIVE.md). Counts as of writing: **52 markers** across
 the browser-target tree.
 
+### Newly opened
+
+- **`slot-deleters-stubbed-for-wasi-cli`** (2026-05-26) — One of the
+  slot deleters in `Environment::slots_` triggers an out-of-bounds wasm
+  memory access during WASI `proc_exit` teardown. Hits when
+  `napi_wasmer edgejs.wasm` runs anything (even an empty script) and
+  prevents the entire wasmer-CLI Node-test-corpus path. Stubbed in
+  `src/edge_environment.cc:RunSlotDeleters` so tests can run. Need to
+  bisect which slot ID's deleter is at fault — likely a deleter that
+  touches data already freed by an earlier cleanup phase, or a wasmer
+  codegen issue on a specific deleter's instruction sequence.
+  See `patches/wasmer-compiler-llvm-7.1.0-call-indirect-phi-fix.patch`
+  for the related wasmer fix that unblocked reaching this code path.
+
 ### Recently resolved
 
 - **`process-exit-blocked-poll`** (2026-05-26, e41) —

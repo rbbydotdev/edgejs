@@ -75,12 +75,14 @@ bool RegisterAttachedEnvHooks(napi_env env) {
 }
 
 void RunSlotDeleters(std::unordered_map<size_t, edge::SlotEntry>* slots) {
+  // #!~debt slot-deleters-stubbed-for-wasi-cli
+  // Confirmed crash source: one of the slot deleters triggers an out-of-bounds
+  // memory access during WASI proc_exit teardown. Stubbing this lets the
+  // wasmer-CLI path (`napi_wasmer edgejs.wasm ...`) exit cleanly so the Node
+  // test corpus can run. Browser-target doesn't go through proc_exit so it's
+  // never hit there. Memory leak is acceptable in exit path -- the OS reclaims.
+  // Real fix: bisect which slot's deleter is OOB-ing. See NOTES.md.
   if (slots == nullptr) return;
-  for (auto& [_, slot] : *slots) {
-    if (slot.deleter != nullptr && slot.data != nullptr) {
-      slot.deleter(slot.data);
-    }
-  }
   slots->clear();
 }
 

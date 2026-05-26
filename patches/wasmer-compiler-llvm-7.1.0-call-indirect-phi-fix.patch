@@ -1,0 +1,32 @@
+--- /dev/fd/12	2026-05-26 16:55:53
++++ /Users/robertpolana/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wasmer-compiler-llvm-7.1.0/src/translator/code.rs	2026-05-26 16:32:54
+@@ -1702,6 +1702,11 @@
+                 is_return_call,
+                 &params,
+             )?;
++            // PATCH(e41-cli): if the call became an `invoke` because we're inside
++            // an EH landingpad, the builder is now positioned at a new
++            // then-block; that's the actual predecessor of `cont`, not the
++            // original local_idx_block. Capture it for the PHI below.
++            let local_pred_block = self.builder.get_insert_block().unwrap_or(local_idx_block);
+ 
+             let local_rets = if is_return_call {
+                 self.emit_return_call(local_call_site, local_llvm_func_type)?;
+@@ -1730,6 +1735,8 @@
+                     is_return_call,
+                     &params,
+                 )?;
++            // PATCH(e41-cli): same EH-aware predecessor capture as above.
++            let foreign_pred_block = self.builder.get_insert_block().unwrap_or(foreign_idx_block);
+ 
+             let foreign_rets = if is_return_call {
+                 self.emit_return_call(foreign_call_site, foreign_llvm_func_type)?;
+@@ -1760,7 +1767,7 @@
+                 let l_i = local_rets[i];
+                 let ty = f_i.get_type();
+                 let v = err!(self.builder.build_phi(ty, ""));
+-                v.add_incoming(&[(&f_i, foreign_idx_block), (&l_i, local_idx_block)]);
++                v.add_incoming(&[(&f_i, foreign_pred_block), (&l_i, local_pred_block)]);
+                 self.state.push1(v.as_basic_value());
+             }
+         } else if foreign_func_indices.is_empty() {
