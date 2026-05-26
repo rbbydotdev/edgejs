@@ -54,9 +54,19 @@ export interface HostWorkerHandle {
 
 let nextId = 0;
 
+export interface SpawnHostWorkerOptions {
+  /** Optional JS source string evaluated inside the host worker AFTER
+   *  init but BEFORE the ready signal. Used by deployments to install
+   *  per-host-worker globals (notably `__edgeChildProcessExecutor` for
+   *  the child-process-via-executor policy's async path). The script
+   *  runs in host-worker globalThis context, so any `globalThis.X = Y`
+   *  assignments are visible to subsequent RPC handlers. */
+  bootScript?: string;
+}
+
 /** Spawn a new host worker.  Resolves with the SAB pair the wasm worker
  *  must attach to (via worker.postMessage handoff). */
-export function spawnHostWorker(): HostWorkerHandle {
+export function spawnHostWorker(opts: SpawnHostWorkerOptions = {}): HostWorkerHandle {
   const id = nextId++;
   const requestRing = createRing(RING_CONFIG);
   const replyRing = createRing(RING_CONFIG);
@@ -111,6 +121,7 @@ export function spawnHostWorker(): HostWorkerHandle {
     reverseReplySab: reverseReplyRing.sab,
     sharedWakeSab,
     hostWorkerId: id,
+    bootScript: opts.bootScript,
   });
   handle.ready = ready;
   return handle;

@@ -99,6 +99,11 @@ interface InitMessage {
   reverseReplySab: SharedArrayBuffer;
   sharedWakeSab: SharedArrayBuffer;
   hostWorkerId: number;
+  /** Optional JS source eval'd in this worker's globalThis after init
+   *  but before ready. Used to install per-host-worker hooks (notably
+   *  __edgeChildProcessExecutor for the child-process-via-executor
+   *  policy's async path). */
+  bootScript?: string;
 }
 
 interface ReadyMessage {
@@ -304,47 +309,67 @@ function handleMainSpawnReply(data: { requestId: number; workerId?: number; erro
   }
 }
 
-// child-process-via-executor (async path): same shape as spawn-user-worker.
-// Wasm worker's spawnSync routes here via OP_RUN_CHILD_PROCESS; we post
-// to main, main calls the user's async executor, replies with serialized
-// result. We block waiting for the reply (the wasm side is already
-// blocked on Atomics.wait via sync RPC).
-interface PendingChildProc {
-  resolve: (replyJson: string) => void;
-  reject: (err: Error) => void;
+// child-process-via-executor (async path). Runs the user-installed
+// executor IN THIS HOST WORKER (not on main -- main has zero runtime
+// responsibility per the architecture rule). The executor is installed
+// via the host-worker init bootScript (see InitMessage.bootScript).
+//
+// Wasm worker's spawnSync routes here via OP_RUN_CHILD_PROCESS sync
+// RPC. We invoke the executor (sync OR async), await, serialize result,
+// return. Wasm side blocks on Atomics.wait the entire time -- host
+// worker's event loop stays free because it's a separate thread.
+//
+// Result shaped to match the wasm-side patch's parser in
+// child-process-via-executor.ts.
+interface ChildProcExecResult {
+  stdout?: Uint8Array | string | number[];
+  stderr?: Uint8Array | string | number[];
+  code?: number | null;
+  signal?: string | null;
+  error?: { code: string; message: string } | null;
 }
+type ChildProcExecutor = (
+  command: string,
+  args: string[],
+  options: Record<string, unknown>,
+) => ChildProcExecResult | Promise<ChildProcExecResult>;
 
-const pendingChildProcs = new Map<number, PendingChildProc>();
-let nextChildProcRequestId = 1;
-
-function postToMainAndAwaitChildProc(requestJson: string): Promise<string> {
-  return new Promise<string>((resolve, reject) => {
-    const requestId = nextChildProcRequestId++;
-    pendingChildProcs.set(requestId, { resolve, reject });
-    self.postMessage({
-      kind: "run-child-process",
-      requestId,
-      parentHostWorkerId: hostWorkerId,
-      requestJson,
-    });
-    // No timeout intentionally (parallels spawn-user-worker).
+async function runChildProcessInHostWorker(requestJson: string): Promise<string> {
+  interface Req {
+    command: string;
+    args: string[];
+    env?: Record<string, string>;
+    cwd?: string;
+    input?: number[];
+    timeout?: number;
+  }
+  const req = JSON.parse(requestJson) as Req;
+  const executor = (self as unknown as { __edgeChildProcessExecutor?: ChildProcExecutor })
+    .__edgeChildProcessExecutor;
+  if (typeof executor !== "function") {
+    return JSON.stringify({ __noExecutor: true });
+  }
+  const inputBytes = Array.isArray(req.input) ? new Uint8Array(req.input) : undefined;
+  const opts: Record<string, unknown> = {};
+  if (req.env) opts.env = req.env;
+  if (req.cwd != null) opts.cwd = req.cwd;
+  if (inputBytes) opts.input = inputBytes;
+  if (typeof req.timeout === "number") opts.timeout = req.timeout;
+  const result = await Promise.resolve(executor(req.command, req.args || [], opts));
+  const toNums = (v: Uint8Array | string | number[] | undefined): number[] => {
+    if (v == null) return [];
+    if (typeof v === "string") return Array.from(new TextEncoder().encode(v));
+    if (v instanceof Uint8Array) return Array.from(v);
+    if (Array.isArray(v)) return v;
+    return Array.from(new TextEncoder().encode(String(v)));
+  };
+  return JSON.stringify({
+    stdout: toNums(result.stdout),
+    stderr: toNums(result.stderr),
+    code: typeof result.code === "number" ? result.code : 0,
+    signal: result.signal != null ? result.signal : null,
+    error: result.error || null,
   });
-}
-
-function handleMainChildProcReply(data: { requestId: number; replyJson?: string; error?: string }): void {
-  const pending = pendingChildProcs.get(data.requestId);
-  if (!pending) {
-    log(`run-child-process-reply: no pending request for id=${data.requestId}`, "warn");
-    return;
-  }
-  pendingChildProcs.delete(data.requestId);
-  if (data.error) {
-    pending.reject(new Error(data.error));
-  } else if (data.replyJson != null) {
-    pending.resolve(data.replyJson);
-  } else {
-    pending.reject(new Error("run-child-process-reply: missing replyJson and error"));
-  }
 }
 
 // Called when main delivers an exit event from a spawned child.  We fire
@@ -910,12 +935,14 @@ function registerHandlers(srv: RpcServer): void {
   });
 
   // child-process-via-executor async path. Wasm spawnSync -> here.
-  // We relay to main, which calls the user-installed executor and
-  // posts back the serialized result. JSON in/out; MVP simplicity.
+  // Executor runs in THIS host worker (installed by the deployment via
+  // init bootScript) -- main thread is never involved per the
+  // architectural rule. The host worker's event loop stays free while
+  // the wasm worker is blocked on Atomics.wait.
   srv.register(OP_RUN_CHILD_PROCESS, async (_ctx, args) => {
     try {
       const requestJson = new TextDecoder("utf-8").decode(args);
-      const replyJson = await postToMainAndAwaitChildProc(requestJson);
+      const replyJson = await runChildProcessInHostWorker(requestJson);
       return {
         payload: new TextEncoder().encode(replyJson),
         status: REPLY_STATUS_OK,
@@ -1255,11 +1282,6 @@ self.addEventListener("message", (e: MessageEvent) => {
     kind: "deliver-message-from-child";
     workerId: number;
     bytes: Uint8Array;
-  } | {
-    kind: "run-child-process-reply";
-    requestId: number;
-    replyJson?: string;
-    error?: string;
   }) | null;
   if (data?.kind === "reverse-echo") {
     void runReverseEcho(data.bytes ?? 32);
@@ -1267,10 +1289,6 @@ self.addEventListener("message", (e: MessageEvent) => {
   }
   if (data?.kind === "spawn-user-worker-reply") {
     handleMainSpawnReply(data);
-    return;
-  }
-  if (data?.kind === "run-child-process-reply") {
-    handleMainChildProcReply(data);
     return;
   }
   if (data?.kind === "deliver-user-worker-exit") {
@@ -1331,6 +1349,19 @@ self.addEventListener("message", (e: MessageEvent) => {
     // there is no further reverse direction from here.
     null,
   );
+  // Eval the deployment's bootScript (if any) BEFORE marking ready and
+  // BEFORE starting the RPC drain loop. This guarantees any executor
+  // hooks the bootScript installs (e.g. __edgeChildProcessExecutor)
+  // are in place by the time the first RPC arrives.
+  if (typeof (data as { bootScript?: string }).bootScript === "string") {
+    const src = (data as { bootScript?: string }).bootScript!;
+    try {
+      // eslint-disable-next-line no-new-func
+      new Function(src)();
+    } catch (err) {
+      log(`bootScript eval failed: ${(err as Error).message}`, "err");
+    }
+  }
   // Start drain loop (fire-and-forget).
   void server.start().catch((err) => {
     log(`rpc-server crashed: ${(err as Error).stack ?? err}`, "err");
