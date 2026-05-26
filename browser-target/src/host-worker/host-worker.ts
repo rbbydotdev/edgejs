@@ -52,6 +52,8 @@ import {
   OP_SPAWN_ASYNC_KILL,
   OP_SPAWN_STDIN_WRITE,
   OP_SPAWN_STDIN_END,
+  OP_SPAWN_IPC_SEND,
+  OP_SPAWN_IPC_DISCONNECT,
   OP_SPAWN_ASYNC_EVENT,
   DIGEST_STAGING_OFFSET,
   REPLY_STATUS_OK,
@@ -348,6 +350,7 @@ function unpackChildProcRequest(buf: Uint8Array): {
   timeout?: number;
   killSignal?: string;
   input?: Uint8Array;
+  ipc?: boolean;
 } | null {
   if (buf.byteLength < 8) return null;
   const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
@@ -377,6 +380,7 @@ function unpackChildProcRequest(buf: Uint8Array): {
     timeout: typeof header.timeout === "number" ? header.timeout : undefined,
     killSignal: typeof header.killSignal === "string" ? header.killSignal : undefined,
     input,
+    ipc: header.ipc === true,
   };
 }
 
@@ -445,11 +449,61 @@ interface StdinPipe {
   // to push() resolves at most one (FIFO).
   waiters: Array<(v: { value?: Uint8Array; done: boolean }) => void>;
 }
+interface IpcChannel {
+  // Set when the spawn options requested stdio with an 'ipc' entry.
+  // If false, the wasm-side .send() RPC returns "no-such-channel"
+  // (status=1, same as no-such-child) and opts.ipc is absent.
+  enabled: boolean;
+  connected: boolean;
+  // Handlers registered by the executor via opts.ipc.on('message', cb).
+  // Called when wasm-side .send(msg) is forwarded by OP_SPAWN_IPC_SEND.
+  messageHandlers: Array<(msg: unknown) => void>;
+  // Handlers registered by the executor via opts.ipc.on('disconnect', cb).
+  disconnectHandlers: Array<() => void>;
+}
 interface SpawnAsyncChild {
   childId: number;
   abortController: AbortController;
   done: boolean;
   stdinPipe: StdinPipe;
+  ipc: IpcChannel;
+}
+
+// Build the executor-facing IPC handle (`opts.ipc`). Mirrors Node's
+// process.send / 'message' / 'disconnect' surface but lives in the
+// host-worker JS realm. Symmetric with wasm-side child.send / child.on:
+// each direction routes through one RPC op (SEND forward, EVENT reverse).
+function makeIpcHandle(
+  childId: number,
+  channel: IpcChannel,
+): {
+  send: (msg: unknown) => boolean;
+  on: (event: "message" | "disconnect", cb: (...args: unknown[]) => void) => void;
+  disconnect: () => void;
+  readonly connected: boolean;
+} {
+  return {
+    send(msg: unknown): boolean {
+      if (!channel.connected) return false;
+      const json = JSON.stringify(msg);
+      emitAsyncEvent(childId, 5 /*ipc-message*/, new TextEncoder().encode(json));
+      return true;
+    },
+    on(event, cb): void {
+      if (event === "message") channel.messageHandlers.push(cb as (m: unknown) => void);
+      else if (event === "disconnect") channel.disconnectHandlers.push(cb as () => void);
+    },
+    disconnect(): void {
+      if (!channel.connected) return;
+      channel.connected = false;
+      // Notify wasm side so EdgeChildProcess emits 'disconnect' there.
+      emitAsyncEvent(childId, 6 /*ipc-disconnect*/, new Uint8Array(0));
+      for (const cb of channel.disconnectHandlers.splice(0)) {
+        try { cb(); } catch (_e) { void _e; }
+      }
+    },
+    get connected(): boolean { return channel.connected; },
+  };
 }
 const asyncSpawnChildren = new Map<number, SpawnAsyncChild>();
 let nextSpawnChildId = 1;
@@ -633,7 +687,13 @@ async function startAsyncSpawn(requestBytes: Uint8Array): Promise<Uint8Array> {
     pushStdinChunk(stdinPipe, req.input);
     endStdinPipe(stdinPipe);
   }
-  asyncSpawnChildren.set(childId, { childId, abortController: ac, done: false, stdinPipe });
+  const ipc: IpcChannel = {
+    enabled: req.ipc === true,
+    connected: req.ipc === true,
+    messageHandlers: [],
+    disconnectHandlers: [],
+  };
+  asyncSpawnChildren.set(childId, { childId, abortController: ac, done: false, stdinPipe, ipc });
 
   // Fire 'spawned' event on next microtask so the wasm side has time
   // to register listeners after the START reply arrives.
@@ -687,6 +747,11 @@ async function startAsyncSpawn(requestBytes: Uint8Array): Promise<Uint8Array> {
     // once and ends, identical to the one-shot input behavior.
     stdin: makeStdinAsyncIterable(stdinPipe),
   };
+  // P3.3 IPC: only exposed when the caller requested stdio with an
+  // 'ipc' entry (cp.fork default). Executors that ignore opts.ipc
+  // mean the wasm-side child.send() will succeed at the RPC layer
+  // but the message will be dropped on the host (no handler).
+  if (ipc.enabled) opts.ipc = makeIpcHandle(childId, ipc);
   if (req.env) opts.env = req.env;
   if (req.cwd != null) opts.cwd = req.cwd;
   if (req.input) opts.input = req.input;
@@ -1471,6 +1536,62 @@ function registerHandlers(srv: RpcServer): void {
     const child = asyncSpawnChildren.get(childId);
     if (!child) { dv.setUint32(0, 1, true); return { payload: reply, status: REPLY_STATUS_OK }; }
     endStdinPipe(child.stdinPipe);
+    dv.setUint32(0, 0, true);
+    return { payload: reply, status: REPLY_STATUS_OK };
+  });
+
+  // P3.3: parent -> child IPC message. Wasm-side child.send(obj)
+  // serializes to JSON, lands here as sync RPC. We deliver to all
+  // registered executor handlers (opts.ipc.on('message', cb)).
+  // status: 0=ok, 1=no-such-child, 2=disconnected, 3=invalid-json.
+  srv.register(OP_SPAWN_IPC_SEND, async (_ctx, args) => {
+    const reply = new Uint8Array(4);
+    const dv = new DataView(reply.buffer);
+    if (args.byteLength < 8) { dv.setUint32(0, 1, true); return { payload: reply, status: REPLY_STATUS_OK }; }
+    const inDv = new DataView(args.buffer, args.byteOffset, args.byteLength);
+    const childId = inDv.getUint32(0, true);
+    const jsonLen = inDv.getUint32(4, true);
+    if (8 + jsonLen > args.byteLength) { dv.setUint32(0, 1, true); return { payload: reply, status: REPLY_STATUS_OK }; }
+    const child = asyncSpawnChildren.get(childId);
+    if (!child) { dv.setUint32(0, 1, true); return { payload: reply, status: REPLY_STATUS_OK }; }
+    if (!child.ipc.connected) { dv.setUint32(0, 2, true); return { payload: reply, status: REPLY_STATUS_OK }; }
+    let msg: unknown;
+    try { msg = JSON.parse(new TextDecoder().decode(args.subarray(8, 8 + jsonLen))); }
+    catch { dv.setUint32(0, 3, true); return { payload: reply, status: REPLY_STATUS_OK }; }
+    // Dispatch in microtask so handlers don't run synchronously inside
+    // the RPC reply path (avoid blocking the wasm RPC client longer
+    // than necessary -- it's parked in Atomics.wait waiting for our reply).
+    queueMicrotask(() => {
+      for (const cb of child.ipc.messageHandlers) {
+        try { cb(msg); } catch (_e) { void _e; }
+      }
+    });
+    dv.setUint32(0, 0, true);
+    return { payload: reply, status: REPLY_STATUS_OK };
+  });
+
+  // P3.3: parent-initiated disconnect. Marks IPC channel closed; fires
+  // executor's onDisconnect handlers. Subsequent send() from either
+  // side returns status=2 (disconnected). Note: child.disconnect() on
+  // wasm side already emits 'disconnect' locally before sending us
+  // this RPC, and the executor's onDisconnect handlers don't need a
+  // reverse event because the executor already knows the channel is
+  // dead. Symmetric path (child calls opts.ipc.disconnect()) emits
+  // OP_SPAWN_ASYNC_EVENT kind=6 toward wasm.
+  srv.register(OP_SPAWN_IPC_DISCONNECT, async (_ctx, args) => {
+    const reply = new Uint8Array(4);
+    const dv = new DataView(reply.buffer);
+    if (args.byteLength < 4) { dv.setUint32(0, 1, true); return { payload: reply, status: REPLY_STATUS_OK }; }
+    const inDv = new DataView(args.buffer, args.byteOffset, args.byteLength);
+    const childId = inDv.getUint32(0, true);
+    const child = asyncSpawnChildren.get(childId);
+    if (!child) { dv.setUint32(0, 1, true); return { payload: reply, status: REPLY_STATUS_OK }; }
+    if (child.ipc.connected) {
+      child.ipc.connected = false;
+      for (const cb of child.ipc.disconnectHandlers.splice(0)) {
+        try { cb(); } catch (_e) { void _e; }
+      }
+    }
     dv.setUint32(0, 0, true);
     return { payload: reply, status: REPLY_STATUS_OK };
   });

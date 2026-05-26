@@ -1,0 +1,8 @@
+replies count: 4
+  reply 0 {"echoed":{"n":1},"count":1}
+  reply 1 {"echoed":{"n":2},"count":2}
+  reply 2 {"echoed":{"n":3},"count":3}
+  reply 3 {"echoed":{"bye":true},"count":4}
+stdout: GOT:4
+exit code: 0
+connected after exit: false

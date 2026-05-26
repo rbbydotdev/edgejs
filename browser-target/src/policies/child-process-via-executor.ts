@@ -675,6 +675,15 @@ const PUBLIC_POST_PATCH = `
   }
 
   // Packing helper -- mirrors child-process-via-executor.ts packRequest.
+  function hasIpcStdio(stdio) {
+    if (!Array.isArray(stdio)) return false;
+    for (var i = 0; i < stdio.length; i++) {
+      var s = stdio[i];
+      if (s === 'ipc' || (s && s.type === 'ipc')) return true;
+    }
+    return false;
+  }
+
   function packRequestForAsync(file, args, opts) {
     var headerObj = {
       command: String(file),
@@ -683,6 +692,7 @@ const PUBLIC_POST_PATCH = `
       cwd: opts && opts.cwd,
       timeout: opts && typeof opts.timeout === 'number' ? opts.timeout : undefined,
       killSignal: opts && opts.killSignal,
+      ipc: opts && hasIpcStdio(opts.stdio),
     };
     var headerBytes = new TextEncoder().encode(JSON.stringify(headerObj));
     var input = null;
@@ -716,6 +726,11 @@ const PUBLIC_POST_PATCH = `
     this.killed = false;
     this.exitCode = null;
     this.signalCode = null;
+    // P3.3 IPC: connected mirrors Node's child.connected. Stays true
+    // until either side calls .disconnect() or the child exits. .send()
+    // is only meaningful when stdio included 'ipc' (cp.fork default).
+    this._hasIpc = hasIpcStdio(this._options.stdio);
+    this.connected = this._hasIpc;
     // Default to PassThrough streams unless stdio mode says otherwise.
     var stdoutMode = stdioModeOfAsync(this._options.stdio, 1);
     var stderrMode = stdioModeOfAsync(this._options.stdio, 2);
@@ -801,6 +816,19 @@ const PUBLIC_POST_PATCH = `
       } else if (kind === 1 /*stderr*/) {
         if (self.stderr) self.stderr.write(payload);
         else if (stderrMode === 'inherit') process.stderr.write(payload);
+      } else if (kind === 5 /*ipc-message*/) {
+        // payload: utf-8 JSON.  Parse and emit 'message' event.
+        if (self.connected) {
+          var raw = new TextDecoder().decode(payload);
+          var msg;
+          try { msg = JSON.parse(raw); } catch (e) { void e; return; }
+          self.emit('message', msg);
+        }
+      } else if (kind === 6 /*ipc-disconnect*/) {
+        if (self.connected) {
+          self.connected = false;
+          self.emit('disconnect');
+        }
       } else if (kind === 3 /*error*/) {
         var raw = new TextDecoder().decode(payload);
         var errCode = 'ESPAWN';
@@ -831,8 +859,15 @@ const PUBLIC_POST_PATCH = `
         var code = (codeRaw === -1 && sig != null) ? null : codeRaw;
         self.exitCode = code;
         self.signalCode = sig;
+        // IPC channel closes BEFORE 'exit' (matches Node ordering --
+        // the IPC pipe drops before the process state finalizes, so
+        // child.connected is observably false inside 'exit' handlers).
+        if (self.connected) {
+          self.connected = false;
+          self.emit('disconnect');
+        }
         self.emit('exit', code, sig);
-        // End streams then emit 'close' (matches Node ordering).
+        // End streams then emit 'close'.
         if (self.stdout) self.stdout.end();
         if (self.stderr) self.stderr.end();
         process.nextTick(function() {
@@ -851,7 +886,69 @@ const PUBLIC_POST_PATCH = `
   };
   EdgeChildProcess.prototype.ref = function() {}; // no-op
   EdgeChildProcess.prototype.unref = function() {}; // no-op
-  EdgeChildProcess.prototype.disconnect = function() {}; // no-op (no IPC)
+
+  // P3.3 IPC: parent-side .send / .disconnect. .send returns true if
+  // the message was queued, false otherwise (Node convention -- match
+  // bufferedAmount-style backpressure not implemented; we always queue
+  // since the host's per-child handler list has no upper bound).
+  // callback fires on next tick to match Node (which fires after the
+  // pipe write returns from the kernel).
+  EdgeChildProcess.prototype.send = function(message, sendHandle, options, callback) {
+    if (typeof sendHandle === 'function') { callback = sendHandle; sendHandle = undefined; options = undefined; }
+    else if (typeof options === 'function') { callback = options; options = undefined; }
+    // #!~debt child-process-ipc-sendhandle: sendHandle (passing fds,
+    // sockets, servers) is silently dropped. Real Node uses kernel fd
+    // passing over the IPC fd; we have no equivalent. Most fork() users
+    // don't pass handles, but cluster.js relies on it -- documented gap.
+    void sendHandle; void options;
+    var err = null;
+    if (!this._hasIpc || this._childId == null) {
+      err = new Error('Channel closed');
+      err.code = 'ERR_IPC_CHANNEL_CLOSED';
+      if (typeof callback === 'function') process.nextTick(function() { callback(err); });
+      return false;
+    }
+    if (!this.connected) {
+      err = new Error('Channel closed');
+      err.code = 'ERR_IPC_CHANNEL_CLOSED';
+      if (typeof callback === 'function') process.nextTick(function() { callback(err); });
+      return false;
+    }
+    var sender = g.__edgeChildProcessIpcSend;
+    if (typeof sender !== 'function') {
+      err = new Error('IPC not wired');
+      err.code = 'ERR_IPC_CHANNEL_CLOSED';
+      if (typeof callback === 'function') process.nextTick(function() { callback(err); });
+      return false;
+    }
+    var status;
+    try { status = sender(this._childId, JSON.stringify(message)); }
+    catch (e) {
+      if (typeof callback === 'function') process.nextTick(function() { callback(e); });
+      return false;
+    }
+    if (status !== 0) {
+      err = new Error(status === 2 ? 'Channel closed' : 'IPC send failed');
+      err.code = status === 2 ? 'ERR_IPC_CHANNEL_CLOSED' : 'ERR_IPC_DISCONNECTED';
+      if (typeof callback === 'function') process.nextTick(function() { callback(err); });
+      return false;
+    }
+    if (typeof callback === 'function') process.nextTick(function() { callback(null); });
+    return true;
+  };
+
+  EdgeChildProcess.prototype.disconnect = function() {
+    if (!this._hasIpc || this._childId == null || !this.connected) return;
+    this.connected = false;
+    var d = g.__edgeChildProcessIpcDisconnect;
+    if (typeof d === 'function') {
+      try { d(this._childId); } catch (e) { void e; }
+    }
+    // Emit 'disconnect' on next tick to match Node (which signals
+    // after the syscall returns).
+    var self = this;
+    process.nextTick(function() { self.emit('disconnect'); });
+  };
 
   function stdioModeOfAsync(stdioOpt, idx) {
     var defaultMode = 'pipe';
@@ -966,6 +1063,44 @@ const PUBLIC_POST_PATCH = `
     var shell = options.shell || (process.platform === 'win32' ? 'cmd.exe' : '/bin/sh');
     var args = (process.platform === 'win32') ? ['/d', '/s', '/c', command] : ['-c', command];
     return cp.execFile(shell, args, options, callback);
+  };
+
+  // P3.3: cp.fork(modulePath, args?, options?). Real Node forks the
+  // current node binary with modulePath as the script and stdio[3]='ipc'
+  // by default. We have no separate node binary; the executor decides
+  // what 'fork-target' actually means (e.g., evaluating modulePath as
+  // a script in another worker, or running a built-in JS interpreter).
+  // We provide: spawn() + ipc stdio + a sensible default execPath.
+  //
+  // The executor sees:
+  //   command = options.execPath || 'node'  (so users can intercept)
+  //   args[0] = modulePath
+  //   args[1..] = user args
+  //   opts.ipc = IPC handle (round-trips messages from cp.send)
+  //
+  // The user installs an executor handling 'node' (or their custom
+  // execPath) by spawning a worker and wiring its parentPort
+  // postMessage to opts.ipc. Without that wiring, .send() still
+  // marshals over RPC successfully but nobody on the host side
+  // dispatches -- silent drop (matches Node when child doesn't
+  // attach a 'message' handler).
+  cp.fork = function fork(modulePath, args, options) {
+    if (args && !Array.isArray(args) && typeof args === 'object') { options = args; args = []; }
+    args = args || [];
+    options = options || {};
+    // stdio default per Node: ['inherit', 'inherit', 'inherit', 'ipc'].
+    // We honor whatever the caller passes IF it includes 'ipc', else
+    // we patch in 'ipc' so the fork-spawn distinction is preserved.
+    var stdio = options.stdio;
+    if (!stdio) stdio = ['pipe', 'pipe', 'pipe', 'ipc'];
+    else if (Array.isArray(stdio) && stdio.indexOf('ipc') < 0) stdio = stdio.concat(['ipc']);
+    else if (stdio === 'inherit' || stdio === 'pipe' || stdio === 'ignore') {
+      stdio = [stdio, stdio, stdio, 'ipc'];
+    }
+    var spawnOpts = Object.assign({}, options, { stdio: stdio });
+    var execPath = options.execPath || process.execPath || 'node';
+    var fullArgs = [modulePath].concat(args);
+    return cp.spawn(execPath, fullArgs, spawnOpts);
   };
 })();
 `;

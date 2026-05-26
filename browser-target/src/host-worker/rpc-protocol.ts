@@ -724,6 +724,25 @@ export const OP_SPAWN_ASYNC_EVENT = OP_DOMAIN_HOST_API | 0x000E;
 //     Reply:   [u32 status]  -- same code set
 export const OP_SPAWN_STDIN_WRITE = OP_DOMAIN_HOST_API | 0x000F;
 export const OP_SPAWN_STDIN_END   = OP_DOMAIN_HOST_API | 0x0010;
+
+// P3.3: IPC channel for fork() / child.send / process.send. Active
+// only when the spawn options included stdio with an 'ipc' entry
+// (default for cp.fork). Symmetric: either side can .send(jsonObj),
+// either side can .disconnect().
+//
+//   OP_SPAWN_IPC_SEND forward (wasm → host, sync):
+//     Request: [u32 childId][u32 jsonLen][utf-8 JSON message]
+//     Reply:   [u32 status]  -- 0=ok, 1=no-such-child, 2=disconnected
+//
+//   OP_SPAWN_IPC_DISCONNECT forward (wasm → host, sync):
+//     Request: [u32 childId]
+//     Reply:   [u32 status]
+//
+// Child→parent direction uses OP_SPAWN_ASYNC_EVENT with two new kinds:
+//   kind=5 (ipc-message): payload is utf-8 JSON
+//   kind=6 (ipc-disconnect): empty payload
+export const OP_SPAWN_IPC_SEND       = OP_DOMAIN_HOST_API | 0x0011;
+export const OP_SPAWN_IPC_DISCONNECT = OP_DOMAIN_HOST_API | 0x0012;
 // Reverse op (host → wasm).  Fires from the parent host's reverseClient
 // into the parent wasm runtime when a message arrives from a child.
 // Parent wasm's handler invokes `globalThis.__edgeDispatchMessageFromChild`
