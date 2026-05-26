@@ -645,6 +645,30 @@ export const OP_DELIVER_MESSAGE_TO_CHILD = OP_DOMAIN_HOST_API | 0x0009;
 //   [u32 bytes_len][marshaled bytes]
 
 export const OP_DELIVER_MESSAGE_FROM_CHILD = OP_DOMAIN_HOST_API | 0x000A;
+
+// child-process-via-executor (async path): wasm spawnSync -> sync RPC
+// here, host-worker postMessages main, main calls user-installed
+// async executor (Promise-returning), result chain back to wasm.
+//
+// Why this op vs OP_RUN_USER_SCRIPT: that one runs JS on host-worker
+// V8 (no Node API access). This one runs the USER'S registered
+// executor on MAIN where they can call e.g. `await new Bash().exec(...)`
+// or any async API. Sync wait happens at the wasm worker via
+// Atomics.wait in the SAB-ring sync client (the existing mechanism
+// OP_SPAWN_USER_WORKER uses).
+//
+// Request payload: utf-8 JSON of
+//   { command: string, args: string[], env?: object, cwd?: string,
+//     input?: number[] /* bytes */, timeout?: number }
+// Reply payload: utf-8 JSON of
+//   { stdout: number[], stderr: number[], code: number|null,
+//     signal: string|null, error?: { code: string, message: string } }
+// JSON keeps MVP simple; we can switch to a binary frame later for
+// large stdio without changing call sites.
+//
+// `REPLY_STATUS_HOST_ERROR` is returned if main hasn't registered an
+// executor; wasm side falls back to the default fake shell.
+export const OP_RUN_CHILD_PROCESS = OP_DOMAIN_HOST_API | 0x000B;
 // Reverse op (host → wasm).  Fires from the parent host's reverseClient
 // into the parent wasm runtime when a message arrives from a child.
 // Parent wasm's handler invokes `globalThis.__edgeDispatchMessageFromChild`

@@ -1056,6 +1056,67 @@ function getOrCompileSharedWasmModule(): Promise<WebAssembly.Module> {
 // same policy patches active on the children.
 const childInheritedPolicies: string[] = [];
 
+// child-process-via-executor (async path). Receives a JSON-encoded
+// spawnSync request, looks up the user-installed executor on this
+// (main) thread, calls it (sync or async), serializes the result.
+//
+// The contract with the executor:
+//   globalThis.__edgeChildProcessExecutor: (command, args, options) =>
+//     { stdout, stderr, code, signal?, error? } | Promise<same>
+// `stdout`/`stderr` accept Uint8Array | string | number[]; missing
+// fields default to empty / 0 / null. Throwing or rejecting surfaces
+// as an executor error on the wasm side.
+//
+// No executor installed -> we reply with a sentinel error code that
+// the wasm side recognizes ("fall back to default fake shell").
+async function runChildProcessOnMain(requestJson: string): Promise<string> {
+  interface Req {
+    command: string;
+    args: string[];
+    env?: Record<string, string>;
+    cwd?: string;
+    input?: number[];
+    timeout?: number;
+  }
+  interface ExecResult {
+    stdout?: Uint8Array | string | number[];
+    stderr?: Uint8Array | string | number[];
+    code?: number | null;
+    signal?: string | null;
+    error?: { code: string; message: string } | null;
+  }
+  const req = JSON.parse(requestJson) as Req;
+  const executor = (globalThis as { __edgeChildProcessExecutor?: (
+    cmd: string, args: string[], opts: Record<string, unknown>,
+  ) => ExecResult | Promise<ExecResult> }).__edgeChildProcessExecutor;
+  if (typeof executor !== "function") {
+    return JSON.stringify({
+      __noExecutor: true,
+    });
+  }
+  const inputBytes = Array.isArray(req.input) ? new Uint8Array(req.input) : undefined;
+  const opts: Record<string, unknown> = {};
+  if (req.env) opts.env = req.env;
+  if (req.cwd != null) opts.cwd = req.cwd;
+  if (inputBytes) opts.input = inputBytes;
+  if (typeof req.timeout === "number") opts.timeout = req.timeout;
+  const result = await Promise.resolve(executor(req.command, req.args || [], opts));
+  const toNums = (v: Uint8Array | string | number[] | undefined): number[] => {
+    if (v == null) return [];
+    if (typeof v === "string") return Array.from(new TextEncoder().encode(v));
+    if (v instanceof Uint8Array) return Array.from(v);
+    if (Array.isArray(v)) return v;
+    return Array.from(new TextEncoder().encode(String(v)));
+  };
+  return JSON.stringify({
+    stdout: toNums(result.stdout),
+    stderr: toNums(result.stderr),
+    code: typeof result.code === "number" ? result.code : 0,
+    signal: result.signal != null ? result.signal : null,
+    error: result.error || null,
+  });
+}
+
 async function spawnUserWorker(
   parentHostWorkerId: number,
   bootstrapScript: string,
@@ -1182,6 +1243,30 @@ function attachHostWorkerMessageHandlers(handle: HostWorkerHandle): void {
           error: err.message,
         });
       });
+      return;
+    }
+    // child-process-via-executor async path: host-worker relays the
+    // wasm-side spawnSync here, we invoke globalThis.__edgeChildProcessExecutor
+    // (sync OR async), serialize the result, post back. Wasm is blocked
+    // on Atomics.wait via the sync RPC client the whole time.
+    if (data?.kind === "run-child-process") {
+      const { requestId, requestJson } = data as typeof data & { requestJson?: string };
+      const replyTo = (replyJson: string, error?: string) => {
+        handle.worker.postMessage({
+          kind: "run-child-process-reply",
+          requestId,
+          replyJson,
+          error,
+        });
+      };
+      if (typeof requestId !== "number" || typeof requestJson !== "string") {
+        replyTo("", "run-child-process: missing fields");
+        return;
+      }
+      void runChildProcessOnMain(requestJson).then(
+        (r) => replyTo(r),
+        (err: Error) => replyTo("", err.message || "run-child-process: executor threw"),
+      );
       return;
     }
     // Phase 2: parent→child postMessage routing.
@@ -1346,6 +1431,27 @@ const l9MultiHost = params.get("probe") === "l9-multi-host"; // L9 spike
 const f1NapiProbe = params.get("probe") === "f1-napi";        // F-1 first napi op via RPC
 const f9SweepProbe = params.get("probe") === "f9-sweep";      // F-9 one-op-per-batch sweep
 const scopeBoundedProbe = params.get("probe") === "scope-bounded"; // B / scope-op forwarding
+
+// Main-thread executor for child-process-via-executor async path.
+// URL param `mainExecutor=<encoded JS source>` is eval'd here to
+// install `globalThis.__edgeChildProcessExecutor` on main. Useful for
+// tests that need to exercise the async path without setting up a
+// full deployment-config file. Production deployments would install
+// the executor in their own bootstrap code instead.
+// `mainExecutor64=<base64 JS>` -- eval'd here to install
+// globalThis.__edgeChildProcessExecutor on main. Base64 avoids the
+// harness-args whitespace-splitter (which would tokenize a raw
+// JS source). Production deployments would install via their own
+// bootstrap code (not this URL hatch).
+const mainExecutorB64 = params.get("mainExecutor64");
+if (mainExecutorB64 !== null) {
+  try {
+    // eslint-disable-next-line no-new-func
+    new Function(atob(mainExecutorB64))();
+  } catch (e) {
+    append(`mainExecutor eval failed: ${(e as Error).message}`, "err");
+  }
+}
 
 append("page bootstrap ok. crossOriginIsolated=" + crossOriginIsolated, "info");
 if (memSnapshotSymbols.length > 0) {

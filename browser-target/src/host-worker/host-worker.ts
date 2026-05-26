@@ -47,6 +47,7 @@ import {
   OP_WORKER_POST_MESSAGE_TO_PARENT,
   OP_DELIVER_MESSAGE_TO_CHILD,
   OP_DELIVER_MESSAGE_FROM_CHILD,
+  OP_RUN_CHILD_PROCESS,
   DIGEST_STAGING_OFFSET,
   REPLY_STATUS_OK,
   REPLY_STATUS_HOST_ERROR,
@@ -300,6 +301,49 @@ function handleMainSpawnReply(data: { requestId: number; workerId?: number; erro
     pending.resolve(data.workerId);
   } else {
     pending.reject(new Error("spawn-user-worker-reply: missing workerId and error"));
+  }
+}
+
+// child-process-via-executor (async path): same shape as spawn-user-worker.
+// Wasm worker's spawnSync routes here via OP_RUN_CHILD_PROCESS; we post
+// to main, main calls the user's async executor, replies with serialized
+// result. We block waiting for the reply (the wasm side is already
+// blocked on Atomics.wait via sync RPC).
+interface PendingChildProc {
+  resolve: (replyJson: string) => void;
+  reject: (err: Error) => void;
+}
+
+const pendingChildProcs = new Map<number, PendingChildProc>();
+let nextChildProcRequestId = 1;
+
+function postToMainAndAwaitChildProc(requestJson: string): Promise<string> {
+  return new Promise<string>((resolve, reject) => {
+    const requestId = nextChildProcRequestId++;
+    pendingChildProcs.set(requestId, { resolve, reject });
+    self.postMessage({
+      kind: "run-child-process",
+      requestId,
+      parentHostWorkerId: hostWorkerId,
+      requestJson,
+    });
+    // No timeout intentionally (parallels spawn-user-worker).
+  });
+}
+
+function handleMainChildProcReply(data: { requestId: number; replyJson?: string; error?: string }): void {
+  const pending = pendingChildProcs.get(data.requestId);
+  if (!pending) {
+    log(`run-child-process-reply: no pending request for id=${data.requestId}`, "warn");
+    return;
+  }
+  pendingChildProcs.delete(data.requestId);
+  if (data.error) {
+    pending.reject(new Error(data.error));
+  } else if (data.replyJson != null) {
+    pending.resolve(data.replyJson);
+  } else {
+    pending.reject(new Error("run-child-process-reply: missing replyJson and error"));
   }
 }
 
@@ -865,6 +909,26 @@ function registerHandlers(srv: RpcServer): void {
     }
   });
 
+  // child-process-via-executor async path. Wasm spawnSync -> here.
+  // We relay to main, which calls the user-installed executor and
+  // posts back the serialized result. JSON in/out; MVP simplicity.
+  srv.register(OP_RUN_CHILD_PROCESS, async (_ctx, args) => {
+    try {
+      const requestJson = new TextDecoder("utf-8").decode(args);
+      const replyJson = await postToMainAndAwaitChildProc(requestJson);
+      return {
+        payload: new TextEncoder().encode(replyJson),
+        status: REPLY_STATUS_OK,
+      };
+    } catch (e) {
+      const msg = (e instanceof Error ? e.message : String(e)) || "run-child-process threw";
+      return {
+        payload: new TextEncoder().encode(msg),
+        status: REPLY_STATUS_HOST_ERROR,
+      };
+    }
+  });
+
   // Worker_threads phase 2: parent's wasm calls this when user JS does
   // `worker.postMessage(data)`.  We unframe (workerId, bytes) and post
   // to main, which routes to the child host's `deliver-message-to-child`
@@ -1191,6 +1255,11 @@ self.addEventListener("message", (e: MessageEvent) => {
     kind: "deliver-message-from-child";
     workerId: number;
     bytes: Uint8Array;
+  } | {
+    kind: "run-child-process-reply";
+    requestId: number;
+    replyJson?: string;
+    error?: string;
   }) | null;
   if (data?.kind === "reverse-echo") {
     void runReverseEcho(data.bytes ?? 32);
@@ -1198,6 +1267,10 @@ self.addEventListener("message", (e: MessageEvent) => {
   }
   if (data?.kind === "spawn-user-worker-reply") {
     handleMainSpawnReply(data);
+    return;
+  }
+  if (data?.kind === "run-child-process-reply") {
+    handleMainChildProcReply(data);
     return;
   }
   if (data?.kind === "deliver-user-worker-exit") {

@@ -82,15 +82,65 @@ const PRE_PATCH = `
   if (!binding || binding.__edgeViaExecutor) return;
   binding.__edgeViaExecutor = true;
 
-  // Resolve the host-installed executor at first call (not at policy
-  // load) so the deployment can install it AFTER the prelude is wired
-  // -- e.g. in a setTimeout or after the wasm boots.
-  function resolveExecutor() {
-    var g = (typeof globalThis !== 'undefined' && globalThis) ||
-            (typeof global !== 'undefined' && global);
+  function getGlobalThis() {
+    return (typeof globalThis !== 'undefined' && globalThis) ||
+           (typeof global !== 'undefined' && global);
+  }
+
+  // Resolve the wasm-worker-side sync executor. Returns null if none
+  // installed; the caller falls through to the async path (main thread
+  // via host RPC) or the default fake shell.
+  function resolveLocalExecutor() {
+    var g = getGlobalThis();
     var ex = g && g.__edgeChildProcessExecutor;
     if (typeof ex === 'function') return ex;
-    return defaultFakeShellExecutor;
+    return null;
+  }
+
+  // Async path. Calls into the worker.ts-installed global that does a
+  // sync RPC -> host -> postMessage main -> main's
+  // __edgeChildProcessExecutor (sync OR async). Wasm thread blocks on
+  // Atomics.wait inside the sync RPC client. Returns the parsed result
+  // object, or null if main has no executor installed (sentinel
+  // \`__noExecutor: true\`) so the caller falls back to fake shell.
+  function tryAsyncPath(command, args, opts) {
+    var g = getGlobalThis();
+    var spawnSync = g && g.__edgeChildProcessSpawnSync;
+    if (typeof spawnSync !== 'function') return null;
+    var input = opts && opts.input;
+    var inputNums = null;
+    if (input != null) {
+      if (typeof input === 'string') {
+        inputNums = Array.from(new TextEncoder().encode(input));
+      } else if (input instanceof Uint8Array) {
+        inputNums = Array.from(input);
+      }
+    }
+    var req = {
+      command: String(command),
+      args: args || [],
+      env: opts && opts.env,
+      cwd: opts && opts.cwd,
+      input: inputNums,
+      timeout: opts && typeof opts.timeout === 'number' ? opts.timeout : undefined,
+    };
+    var replyJson;
+    try {
+      replyJson = spawnSync(JSON.stringify(req));
+    } catch (e) {
+      void e;
+      return null; // RPC failed; fall back to fake shell.
+    }
+    var parsed;
+    try { parsed = JSON.parse(replyJson); } catch (e) { void e; return null; }
+    if (parsed && parsed.__noExecutor) return null; // main has none.
+    return {
+      stdout: parsed.stdout ? new Uint8Array(parsed.stdout) : '',
+      stderr: parsed.stderr ? new Uint8Array(parsed.stderr) : '',
+      code: typeof parsed.code === 'number' ? parsed.code : 0,
+      signal: parsed.signal != null ? parsed.signal : null,
+      error: parsed.error || null,
+    };
   }
 
   // Default executor: a tiny fake shell with a handful of authentic
@@ -263,15 +313,34 @@ const PRE_PATCH = `
       var s0 = options.stdio[0];
       if (s0 && s0.input != null) input = s0.input;
     }
-    var executor = resolveExecutor();
+    // Three-tier executor resolution:
+    //   1. wasm-worker sync executor (fast path, no RPC)
+    //   2. main-thread executor via host RPC (async-capable)
+    //   3. default fake shell (sync, on wasm-worker)
+    var execOpts = {
+      env: env,
+      cwd: options.cwd != null ? String(options.cwd) : undefined,
+      input: input,
+      timeout: typeof options.timeout === 'number' ? options.timeout : undefined,
+    };
     var execResult;
+    var localExec = resolveLocalExecutor();
     try {
-      execResult = executor(command, args, {
-        env: env,
-        cwd: options.cwd != null ? String(options.cwd) : undefined,
-        input: input,
-        timeout: typeof options.timeout === 'number' ? options.timeout : undefined,
-      });
+      if (localExec) {
+        execResult = localExec(command, args, execOpts);
+        // If local executor returned a Promise (async), it can't be
+        // awaited on the wasm thread -- fall through to the async path.
+        if (execResult && typeof execResult.then === 'function') {
+          execResult = tryAsyncPath(command, args, execOpts);
+        }
+      } else {
+        // No local executor: try async-via-main first, then default.
+        execResult = tryAsyncPath(command, args, execOpts);
+      }
+      // Either path returned null/undefined -> default fake shell.
+      if (execResult == null) {
+        execResult = defaultFakeShellExecutor(command, args, execOpts);
+      }
     } catch (e) {
       // Executor itself threw -- surface as a spawn error (-EINVAL).
       void e;
@@ -285,7 +354,8 @@ const PRE_PATCH = `
         error: -22,
       };
     }
-    // Detect accidentally-async executors so users get a clear message.
+    // Defensive: execResult should be a plain result object at this
+    // point (we routed Promises through tryAsyncPath above).
     if (execResult && typeof execResult.then === 'function') {
       return {
         pid: 0,
@@ -294,7 +364,7 @@ const PRE_PATCH = `
         stderr: Buffer.alloc(0),
         status: null,
         signal: null,
-        error: -38, // ENOSYS - function not implemented
+        error: -38, // ENOSYS
       };
     }
     return shapeResult(execResult || {}, options);

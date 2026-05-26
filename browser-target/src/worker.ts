@@ -105,7 +105,7 @@ import { attachRing as attachHostRing, type RingConfig as HostRingConfig } from 
 import { RpcClient } from "./host-worker/rpc-client";
 import { RpcServer } from "./host-worker/rpc-server";
 import { SyncRpcClient } from "./host-worker/rpc-client-sync";
-import { OP_PING, OP_WASM_ECHO, OP_SUBTLE_DIGEST, OP_SUBTLE_HMAC, OP_SUBTLE_DIGEST_VIA_NAPI_MEM, OP_SUBTLE_HMAC_VIA_NAPI_MEM, OP_NAPI_OPEN_HANDLE_SCOPE, OP_NAPI_CLOSE_HANDLE_SCOPE, OP_SPAWN_USER_WORKER, OP_DELIVER_USER_WORKER_EXIT, OP_WORKER_POST_MESSAGE_TO_CHILD, OP_WORKER_POST_MESSAGE_TO_PARENT, OP_DELIVER_MESSAGE_TO_CHILD, OP_DELIVER_MESSAGE_FROM_CHILD, DIGEST_STAGING_OFFSET, REPLY_STATUS_OK, REPLY_STATUS_INVALID_ARGS, REPLY_STATUS_HOST_ERROR } from "./host-worker/rpc-protocol";
+import { OP_PING, OP_WASM_ECHO, OP_SUBTLE_DIGEST, OP_SUBTLE_HMAC, OP_SUBTLE_DIGEST_VIA_NAPI_MEM, OP_SUBTLE_HMAC_VIA_NAPI_MEM, OP_NAPI_OPEN_HANDLE_SCOPE, OP_NAPI_CLOSE_HANDLE_SCOPE, OP_SPAWN_USER_WORKER, OP_DELIVER_USER_WORKER_EXIT, OP_WORKER_POST_MESSAGE_TO_CHILD, OP_WORKER_POST_MESSAGE_TO_PARENT, OP_DELIVER_MESSAGE_TO_CHILD, OP_DELIVER_MESSAGE_FROM_CHILD, OP_RUN_CHILD_PROCESS, DIGEST_STAGING_OFFSET, REPLY_STATUS_OK, REPLY_STATUS_INVALID_ARGS, REPLY_STATUS_HOST_ERROR } from "./host-worker/rpc-protocol";
 import { packPostMessage, unpackPostMessage } from "./host-worker/marshal-postmessage";
 import { registerWasmCallbackInvoker, createCallbackDepthCounter } from "./host-worker/callback-dispatch";
 const HOST_RPC_RING_CONFIG: HostRingConfig = { numSlots: 32, slotSize: 4 * 1024 };
@@ -391,6 +391,34 @@ function installSpawnNodeWorkerGlobal(): void {
   (globalThis as { __edgeSpawnNodeWorker?: SpawnNodeWorker }).__edgeSpawnNodeWorker = impl;
 }
 
+// child-process-via-executor (async path) global. Mirrors
+// `__edgeSpawnNodeWorker` shape: pack args, sync RPC to host, parse
+// reply. The host posts to main, main calls the user-installed
+// executor (sync or async), serializes reply. Wasm thread blocks on
+// Atomics.wait inside the sync RPC client the whole time -- no JSPI
+// involvement, no SuspendError risk.
+//
+// Returns the result JSON string (the policy patch unpacks). On
+// "no executor installed on main" we return a sentinel string the
+// patch recognizes so it can fall back to the default fake shell.
+type SpawnChildProcessSync = (requestJson: string) => string;
+
+function installSpawnChildProcessGlobal(): void {
+  const impl: SpawnChildProcessSync = (requestJson) => {
+    if (!hostRpcSyncClient) {
+      throw new Error("__edgeChildProcessSpawnSync: host RPC sync client not attached");
+    }
+    const payload = new TextEncoder().encode(requestJson);
+    const reply = hostRpcSyncClient.callSync(OP_RUN_CHILD_PROCESS, hostWorkerId, 0, payload);
+    if (reply.status !== REPLY_STATUS_OK) {
+      const msg = new TextDecoder().decode(reply.payload) || `run-child-process status=${reply.status}`;
+      throw new Error("__edgeChildProcessSpawnSync: " + msg);
+    }
+    return new TextDecoder().decode(reply.payload);
+  };
+  (globalThis as { __edgeChildProcessSpawnSync?: SpawnChildProcessSync }).__edgeChildProcessSpawnSync = impl;
+}
+
 // Worker-threads phase 2: postMessage globals.  Pure plumbing — they
 // shuttle marshaled bytes through sync forward RPC (wasm → host → main
 // → other host → reverse RPC → wasm).  The actual JS-value
@@ -620,6 +648,7 @@ self.addEventListener("message", (e: MessageEvent) => {
     installHostDigestSyncGlobal();
     installHostHmacSyncGlobal();
     installSpawnNodeWorkerGlobal();
+    installSpawnChildProcessGlobal();
     installPostMessageGlobals();
     // L4 reverse channel — host can send requests TO this worker.
     // Reverse-direction SABs come in the same message.
