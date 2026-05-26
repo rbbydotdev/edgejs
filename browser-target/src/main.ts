@@ -158,7 +158,7 @@ async function runF1NapiProbe(): Promise<void> {
   const { attachRing } = await import("./wasi-shim/sab-ring");
   const { RpcClient } = await import("./host-worker/rpc-client");
   const proto = await import("./host-worker/rpc-protocol");
-  const ringConfig = { numSlots: 32, slotSize: 4 * 1024 };
+  const ringConfig = { numSlots: 256, slotSize: 4 * 1024 };
   const reqRing = attachRing(hostHandle.requestSab, ringConfig);
   const replyRing = attachRing(hostHandle.replySab, ringConfig);
   const client = new RpcClient(reqRing, replyRing);
@@ -226,7 +226,7 @@ async function runF9SweepProbe(): Promise<void> {
   const { attachRing } = await import("./wasi-shim/sab-ring");
   const { RpcClient } = await import("./host-worker/rpc-client");
   const proto = await import("./host-worker/rpc-protocol");
-  const ringConfig = { numSlots: 32, slotSize: 4 * 1024 };
+  const ringConfig = { numSlots: 256, slotSize: 4 * 1024 };
   const client = new RpcClient(
     attachRing(hostHandle.requestSab, ringConfig),
     attachRing(hostHandle.replySab, ringConfig),
@@ -677,7 +677,7 @@ async function runScopeBoundedProbe(): Promise<void> {
   const { attachRing } = await import("./wasi-shim/sab-ring");
   const { RpcClient } = await import("./host-worker/rpc-client");
   const proto = await import("./host-worker/rpc-protocol");
-  const ringConfig = { numSlots: 32, slotSize: 4 * 1024 };
+  const ringConfig = { numSlots: 256, slotSize: 4 * 1024 };
   const client = new RpcClient(
     attachRing(hostHandle.requestSab, ringConfig),
     attachRing(hostHandle.replySab, ringConfig),
@@ -779,7 +779,7 @@ async function runL9MultiHostSpike(): Promise<void> {
   const { attachRing } = await import("./wasi-shim/sab-ring");
   const { RpcClient } = await import("./host-worker/rpc-client");
   const { OP_PING, OP_HOST_ECHO } = await import("./host-worker/rpc-protocol");
-  const ringConfig = { numSlots: 32, slotSize: 4 * 1024 };
+  const ringConfig = { numSlots: 256, slotSize: 4 * 1024 };
   // We already have hostHandle (id=0).  Spawn a second.
   const h1 = spawnHostWorker();
   await h1.ready;
@@ -833,7 +833,7 @@ async function runUserScriptOnHost(source: string, format: "test-runner" | "debu
   const { attachRing } = await import("./wasi-shim/sab-ring");
   const { RpcClient } = await import("./host-worker/rpc-client");
   const { OP_RUN_USER_SCRIPT } = await import("./host-worker/rpc-protocol");
-  const ringConfig = { numSlots: 32, slotSize: 4 * 1024 };
+  const ringConfig = { numSlots: 256, slotSize: 4 * 1024 };
   const reqRing = attachRing(hostHandle.requestSab, ringConfig);
   const replyRing = attachRing(hostHandle.replySab, ringConfig);
   const client = new RpcClient(reqRing, replyRing);
@@ -885,7 +885,7 @@ async function runEchoBench(iters: number, payloadBytes: number): Promise<void> 
   const { attachRing } = await import("./wasi-shim/sab-ring");
   const { RpcClient } = await import("./host-worker/rpc-client");
   const { OP_HOST_ECHO } = await import("./host-worker/rpc-protocol");
-  const ringConfig = { numSlots: 32, slotSize: 4 * 1024 };
+  const ringConfig = { numSlots: 256, slotSize: 4 * 1024 };
   const reqRing = attachRing(hostHandle.requestSab, ringConfig);
   const replyRing = attachRing(hostHandle.replySab, ringConfig);
   const client = new RpcClient(reqRing, replyRing);

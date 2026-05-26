@@ -13,7 +13,7 @@ import { createRing, type RingConfig } from "../wasi-shim/sab-ring";
 
 // Must match host-worker.ts's RING_CONFIG.
 const RING_CONFIG: RingConfig = {
-  numSlots: 32,
+  numSlots: 256,
   slotSize: 4 * 1024,
 };
 

@@ -108,7 +108,16 @@ import { SyncRpcClient } from "./host-worker/rpc-client-sync";
 import { OP_PING, OP_WASM_ECHO, OP_SUBTLE_DIGEST, OP_SUBTLE_HMAC, OP_SUBTLE_DIGEST_VIA_NAPI_MEM, OP_SUBTLE_HMAC_VIA_NAPI_MEM, OP_NAPI_OPEN_HANDLE_SCOPE, OP_NAPI_CLOSE_HANDLE_SCOPE, OP_SPAWN_USER_WORKER, OP_DELIVER_USER_WORKER_EXIT, OP_WORKER_POST_MESSAGE_TO_CHILD, OP_WORKER_POST_MESSAGE_TO_PARENT, OP_DELIVER_MESSAGE_TO_CHILD, OP_DELIVER_MESSAGE_FROM_CHILD, OP_RUN_CHILD_PROCESS, OP_SPAWN_ASYNC_START, OP_SPAWN_ASYNC_KILL, OP_SPAWN_ASYNC_EVENT, OP_SPAWN_STDIO_WRITE, OP_SPAWN_STDIO_END, OP_SPAWN_IPC_SEND, OP_SPAWN_IPC_DISCONNECT, DIGEST_STAGING_OFFSET, REPLY_STATUS_OK, REPLY_STATUS_INVALID_ARGS, REPLY_STATUS_HOST_ERROR } from "./host-worker/rpc-protocol";
 import { packPostMessage, unpackPostMessage } from "./host-worker/marshal-postmessage";
 import { registerWasmCallbackInvoker, createCallbackDepthCounter } from "./host-worker/callback-dispatch";
-const HOST_RPC_RING_CONFIG: HostRingConfig = { numSlots: 32, slotSize: 4 * 1024 };
+// 256 slots * 4 KiB = 1 MiB per ring. Bumped from 32 to handle bursty
+// reverse-RPC traffic (IPC ack storms during cp.send loops, streaming
+// stdio fan-out). With only 32 slots, the host's reverseClient.call
+// hits backoff after the 32nd event because the wasm worker is blocked
+// in a sync RPC and can't drain. After max-backoff (100 attempts) the
+// call drops the event silently. 256 absorbs realistic bursts; the true
+// fix is draining reverse RPC during sync-RPC waits (the SyncRpcClient
+// drainReverseRequests hook), which is a deeper change tracked as
+// `#!~debt host-rpc-sync-reverse-drain`.
+const HOST_RPC_RING_CONFIG: HostRingConfig = { numSlots: 256, slotSize: 4 * 1024 };
 let hostRpcClient: RpcClient | null = null;
 /** E18: sync variant on the forward channel (wasm → host).  Wraps the
  *  same request/reply SAB pair that `hostRpcClient` uses, but blocks

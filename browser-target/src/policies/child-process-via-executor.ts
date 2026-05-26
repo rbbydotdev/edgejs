@@ -1026,35 +1026,101 @@ const PRE_PATCH = `
     processWrapBinding.Process = EdgeProcess;
   }
 
-  // --- serdes binding stub: lib/v8.js destructures Serializer/Deserializer
-  // from internalBinding('serdes'). When IPC setupChannel triggers a require
-  // of lib's serialization.js (which requires v8), v8.js tries to do
-  // \`class DefaultSerializer extends Serializer\` -- if Serializer is
-  // undefined we get "Cannot read properties of undefined (reading 'prototype')".
-  // Stub Serializer/Deserializer here so v8.js loads. Only matters for
-  // serialization mode 'advanced' -- json mode (our default) never uses
-  // these. #!~debt child-process-ipc-advanced-serialization tracked. ---
+  // --- serdes binding: lib/v8.js destructures Serializer/Deserializer
+  // from internalBinding('serdes'). When IPC setupChannel triggers a
+  // require of lib's serialization.js (which requires v8), v8.js does
+  // \`class DefaultSerializer extends Serializer\` at module load -- if
+  // Serializer is undefined we get "Cannot read properties of undefined
+  // (reading 'prototype')".
+  //
+  // We provide a JSON-backed Serializer/Deserializer that satisfies the
+  // protocol lib uses (writeHeader/writeValue/writeRawBytes/writeUint32/
+  // releaseBuffer + read counterparts). Values round-trip losslessly for
+  // JSON-compatible types (string/number/bool/null/plain object/array).
+  //
+  // #!~debt child-process-ipc-advanced-serialization-types: Map, Set,
+  // Date, ArrayBuffer/TypedArray round-trip lossy under 'advanced' mode
+  // because our backing is JSON. Real V8 structured-clone (binary V8
+  // protocol with type tags + transferable handles) would require a
+  // ~thousand-line serializer; deferred. JSON mode (the default for
+  // child_process IPC) is unaffected and supports the same value subset.
   var serdesBinding;
   try { serdesBinding = internalBinding('serdes'); } catch (_e) { void _e; }
   if (serdesBinding && typeof serdesBinding.Serializer !== 'function') {
-    function StubSerializer() {
-      this._buf = [];
+    function JsonSerializer() {
+      this._chunks = [];  // ordered list of (length-prefixed) byte segments
     }
-    StubSerializer.prototype._writeHostObject = function() {};
-    StubSerializer.prototype.writeHeader = function() {};
-    StubSerializer.prototype.writeValue = function(v) { this._buf.push(v); };
-    StubSerializer.prototype.writeUint32 = function() {};
-    StubSerializer.prototype.writeRawBytes = function() {};
-    StubSerializer.prototype.releaseBuffer = function() { return Buffer.alloc(0); };
-    StubSerializer.prototype.transferArrayBuffer = function() {};
-    function StubDeserializer(_buf) {}
-    StubDeserializer.prototype._readHostObject = function() { return undefined; };
-    StubDeserializer.prototype.readHeader = function() {};
-    StubDeserializer.prototype.readValue = function() { return undefined; };
-    StubDeserializer.prototype.readUint32 = function() { return 0; };
-    StubDeserializer.prototype.transferArrayBuffer = function() {};
-    serdesBinding.Serializer = StubSerializer;
-    serdesBinding.Deserializer = StubDeserializer;
+    JsonSerializer.prototype._writeHostObject = function(obj) {
+      // Lib's ChildProcessSerializer calls this for non-stringifiable
+      // host objects (typed arrays etc.). Override semantics: write a
+      // length-prefixed JSON of {host: ...stringifiable view}.
+      this.writeValue(obj);
+    };
+    JsonSerializer.prototype.writeHeader = function() {
+      this._chunks.push(new Uint8Array([0xFF])); // 1-byte format marker
+    };
+    JsonSerializer.prototype.writeValue = function(v) {
+      var json = JSON.stringify(v);
+      var bytes = new TextEncoder().encode(json);
+      var lenBytes = new Uint8Array(4);
+      new DataView(lenBytes.buffer).setUint32(0, bytes.byteLength, true);
+      this._chunks.push(lenBytes);
+      this._chunks.push(bytes);
+    };
+    JsonSerializer.prototype.writeUint32 = function(n) {
+      var b = new Uint8Array(4);
+      new DataView(b.buffer).setUint32(0, n, true);
+      this._chunks.push(b);
+    };
+    JsonSerializer.prototype.writeRawBytes = function(b) {
+      this._chunks.push(b instanceof Uint8Array ? b : new Uint8Array(b));
+    };
+    JsonSerializer.prototype.transferArrayBuffer = function() {};
+    // v8.DefaultSerializer constructor calls this; no-op for json mode.
+    JsonSerializer.prototype._setTreatArrayBufferViewsAsHostObjects = function() {};
+    JsonSerializer.prototype.releaseBuffer = function() {
+      var total = 0;
+      for (var i = 0; i < this._chunks.length; i++) total += this._chunks[i].byteLength;
+      var out = Buffer.allocUnsafe(total);
+      var off = 0;
+      for (var j = 0; j < this._chunks.length; j++) {
+        out.set(this._chunks[j], off);
+        off += this._chunks[j].byteLength;
+      }
+      return out;
+    };
+    function JsonDeserializer(buf) {
+      this._buf = buf instanceof Uint8Array ? buf
+        : new Uint8Array(buf.buffer || buf, buf.byteOffset || 0, buf.byteLength || buf.length || 0);
+      this._off = 0;
+    }
+    JsonDeserializer.prototype._readHostObject = function() {
+      return this.readValue();
+    };
+    JsonDeserializer.prototype.readHeader = function() {
+      if (this._off < this._buf.byteLength) this._off++; // skip 0xFF marker
+    };
+    JsonDeserializer.prototype.readValue = function() {
+      if (this._off + 4 > this._buf.byteLength) return undefined;
+      var dv = new DataView(this._buf.buffer, this._buf.byteOffset, this._buf.byteLength);
+      var len = dv.getUint32(this._off, true);
+      this._off += 4;
+      if (this._off + len > this._buf.byteLength) return undefined;
+      var bytes = this._buf.subarray(this._off, this._off + len);
+      this._off += len;
+      try { return JSON.parse(new TextDecoder('utf-8').decode(bytes)); }
+      catch (e) { void e; return undefined; }
+    };
+    JsonDeserializer.prototype.readUint32 = function() {
+      if (this._off + 4 > this._buf.byteLength) return 0;
+      var dv = new DataView(this._buf.buffer, this._buf.byteOffset, this._buf.byteLength);
+      var n = dv.getUint32(this._off, true);
+      this._off += 4;
+      return n;
+    };
+    JsonDeserializer.prototype.transferArrayBuffer = function() {};
+    serdesBinding.Serializer = JsonSerializer;
+    serdesBinding.Deserializer = JsonDeserializer;
   }
 })();
 `;

@@ -94,7 +94,7 @@ declare const self: DedicatedWorkerGlobalScope;
 
 // Must match the producer's config (in worker-pool.ts).
 const RING_CONFIG: RingConfig = {
-  numSlots: 32,
+  numSlots: 256,
   slotSize: 4 * 1024,
 };
 
@@ -873,10 +873,21 @@ async function startAsyncSpawn(requestBytes: Uint8Array): Promise<Uint8Array> {
     try {
       result = await Promise.resolve(executor(req.command, req.args || [], opts));
     } catch (e) {
-      const err = e instanceof Error ? e : new Error(String(e));
-      const payload = new TextEncoder().encode(err.message);
-      emitAsyncEvent(childId, 3 /*error*/, payload);
-      emitAsyncEvent(childId, 2 /*exit*/, packExitPayload(null, ac.signal.aborted ? (req.killSignal || "SIGTERM") : null));
+      // Distinguish abort-driven exits from genuine spawn errors:
+      // - If ac.signal.aborted, this is a kill() reaction (cooperative
+      //   executor honoring opts.signal). Emit ONLY exit with the kill
+      //   signal -- wasm's ChildProcess fires 'exit' (null, killSignal)
+      //   matching Node's "process terminated by signal" semantics.
+      // - Otherwise the executor genuinely failed -- emit error + exit
+      //   so wasm fires both 'error' and 'close'.
+      if (ac.signal.aborted) {
+        emitAsyncEvent(childId, 2 /*exit*/, packExitPayload(null, req.killSignal || "SIGTERM"));
+      } else {
+        const err = e instanceof Error ? e : new Error(String(e));
+        const payload = new TextEncoder().encode(err.message);
+        emitAsyncEvent(childId, 3 /*error*/, payload);
+        emitAsyncEvent(childId, 2 /*exit*/, packExitPayload(null, null));
+      }
       const child = asyncSpawnChildren.get(childId);
       if (child) { child.done = true; asyncSpawnChildren.delete(childId); }
       return;
