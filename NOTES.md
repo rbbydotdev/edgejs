@@ -90,6 +90,22 @@ Inline `#!~debt` markers point here. Resolved entries live in
 [ARCHIVE.md](./ARCHIVE.md). Counts as of writing: **52 markers** across
 the browser-target tree.
 
+### Recently resolved
+
+- **`process-exit-blocked-poll`** (2026-05-26, e41) —
+  `process.exit()` from inside a libuv callback was not honored: V8's
+  `TerminateExecution()` is a no-op at napi callback boundaries in
+  this wasm V8 build, and `uv_stop` alone cannot wake an
+  already-blocking `uv__io_poll`. The loop continued until the next
+  pending timer fired, racing the safety-timer in tests.
+  **Fix**: dedicated `uv_async_t exit_wake_async_` in
+  `Environment`, signaled from `Environment::Exit` to wake `io_poll`
+  so `stop_flag` is checked promptly at the next iteration top.
+  Shipped alongside the wasi-shim line-1122 fix
+  (`pollOneoffAsyncImpl` was taking the timer-only branch even when
+  pipe-read subs were present). See
+  `experiments/e41-process-exit-diagnostic/FINDINGS.md`.
+
 ### Boot-blocking / correctness
 
 - `crude-circuit-breaker` — **PARTIALLY RESOLVED** (2026-05-22).

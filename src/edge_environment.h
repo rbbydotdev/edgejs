@@ -337,16 +337,20 @@ class Environment {
  private:
   static void OnThreadsafeImmediate(uv_async_t* handle);
   static void OnThreadsafeImmediateClosed(uv_handle_t* handle);
+  static void OnExitWake(uv_async_t* handle);
+  static void OnExitWakeClosed(uv_handle_t* handle);
   static void OnTimer(uv_timer_t* handle);
   static void OnImmediateCheck(uv_check_t* handle);
 
   void ResetTrackedRefs();
   void DeleteRefIfPresent(napi_ref* ref);
   bool EnsureThreadsafeImmediateHandleLocked();
+  bool EnsureExitWakeHandleLocked();
   bool EnsureTimerHandleLocked();
   bool EnsureImmediateCheckHandleLocked();
   bool EnsureImmediateIdleHandleLocked();
   void CloseThreadsafeImmediateHandleLocked();
+  void CloseExitWakeHandleLocked();
   void ClosePerEnvHandlesLocked();
   void ScheduleTimerFromExpiry(double next_expiry, double now_ms);
   static void OnInterruptFromV8(napi_env env, void* data);
@@ -402,6 +406,14 @@ class Environment {
   uv_async_t threadsafe_immediate_async_{};
   bool threadsafe_immediate_async_initialized_ = false;
   bool threadsafe_immediate_async_closed_ = true;
+  // Dedicated async handle for waking uv__io_poll when Exit() is called
+  // from inside a libuv callback. uv_stop() alone sets stop_flag but
+  // does not wake an already-blocked io_poll; uv_async_send on this
+  // handle wakes the poll so uv_run returns promptly. See
+  // experiments/e41-process-exit-diagnostic/FINDINGS.md.
+  uv_async_t exit_wake_async_{};
+  bool exit_wake_async_initialized_ = false;
+  bool exit_wake_async_closed_ = true;
   std::deque<ThreadsafeImmediateEntry> interrupts_;
   std::deque<ThreadsafeImmediateEntry> threadsafe_immediates_;
   ProcessExitHandler process_exit_handler_;

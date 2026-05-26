@@ -1871,6 +1871,18 @@ int RunEventLoopUntilQuiescent(napi_env env, std::string* error_out) {
       }
     }
 
+    // process.exit() called from a callback inside uv_run sets the
+    // env-exiting flag and calls uv_stop, but uv_stop alone does NOT
+    // wake uv__io_poll if it's already blocking in a wait. Without a
+    // wake source on the loop, uv_run stays in poll until the next
+    // pending timer fires, then exits. Environment::Exit also calls
+    // uv_async_send on a dedicated exit_wake_ async handle which DOES
+    // wake io_poll, so the loop bails promptly after the handler.
+    // See experiments/e41-process-exit-diagnostic/FINDINGS.md.
+    if (IsProcessExiting(env) || IsEnvironmentExitRequested(env)) {
+      break;
+    }
+
     const bool use_polling_loop = loop_timeout_ms > 0;
     if (use_polling_loop) {
       uv_run(loop, UV_RUN_NOWAIT);

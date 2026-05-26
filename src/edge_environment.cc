@@ -428,6 +428,7 @@ void Environment::RequestStop() {
 
 void Environment::Exit(int exit_code) {
   ProcessExitHandler handler;
+  bool wake_initialized = false;
   {
     std::lock_guard<std::mutex> lock(mutex_);
     exiting_ = true;
@@ -435,6 +436,17 @@ void Environment::Exit(int exit_code) {
     exit_code_ = exit_code;
     stop_requested_ = true;
     handler = process_exit_handler_;
+    wake_initialized = exit_wake_async_initialized_ && !exit_wake_async_closed_;
+  }
+
+  // Wake uv__io_poll if it's currently blocking. V8's TerminateExecution
+  // does NOT interrupt JS execution at napi callback boundaries in this
+  // wasm build, and uv_stop alone cannot wake a blocked poll -- without
+  // this send, uv_run stays blocked until the next pending timer fires.
+  // The handler is a no-op; what matters is the wfd write that
+  // uv_async_send triggers, which forces poll to return.
+  if (wake_initialized) {
+    (void)uv_async_send(&exit_wake_async_);
   }
 
   if (handler != nullptr) {
@@ -510,6 +522,7 @@ napi_status Environment::EnsureEventLoop(uv_loop_t** loop_out) {
     (void)uv_loop_configure(loop, UV_METRICS_IDLE_TIME);
     loop_ = loop;
   }
+  (void)EnsureExitWakeHandleLocked();
   if (loop_out != nullptr) *loop_out = loop_;
   return napi_ok;
 }
@@ -526,20 +539,20 @@ uv_loop_t* Environment::GetExistingEventLoop() const {
 
 uv_loop_t* Environment::ReleaseEventLoop() {
   uv_loop_t* loop = nullptr;
-  bool wait_for_threadsafe_async_close = false;
+  bool wait_for_async_close = false;
   {
     std::lock_guard<std::mutex> lock(mutex_);
-    wait_for_threadsafe_async_close = threadsafe_immediate_async_initialized_;
+    wait_for_async_close = threadsafe_immediate_async_initialized_ || exit_wake_async_initialized_;
     ClosePerEnvHandlesLocked();
     loop = loop_;
     loop_ = nullptr;
   }
 
-  if (wait_for_threadsafe_async_close && loop != nullptr) {
+  if (wait_for_async_close && loop != nullptr) {
     for (size_t guard = 0; guard < 256; ++guard) {
       {
         std::lock_guard<std::mutex> lock(mutex_);
-        if (threadsafe_immediate_async_closed_) break;
+        if (threadsafe_immediate_async_closed_ && exit_wake_async_closed_) break;
       }
       (void)uv_run(loop, UV_RUN_NOWAIT);
     }
@@ -565,6 +578,20 @@ bool Environment::EnsureThreadsafeImmediateHandleLocked() {
   }
   uv_unref(reinterpret_cast<uv_handle_t*>(&threadsafe_immediate_async_));
   threadsafe_immediate_async_initialized_ = true;
+  return true;
+}
+
+bool Environment::EnsureExitWakeHandleLocked() {
+  if (exit_wake_async_initialized_) return true;
+  if (loop_ == nullptr) return false;
+  exit_wake_async_.data = this;
+  exit_wake_async_closed_ = false;
+  if (uv_async_init(loop_, &exit_wake_async_, OnExitWake) != 0) {
+    exit_wake_async_closed_ = true;
+    return false;
+  }
+  uv_unref(reinterpret_cast<uv_handle_t*>(&exit_wake_async_));
+  exit_wake_async_initialized_ = true;
   return true;
 }
 
@@ -612,8 +639,19 @@ void Environment::CloseThreadsafeImmediateHandleLocked() {
   }
 }
 
+void Environment::CloseExitWakeHandleLocked() {
+  if (!exit_wake_async_initialized_) return;
+  exit_wake_async_initialized_ = false;
+  if (uv_is_closing(reinterpret_cast<uv_handle_t*>(&exit_wake_async_)) == 0) {
+    exit_wake_async_closed_ = false;
+    uv_close(reinterpret_cast<uv_handle_t*>(&exit_wake_async_),
+             OnExitWakeClosed);
+  }
+}
+
 void Environment::ClosePerEnvHandlesLocked() {
   CloseThreadsafeImmediateHandleLocked();
+  CloseExitWakeHandleLocked();
 
   if (timer_handle_initialized_) {
     timer_handle_initialized_ = false;
@@ -1404,6 +1442,21 @@ void Environment::OnThreadsafeImmediateClosed(uv_handle_t* handle) {
   if (env == nullptr) return;
   std::lock_guard<std::mutex> lock(env->mutex_);
   env->threadsafe_immediate_async_closed_ = true;
+}
+
+void Environment::OnExitWake(uv_async_t* /*handle*/) {
+  // No-op. The handle exists solely to wake uv__io_poll when Exit() is
+  // called from inside a libuv callback. uv_stop() alone cannot wake a
+  // poll that's already blocking; uv_async_send writes to the loop's
+  // internal wfd, which forces poll to return so uv_run's main loop
+  // checks stop_flag at the next iteration top and exits.
+}
+
+void Environment::OnExitWakeClosed(uv_handle_t* handle) {
+  auto* env = static_cast<Environment*>(handle != nullptr ? handle->data : nullptr);
+  if (env == nullptr) return;
+  std::lock_guard<std::mutex> lock(env->mutex_);
+  env->exit_wake_async_closed_ = true;
 }
 
 void Environment::OnTimer(uv_timer_t* handle) {

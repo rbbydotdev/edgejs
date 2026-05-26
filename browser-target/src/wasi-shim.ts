@@ -1119,7 +1119,7 @@ export function createWasiShim(ctx: ShimContext): {
       return ERRNO_SUCCESS;
     }
 
-    if (minTimeoutNs >= 0 && !hasSocketSub) {
+    if (minTimeoutNs >= 0 && !hasSocketSub && r.pipeReadSubs.length === 0) {
       // Timer-only wait: yield via Atomics.waitAsync with its built-in
       // timeout (see pollOneoffAwaitTimer).
       const ms = Math.max(0, Math.min(60_000, Math.ceil(minTimeoutNs / 1_000_000)));
