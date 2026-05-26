@@ -1,0 +1,25 @@
+browser-target/src/policies/child-process-via-executor.ts
+  s_92c1b47c0d6ee8::t_59176ea9e1dbc1 276-277,285,297
+  s_92c1b47c0d6ee8::t_d1e8fecdeb8c50 93,96-171,173-175,177
+  s_92c1b47c0d6ee8::t_4870d4844b1bf6 222-226,228-236
+tests/js/child-process-spawn-echo.stdout
+  s_92c1b47c0d6ee8::t_3f1ddefad16787 1-7
+tests/js/child-process-spawn-echo.js
+  s_92c1b47c0d6ee8::t_f2715004c8a215 1,3-5,7-42
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "b74004b36b18fbc8ce3ce6d0c8c5d9fafd811cc3",
+  "prompts": {},
+  "sessions": {
+    "s_92c1b47c0d6ee8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "dca99c1c-d946-4444-9a53-9ba89db5d748",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
