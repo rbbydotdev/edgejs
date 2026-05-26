@@ -1,0 +1,38 @@
+browser-target/src/policies/child-process-via-executor.ts
+  s_92c1b47c0d6ee8::t_46d267864544ce 245-269,275-289,291-294,318,324-325,329-335,339-343
+  s_92c1b47c0d6ee8::t_26af6595d8d4da 290,299-310,328,336-337
+  s_92c1b47c0d6ee8::t_bdca47f4f9bc32 375,377-378,383-385
+  s_92c1b47c0d6ee8::t_971b5545169985 101-106,127,138,142
+  s_92c1b47c0d6ee8::t_c4702eddd58263 436-467,471,473
+tests/js/child-process-spawn-timeout.js
+  s_92c1b47c0d6ee8::t_ab8e993ed906d0 1-28
+tests/js/child-process-spawn-maxbuffer.js
+  s_92c1b47c0d6ee8::t_ebc5e47c94828f 1-25
+tests/js/child-process-spawn-timeout.harness-args
+  s_92c1b47c0d6ee8::t_c7c096673b5798 1-2
+tests/js/child-process-spawn-maxbuffer.harness-args
+  s_92c1b47c0d6ee8::t_3793ccc9c0d621 1
+browser-target/src/host-worker/host-worker.ts
+  s_92c1b47c0d6ee8::t_747c060d6cd081 345,359-391,402
+tests/js/child-process-spawn-timeout.stdout
+  s_92c1b47c0d6ee8::t_6e035c1e2d7fc4 1-3
+tests/js/child-process-spawn-maxbuffer.stdout
+  s_92c1b47c0d6ee8::t_74ed86d52d2580 2
+  s_92c1b47c0d6ee8::t_b122b7f6c3ddd2 1,3
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "2819c383865c9733abd3d043018ba2364627d75b",
+  "prompts": {},
+  "sessions": {
+    "s_92c1b47c0d6ee8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "dca99c1c-d946-4444-9a53-9ba89db5d748",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
