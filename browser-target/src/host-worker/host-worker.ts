@@ -50,8 +50,8 @@ import {
   OP_RUN_CHILD_PROCESS,
   OP_SPAWN_ASYNC_START,
   OP_SPAWN_ASYNC_KILL,
-  OP_SPAWN_STDIN_WRITE,
-  OP_SPAWN_STDIN_END,
+  OP_SPAWN_STDIO_WRITE,
+  OP_SPAWN_STDIO_END,
   OP_SPAWN_IPC_SEND,
   OP_SPAWN_IPC_DISCONNECT,
   OP_SPAWN_ASYNC_EVENT,
@@ -466,6 +466,10 @@ interface SpawnAsyncChild {
   abortController: AbortController;
   done: boolean;
   stdinPipe: StdinPipe;
+  // P3.5: stdio[3+] extra pipes. Keyed by fd index. Created lazily on
+  // first write/end RPC for that fd (the wasm side knows which indices
+  // were declared in spawn options; we don't pre-register them here).
+  extraStdio: Map<number, StdinPipe>;
   ipc: IpcChannel;
 }
 
@@ -557,6 +561,95 @@ function endStdinPipe(pipe: StdinPipe): void {
   if (pipe.ended) return;
   pipe.ended = true;
   while (pipe.waiters.length > 0) pipe.waiters.shift()!({ done: true });
+}
+
+// P3.5: build opts.stdio accessor for the executor. Returns a Proxy that
+// resolves arbitrary index N into a per-fd handle. fd 0 -> stdin reader,
+// fd 1 -> stdout writer (calls onStdout), fd 2 -> stderr writer
+// (calls onStderr), fd N>=3 -> bidirectional pipe backed by extraStdio.
+// The bidirectional case exposes both async-iterator semantics
+// (`for await` to read inbound bytes from wasm) AND .write/.end methods
+// (push outbound bytes back to wasm as kind=7 events). Mirrors what
+// Node's executor sees as fd 3/4/5/... in a real spawn().
+function makeExecutorStdioAccessor(
+  childId: number,
+  stdinPipe: StdinPipe,
+  onStdoutCb: (chunk: Uint8Array | string | number[]) => void,
+  onStderrCb: (chunk: Uint8Array | string | number[]) => void,
+  getChild: () => SpawnAsyncChild | undefined,
+): unknown {
+  const toBytes = (v: Uint8Array | string | number[]): Uint8Array => {
+    if (v instanceof Uint8Array) return v;
+    if (typeof v === "string") return new TextEncoder().encode(v);
+    if (Array.isArray(v)) return new Uint8Array(v);
+    return new TextEncoder().encode(String(v));
+  };
+  // fd 1/2 wrappers: pure writers, no read side.
+  const stdoutWriter = {
+    write(chunk: Uint8Array | string | number[]): boolean { onStdoutCb(chunk); return true; },
+    end(chunk?: Uint8Array | string | number[]): void { if (chunk != null) onStdoutCb(chunk); },
+  };
+  const stderrWriter = {
+    write(chunk: Uint8Array | string | number[]): boolean { onStderrCb(chunk); return true; },
+    end(chunk?: Uint8Array | string | number[]): void { if (chunk != null) onStderrCb(chunk); },
+  };
+  // fd 0: async-iterable reader (alias for opts.stdin).
+  const stdinIterable = makeStdinAsyncIterable(stdinPipe);
+  // fd N>=3: build a duplex on-demand. Bytes inbound from wasm land
+  // in child.extraStdio[N] (created by the OP_SPAWN_STDIO_WRITE handler);
+  // outbound bytes go via emitAsyncEvent kind=7 with [u32 fdIndex][bytes].
+  const extraHandles = new Map<number, unknown>();
+  function buildExtraHandle(fdIndex: number): unknown {
+    const ensurePipe = (): StdinPipe | null => {
+      const child = getChild();
+      if (!child) return null;
+      let p = child.extraStdio.get(fdIndex);
+      if (!p) {
+        p = { buffered: [], ended: false, waiters: [] };
+        child.extraStdio.set(fdIndex, p);
+      }
+      return p;
+    };
+    return {
+      [Symbol.asyncIterator](): AsyncIterator<Uint8Array> {
+        const p = ensurePipe();
+        if (!p) {
+          return { next: () => Promise.resolve({ value: undefined as unknown as Uint8Array, done: true }) };
+        }
+        return makeStdinAsyncIterable(p)[Symbol.asyncIterator]();
+      },
+      write(chunk: Uint8Array | string | number[]): boolean {
+        const bytes = toBytes(chunk);
+        if (bytes.byteLength === 0) return true;
+        // Frame as [u32 fdIndex][bytes].
+        const payload = new Uint8Array(4 + bytes.byteLength);
+        new DataView(payload.buffer).setUint32(0, fdIndex, true);
+        payload.set(bytes, 4);
+        emitAsyncEvent(childId, 7 /*stdio-fdN*/, payload);
+        return true;
+      },
+      end(chunk?: Uint8Array | string | number[]): void {
+        if (chunk != null) (this as { write: (c: unknown) => void }).write(chunk);
+        // Out-of-band end signal: zero-length frame.
+        const payload = new Uint8Array(4);
+        new DataView(payload.buffer).setUint32(0, fdIndex, true);
+        emitAsyncEvent(childId, 7 /*stdio-fdN*/, payload);
+      },
+    };
+  }
+  return new Proxy({}, {
+    get(_t, prop): unknown {
+      if (typeof prop !== "string") return undefined;
+      if (prop === "0") return stdinIterable;
+      if (prop === "1") return stdoutWriter;
+      if (prop === "2") return stderrWriter;
+      const idx = Number(prop);
+      if (!Number.isInteger(idx) || idx < 0) return undefined;
+      let h = extraHandles.get(idx);
+      if (!h) { h = buildExtraHandle(idx); extraHandles.set(idx, h); }
+      return h;
+    },
+  });
 }
 
 function packAsyncEvent(childId: number, kind: number, payload: Uint8Array): Uint8Array {
@@ -693,7 +786,7 @@ async function startAsyncSpawn(requestBytes: Uint8Array): Promise<Uint8Array> {
     messageHandlers: [],
     disconnectHandlers: [],
   };
-  asyncSpawnChildren.set(childId, { childId, abortController: ac, done: false, stdinPipe, ipc });
+  asyncSpawnChildren.set(childId, { childId, abortController: ac, done: false, stdinPipe, extraStdio: new Map(), ipc });
 
   // Fire 'spawned' event on next microtask so the wasm side has time
   // to register listeners after the START reply arrives.
@@ -746,6 +839,22 @@ async function startAsyncSpawn(requestBytes: Uint8Array): Promise<Uint8Array> {
     // pre-queued and the pipe is closed -- the iterator drains it
     // once and ends, identical to the one-shot input behavior.
     stdin: makeStdinAsyncIterable(stdinPipe),
+    // P3.5: opts.stdio[N] -- per-fd accessor that lets the executor:
+    //   * `for await` to read inbound bytes (wasm-side child.stdio[N].write())
+    //   * `.write(bytes)` to push outbound bytes (wasm-side reads via
+    //     child.stdio[N].on('data')); routed through OP_SPAWN_ASYNC_EVENT
+    //     kind=7 with [u32 fdIndex][bytes] payload.
+    // fd 0 / 1 / 2 alias to stdin / onStdout / onStderr respectively so
+    // executors written against just stdin/stdout/stderr still work.
+    stdio: makeExecutorStdioAccessor(childId, stdinPipe, (chunk: Uint8Array | string | number[]) => {
+      usedStdoutStream = true;
+      const bytes = toBytesForChunk(chunk);
+      if (bytes.byteLength > 0) emitChunked(childId, 0 /*stdout*/, bytes);
+    }, (chunk: Uint8Array | string | number[]) => {
+      usedStderrStream = true;
+      const bytes = toBytesForChunk(chunk);
+      if (bytes.byteLength > 0) emitChunked(childId, 1 /*stderr*/, bytes);
+    }, () => asyncSpawnChildren.get(childId)),
   };
   // P3.3 IPC: only exposed when the caller requested stdio with an
   // 'ipc' entry (cp.fork default). Executors that ignore opts.ipc
@@ -1498,44 +1607,63 @@ function registerHandlers(srv: RpcServer): void {
     return { payload: replyBytes, status: REPLY_STATUS_OK };
   });
 
-  // P3.2: streaming stdin. Wasm-side `child.stdin.write()` lands here
-  // as a sync RPC; we push the bytes into the child's stdinPipe, which
-  // the executor reads via `for await (const chunk of opts.stdin)`.
-  // Status: 0=ok, 1=no-such-child (child already exited or never
-  // existed), 2=already-ended (write after end).
-  srv.register(OP_SPAWN_STDIN_WRITE, async (_ctx, args) => {
+  // Pick the StdinPipe instance for (childId, fdIndex). fd 0 -> stdinPipe.
+  // fd >=3 -> lazy-create in child.extraStdio (executor reads via opts.stdio[N]).
+  // fd 1/2 are output directions (executor writes, wasm reads) so writing
+  // TO them from the wasm side is a no-op error (status 1).
+  function pipeForFd(child: SpawnAsyncChild, fdIndex: number): StdinPipe | null {
+    if (fdIndex === 0) return child.stdinPipe;
+    if (fdIndex === 1 || fdIndex === 2) return null; // wrong direction
+    let p = child.extraStdio.get(fdIndex);
+    if (!p) {
+      p = { buffered: [], ended: false, waiters: [] };
+      child.extraStdio.set(fdIndex, p);
+    }
+    return p;
+  }
+
+  // P3.2 + P3.5: streaming stdio. Wasm-side child.stdin.write() (fd 0)
+  // or child.stdio[N].write() (fd N>=3) lands here as sync RPC; we push
+  // the bytes into the right per-fd pipe. The executor reads via
+  // opts.stdin (fd 0) or opts.stdio[N] (other fds). Status: 0=ok,
+  // 1=no-such-child / invalid fd, 2=already-ended.
+  srv.register(OP_SPAWN_STDIO_WRITE, async (_ctx, args) => {
     const reply = new Uint8Array(4);
     const dv = new DataView(reply.buffer);
-    if (args.byteLength < 4) {
+    if (args.byteLength < 8) {
       dv.setUint32(0, 1, true);
       return { payload: reply, status: REPLY_STATUS_OK };
     }
     const inDv = new DataView(args.buffer, args.byteOffset, args.byteLength);
     const childId = inDv.getUint32(0, true);
+    const fdIndex = inDv.getUint32(4, true);
     const child = asyncSpawnChildren.get(childId);
     if (!child) { dv.setUint32(0, 1, true); return { payload: reply, status: REPLY_STATUS_OK }; }
-    if (child.stdinPipe.ended) { dv.setUint32(0, 2, true); return { payload: reply, status: REPLY_STATUS_OK }; }
+    const pipe = pipeForFd(child, fdIndex);
+    if (!pipe) { dv.setUint32(0, 1, true); return { payload: reply, status: REPLY_STATUS_OK }; }
+    if (pipe.ended) { dv.setUint32(0, 2, true); return { payload: reply, status: REPLY_STATUS_OK }; }
     // Copy data out of the SAB slot view since the slot may be reused
     // before the executor consumes the chunk.
-    const chunk = new Uint8Array(args.byteLength - 4);
-    chunk.set(args.subarray(4));
-    pushStdinChunk(child.stdinPipe, chunk);
+    const chunk = new Uint8Array(args.byteLength - 8);
+    chunk.set(args.subarray(8));
+    pushStdinChunk(pipe, chunk);
     dv.setUint32(0, 0, true);
     return { payload: reply, status: REPLY_STATUS_OK };
   });
 
-  // P3.2: signal end-of-stream for child.stdin. After this, the
-  // executor's async iterator yields done and exits its `for await`
-  // loop. Idempotent -- a second END is a no-op.
-  srv.register(OP_SPAWN_STDIN_END, async (_ctx, args) => {
+  // P3.2 + P3.5: signal end-of-stream for an stdio pipe. Idempotent.
+  srv.register(OP_SPAWN_STDIO_END, async (_ctx, args) => {
     const reply = new Uint8Array(4);
     const dv = new DataView(reply.buffer);
-    if (args.byteLength < 4) { dv.setUint32(0, 1, true); return { payload: reply, status: REPLY_STATUS_OK }; }
+    if (args.byteLength < 8) { dv.setUint32(0, 1, true); return { payload: reply, status: REPLY_STATUS_OK }; }
     const inDv = new DataView(args.buffer, args.byteOffset, args.byteLength);
     const childId = inDv.getUint32(0, true);
+    const fdIndex = inDv.getUint32(4, true);
     const child = asyncSpawnChildren.get(childId);
     if (!child) { dv.setUint32(0, 1, true); return { payload: reply, status: REPLY_STATUS_OK }; }
-    endStdinPipe(child.stdinPipe);
+    const pipe = pipeForFd(child, fdIndex);
+    if (!pipe) { dv.setUint32(0, 1, true); return { payload: reply, status: REPLY_STATUS_OK }; }
+    endStdinPipe(pipe);
     dv.setUint32(0, 0, true);
     return { payload: reply, status: REPLY_STATUS_OK };
   });

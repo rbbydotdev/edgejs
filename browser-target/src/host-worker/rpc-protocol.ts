@@ -699,31 +699,42 @@ export const OP_RUN_CHILD_PROCESS = OP_DOMAIN_HOST_API | 0x000B;
 //   KILL reply:    [u32 0=ok | 1=no-such-child]
 //
 //   EVENT request (reverse): [u32 childId][u8 eventKind][bytes payload]
-//     eventKind: 0=stdout, 1=stderr, 2=exit, 3=error, 4=spawned(pid)
-//     For stdout/stderr: payload is raw bytes (chunk).
+//     eventKind: 0=stdout, 1=stderr, 2=exit, 3=error, 4=spawned(pid),
+//                5=ipc-message, 6=ipc-disconnect, 7=stdio-fdN
+//     For stdout/stderr: payload is raw bytes (chunk; fd 1/2 implied).
 //     For exit:          payload is [i32 code | -1 for null][u32 signalLen][utf-8 signalName]
-//     For error:         payload is utf-8 message + a code separator (rare; for spawn-time failures)
+//     For error:         payload is utf-8 JSON {code, message}.
 //     For spawned:       payload is [u32 pid]
+//     For ipc-message:   payload is utf-8 JSON object
+//     For ipc-disconnect:payload is empty
+//     For stdio-fdN:     payload is [u32 fdIndex][bytes data] -- P3.5
+//                        for stdio[3+] bidirectional pipes the executor
+//                        writes to (or wasm parent reads from).
 export const OP_SPAWN_ASYNC_START = OP_DOMAIN_HOST_API | 0x000C;
 export const OP_SPAWN_ASYNC_KILL  = OP_DOMAIN_HOST_API | 0x000D;
 export const OP_SPAWN_ASYNC_EVENT = OP_DOMAIN_HOST_API | 0x000E;
 
-// child-process-via-executor ASYNC stdin streaming (P3.2). Lets the
-// wasm forward bytes written to `child.stdin` to the executor running
-// on host. Without this, child.stdin.write() bytes vanish (the Writable
-// existed but was a no-op black hole). Real Node delivers stdin bytes
-// to the child process via the UV_PIPE handle; we mirror that by
-// pushing into an AsyncIterable that the executor reads from opts.stdin.
+// child-process-via-executor ASYNC stdio streaming (P3.2 + P3.5).
+// Generalized over fd index so it handles child.stdin (fd 0) AND extra
+// pipes at stdio[3+] (P3.5 multi-stdio support). The executor sees the
+// bytes via opts.stdio[N] or opts.stdin (which is an alias for index 0).
+// Pipes for fds 1 and 2 (stdout/stderr) flow the OTHER direction via
+// OP_SPAWN_ASYNC_EVENT kind=0/1 -- the executor only calls these write
+// ops for fd 0 or for an stdio[3+] pipe the wasm side is writing to.
 //
-//   OP_SPAWN_STDIN_WRITE forward (wasm → host):
-//     Request: [u32 childId][bytes data]
+//   OP_SPAWN_STDIO_WRITE forward (wasm → host):
+//     Request: [u32 childId][u32 fdIndex][bytes data]
 //     Reply:   [u32 status]  -- 0=ok, 1=no-such-child, 2=already-ended
 //
-//   OP_SPAWN_STDIN_END forward (wasm → host):
-//     Request: [u32 childId]
+//   OP_SPAWN_STDIO_END forward (wasm → host):
+//     Request: [u32 childId][u32 fdIndex]
 //     Reply:   [u32 status]  -- same code set
-export const OP_SPAWN_STDIN_WRITE = OP_DOMAIN_HOST_API | 0x000F;
-export const OP_SPAWN_STDIN_END   = OP_DOMAIN_HOST_API | 0x0010;
+//
+// Note: pre-P3.5 these were OP_SPAWN_STDIN_{WRITE,END} (fd 0 hardcoded).
+// Renamed when extending for stdio[3+]; semantics unchanged for fd 0,
+// generalized for other indices.
+export const OP_SPAWN_STDIO_WRITE = OP_DOMAIN_HOST_API | 0x000F;
+export const OP_SPAWN_STDIO_END   = OP_DOMAIN_HOST_API | 0x0010;
 
 // P3.3: IPC channel for fork() / child.send / process.send. Active
 // only when the spawn options included stdio with an 'ipc' entry

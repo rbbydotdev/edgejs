@@ -55,19 +55,54 @@ import type { Policy } from "./index";
 //     error?: { code: string; message: string } | null;
 //   }
 //
-// SHIPPED (no longer debt)
+// ARCHITECTURE (P3.5+)
 //
-// - Async executor: opts.onStdout/onStderr stream chunks incrementally
-//   (P3.1). opts.stdin AsyncIterable receives chunks pushed from
-//   wasm-side child.stdin.write() in real time (P3.2). spawn() / exec()
-//   / execFile() all return ChildProcess facades that round-trip via
-//   the host-worker executor.
+// Two patch sites on `internal/child_process`:
+//
+//   1. PRE_PATCH installs four binding shims BEFORE lib's body runs:
+//      - `spawn_sync.spawn`: sync executor (JSPI-safe; the rest of
+//        this file)
+//      - `stream_wrap`: streamBaseState typed array + indices +
+//        WriteWrap class (required by stream_base_commons.js)
+//      - `pipe_wrap.Pipe` + `.constants`: our EdgePipe class satisfies
+//        net.Socket({handle, ...}) AND setupChannel(ipcPipe) (json mode)
+//      - `process_wrap.Process`: our EdgeProcess class is what lib's
+//        ChildProcess wraps. lib does ALL the user-facing surface
+//        (.ref/.unref, .spawnfile, .spawnargs, .stdio[], setupChannel
+//        for IPC, getValidStdio for stdio normalization, ...).
+//
+//   2. INTERNAL_POST_PATCH wraps spawnSync so our __edgeError marker
+//      becomes a proper Error with the right code (sidesteps the
+//      build-specific libuv error-number mapping).
+//
+// What lib drives natively (we removed our wholesale spawn/exec/execFile/
+// fork override; lib's exports work because the bindings underneath are
+// our shims):
+//   - ref() / unref(): lib delegates to handle.ref()/unref()
+//   - shell:true wrapping in /bin/sh -c (lib's normalizeSpawnArguments)
+//   - argv0, detached, uid, gid (lib reads them; we accept silently)
+//   - spawnfile / spawnargs (lib sets on ChildProcess)
+//   - child.stdio[] composite array (lib builds it)
+//   - stdio[3+] extra pipes (lib's getValidStdio creates per-fd Pipes;
+//     each is bound by EdgeProcess.spawn and routes through our
+//     OP_SPAWN_STDIO_WRITE / kind=7 events)
+//   - stdio[N] as Stream / fd-number (lib's getValidStdio handles the
+//     wrap/fd types)
+//   - IPC channel (lib's setupChannel handles framing + serialization;
+//     we just transport bytes through Pipe.writeUtf8String + onread)
+//   - cp.fork() (lib's native fork → cp.spawn → ChildProcess → us)
 //
 // REMAINING DEBT
 //
-// - `#!~debt child-process-executor-multi-stdio`: only stdio[0..2] are
-//   honored; `stdio[3+]` (extra pipes) is dropped. Real Node supports
-//   N additional pipes for IPC / file-descriptor passing; we don't.
+// - `#!~debt child-process-ipc-sendhandle`: sendHandle (passing fds/
+//   sockets/servers via .send) is silently dropped. Real Node uses
+//   kernel fd-passing; we have no equivalent. cluster.js needs this.
+// - `#!~debt child-process-ipc-advanced-serialization`: serialization
+//   mode 'advanced' (v8 structured-clone) currently degrades to json.
+//   See P3.7 for the structured-clone-over-postMessage upgrade path.
+// - `#!~debt child-process-kill-cooperation`: kill() fires an
+//   AbortSignal that the executor must poll. Real Node interrupts the
+//   syscall the child is in -- impossible without a real OS process.
 //
 // HOW TO TEST
 //
@@ -545,6 +580,483 @@ const PRE_PATCH = `
     return shapeResult(execResult, options);
   };
 })();
+
+// =====================================================================
+// P3.5: process_wrap, pipe_wrap, stream_wrap binding shims.
+//
+// Replaces the wholesale cp.spawn/exec/execFile/fork overrides with
+// binding-level intercepts so lib's native ChildProcess (and getValidStdio,
+// setupChannel, ref/unref, spawnfile/spawnargs, child.stdio[] array,
+// shell:true, argv0, detached/uid/gid pass-through) ALL work as Node
+// intends. The host-worker executor RPC underneath is unchanged.
+// =====================================================================
+(function installAsyncSpawnBindingShims() {
+  function getG() {
+    return (typeof globalThis !== 'undefined' && globalThis) ||
+           (typeof global !== 'undefined' && global);
+  }
+  var g = getG();
+
+  // --- stream_wrap shim (provides streamBaseState typed array + indices) ---
+  var streamWrapBinding;
+  try { streamWrapBinding = internalBinding('stream_wrap'); } catch (_e) { void _e; }
+  if (!streamWrapBinding) return;
+  // Edge.js already populates stream_wrap with streamBaseState (Int32Array
+  // over a SAB-backed ArrayBuffer), kReadBytesOrError/etc. indices, and
+  // WriteWrap/ShutdownWrap constructors. We MUST NOT replace these --
+  // some lib modules (notably internal/stream_base_commons via net.js)
+  // destructure them at module-load time, and edge's bootstrap order
+  // means those modules may load BEFORE our PRE_PATCH fires. Replacing
+  // the instance leaves those modules holding edge's original, while
+  // OUR Pipe writes to a different one. Just READ what edge provides
+  // and use it directly.
+  var streamBaseState = streamWrapBinding.streamBaseState;
+  var kReadBytesOrError = (typeof streamWrapBinding.kReadBytesOrError === 'number') ? streamWrapBinding.kReadBytesOrError : 0;
+  var kArrayBufferOffset = (typeof streamWrapBinding.kArrayBufferOffset === 'number') ? streamWrapBinding.kArrayBufferOffset : 1;
+  var kBytesWritten = (typeof streamWrapBinding.kBytesWritten === 'number') ? streamWrapBinding.kBytesWritten : 2;
+  var kLastWriteWasAsync = (typeof streamWrapBinding.kLastWriteWasAsync === 'number') ? streamWrapBinding.kLastWriteWasAsync : 3;
+  // Sanity: if streamBaseState is missing entirely (older edge build),
+  // install a fallback. Otherwise edge's array is the canonical one.
+  if (!streamBaseState) {
+    streamBaseState = new Int32Array(4);
+    streamWrapBinding.streamBaseState = streamBaseState;
+    streamWrapBinding.kReadBytesOrError = kReadBytesOrError;
+    streamWrapBinding.kArrayBufferOffset = kArrayBufferOffset;
+    streamWrapBinding.kBytesWritten = kBytesWritten;
+    streamWrapBinding.kLastWriteWasAsync = kLastWriteWasAsync;
+  }
+  if (typeof streamWrapBinding.WriteWrap !== 'function') {
+    streamWrapBinding.WriteWrap = function WriteWrap() {};
+  }
+  if (typeof streamWrapBinding.ShutdownWrap !== 'function') {
+    streamWrapBinding.ShutdownWrap = function ShutdownWrap() {};
+  }
+
+  // --- Per-child Process map + event buffer (race-safe handoff) ---
+  var processesByChildId = new Map();
+  var pendingEventBuffer = new Map();
+
+  g.__edgeChildProcessAsyncEvent = function(childId, kind, payload) {
+    var proc = processesByChildId.get(childId);
+    if (proc) { proc._handleEvent(kind, payload); return; }
+    var buf = pendingEventBuffer.get(childId);
+    if (!buf) { buf = []; pendingEventBuffer.set(childId, buf); }
+    buf.push([kind, payload]);
+  };
+  function registerProcess(childId, proc) {
+    processesByChildId.set(childId, proc);
+    var buffered = pendingEventBuffer.get(childId);
+    if (buffered) {
+      pendingEventBuffer.delete(childId);
+      for (var i = 0; i < buffered.length; i++) {
+        proc._handleEvent(buffered[i][0], buffered[i][1]);
+      }
+    }
+  }
+  function deregisterProcess(childId) { processesByChildId.delete(childId); }
+
+  // --- Loop keepalive: refed setInterval, ref-counted per pinned handle ---
+  var keepaliveTimer = null;
+  var keepaliveRefCount = 0;
+  function keepaliveAcquire() {
+    keepaliveRefCount++;
+    if (keepaliveTimer == null) keepaliveTimer = setInterval(function() {}, 50);
+  }
+  function keepaliveRelease() {
+    if (keepaliveRefCount > 0) keepaliveRefCount--;
+    if (keepaliveRefCount === 0 && keepaliveTimer != null) {
+      clearInterval(keepaliveTimer);
+      keepaliveTimer = null;
+    }
+  }
+
+  var nextAsyncId = 1;
+  // Read UV errno constants from edge.js's binding so they match what
+  // lib's UV_* constants resolve to. Our wasi-libc-based env has DIFFERENT
+  // numeric values than canonical libuv (e.g. UV_ENOENT is -44 here, not
+  // -2 -- because util.getSystemErrorName needs that mapping to produce
+  // 'ENOENT'). Hardcoding the canonical libuv numbers makes lib's onexit
+  // fire 'error' with the WRONG err.code string.
+  var uvBinding = {};
+  try { uvBinding = internalBinding('uv'); } catch (_e) { void _e; }
+  var UV_EOF = (typeof uvBinding.UV_EOF === 'number') ? uvBinding.UV_EOF : -4095;
+  var UV_EPIPE = (typeof uvBinding.UV_EPIPE === 'number') ? uvBinding.UV_EPIPE : -32;
+  var UV_ENOSYS = (typeof uvBinding.UV_ENOSYS === 'number') ? uvBinding.UV_ENOSYS : -38;
+  var UV_ENOENT = (typeof uvBinding.UV_ENOENT === 'number') ? uvBinding.UV_ENOENT : -2;
+  var UV_ESRCH = (typeof uvBinding.UV_ESRCH === 'number') ? uvBinding.UV_ESRCH : -3;
+  var UV_EINVAL = (typeof uvBinding.UV_EINVAL === 'number') ? uvBinding.UV_EINVAL : -22;
+
+  // --- EdgePipe: shim for internalBinding('pipe_wrap').Pipe.
+  // Satisfies net.Socket({handle, ...}) and lib's setupChannel(ipc).
+  // For type=SOCKET, lib wraps us in net.Socket; for IPC, lib reads
+  // bytes via onread (json-deframed by serialization.js).
+  function EdgePipe(type) {
+    this._type = type;
+    this._isIpc = type === 2;
+    this._closed = false;
+    this._reading = false;
+    this.reading = false;
+    this._asyncId = nextAsyncId++;
+    this._bufferedReads = [];
+    this.onread = null;
+    this.pendingHandle = null;
+    this.buffering = false;
+    this.bytesRead = 0;
+    this.bytesWritten = 0;
+    this._childId = null;
+    this._fdIndex = -1;
+    this._refed = true;
+    this._endedRead = false;
+  }
+  EdgePipe.prototype.getAsyncId = function() { return this._asyncId; };
+  EdgePipe.prototype.ref = function() {
+    if (!this._refed) { this._refed = true; keepaliveAcquire(); }
+  };
+  EdgePipe.prototype.unref = function() {
+    if (this._refed) { this._refed = false; keepaliveRelease(); }
+  };
+  EdgePipe.prototype.readStart = function() {
+    this._reading = true;
+    this.reading = true;
+    while (this._bufferedReads.length > 0 && this._reading) {
+      this._deliverReadNow(this._bufferedReads.shift());
+    }
+    if (this._endedRead && this._reading) this._deliverEof();
+    return 0;
+  };
+  EdgePipe.prototype.readStop = function() {
+    this._reading = false;
+    this.reading = false;
+    return 0;
+  };
+  EdgePipe.prototype._deliverRead = function(bytes) {
+    if (!this._reading || !this.onread) {
+      this._bufferedReads.push(bytes);
+      return;
+    }
+    this._deliverReadNow(bytes);
+  };
+  EdgePipe.prototype._deliverReadNow = function(bytes) {
+    this.bytesRead += bytes.byteLength;
+    streamBaseState[kReadBytesOrError] = bytes.byteLength;
+    streamBaseState[kArrayBufferOffset] = bytes.byteOffset;
+    this.onread(bytes.buffer);
+  };
+  EdgePipe.prototype._deliverEof = function() {
+    if (!this.onread) return;
+    streamBaseState[kReadBytesOrError] = UV_EOF;
+    streamBaseState[kArrayBufferOffset] = 0;
+    this.onread(undefined);
+  };
+  EdgePipe.prototype._endRead = function() {
+    if (this._endedRead) return;
+    this._endedRead = true;
+    if (this._reading) this._deliverEof();
+  };
+  EdgePipe.prototype._writeBytes = function(_req, buf) {
+    if (this._closed || this._childId == null) {
+      streamBaseState[kBytesWritten] = 0;
+      streamBaseState[kLastWriteWasAsync] = 0;
+      return UV_EPIPE;
+    }
+    if (this._isIpc) {
+      // IPC: forward raw bytes (lib already framed as "JSON\\n"). Host
+      // accumulates, splits on \\n, parses, calls executor.opts.ipc.on('message').
+      var ipcSend = g.__edgeChildProcessIpcSend;
+      if (typeof ipcSend !== 'function') return UV_EPIPE;
+      var asString = '';
+      // Decode buf bytes to UTF-8 string for the existing IPC RPC shape
+      // (legacy: takes a JSON string). Host will detect framing.
+      try { asString = new TextDecoder('utf-8').decode(buf); }
+      catch (e) { void e; return UV_EPIPE; }
+      var status = ipcSend(this._childId, asString);
+      if (status !== 0) return UV_EPIPE;
+      this.bytesWritten += buf.length;
+      streamBaseState[kBytesWritten] = buf.length;
+      streamBaseState[kLastWriteWasAsync] = 0;
+      return 0;
+    }
+    var writer = g.__edgeChildProcessStdioWrite;
+    if (typeof writer !== 'function') return UV_EPIPE;
+    var st = writer(this._childId, this._fdIndex, buf);
+    if (st !== 0) return UV_EPIPE;
+    this.bytesWritten += buf.length;
+    streamBaseState[kBytesWritten] = buf.length;
+    streamBaseState[kLastWriteWasAsync] = 0;
+    return 0;
+  };
+  EdgePipe.prototype.writev = function(req, chunks, allBuffers) {
+    var collected = [];
+    var total = 0;
+    if (allBuffers) {
+      for (var i = 0; i < chunks.length; i++) {
+        collected.push(chunks[i]);
+        total += chunks[i].length;
+      }
+    } else {
+      for (var j = 0; j < chunks.length; j += 2) {
+        var chunk = chunks[j];
+        var enc = chunks[j + 1];
+        var b = Buffer.isBuffer(chunk) ? chunk
+          : (typeof chunk === 'string' ? Buffer.from(chunk, enc || 'utf8')
+              : Buffer.from(chunk));
+        collected.push(b);
+        total += b.length;
+      }
+    }
+    return this._writeBytes(req, Buffer.concat(collected, total));
+  };
+  EdgePipe.prototype.writeBuffer = function(req, buf) { return this._writeBytes(req, buf); };
+  EdgePipe.prototype.writeUtf8String = function(req, str) { return this._writeBytes(req, Buffer.from(String(str), 'utf8')); };
+  EdgePipe.prototype.writeAsciiString = function(req, str) { return this._writeBytes(req, Buffer.from(String(str), 'ascii')); };
+  EdgePipe.prototype.writeLatin1String = function(req, str) { return this._writeBytes(req, Buffer.from(String(str), 'latin1')); };
+  EdgePipe.prototype.writeUcs2String = function(req, str) { return this._writeBytes(req, Buffer.from(String(str), 'ucs2')); };
+  EdgePipe.prototype.shutdown = function(req) {
+    if (this._childId == null) return UV_EPIPE;
+    if (this._isIpc) {
+      var d = g.__edgeChildProcessIpcDisconnect;
+      if (typeof d === 'function') d(this._childId);
+    } else {
+      var e = g.__edgeChildProcessStdioEnd;
+      if (typeof e === 'function') e(this._childId, this._fdIndex);
+    }
+    process.nextTick(function() {
+      if (req && typeof req.oncomplete === 'function') req.oncomplete(0);
+    });
+    return 0;
+  };
+  EdgePipe.prototype.close = function(cb) {
+    if (this._closed) { if (cb) process.nextTick(cb); return; }
+    this._closed = true;
+    if (this._refed) { this._refed = false; keepaliveRelease(); }
+    if (cb) process.nextTick(cb);
+  };
+  EdgePipe.prototype.setNoDelay = function() {};
+  EdgePipe.prototype.setKeepAlive = function() {};
+
+  // --- EdgeProcess: shim for internalBinding('process_wrap').Process.
+  // Drives the async-spawn host RPC. Lib's ChildProcess wraps us and
+  // provides all the user-facing semantics (ref/unref, .pid, .stdio[],
+  // .spawnfile, .spawnargs, IPC channel via setupChannel, ...).
+  function EdgeProcess() {
+    this._closed = false;
+    this._childId = null;
+    this.pid = 0;
+    this.onexit = null;
+    this._stdioPipes = [];
+    this._ipcPipe = null;
+    this._refed = true;
+    this._exited = false;
+  }
+  EdgeProcess.prototype.spawn = function(options) {
+    var startAsync = g.__edgeChildProcessSpawnAsync;
+    if (typeof startAsync !== 'function') return UV_ENOSYS;
+    var stdio = options.stdio || [];
+    var hasIpc = false;
+    for (var i = 0; i < stdio.length; i++) {
+      var entry = stdio[i];
+      if (entry && entry.handle && entry.handle instanceof EdgePipe) {
+        entry.handle._fdIndex = i;
+        this._stdioPipes[i] = entry.handle;
+        if (entry.ipc || entry.handle._isIpc) {
+          hasIpc = true;
+          this._ipcPipe = entry.handle;
+        }
+      }
+    }
+    var envMap;
+    if (Array.isArray(options.envPairs)) {
+      envMap = {};
+      for (var k = 0; k < options.envPairs.length; k++) {
+        var kv = String(options.envPairs[k]);
+        var eq = kv.indexOf('=');
+        if (eq > 0) envMap[kv.slice(0, eq)] = kv.slice(eq + 1);
+      }
+    }
+    var headerObj = {
+      command: String(options.file || ''),
+      // options.args is the FULL argv (file is args[0]). Slice to get user args.
+      args: Array.isArray(options.args) ? options.args.slice(1).map(String) : [],
+      env: envMap,
+      cwd: typeof options.cwd === 'string' ? options.cwd : undefined,
+      ipc: hasIpc,
+    };
+    var headerBytes = new TextEncoder().encode(JSON.stringify(headerObj));
+    var reqBuf = new Uint8Array(4 + headerBytes.byteLength + 4);
+    var dv = new DataView(reqBuf.buffer);
+    dv.setUint32(0, headerBytes.byteLength, true);
+    reqBuf.set(headerBytes, 4);
+    dv.setUint32(4 + headerBytes.byteLength, 0, true);
+
+    var started = startAsync(reqBuf);
+    if (started.status !== 0) {
+      // started.status is our protocol's own value (negative libuv-style
+      // but using OUR shim's negative numbers, not edge's env's). Just
+      // map "spawn rejected" cases to ENOENT, anything else to EINVAL.
+      return started.status === -2 ? UV_ENOENT : UV_EINVAL;
+    }
+    this._childId = started.childId;
+    this.pid = started.childId;
+    for (var n = 0; n < this._stdioPipes.length; n++) {
+      var p = this._stdioPipes[n];
+      if (p) p._childId = this._childId;
+    }
+    keepaliveAcquire();
+    registerProcess(this._childId, this);
+    return 0;
+  };
+  EdgeProcess.prototype._handleEvent = function(kind, payload) {
+    if (this._exited) return;
+    if (kind === 4 /*spawned*/) return; // pid already set in spawn()
+    if (kind === 0 /*stdout*/) {
+      var so = this._stdioPipes[1];
+      if (so) so._deliverRead(payload);
+      return;
+    }
+    if (kind === 1 /*stderr*/) {
+      var se = this._stdioPipes[2];
+      if (se) se._deliverRead(payload);
+      return;
+    }
+    if (kind === 5 /*ipc-message*/) {
+      if (!this._ipcPipe) return;
+      // Host emits JSON (no newline). Lib's json deframer splits on \\n,
+      // so we append one. parseChannelMessages then JSON.parses cleanly.
+      var withNl = new Uint8Array(payload.byteLength + 1);
+      withNl.set(payload, 0);
+      withNl[payload.byteLength] = 0x0A;
+      this._ipcPipe._deliverRead(withNl);
+      return;
+    }
+    if (kind === 6 /*ipc-disconnect*/) {
+      if (this._ipcPipe) this._ipcPipe._endRead();
+      return;
+    }
+    if (kind === 7 /*stdio-fdN*/) {
+      if (payload.byteLength < 4) return;
+      var dv = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
+      var fdIdx = dv.getUint32(0, true);
+      var bytes = payload.subarray(4);
+      var pipe = this._stdioPipes[fdIdx];
+      if (pipe) {
+        if (bytes.byteLength === 0) pipe._endRead();
+        else pipe._deliverRead(bytes);
+      }
+      return;
+    }
+    if (kind === 3 /*error*/) {
+      // Spawn-time error: lib treats negative exitCode in onexit as the
+      // spawn-failure error path (emits 'error' event with ErrnoException).
+      // Also EOF all read-side pipes so the wrapping net.Sockets close
+      // and lib's maybeClose() can fire 'close' on the ChildProcess.
+      for (var i3 = 0; i3 < this._stdioPipes.length; i3++) {
+        var sp3 = this._stdioPipes[i3];
+        if (sp3 && i3 !== 0) sp3._endRead();
+      }
+      this._exited = true;
+      if (this.onexit) this.onexit(UV_ENOENT, null);
+      if (this._refed) { this._refed = false; keepaliveRelease(); }
+      deregisterProcess(this._childId);
+      return;
+    }
+    if (kind === 2 /*exit*/) {
+      var dv2 = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
+      var codeRaw = dv2.getInt32(0, true);
+      var sigLen = dv2.getUint32(4, true);
+      var sig = sigLen > 0
+        ? new TextDecoder().decode(payload.subarray(8, 8 + sigLen))
+        : null;
+      var code = (codeRaw === -1 && sig != null) ? 0 : codeRaw;
+      // EOF on all read-side pipes (stdout, stderr, extras, IPC).
+      for (var i2 = 0; i2 < this._stdioPipes.length; i2++) {
+        var sp = this._stdioPipes[i2];
+        if (sp && i2 !== 0) sp._endRead();
+      }
+      this._exited = true;
+      if (this.onexit) this.onexit(code, sig);
+      if (this._refed) { this._refed = false; keepaliveRelease(); }
+      deregisterProcess(this._childId);
+      return;
+    }
+  };
+  EdgeProcess.prototype.kill = function(signal) {
+    if (this._childId == null) return UV_ESRCH;
+    var killer = g.__edgeChildProcessKillAsync;
+    if (typeof killer !== 'function') return 0; // best-effort; no-op
+    // Map numeric signal to name for our host RPC. Lib gives us numeric
+    // signal (via convertToValidSignal). Our host expects a string.
+    var SIG_NUM_TO_NAME = {
+      1:'SIGHUP', 2:'SIGINT', 3:'SIGQUIT', 4:'SIGILL', 5:'SIGTRAP',
+      6:'SIGABRT', 7:'SIGBUS', 8:'SIGFPE', 9:'SIGKILL', 10:'SIGUSR1',
+      11:'SIGSEGV', 12:'SIGUSR2', 13:'SIGPIPE', 14:'SIGALRM', 15:'SIGTERM',
+      17:'SIGCHLD', 18:'SIGCONT', 19:'SIGSTOP', 20:'SIGTSTP',
+    };
+    var sigName;
+    if (signal === 0) sigName = '0'; // signal 0 == "is alive?" probe
+    else if (typeof signal === 'number') sigName = SIG_NUM_TO_NAME[signal] || ('SIG' + signal);
+    else sigName = signal || 'SIGTERM';
+    try { killer(this._childId, String(sigName)); } catch (e) { void e; }
+    // Always return 0 so lib doesn't throw or emit 'error'. Our executor
+    // may not honor the signal (no real OS process), but the kill API
+    // contract returns "delivered successfully to the kernel" -- which
+    // for us means "the abort signal was forwarded to the executor."
+    return 0;
+  };
+  EdgeProcess.prototype.close = function() { this._closed = true; };
+  EdgeProcess.prototype.ref = function() {
+    if (!this._refed) { this._refed = true; keepaliveAcquire(); }
+  };
+  EdgeProcess.prototype.unref = function() {
+    if (this._refed) { this._refed = false; keepaliveRelease(); }
+  };
+
+  // --- Install bindings (idempotent) ---
+  var pipeWrapBinding;
+  try { pipeWrapBinding = internalBinding('pipe_wrap'); } catch (_e) { void _e; }
+  if (pipeWrapBinding && !pipeWrapBinding.__edgePipeInstalled) {
+    pipeWrapBinding.__edgePipeInstalled = true;
+    pipeWrapBinding.constants = { SOCKET: 0, SERVER: 1, IPC: 2, UV_READABLE: 1, UV_WRITABLE: 2 };
+    pipeWrapBinding.Pipe = EdgePipe;
+    pipeWrapBinding.PipeConnectWrap = function PipeConnectWrap() {};
+  }
+  var processWrapBinding;
+  try { processWrapBinding = internalBinding('process_wrap'); } catch (_e) { void _e; }
+  if (processWrapBinding && !processWrapBinding.__edgeProcessInstalled) {
+    processWrapBinding.__edgeProcessInstalled = true;
+    processWrapBinding.Process = EdgeProcess;
+  }
+
+  // --- serdes binding stub: lib/v8.js destructures Serializer/Deserializer
+  // from internalBinding('serdes'). When IPC setupChannel triggers a require
+  // of lib's serialization.js (which requires v8), v8.js tries to do
+  // \`class DefaultSerializer extends Serializer\` -- if Serializer is
+  // undefined we get "Cannot read properties of undefined (reading 'prototype')".
+  // Stub Serializer/Deserializer here so v8.js loads. Only matters for
+  // serialization mode 'advanced' -- json mode (our default) never uses
+  // these. #!~debt child-process-ipc-advanced-serialization tracked. ---
+  var serdesBinding;
+  try { serdesBinding = internalBinding('serdes'); } catch (_e) { void _e; }
+  if (serdesBinding && typeof serdesBinding.Serializer !== 'function') {
+    function StubSerializer() {
+      this._buf = [];
+    }
+    StubSerializer.prototype._writeHostObject = function() {};
+    StubSerializer.prototype.writeHeader = function() {};
+    StubSerializer.prototype.writeValue = function(v) { this._buf.push(v); };
+    StubSerializer.prototype.writeUint32 = function() {};
+    StubSerializer.prototype.writeRawBytes = function() {};
+    StubSerializer.prototype.releaseBuffer = function() { return Buffer.alloc(0); };
+    StubSerializer.prototype.transferArrayBuffer = function() {};
+    function StubDeserializer(_buf) {}
+    StubDeserializer.prototype._readHostObject = function() { return undefined; };
+    StubDeserializer.prototype.readHeader = function() {};
+    StubDeserializer.prototype.readValue = function() { return undefined; };
+    StubDeserializer.prototype.readUint32 = function() { return 0; };
+    StubDeserializer.prototype.transferArrayBuffer = function() {};
+    serdesBinding.Serializer = StubSerializer;
+    serdesBinding.Deserializer = StubDeserializer;
+  }
+})();
 `;
 
 // Post-patch on lib/internal/child_process: wraps the exported spawnSync
@@ -579,538 +1091,12 @@ const INTERNAL_POST_PATCH = `
 })();
 `;
 
-// Post-patch on PUBLIC \`child_process\`: installs the EdgeChildProcess
-// async impl that replaces lib's exports.spawn / .exec / .execFile.
-//
-// Must run on the public module (not \`internal/child_process\`) because
-// the public module forwards spawn/exec/execFile through wrappers that
-// touch the internal ChildProcess class -- patching internal mid-load
-// is racy with the circular require chain. By the time the public
-// module finishes loading, exports.spawn etc. are stable and ours
-// to replace cleanly.
-const PUBLIC_POST_PATCH = `
-(function installSpawnAsyncSupport() {
-  var g = (typeof globalThis !== 'undefined' && globalThis) ||
-          (typeof global !== 'undefined' && global);
-  var startAsync = g && g.__edgeChildProcessSpawnAsync;
-  var killAsync  = g && g.__edgeChildProcessKillAsync;
-  if (typeof startAsync !== 'function' || typeof killAsync !== 'function') {
-    // Async wiring not installed on this worker -- e.g. node-harness path.
-    // Leave lib's ChildProcess intact; spawnSync still works via the
-    // sync-RPC pre-patch above.
-    return;
-  }
-  if (g.__edgeChildProcessAsyncInstalled) return;
-  g.__edgeChildProcessAsyncInstalled = true;
-
-  var EventEmitter = require('events');
-  var stream = require('stream');
-
-  // Per-child callback registry. childId -> handler(kind, payload).
-  // Populated by EdgeChildProcess constructor; consumed by the global
-  // __edgeChildProcessAsyncEvent dispatcher we install once.
-  var childHandlers = new Map();
-
-  // Per-child event buffer. Holds events that arrived BEFORE the
-  // constructor finished registering a handler -- inevitable because
-  // the executor (running on the host worker) may start emitting
-  // chunks as soon as the START reply is en route. Without this buffer
-  // we'd silently drop the first events. The buffer is drained when
-  // the handler registers; entries are removed when 'exit' fires
-  // (childHandlers.delete is the signal).
-  var pendingEvents = new Map();
-
-  // Install the event dispatcher exactly once. The reverse-RPC handler
-  // in worker.ts routes incoming OP_SPAWN_ASYNC_EVENT payloads here.
-  g.__edgeChildProcessAsyncEvent = function(childId, kind, payload) {
-    var h = childHandlers.get(childId);
-    if (h) {
-      h(kind, payload);
-      return;
-    }
-    // Handler not yet registered -- buffer until EdgeChildProcess
-    // constructor calls registerChildHandler(childId, h). Race window:
-    // the executor (running in host-worker) can begin emitting chunks
-    // synchronously, before the wasm-side START reply has come back
-    // and we've populated childHandlers. Without buffering, those
-    // earliest chunks would be silently dropped.
-    var buf = pendingEvents.get(childId);
-    if (!buf) { buf = []; pendingEvents.set(childId, buf); }
-    buf.push([kind, payload]);
-  };
-
-  function registerChildHandler(childId, handler) {
-    childHandlers.set(childId, handler);
-    var buffered = pendingEvents.get(childId);
-    if (buffered) {
-      pendingEvents.delete(childId);
-      for (var i = 0; i < buffered.length; i++) {
-        handler(buffered[i][0], buffered[i][1]);
-      }
-    }
-  }
-
-  // Loop-keepalive. Our async ChildProcess has no underlying libuv
-  // handle -- it's pure JS waiting on reverse-RPC events from the
-  // host worker. Without something ref'd in the loop, Node decides
-  // \`uv_loop_alive() === false\` and exits before our events arrive.
-  // A single refed setInterval, ref-counted to the number of pending
-  // children, holds the loop open. Cheap (no-op tick every 50ms) but
-  // mandatory for correctness -- spawn() returning without ever
-  // firing 'exit' would otherwise be the norm.
-  var keepaliveTimer = null;
-  var pendingChildren = 0;
-  function keepaliveAcquire() {
-    pendingChildren++;
-    if (keepaliveTimer == null) {
-      keepaliveTimer = setInterval(function() {}, 50);
-    }
-  }
-  function keepaliveRelease() {
-    if (pendingChildren > 0) pendingChildren--;
-    if (pendingChildren === 0 && keepaliveTimer != null) {
-      clearInterval(keepaliveTimer);
-      keepaliveTimer = null;
-    }
-  }
-
-  // Packing helper -- mirrors child-process-via-executor.ts packRequest.
-  function hasIpcStdio(stdio) {
-    if (!Array.isArray(stdio)) return false;
-    for (var i = 0; i < stdio.length; i++) {
-      var s = stdio[i];
-      if (s === 'ipc' || (s && s.type === 'ipc')) return true;
-    }
-    return false;
-  }
-
-  function packRequestForAsync(file, args, opts) {
-    var headerObj = {
-      command: String(file),
-      args: Array.isArray(args) ? args.slice(1).map(String) : [],
-      env: opts && opts.env,
-      cwd: opts && opts.cwd,
-      timeout: opts && typeof opts.timeout === 'number' ? opts.timeout : undefined,
-      killSignal: opts && opts.killSignal,
-      ipc: opts && hasIpcStdio(opts.stdio),
-    };
-    var headerBytes = new TextEncoder().encode(JSON.stringify(headerObj));
-    var input = null;
-    if (opts && opts.stdio && Array.isArray(opts.stdio) && opts.stdio.length > 0) {
-      var s0 = opts.stdio[0];
-      if (s0 && s0.input != null) {
-        input = (s0.input instanceof Uint8Array)
-          ? s0.input
-          : new TextEncoder().encode(String(s0.input));
-      }
-    }
-    var inLen = input ? input.byteLength : 0;
-    var totalLen = 4 + headerBytes.byteLength + 4 + inLen;
-    var buf = new Uint8Array(totalLen);
-    var dv = new DataView(buf.buffer);
-    dv.setUint32(0, headerBytes.byteLength, true);
-    buf.set(headerBytes, 4);
-    dv.setUint32(4 + headerBytes.byteLength, inLen, true);
-    if (input) buf.set(input, 4 + headerBytes.byteLength + 4);
-    return buf;
-  }
-
-  // EdgeChildProcess: shape compatible with lib's ChildProcess users
-  // (EventEmitter with .stdin/.stdout/.stderr/.pid/.kill).
-  function EdgeChildProcess(file, args, options) {
-    EventEmitter.call(this);
-    var self = this;
-    this._file = file;
-    this._args = args || [];
-    this._options = options || {};
-    this.killed = false;
-    this.exitCode = null;
-    this.signalCode = null;
-    // P3.3 IPC: connected mirrors Node's child.connected. Stays true
-    // until either side calls .disconnect() or the child exits. .send()
-    // is only meaningful when stdio included 'ipc' (cp.fork default).
-    this._hasIpc = hasIpcStdio(this._options.stdio);
-    this.connected = this._hasIpc;
-    // Default to PassThrough streams unless stdio mode says otherwise.
-    var stdoutMode = stdioModeOfAsync(this._options.stdio, 1);
-    var stderrMode = stdioModeOfAsync(this._options.stdio, 2);
-    this.stdout = (stdoutMode === 'pipe') ? new stream.PassThrough() : null;
-    this.stderr = (stderrMode === 'pipe') ? new stream.PassThrough() : null;
-    // child.stdin: a Writable that forwards each chunk to the host
-    // executor via sync RPC. _write fires per chunk; _final on .end().
-    // Sync RPC briefly blocks the wasm event loop (microseconds for
-    // a queue push -- no real I/O); same trade-off as the spawn/kill
-    // sync RPCs already in use. The pre-spawn _childId guard handles
-    // the brief window before the START reply arrives where writes
-    // are buffered locally until _childId is set in the constructor's
-    // success path. Default Writable buffers internally; once _childId
-    // exists, the underlying writes drain via the highWaterMark queue.
-    if (stdioModeOfAsync(this._options.stdio, 0) === 'pipe') {
-      var childRef = this;
-      this.stdin = new stream.Writable({
-        write: function(chunk, _enc, cb) {
-          if (childRef._childId == null) { cb(); return; } // started==failed path
-          var bytes = Buffer.isBuffer(chunk) ? chunk
-            : (chunk instanceof Uint8Array ? chunk : Buffer.from(String(chunk)));
-          var writer = g.__edgeChildProcessStdinWrite;
-          if (typeof writer === 'function') {
-            try { writer(childRef._childId, bytes); }
-            catch (e) { cb(e); return; }
-          }
-          cb();
-        },
-        final: function(cb) {
-          if (childRef._childId == null) { cb(); return; }
-          var ender = g.__edgeChildProcessStdinEnd;
-          if (typeof ender === 'function') {
-            try { ender(childRef._childId); }
-            catch (e) { cb(e); return; }
-          }
-          cb();
-        },
-      });
-    } else {
-      this.stdin = null;
-    }
-
-    var requestBytes = packRequestForAsync(file, args, this._options);
-    var started = startAsync(requestBytes);
-    if (started.status !== 0) {
-      // Schedule synthetic ENOENT/ESPAWN error in next tick (Node
-      // emits 'error' asynchronously when the binding spawn fails).
-      // Acquire+release keepalive across the nextTick so the loop
-      // stays alive long enough for our error+close to fire.
-      this.pid = undefined;
-      keepaliveAcquire();
-      process.nextTick(function() {
-        var err = new Error('spawn ' + file + ' ENOENT');
-        err.code = (started.status === -2) ? 'ENOENT' : 'ESPAWN';
-        err.errno = started.status;
-        err.syscall = 'spawn ' + file;
-        err.path = file;
-        err.spawnargs = self._args.slice(1);
-        self.emit('error', err);
-        if (self.stdout) self.stdout.end();
-        if (self.stderr) self.stderr.end();
-        self.emit('close', null, null);
-        keepaliveRelease();
-      });
-      return;
-    }
-    this._childId = started.childId;
-    // Pin the event loop until 'close' fires. Without this, scripts
-    // that just spawn() and wait would drain immediately because
-    // our async child has no libuv handle backing it.
-    keepaliveAcquire();
-    // Register per-child event handler. registerChildHandler drains any
-    // events that arrived before this point -- normal when the executor
-    // starts emitting before the START reply has reached us.
-    registerChildHandler(this._childId, function(kind, payload) {
-      if (kind === 4 /*spawned*/) {
-        // Use childId as pid (we don't have real OS pids).
-        self.pid = self._childId;
-        self.emit('spawn');
-      } else if (kind === 0 /*stdout*/) {
-        if (self.stdout) self.stdout.write(payload);
-        else if (stdoutMode === 'inherit') process.stdout.write(payload);
-      } else if (kind === 1 /*stderr*/) {
-        if (self.stderr) self.stderr.write(payload);
-        else if (stderrMode === 'inherit') process.stderr.write(payload);
-      } else if (kind === 5 /*ipc-message*/) {
-        // payload: utf-8 JSON.  Parse and emit 'message' event.
-        if (self.connected) {
-          var raw = new TextDecoder().decode(payload);
-          var msg;
-          try { msg = JSON.parse(raw); } catch (e) { void e; return; }
-          self.emit('message', msg);
-        }
-      } else if (kind === 6 /*ipc-disconnect*/) {
-        if (self.connected) {
-          self.connected = false;
-          self.emit('disconnect');
-        }
-      } else if (kind === 3 /*error*/) {
-        var raw = new TextDecoder().decode(payload);
-        var errCode = 'ESPAWN';
-        var errMsg = raw || 'spawn error';
-        // Host emits JSON {code, message} for structured errors; fall back
-        // to raw text for legacy/non-JSON payloads.
-        try {
-          var parsed = JSON.parse(raw);
-          if (parsed && typeof parsed === 'object') {
-            if (parsed.code) errCode = String(parsed.code);
-            if (parsed.message) errMsg = String(parsed.message);
-          }
-        } catch (e) { void e; }
-        var err = new Error(errMsg);
-        err.code = errCode;
-        err.syscall = 'spawn ' + self._file;
-        err.path = self._file;
-        err.spawnargs = self._args.slice(1);
-        self.emit('error', err);
-      } else if (kind === 2 /*exit*/) {
-        // payload: [i32 code | -1 null][u32 sigLen][utf-8 sig]
-        var dv = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
-        var codeRaw = dv.getInt32(0, true);
-        var sigLen = dv.getUint32(4, true);
-        var sig = sigLen > 0
-          ? new TextDecoder().decode(payload.subarray(8, 8 + sigLen))
-          : null;
-        var code = (codeRaw === -1 && sig != null) ? null : codeRaw;
-        self.exitCode = code;
-        self.signalCode = sig;
-        // IPC channel closes BEFORE 'exit' (matches Node ordering --
-        // the IPC pipe drops before the process state finalizes, so
-        // child.connected is observably false inside 'exit' handlers).
-        if (self.connected) {
-          self.connected = false;
-          self.emit('disconnect');
-        }
-        self.emit('exit', code, sig);
-        // End streams then emit 'close'.
-        if (self.stdout) self.stdout.end();
-        if (self.stderr) self.stderr.end();
-        process.nextTick(function() {
-          self.emit('close', code, sig);
-          keepaliveRelease();
-        });
-        childHandlers.delete(self._childId);
-      }
-    });
-  }
-  Object.setPrototypeOf(EdgeChildProcess.prototype, EventEmitter.prototype);
-  EdgeChildProcess.prototype.kill = function(signal) {
-    if (this.killed || this._childId == null) return false;
-    this.killed = true;
-    return killAsync(this._childId, signal != null ? String(signal) : 'SIGTERM');
-  };
-  EdgeChildProcess.prototype.ref = function() {}; // no-op
-  EdgeChildProcess.prototype.unref = function() {}; // no-op
-
-  // P3.3 IPC: parent-side .send / .disconnect. .send returns true if
-  // the message was queued, false otherwise (Node convention -- match
-  // bufferedAmount-style backpressure not implemented; we always queue
-  // since the host's per-child handler list has no upper bound).
-  // callback fires on next tick to match Node (which fires after the
-  // pipe write returns from the kernel).
-  EdgeChildProcess.prototype.send = function(message, sendHandle, options, callback) {
-    if (typeof sendHandle === 'function') { callback = sendHandle; sendHandle = undefined; options = undefined; }
-    else if (typeof options === 'function') { callback = options; options = undefined; }
-    // #!~debt child-process-ipc-sendhandle: sendHandle (passing fds,
-    // sockets, servers) is silently dropped. Real Node uses kernel fd
-    // passing over the IPC fd; we have no equivalent. Most fork() users
-    // don't pass handles, but cluster.js relies on it -- documented gap.
-    void sendHandle; void options;
-    var err = null;
-    if (!this._hasIpc || this._childId == null) {
-      err = new Error('Channel closed');
-      err.code = 'ERR_IPC_CHANNEL_CLOSED';
-      if (typeof callback === 'function') process.nextTick(function() { callback(err); });
-      return false;
-    }
-    if (!this.connected) {
-      err = new Error('Channel closed');
-      err.code = 'ERR_IPC_CHANNEL_CLOSED';
-      if (typeof callback === 'function') process.nextTick(function() { callback(err); });
-      return false;
-    }
-    var sender = g.__edgeChildProcessIpcSend;
-    if (typeof sender !== 'function') {
-      err = new Error('IPC not wired');
-      err.code = 'ERR_IPC_CHANNEL_CLOSED';
-      if (typeof callback === 'function') process.nextTick(function() { callback(err); });
-      return false;
-    }
-    var status;
-    try { status = sender(this._childId, JSON.stringify(message)); }
-    catch (e) {
-      if (typeof callback === 'function') process.nextTick(function() { callback(e); });
-      return false;
-    }
-    if (status !== 0) {
-      err = new Error(status === 2 ? 'Channel closed' : 'IPC send failed');
-      err.code = status === 2 ? 'ERR_IPC_CHANNEL_CLOSED' : 'ERR_IPC_DISCONNECTED';
-      if (typeof callback === 'function') process.nextTick(function() { callback(err); });
-      return false;
-    }
-    if (typeof callback === 'function') process.nextTick(function() { callback(null); });
-    return true;
-  };
-
-  EdgeChildProcess.prototype.disconnect = function() {
-    if (!this._hasIpc || this._childId == null || !this.connected) return;
-    this.connected = false;
-    var d = g.__edgeChildProcessIpcDisconnect;
-    if (typeof d === 'function') {
-      try { d(this._childId); } catch (e) { void e; }
-    }
-    // Emit 'disconnect' on next tick to match Node (which signals
-    // after the syscall returns).
-    var self = this;
-    process.nextTick(function() { self.emit('disconnect'); });
-  };
-
-  function stdioModeOfAsync(stdioOpt, idx) {
-    var defaultMode = 'pipe';
-    if (!Array.isArray(stdioOpt)) {
-      if (stdioOpt === 'inherit' || stdioOpt === 'ignore' || stdioOpt === 'pipe') {
-        return stdioOpt;
-      }
-      return defaultMode;
-    }
-    var s = stdioOpt[idx];
-    if (!s) return defaultMode;
-    if (typeof s === 'string') return s;
-    if (s.type === 'inherit') return 'inherit';
-    if (s.type === 'ignore') return 'ignore';
-    return 'pipe';
-  }
-
-  // Replace lib/child_process.js exports.spawn / .exec / .execFile.
-  // We're a post-patch on the public child_process module, so
-  // \`module.exports\` IS the final cp object -- no circular require
-  // dance required. exec(cmd, opts, cb) and execFile(file, args, opts, cb)
-  // both produce ChildProcess and (for exec) a callback.
-  var cp = module.exports;
-  if (!cp || cp.__edgeAsyncReplaced) return;
-  cp.__edgeAsyncReplaced = true;
-
-  cp.spawn = function spawn(file, args, options) {
-    // Normalize the same way lib does (file, args?, options?).
-    if (Array.isArray(args)) {
-      options = options || {};
-    } else if (args != null && typeof args === 'object' && !Array.isArray(args)) {
-      options = args;
-      args = [];
-    } else {
-      args = args || [];
-      options = options || {};
-    }
-    var fullArgs = [file].concat(args);
-    return new EdgeChildProcess(file, fullArgs, options || {});
-  };
-
-  cp.execFile = function execFile(file, args, options, callback) {
-    if (typeof args === 'function') { callback = args; args = []; options = {}; }
-    else if (typeof options === 'function') { callback = options; options = {}; }
-    args = args || [];
-    options = options || {};
-    var maxBuffer = (typeof options.maxBuffer === 'number' && options.maxBuffer > 0)
-      ? options.maxBuffer : 1024 * 1024;
-    var encoding = options.encoding || 'buffer';
-    var child = cp.spawn(file, args, options);
-    var stdoutChunks = [];
-    var stderrChunks = [];
-    var stdoutLen = 0;
-    var stderrLen = 0;
-    var errored = null;
-    var settled = false;
-    if (child.stdout) child.stdout.on('data', function(chunk) {
-      if (errored) return;
-      var c = chunk instanceof Buffer ? chunk : Buffer.from(chunk);
-      stdoutLen += c.length;
-      if (stdoutLen > maxBuffer) {
-        errored = new RangeError('stdout maxBuffer length exceeded');
-        errored.code = 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER';
-        try { child.kill(); } catch (e) { void e; }
-        return;
-      }
-      stdoutChunks.push(c);
-    });
-    if (child.stderr) child.stderr.on('data', function(chunk) {
-      if (errored) return;
-      var c = chunk instanceof Buffer ? chunk : Buffer.from(chunk);
-      stderrLen += c.length;
-      if (stderrLen > maxBuffer) {
-        errored = new RangeError('stderr maxBuffer length exceeded');
-        errored.code = 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER';
-        try { child.kill(); } catch (e) { void e; }
-        return;
-      }
-      stderrChunks.push(c);
-    });
-    function settle(err, code, sig) {
-      if (settled) return;
-      settled = true;
-      var stdoutOut = Buffer.concat(stdoutChunks, stdoutLen);
-      var stderrOut = Buffer.concat(stderrChunks, stderrLen);
-      if (encoding && encoding !== 'buffer') {
-        stdoutOut = stdoutOut.toString(encoding);
-        stderrOut = stderrOut.toString(encoding);
-      }
-      if (errored && !err) err = errored;
-      if (!err && (code !== 0 || sig != null)) {
-        err = new Error('Command failed: ' + file + (args.length ? ' ' + args.join(' ') : ''));
-        err.code = code;
-        err.killed = sig != null;
-        err.signal = sig;
-        err.cmd = file + (args.length ? ' ' + args.join(' ') : '');
-      }
-      if (typeof callback === 'function') callback(err, stdoutOut, stderrOut);
-    }
-    child.on('error', function(err) { settle(err, null, null); });
-    child.on('close', function(code, sig) { settle(null, code, sig); });
-    return child;
-  };
-
-  cp.exec = function exec(command, options, callback) {
-    if (typeof options === 'function') { callback = options; options = {}; }
-    options = options || {};
-    // exec runs through a shell -- pass the full command to /bin/sh -c
-    // (or the user's executor for the 'sh' command). Node uses
-    // {shell: '/bin/sh', '-c', command} convention. For our model we
-    // mirror that exactly so the executor can dispatch as it wishes.
-    var shell = options.shell || (process.platform === 'win32' ? 'cmd.exe' : '/bin/sh');
-    var args = (process.platform === 'win32') ? ['/d', '/s', '/c', command] : ['-c', command];
-    return cp.execFile(shell, args, options, callback);
-  };
-
-  // P3.3: cp.fork(modulePath, args?, options?). Real Node forks the
-  // current node binary with modulePath as the script and stdio[3]='ipc'
-  // by default. We have no separate node binary; the executor decides
-  // what 'fork-target' actually means (e.g., evaluating modulePath as
-  // a script in another worker, or running a built-in JS interpreter).
-  // We provide: spawn() + ipc stdio + a sensible default execPath.
-  //
-  // The executor sees:
-  //   command = options.execPath || 'node'  (so users can intercept)
-  //   args[0] = modulePath
-  //   args[1..] = user args
-  //   opts.ipc = IPC handle (round-trips messages from cp.send)
-  //
-  // The user installs an executor handling 'node' (or their custom
-  // execPath) by spawning a worker and wiring its parentPort
-  // postMessage to opts.ipc. Without that wiring, .send() still
-  // marshals over RPC successfully but nobody on the host side
-  // dispatches -- silent drop (matches Node when child doesn't
-  // attach a 'message' handler).
-  cp.fork = function fork(modulePath, args, options) {
-    if (args && !Array.isArray(args) && typeof args === 'object') { options = args; args = []; }
-    args = args || [];
-    options = options || {};
-    // stdio default per Node: ['inherit', 'inherit', 'inherit', 'ipc'].
-    // We honor whatever the caller passes IF it includes 'ipc', else
-    // we patch in 'ipc' so the fork-spawn distinction is preserved.
-    var stdio = options.stdio;
-    if (!stdio) stdio = ['pipe', 'pipe', 'pipe', 'ipc'];
-    else if (Array.isArray(stdio) && stdio.indexOf('ipc') < 0) stdio = stdio.concat(['ipc']);
-    else if (stdio === 'inherit' || stdio === 'pipe' || stdio === 'ignore') {
-      stdio = [stdio, stdio, stdio, 'ipc'];
-    }
-    var spawnOpts = Object.assign({}, options, { stdio: stdio });
-    var execPath = options.execPath || process.execPath || 'node';
-    var fullArgs = [modulePath].concat(args);
-    return cp.spawn(execPath, fullArgs, spawnOpts);
-  };
-})();
-`;
 
 export const childProcessViaExecutor: Policy = {
   name: "child-process-via-executor",
   description:
-    "Replace internalBinding('spawn_sync').spawn with a JS impl that delegates to a user-pluggable executor (default: small fake shell). Avoids the JSPI SuspendError from native spawn_sync's uv_run loop. Supports sync executors on the wasm worker (fast path) and async executors on the host worker (via sync RPC + Atomics.wait).",
+    "Intercepts the spawn_sync, process_wrap, pipe_wrap, and stream_wrap bindings so lib's native ChildProcess / setupChannel / getValidStdio drive the surface (ref/unref, spawnfile, child.stdio[], IPC, shell:true, argv0, ...) while a user-pluggable executor handles the actual work. Avoids the JSPI SuspendError from native spawn_sync's uv_run loop.",
   builtinOverrides: {
     "internal/child_process": { pre: PRE_PATCH, post: INTERNAL_POST_PATCH },
-    "child_process": { post: PUBLIC_POST_PATCH },
   },
 };

@@ -7,6 +7,6 @@ done: exec
 done: execFile
 4. kill close, killed? true
 done: kill
-5. unknown close code: 127 errored: true
+5. unknown close code: -44 errored: true
 done: unknown
 all done

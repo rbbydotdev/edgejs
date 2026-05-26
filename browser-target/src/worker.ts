@@ -105,7 +105,7 @@ import { attachRing as attachHostRing, type RingConfig as HostRingConfig } from 
 import { RpcClient } from "./host-worker/rpc-client";
 import { RpcServer } from "./host-worker/rpc-server";
 import { SyncRpcClient } from "./host-worker/rpc-client-sync";
-import { OP_PING, OP_WASM_ECHO, OP_SUBTLE_DIGEST, OP_SUBTLE_HMAC, OP_SUBTLE_DIGEST_VIA_NAPI_MEM, OP_SUBTLE_HMAC_VIA_NAPI_MEM, OP_NAPI_OPEN_HANDLE_SCOPE, OP_NAPI_CLOSE_HANDLE_SCOPE, OP_SPAWN_USER_WORKER, OP_DELIVER_USER_WORKER_EXIT, OP_WORKER_POST_MESSAGE_TO_CHILD, OP_WORKER_POST_MESSAGE_TO_PARENT, OP_DELIVER_MESSAGE_TO_CHILD, OP_DELIVER_MESSAGE_FROM_CHILD, OP_RUN_CHILD_PROCESS, OP_SPAWN_ASYNC_START, OP_SPAWN_ASYNC_KILL, OP_SPAWN_ASYNC_EVENT, OP_SPAWN_STDIN_WRITE, OP_SPAWN_STDIN_END, OP_SPAWN_IPC_SEND, OP_SPAWN_IPC_DISCONNECT, DIGEST_STAGING_OFFSET, REPLY_STATUS_OK, REPLY_STATUS_INVALID_ARGS, REPLY_STATUS_HOST_ERROR } from "./host-worker/rpc-protocol";
+import { OP_PING, OP_WASM_ECHO, OP_SUBTLE_DIGEST, OP_SUBTLE_HMAC, OP_SUBTLE_DIGEST_VIA_NAPI_MEM, OP_SUBTLE_HMAC_VIA_NAPI_MEM, OP_NAPI_OPEN_HANDLE_SCOPE, OP_NAPI_CLOSE_HANDLE_SCOPE, OP_SPAWN_USER_WORKER, OP_DELIVER_USER_WORKER_EXIT, OP_WORKER_POST_MESSAGE_TO_CHILD, OP_WORKER_POST_MESSAGE_TO_PARENT, OP_DELIVER_MESSAGE_TO_CHILD, OP_DELIVER_MESSAGE_FROM_CHILD, OP_RUN_CHILD_PROCESS, OP_SPAWN_ASYNC_START, OP_SPAWN_ASYNC_KILL, OP_SPAWN_ASYNC_EVENT, OP_SPAWN_STDIO_WRITE, OP_SPAWN_STDIO_END, OP_SPAWN_IPC_SEND, OP_SPAWN_IPC_DISCONNECT, DIGEST_STAGING_OFFSET, REPLY_STATUS_OK, REPLY_STATUS_INVALID_ARGS, REPLY_STATUS_HOST_ERROR } from "./host-worker/rpc-protocol";
 import { packPostMessage, unpackPostMessage } from "./host-worker/marshal-postmessage";
 import { registerWasmCallbackInvoker, createCallbackDepthCounter } from "./host-worker/callback-dispatch";
 const HOST_RPC_RING_CONFIG: HostRingConfig = { numSlots: 32, slotSize: 4 * 1024 };
@@ -456,28 +456,41 @@ function installSpawnChildProcessAsyncGlobals(): void {
     if (reply.status !== REPLY_STATUS_OK || reply.payload.byteLength < 4) return false;
     return new DataView(reply.payload.buffer, reply.payload.byteOffset, reply.payload.byteLength).getUint32(0, true) === 0;
   };
-  // P3.2 stdin pipe: write/end ops forwarded sync to host. Wasm thread
-  // blocks for the duration of the RPC -- typically microseconds (host
-  // just queues into a per-child array). Sync semantics mirror Node:
-  // the OS write() returns after the kernel takes the bytes; here the
-  // "kernel" is the host worker's queue.
-  const stdinWrite: StdinWrite = (childId, chunk) => {
+  // P3.2 + P3.5 stdio pipe: write/end ops forwarded sync to host. Wasm
+  // thread blocks for the duration of the RPC -- typically microseconds
+  // (host just queues into a per-child array). Sync semantics mirror
+  // Node: the OS write() returns after the kernel takes the bytes;
+  // here the "kernel" is the host worker's queue.
+  // fdIndex parameter: 0 for stdin (legacy stdinWrite alias), N>=3 for
+  // extra stdio[N] pipes (P3.5 multi-stdio).
+  type StdioWrite = (childId: number, fdIndex: number, chunk: Uint8Array) => number;
+  type StdioEnd = (childId: number, fdIndex: number) => number;
+  const stdioWrite: StdioWrite = (childId, fdIndex, chunk) => {
     if (!hostRpcSyncClient) return 1;
-    const req = new Uint8Array(4 + chunk.byteLength);
-    new DataView(req.buffer).setUint32(0, childId, true);
-    if (chunk.byteLength > 0) req.set(chunk, 4);
-    const reply = hostRpcSyncClient.callSync(OP_SPAWN_STDIN_WRITE, hostWorkerId, 0, req);
+    const req = new Uint8Array(8 + chunk.byteLength);
+    const dv = new DataView(req.buffer);
+    dv.setUint32(0, childId, true);
+    dv.setUint32(4, fdIndex, true);
+    if (chunk.byteLength > 0) req.set(chunk, 8);
+    const reply = hostRpcSyncClient.callSync(OP_SPAWN_STDIO_WRITE, hostWorkerId, 0, req);
     if (reply.status !== REPLY_STATUS_OK || reply.payload.byteLength < 4) return 1;
     return new DataView(reply.payload.buffer, reply.payload.byteOffset, reply.payload.byteLength).getUint32(0, true);
   };
-  const stdinEnd: StdinEnd = (childId) => {
+  const stdioEnd: StdioEnd = (childId, fdIndex) => {
     if (!hostRpcSyncClient) return 1;
-    const req = new Uint8Array(4);
-    new DataView(req.buffer).setUint32(0, childId, true);
-    const reply = hostRpcSyncClient.callSync(OP_SPAWN_STDIN_END, hostWorkerId, 0, req);
+    const req = new Uint8Array(8);
+    const dv = new DataView(req.buffer);
+    dv.setUint32(0, childId, true);
+    dv.setUint32(4, fdIndex, true);
+    const reply = hostRpcSyncClient.callSync(OP_SPAWN_STDIO_END, hostWorkerId, 0, req);
     if (reply.status !== REPLY_STATUS_OK || reply.payload.byteLength < 4) return 1;
     return new DataView(reply.payload.buffer, reply.payload.byteOffset, reply.payload.byteLength).getUint32(0, true);
   };
+  // Legacy aliases (fd-0 hardcoded) -- old policy code still calls
+  // these. P3.5's new bindings use stdioWrite/End directly with explicit
+  // fd index.
+  const stdinWrite: StdinWrite = (childId, chunk) => stdioWrite(childId, 0, chunk);
+  const stdinEnd: StdinEnd = (childId) => stdioEnd(childId, 0);
   // P3.3 IPC: wasm-side child.send(json) and child.disconnect() forward
   // through these sync RPC ops. Same micro-latency cost as stdin
   // write/end -- host just queues + dispatches to executor handlers.
@@ -507,6 +520,8 @@ function installSpawnChildProcessAsyncGlobals(): void {
   (globalThis as { __edgeChildProcessKillAsync?: KillAsync }).__edgeChildProcessKillAsync = kill;
   (globalThis as { __edgeChildProcessStdinWrite?: StdinWrite }).__edgeChildProcessStdinWrite = stdinWrite;
   (globalThis as { __edgeChildProcessStdinEnd?: StdinEnd }).__edgeChildProcessStdinEnd = stdinEnd;
+  (globalThis as { __edgeChildProcessStdioWrite?: StdioWrite }).__edgeChildProcessStdioWrite = stdioWrite;
+  (globalThis as { __edgeChildProcessStdioEnd?: StdioEnd }).__edgeChildProcessStdioEnd = stdioEnd;
   (globalThis as { __edgeChildProcessIpcSend?: IpcSend }).__edgeChildProcessIpcSend = ipcSend;
   (globalThis as { __edgeChildProcessIpcDisconnect?: IpcDisconnect }).__edgeChildProcessIpcDisconnect = ipcDisconnect;
 }

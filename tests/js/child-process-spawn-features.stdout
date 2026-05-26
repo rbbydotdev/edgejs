@@ -1,0 +1,14 @@
+spawnfile: echo
+spawnargs: ["echo","hi","there"]
+stdio.length: 3
+stdio[1] is socket: true
+stdin === stdio[0]: true
+stdout === stdio[1]: true
+stderr === stdio[2]: true
+ref/unref methods: true true
+connected: false
+echo output: "hi there" exit: 0
+shell:true spawnfile: /bin/sh
+shell:true args[0]: /bin/sh
+shell:true args[1]: -c
+argv0 spawnargs[0]: custom-name
