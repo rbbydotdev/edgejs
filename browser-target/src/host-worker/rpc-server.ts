@@ -79,8 +79,18 @@ export class RpcServer {
   async start(): Promise<void> {
     if (this.running) return;
     this.running = true;
-    let lastSeen = readWakeCounter(this.requestRing);
     while (this.running) {
+      // Read the wake counter BEFORE draining, not after. If a producer
+      // publishes between drain and counter-read (TOCTOU window), the
+      // counter would already be bumped at read time, then waitForReadyAsync
+      // would wait for ANOTHER bump that may never come -- leaving the
+      // freshly-published slot stranded in the ring until the next
+      // unrelated wake. Reading lastSeen first guarantees that any
+      // publish that happens during this iteration either (a) appears in
+      // our drainRing this turn, or (b) bumps the counter past lastSeen
+      // and waitForReadyAsync returns immediately so the next iteration
+      // drains it. Either way, no slot is stranded.
+      const lastSeen = readWakeCounter(this.requestRing);
       const messages = drainRing(this.requestRing);
       for (const m of messages) {
         // Copy header out before processing — payload aliases SAB and
@@ -99,7 +109,6 @@ export class RpcServer {
         // possible.  Each handler races to write its own reply.
         void this.dispatch(ctx, argsCopy);
       }
-      lastSeen = readWakeCounter(this.requestRing);
       await waitForReadyAsync(this.requestRing, lastSeen);
     }
   }

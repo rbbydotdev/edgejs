@@ -669,6 +669,61 @@ export const OP_DELIVER_MESSAGE_FROM_CHILD = OP_DOMAIN_HOST_API | 0x000A;
 // `REPLY_STATUS_HOST_ERROR` is returned if main hasn't registered an
 // executor; wasm side falls back to the default fake shell.
 export const OP_RUN_CHILD_PROCESS = OP_DOMAIN_HOST_API | 0x000B;
+
+// child-process-via-executor ASYNC path (used by lib's spawn() / exec()
+// / execFile() -- the EventEmitter-returning APIs).
+//
+// Two-way protocol:
+//
+//   Forward (wasm -> host):
+//     OP_SPAWN_ASYNC_START  -- start a new spawn; reply carries u32 childId
+//     OP_SPAWN_ASYNC_KILL   -- kill an in-flight child (childId + signalName)
+//
+//   Reverse (host -> wasm):
+//     OP_SPAWN_ASYNC_EVENT  -- chunk/exit event for a previously-started child
+//
+// Lifecycle: wasm calls OP_SPAWN_ASYNC_START, gets childId immediately;
+// later the executor runs and the host pushes events (stdout chunks,
+// stderr chunks, exit) via OP_SPAWN_ASYNC_EVENT reverse RPC. Wasm
+// dispatches events through globalThis.__edgeChildProcessAsyncEvent
+// (installed by worker.ts; the policy patch registers a listener for
+// each spawned child).
+//
+// Wire format:
+//   START request: same as OP_RUN_CHILD_PROCESS (binary frame; see
+//                  child-process-via-executor.ts packRequest).
+//   START reply:   [u32 childId][u32 statusCode] -- statusCode 0 on
+//                  success, libuv-style negative on error (delivered
+//                  via __edgeError in the policy patch).
+//   KILL request:  [u32 childId][u32 signalNameLen][utf-8 signalName]
+//   KILL reply:    [u32 0=ok | 1=no-such-child]
+//
+//   EVENT request (reverse): [u32 childId][u8 eventKind][bytes payload]
+//     eventKind: 0=stdout, 1=stderr, 2=exit, 3=error, 4=spawned(pid)
+//     For stdout/stderr: payload is raw bytes (chunk).
+//     For exit:          payload is [i32 code | -1 for null][u32 signalLen][utf-8 signalName]
+//     For error:         payload is utf-8 message + a code separator (rare; for spawn-time failures)
+//     For spawned:       payload is [u32 pid]
+export const OP_SPAWN_ASYNC_START = OP_DOMAIN_HOST_API | 0x000C;
+export const OP_SPAWN_ASYNC_KILL  = OP_DOMAIN_HOST_API | 0x000D;
+export const OP_SPAWN_ASYNC_EVENT = OP_DOMAIN_HOST_API | 0x000E;
+
+// child-process-via-executor ASYNC stdin streaming (P3.2). Lets the
+// wasm forward bytes written to `child.stdin` to the executor running
+// on host. Without this, child.stdin.write() bytes vanish (the Writable
+// existed but was a no-op black hole). Real Node delivers stdin bytes
+// to the child process via the UV_PIPE handle; we mirror that by
+// pushing into an AsyncIterable that the executor reads from opts.stdin.
+//
+//   OP_SPAWN_STDIN_WRITE forward (wasm → host):
+//     Request: [u32 childId][bytes data]
+//     Reply:   [u32 status]  -- 0=ok, 1=no-such-child, 2=already-ended
+//
+//   OP_SPAWN_STDIN_END forward (wasm → host):
+//     Request: [u32 childId]
+//     Reply:   [u32 status]  -- same code set
+export const OP_SPAWN_STDIN_WRITE = OP_DOMAIN_HOST_API | 0x000F;
+export const OP_SPAWN_STDIN_END   = OP_DOMAIN_HOST_API | 0x0010;
 // Reverse op (host → wasm).  Fires from the parent host's reverseClient
 // into the parent wasm runtime when a message arrives from a child.
 // Parent wasm's handler invokes `globalThis.__edgeDispatchMessageFromChild`

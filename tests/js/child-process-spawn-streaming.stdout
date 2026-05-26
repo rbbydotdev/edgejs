@@ -1,0 +1,8 @@
+chunks received: 3
+chunk texts: chunk1
+|chunk2
+|chunk3
+
+exit code: 0 sig: null
+streamed? YES
+data-before-exit? YES

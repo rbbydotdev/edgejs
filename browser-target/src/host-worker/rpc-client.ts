@@ -118,9 +118,15 @@ export class RpcClient {
 
   /** Background loop that drains reply ring and dispatches to pending callers. */
   private async startReplyDrainer(): Promise<void> {
-    let lastSeen = readWakeCounter(this.replyRing);
     const loop = async (): Promise<void> => {
       for (;;) {
+        // Read wake counter BEFORE drain to avoid TOCTOU stall. If a
+        // reply publishes between drain and counter-read, the counter
+        // is bumped at read time and we'd wait for ANOTHER bump that
+        // never arrives. Reading lastSeen first guarantees either the
+        // reply lands in our drain, or the counter is already past
+        // lastSeen and waitForReadyAsync returns immediately.
+        const lastSeen = readWakeCounter(this.replyRing);
         const messages = drainRing(this.replyRing);
         for (const m of messages) {
           const hdr = readReplyHeader(m.payload);
@@ -137,7 +143,6 @@ export class RpcClient {
             freeSlot(this.replyRing, m.slot);
           }
         }
-        lastSeen = readWakeCounter(this.replyRing);
         await waitForReadyAsync(this.replyRing, lastSeen);
       }
     };

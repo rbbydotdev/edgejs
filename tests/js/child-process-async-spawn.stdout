@@ -1,0 +1,12 @@
+1. spawn= true data= "async-spawn-data" exit code= 0 sig= null
+1. close after exit? true
+done: spawn
+2. exec err? true code: ENOENT
+done: exec
+3. execFile err? false stdout: "hello-from-execfile"
+done: execFile
+4. kill close, killed? true
+done: kill
+5. unknown close code: 127 errored: true
+done: unknown
+all done

@@ -162,10 +162,15 @@ async function runOne(browser, t) {
     }
 
     if (!sentinel) {
+      const fullLog = await page.evaluate(() => {
+        const log = document.getElementById("log");
+        return log ? (log.innerText || "") : "";
+      });
       return {
         status: "error",
         reason: `timeout: no _start completion sentinel within ${TEST_TIMEOUT_MS}ms`,
         logs: consoleLogs.slice(-20).join("\n"),
+        fullLog,
       };
     }
 
@@ -203,12 +208,17 @@ async function runOne(browser, t) {
     });
 
     if (sentinel.exit !== 0 && sentinel.exit !== null) {
+      const fullLog = await page.evaluate(() => {
+        const log = document.getElementById("log");
+        return log ? (log.innerText || "") : "";
+      });
       return {
         status: "fail",
         reason: `non-zero exit (${sentinel.exit})`,
         expected: expectedOut,
         actual: actualOut,
         logs: consoleLogs.slice(-20).join("\n"),
+        fullLog,
       };
     }
     if (sentinel.exit === null && sentinel.matched.includes("THREW")) {

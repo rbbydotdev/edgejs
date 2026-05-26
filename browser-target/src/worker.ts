@@ -105,7 +105,7 @@ import { attachRing as attachHostRing, type RingConfig as HostRingConfig } from 
 import { RpcClient } from "./host-worker/rpc-client";
 import { RpcServer } from "./host-worker/rpc-server";
 import { SyncRpcClient } from "./host-worker/rpc-client-sync";
-import { OP_PING, OP_WASM_ECHO, OP_SUBTLE_DIGEST, OP_SUBTLE_HMAC, OP_SUBTLE_DIGEST_VIA_NAPI_MEM, OP_SUBTLE_HMAC_VIA_NAPI_MEM, OP_NAPI_OPEN_HANDLE_SCOPE, OP_NAPI_CLOSE_HANDLE_SCOPE, OP_SPAWN_USER_WORKER, OP_DELIVER_USER_WORKER_EXIT, OP_WORKER_POST_MESSAGE_TO_CHILD, OP_WORKER_POST_MESSAGE_TO_PARENT, OP_DELIVER_MESSAGE_TO_CHILD, OP_DELIVER_MESSAGE_FROM_CHILD, OP_RUN_CHILD_PROCESS, DIGEST_STAGING_OFFSET, REPLY_STATUS_OK, REPLY_STATUS_INVALID_ARGS, REPLY_STATUS_HOST_ERROR } from "./host-worker/rpc-protocol";
+import { OP_PING, OP_WASM_ECHO, OP_SUBTLE_DIGEST, OP_SUBTLE_HMAC, OP_SUBTLE_DIGEST_VIA_NAPI_MEM, OP_SUBTLE_HMAC_VIA_NAPI_MEM, OP_NAPI_OPEN_HANDLE_SCOPE, OP_NAPI_CLOSE_HANDLE_SCOPE, OP_SPAWN_USER_WORKER, OP_DELIVER_USER_WORKER_EXIT, OP_WORKER_POST_MESSAGE_TO_CHILD, OP_WORKER_POST_MESSAGE_TO_PARENT, OP_DELIVER_MESSAGE_TO_CHILD, OP_DELIVER_MESSAGE_FROM_CHILD, OP_RUN_CHILD_PROCESS, OP_SPAWN_ASYNC_START, OP_SPAWN_ASYNC_KILL, OP_SPAWN_ASYNC_EVENT, OP_SPAWN_STDIN_WRITE, OP_SPAWN_STDIN_END, DIGEST_STAGING_OFFSET, REPLY_STATUS_OK, REPLY_STATUS_INVALID_ARGS, REPLY_STATUS_HOST_ERROR } from "./host-worker/rpc-protocol";
 import { packPostMessage, unpackPostMessage } from "./host-worker/marshal-postmessage";
 import { registerWasmCallbackInvoker, createCallbackDepthCounter } from "./host-worker/callback-dispatch";
 const HOST_RPC_RING_CONFIG: HostRingConfig = { numSlots: 32, slotSize: 4 * 1024 };
@@ -418,6 +418,72 @@ function installSpawnChildProcessGlobal(): void {
   (globalThis as { __edgeChildProcessSpawnSync?: SpawnChildProcessSync }).__edgeChildProcessSpawnSync = impl;
 }
 
+// Async child_process globals: spawn() / exec() / execFile() paths.
+//
+// __edgeChildProcessSpawnAsync(requestBytes) -> { childId, status }
+//   Sync RPC to host -> START -> returns immediately. Events stream
+//   back via reverse-RPC (registered separately below).
+//
+// __edgeChildProcessKillAsync(childId, signalName) -> ok
+//   Sync RPC to host -> KILL -> AbortController fires on host;
+//   executor cooperates (or events drain naturally).
+type SpawnAsyncStart = (request: Uint8Array) => { childId: number; status: number };
+type KillAsync = (childId: number, signalName: string) => boolean;
+type StdinWrite = (childId: number, chunk: Uint8Array) => number;
+type StdinEnd = (childId: number) => number;
+
+function installSpawnChildProcessAsyncGlobals(): void {
+  const start: SpawnAsyncStart = (request) => {
+    if (!hostRpcSyncClient) {
+      throw new Error("__edgeChildProcessSpawnAsync: host RPC sync client not attached");
+    }
+    const reply = hostRpcSyncClient.callSync(OP_SPAWN_ASYNC_START, hostWorkerId, 0, request);
+    if (reply.status !== REPLY_STATUS_OK || reply.payload.byteLength < 8) {
+      return { childId: 0, status: -1 };
+    }
+    const dv = new DataView(reply.payload.buffer, reply.payload.byteOffset, reply.payload.byteLength);
+    return { childId: dv.getUint32(0, true), status: dv.getInt32(4, true) };
+  };
+  const kill: KillAsync = (childId, signalName) => {
+    if (!hostRpcSyncClient) return false;
+    const sigBytes = new TextEncoder().encode(signalName || "SIGTERM");
+    const req = new Uint8Array(4 + 4 + sigBytes.byteLength);
+    const dv = new DataView(req.buffer);
+    dv.setUint32(0, childId, true);
+    dv.setUint32(4, sigBytes.byteLength, true);
+    req.set(sigBytes, 8);
+    const reply = hostRpcSyncClient.callSync(OP_SPAWN_ASYNC_KILL, hostWorkerId, 0, req);
+    if (reply.status !== REPLY_STATUS_OK || reply.payload.byteLength < 4) return false;
+    return new DataView(reply.payload.buffer, reply.payload.byteOffset, reply.payload.byteLength).getUint32(0, true) === 0;
+  };
+  // P3.2 stdin pipe: write/end ops forwarded sync to host. Wasm thread
+  // blocks for the duration of the RPC -- typically microseconds (host
+  // just queues into a per-child array). Sync semantics mirror Node:
+  // the OS write() returns after the kernel takes the bytes; here the
+  // "kernel" is the host worker's queue.
+  const stdinWrite: StdinWrite = (childId, chunk) => {
+    if (!hostRpcSyncClient) return 1;
+    const req = new Uint8Array(4 + chunk.byteLength);
+    new DataView(req.buffer).setUint32(0, childId, true);
+    if (chunk.byteLength > 0) req.set(chunk, 4);
+    const reply = hostRpcSyncClient.callSync(OP_SPAWN_STDIN_WRITE, hostWorkerId, 0, req);
+    if (reply.status !== REPLY_STATUS_OK || reply.payload.byteLength < 4) return 1;
+    return new DataView(reply.payload.buffer, reply.payload.byteOffset, reply.payload.byteLength).getUint32(0, true);
+  };
+  const stdinEnd: StdinEnd = (childId) => {
+    if (!hostRpcSyncClient) return 1;
+    const req = new Uint8Array(4);
+    new DataView(req.buffer).setUint32(0, childId, true);
+    const reply = hostRpcSyncClient.callSync(OP_SPAWN_STDIN_END, hostWorkerId, 0, req);
+    if (reply.status !== REPLY_STATUS_OK || reply.payload.byteLength < 4) return 1;
+    return new DataView(reply.payload.buffer, reply.payload.byteOffset, reply.payload.byteLength).getUint32(0, true);
+  };
+  (globalThis as { __edgeChildProcessSpawnAsync?: SpawnAsyncStart }).__edgeChildProcessSpawnAsync = start;
+  (globalThis as { __edgeChildProcessKillAsync?: KillAsync }).__edgeChildProcessKillAsync = kill;
+  (globalThis as { __edgeChildProcessStdinWrite?: StdinWrite }).__edgeChildProcessStdinWrite = stdinWrite;
+  (globalThis as { __edgeChildProcessStdinEnd?: StdinEnd }).__edgeChildProcessStdinEnd = stdinEnd;
+}
+
 // Worker-threads phase 2: postMessage globals.  Pure plumbing — they
 // shuttle marshaled bytes through sync forward RPC (wasm → host → main
 // → other host → reverse RPC → wasm).  The actual JS-value
@@ -648,6 +714,7 @@ self.addEventListener("message", (e: MessageEvent) => {
     installHostHmacSyncGlobal();
     installSpawnNodeWorkerGlobal();
     installSpawnChildProcessGlobal();
+    installSpawnChildProcessAsyncGlobals();
     installPostMessageGlobals();
     // L4 reverse channel — host can send requests TO this worker.
     // Reverse-direction SABs come in the same message.
@@ -820,6 +887,40 @@ self.addEventListener("message", (e: MessageEvent) => {
             } else {
               post("log", { text: `[runtime] OP_DELIVER_MESSAGE_TO_CHILD: no control dispatcher (kind=0x${kind.toString(16)})`, level: "warn" });
             }
+          }
+          return { payload: new Uint8Array(0), status: REPLY_STATUS_OK };
+        } catch (e) {
+          return {
+            payload: new TextEncoder().encode((e as Error).message),
+            status: REPLY_STATUS_HOST_ERROR,
+          };
+        }
+      });
+      // Async child_process spawn() events: host pushes stdout/stderr
+      // chunks + exit/error/spawned events as the executor produces
+      // them. Dispatch to JS via __edgeChildProcessAsyncEvent so the
+      // policy patch's ChildProcess facade can wire to streams + emit.
+      reverseRpcServer.register(OP_SPAWN_ASYNC_EVENT, async (_ctx, args) => {
+        try {
+          if (args.byteLength < 5) {
+            return {
+              payload: new TextEncoder().encode("spawn-async-event: args too short"),
+              status: REPLY_STATUS_INVALID_ARGS,
+            };
+          }
+          const dv = new DataView(args.buffer, args.byteOffset, args.byteLength);
+          const childId = dv.getUint32(0, true);
+          const kind = args[4];
+          const payload = new Uint8Array(args.byteLength - 5);
+          payload.set(args.subarray(5));
+          type AsyncEventDispatcher = (childId: number, kind: number, payload: Uint8Array) => void;
+          const dispatch = (globalThis as { __edgeChildProcessAsyncEvent?: AsyncEventDispatcher })
+            .__edgeChildProcessAsyncEvent;
+          if (typeof dispatch === "function") {
+            // Run on the libuv tick so the EE 'data' callbacks fire
+            // inside a proper event-loop turn (matches Node's pattern
+            // of emitting data events as macrotasks from uv_read_cb).
+            dispatchOnLibuvTick("OP_SPAWN_ASYNC_EVENT", () => dispatch(childId, kind, payload));
           }
           return { payload: new Uint8Array(0), status: REPLY_STATUS_OK };
         } catch (e) {

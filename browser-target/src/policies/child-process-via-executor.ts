@@ -55,17 +55,19 @@ import type { Policy } from "./index";
 //     error?: { code: string; message: string } | null;
 //   }
 //
-// NOT IN MVP (tracked debt; expand as needed)
+// SHIPPED (no longer debt)
 //
-// - `#!~debt child-process-executor-async`: async executor support
-//   (Promise return) requires Atomics.wait + a separate worker for the
-//   actual work so the Promise can resolve from another thread.
-// - `#!~debt child-process-executor-streams`: stdin/stdout streaming.
-//   MVP buffers everything.
+// - Async executor: opts.onStdout/onStderr stream chunks incrementally
+//   (P3.1). opts.stdin AsyncIterable receives chunks pushed from
+//   wasm-side child.stdin.write() in real time (P3.2). spawn() / exec()
+//   / execFile() all return ChildProcess facades that round-trip via
+//   the host-worker executor.
+//
+// REMAINING DEBT
+//
 // - `#!~debt child-process-executor-multi-stdio`: only stdio[0..2] are
-//   honored; `stdio[3+]` (extra pipes) is dropped.
-// - `#!~debt child-process-async-spawn`: only `spawnSync` is wired;
-//   async `spawn`/`exec` still go to the C++ binding which throws.
+//   honored; `stdio[3+]` (extra pipes) is dropped. Real Node supports
+//   N additional pipes for IPC / file-descriptor passing; we don't.
 //
 // HOW TO TEST
 //
@@ -545,13 +547,13 @@ const PRE_PATCH = `
 })();
 `;
 
-// Post-patch on lib/internal/child_process: wrap the exported spawnSync
+// Post-patch on lib/internal/child_process: wraps the exported spawnSync
 // so when our binding attached a __edgeError marker on the result, we
 // reconstruct result.error from it AFTER lib's ErrnoException wrap.
-// This lets us deliver an Error with the EXACT code we want (e.g.
-// 'ETIMEDOUT', 'ENOBUFS') without depending on the build-specific
-// libuv error-number mapping.
-const POST_PATCH = `
+// Sidesteps the build-specific libuv error-number mapping; lets us
+// deliver an Error with the EXACT code we want (e.g. 'ETIMEDOUT',
+// 'ENOBUFS').
+const INTERNAL_POST_PATCH = `
 (function installSpawnSyncErrorPostPatch() {
   if (!module || !module.exports || typeof module.exports.spawnSync !== 'function') return;
   if (module.exports.__edgeSpawnSyncWrapped) return;
@@ -577,11 +579,403 @@ const POST_PATCH = `
 })();
 `;
 
+// Post-patch on PUBLIC \`child_process\`: installs the EdgeChildProcess
+// async impl that replaces lib's exports.spawn / .exec / .execFile.
+//
+// Must run on the public module (not \`internal/child_process\`) because
+// the public module forwards spawn/exec/execFile through wrappers that
+// touch the internal ChildProcess class -- patching internal mid-load
+// is racy with the circular require chain. By the time the public
+// module finishes loading, exports.spawn etc. are stable and ours
+// to replace cleanly.
+const PUBLIC_POST_PATCH = `
+(function installSpawnAsyncSupport() {
+  var g = (typeof globalThis !== 'undefined' && globalThis) ||
+          (typeof global !== 'undefined' && global);
+  var startAsync = g && g.__edgeChildProcessSpawnAsync;
+  var killAsync  = g && g.__edgeChildProcessKillAsync;
+  if (typeof startAsync !== 'function' || typeof killAsync !== 'function') {
+    // Async wiring not installed on this worker -- e.g. node-harness path.
+    // Leave lib's ChildProcess intact; spawnSync still works via the
+    // sync-RPC pre-patch above.
+    return;
+  }
+  if (g.__edgeChildProcessAsyncInstalled) return;
+  g.__edgeChildProcessAsyncInstalled = true;
+
+  var EventEmitter = require('events');
+  var stream = require('stream');
+
+  // Per-child callback registry. childId -> handler(kind, payload).
+  // Populated by EdgeChildProcess constructor; consumed by the global
+  // __edgeChildProcessAsyncEvent dispatcher we install once.
+  var childHandlers = new Map();
+
+  // Per-child event buffer. Holds events that arrived BEFORE the
+  // constructor finished registering a handler -- inevitable because
+  // the executor (running on the host worker) may start emitting
+  // chunks as soon as the START reply is en route. Without this buffer
+  // we'd silently drop the first events. The buffer is drained when
+  // the handler registers; entries are removed when 'exit' fires
+  // (childHandlers.delete is the signal).
+  var pendingEvents = new Map();
+
+  // Install the event dispatcher exactly once. The reverse-RPC handler
+  // in worker.ts routes incoming OP_SPAWN_ASYNC_EVENT payloads here.
+  g.__edgeChildProcessAsyncEvent = function(childId, kind, payload) {
+    var h = childHandlers.get(childId);
+    if (h) {
+      h(kind, payload);
+      return;
+    }
+    // Handler not yet registered -- buffer until EdgeChildProcess
+    // constructor calls registerChildHandler(childId, h). Race window:
+    // the executor (running in host-worker) can begin emitting chunks
+    // synchronously, before the wasm-side START reply has come back
+    // and we've populated childHandlers. Without buffering, those
+    // earliest chunks would be silently dropped.
+    var buf = pendingEvents.get(childId);
+    if (!buf) { buf = []; pendingEvents.set(childId, buf); }
+    buf.push([kind, payload]);
+  };
+
+  function registerChildHandler(childId, handler) {
+    childHandlers.set(childId, handler);
+    var buffered = pendingEvents.get(childId);
+    if (buffered) {
+      pendingEvents.delete(childId);
+      for (var i = 0; i < buffered.length; i++) {
+        handler(buffered[i][0], buffered[i][1]);
+      }
+    }
+  }
+
+  // Loop-keepalive. Our async ChildProcess has no underlying libuv
+  // handle -- it's pure JS waiting on reverse-RPC events from the
+  // host worker. Without something ref'd in the loop, Node decides
+  // \`uv_loop_alive() === false\` and exits before our events arrive.
+  // A single refed setInterval, ref-counted to the number of pending
+  // children, holds the loop open. Cheap (no-op tick every 50ms) but
+  // mandatory for correctness -- spawn() returning without ever
+  // firing 'exit' would otherwise be the norm.
+  var keepaliveTimer = null;
+  var pendingChildren = 0;
+  function keepaliveAcquire() {
+    pendingChildren++;
+    if (keepaliveTimer == null) {
+      keepaliveTimer = setInterval(function() {}, 50);
+    }
+  }
+  function keepaliveRelease() {
+    if (pendingChildren > 0) pendingChildren--;
+    if (pendingChildren === 0 && keepaliveTimer != null) {
+      clearInterval(keepaliveTimer);
+      keepaliveTimer = null;
+    }
+  }
+
+  // Packing helper -- mirrors child-process-via-executor.ts packRequest.
+  function packRequestForAsync(file, args, opts) {
+    var headerObj = {
+      command: String(file),
+      args: Array.isArray(args) ? args.slice(1).map(String) : [],
+      env: opts && opts.env,
+      cwd: opts && opts.cwd,
+      timeout: opts && typeof opts.timeout === 'number' ? opts.timeout : undefined,
+      killSignal: opts && opts.killSignal,
+    };
+    var headerBytes = new TextEncoder().encode(JSON.stringify(headerObj));
+    var input = null;
+    if (opts && opts.stdio && Array.isArray(opts.stdio) && opts.stdio.length > 0) {
+      var s0 = opts.stdio[0];
+      if (s0 && s0.input != null) {
+        input = (s0.input instanceof Uint8Array)
+          ? s0.input
+          : new TextEncoder().encode(String(s0.input));
+      }
+    }
+    var inLen = input ? input.byteLength : 0;
+    var totalLen = 4 + headerBytes.byteLength + 4 + inLen;
+    var buf = new Uint8Array(totalLen);
+    var dv = new DataView(buf.buffer);
+    dv.setUint32(0, headerBytes.byteLength, true);
+    buf.set(headerBytes, 4);
+    dv.setUint32(4 + headerBytes.byteLength, inLen, true);
+    if (input) buf.set(input, 4 + headerBytes.byteLength + 4);
+    return buf;
+  }
+
+  // EdgeChildProcess: shape compatible with lib's ChildProcess users
+  // (EventEmitter with .stdin/.stdout/.stderr/.pid/.kill).
+  function EdgeChildProcess(file, args, options) {
+    EventEmitter.call(this);
+    var self = this;
+    this._file = file;
+    this._args = args || [];
+    this._options = options || {};
+    this.killed = false;
+    this.exitCode = null;
+    this.signalCode = null;
+    // Default to PassThrough streams unless stdio mode says otherwise.
+    var stdoutMode = stdioModeOfAsync(this._options.stdio, 1);
+    var stderrMode = stdioModeOfAsync(this._options.stdio, 2);
+    this.stdout = (stdoutMode === 'pipe') ? new stream.PassThrough() : null;
+    this.stderr = (stderrMode === 'pipe') ? new stream.PassThrough() : null;
+    // child.stdin: a Writable that forwards each chunk to the host
+    // executor via sync RPC. _write fires per chunk; _final on .end().
+    // Sync RPC briefly blocks the wasm event loop (microseconds for
+    // a queue push -- no real I/O); same trade-off as the spawn/kill
+    // sync RPCs already in use. The pre-spawn _childId guard handles
+    // the brief window before the START reply arrives where writes
+    // are buffered locally until _childId is set in the constructor's
+    // success path. Default Writable buffers internally; once _childId
+    // exists, the underlying writes drain via the highWaterMark queue.
+    if (stdioModeOfAsync(this._options.stdio, 0) === 'pipe') {
+      var childRef = this;
+      this.stdin = new stream.Writable({
+        write: function(chunk, _enc, cb) {
+          if (childRef._childId == null) { cb(); return; } // started==failed path
+          var bytes = Buffer.isBuffer(chunk) ? chunk
+            : (chunk instanceof Uint8Array ? chunk : Buffer.from(String(chunk)));
+          var writer = g.__edgeChildProcessStdinWrite;
+          if (typeof writer === 'function') {
+            try { writer(childRef._childId, bytes); }
+            catch (e) { cb(e); return; }
+          }
+          cb();
+        },
+        final: function(cb) {
+          if (childRef._childId == null) { cb(); return; }
+          var ender = g.__edgeChildProcessStdinEnd;
+          if (typeof ender === 'function') {
+            try { ender(childRef._childId); }
+            catch (e) { cb(e); return; }
+          }
+          cb();
+        },
+      });
+    } else {
+      this.stdin = null;
+    }
+
+    var requestBytes = packRequestForAsync(file, args, this._options);
+    var started = startAsync(requestBytes);
+    if (started.status !== 0) {
+      // Schedule synthetic ENOENT/ESPAWN error in next tick (Node
+      // emits 'error' asynchronously when the binding spawn fails).
+      // Acquire+release keepalive across the nextTick so the loop
+      // stays alive long enough for our error+close to fire.
+      this.pid = undefined;
+      keepaliveAcquire();
+      process.nextTick(function() {
+        var err = new Error('spawn ' + file + ' ENOENT');
+        err.code = (started.status === -2) ? 'ENOENT' : 'ESPAWN';
+        err.errno = started.status;
+        err.syscall = 'spawn ' + file;
+        err.path = file;
+        err.spawnargs = self._args.slice(1);
+        self.emit('error', err);
+        if (self.stdout) self.stdout.end();
+        if (self.stderr) self.stderr.end();
+        self.emit('close', null, null);
+        keepaliveRelease();
+      });
+      return;
+    }
+    this._childId = started.childId;
+    // Pin the event loop until 'close' fires. Without this, scripts
+    // that just spawn() and wait would drain immediately because
+    // our async child has no libuv handle backing it.
+    keepaliveAcquire();
+    // Register per-child event handler. registerChildHandler drains any
+    // events that arrived before this point -- normal when the executor
+    // starts emitting before the START reply has reached us.
+    registerChildHandler(this._childId, function(kind, payload) {
+      if (kind === 4 /*spawned*/) {
+        // Use childId as pid (we don't have real OS pids).
+        self.pid = self._childId;
+        self.emit('spawn');
+      } else if (kind === 0 /*stdout*/) {
+        if (self.stdout) self.stdout.write(payload);
+        else if (stdoutMode === 'inherit') process.stdout.write(payload);
+      } else if (kind === 1 /*stderr*/) {
+        if (self.stderr) self.stderr.write(payload);
+        else if (stderrMode === 'inherit') process.stderr.write(payload);
+      } else if (kind === 3 /*error*/) {
+        var raw = new TextDecoder().decode(payload);
+        var errCode = 'ESPAWN';
+        var errMsg = raw || 'spawn error';
+        // Host emits JSON {code, message} for structured errors; fall back
+        // to raw text for legacy/non-JSON payloads.
+        try {
+          var parsed = JSON.parse(raw);
+          if (parsed && typeof parsed === 'object') {
+            if (parsed.code) errCode = String(parsed.code);
+            if (parsed.message) errMsg = String(parsed.message);
+          }
+        } catch (e) { void e; }
+        var err = new Error(errMsg);
+        err.code = errCode;
+        err.syscall = 'spawn ' + self._file;
+        err.path = self._file;
+        err.spawnargs = self._args.slice(1);
+        self.emit('error', err);
+      } else if (kind === 2 /*exit*/) {
+        // payload: [i32 code | -1 null][u32 sigLen][utf-8 sig]
+        var dv = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
+        var codeRaw = dv.getInt32(0, true);
+        var sigLen = dv.getUint32(4, true);
+        var sig = sigLen > 0
+          ? new TextDecoder().decode(payload.subarray(8, 8 + sigLen))
+          : null;
+        var code = (codeRaw === -1 && sig != null) ? null : codeRaw;
+        self.exitCode = code;
+        self.signalCode = sig;
+        self.emit('exit', code, sig);
+        // End streams then emit 'close' (matches Node ordering).
+        if (self.stdout) self.stdout.end();
+        if (self.stderr) self.stderr.end();
+        process.nextTick(function() {
+          self.emit('close', code, sig);
+          keepaliveRelease();
+        });
+        childHandlers.delete(self._childId);
+      }
+    });
+  }
+  Object.setPrototypeOf(EdgeChildProcess.prototype, EventEmitter.prototype);
+  EdgeChildProcess.prototype.kill = function(signal) {
+    if (this.killed || this._childId == null) return false;
+    this.killed = true;
+    return killAsync(this._childId, signal != null ? String(signal) : 'SIGTERM');
+  };
+  EdgeChildProcess.prototype.ref = function() {}; // no-op
+  EdgeChildProcess.prototype.unref = function() {}; // no-op
+  EdgeChildProcess.prototype.disconnect = function() {}; // no-op (no IPC)
+
+  function stdioModeOfAsync(stdioOpt, idx) {
+    var defaultMode = 'pipe';
+    if (!Array.isArray(stdioOpt)) {
+      if (stdioOpt === 'inherit' || stdioOpt === 'ignore' || stdioOpt === 'pipe') {
+        return stdioOpt;
+      }
+      return defaultMode;
+    }
+    var s = stdioOpt[idx];
+    if (!s) return defaultMode;
+    if (typeof s === 'string') return s;
+    if (s.type === 'inherit') return 'inherit';
+    if (s.type === 'ignore') return 'ignore';
+    return 'pipe';
+  }
+
+  // Replace lib/child_process.js exports.spawn / .exec / .execFile.
+  // We're a post-patch on the public child_process module, so
+  // \`module.exports\` IS the final cp object -- no circular require
+  // dance required. exec(cmd, opts, cb) and execFile(file, args, opts, cb)
+  // both produce ChildProcess and (for exec) a callback.
+  var cp = module.exports;
+  if (!cp || cp.__edgeAsyncReplaced) return;
+  cp.__edgeAsyncReplaced = true;
+
+  cp.spawn = function spawn(file, args, options) {
+    // Normalize the same way lib does (file, args?, options?).
+    if (Array.isArray(args)) {
+      options = options || {};
+    } else if (args != null && typeof args === 'object' && !Array.isArray(args)) {
+      options = args;
+      args = [];
+    } else {
+      args = args || [];
+      options = options || {};
+    }
+    var fullArgs = [file].concat(args);
+    return new EdgeChildProcess(file, fullArgs, options || {});
+  };
+
+  cp.execFile = function execFile(file, args, options, callback) {
+    if (typeof args === 'function') { callback = args; args = []; options = {}; }
+    else if (typeof options === 'function') { callback = options; options = {}; }
+    args = args || [];
+    options = options || {};
+    var maxBuffer = (typeof options.maxBuffer === 'number' && options.maxBuffer > 0)
+      ? options.maxBuffer : 1024 * 1024;
+    var encoding = options.encoding || 'buffer';
+    var child = cp.spawn(file, args, options);
+    var stdoutChunks = [];
+    var stderrChunks = [];
+    var stdoutLen = 0;
+    var stderrLen = 0;
+    var errored = null;
+    var settled = false;
+    if (child.stdout) child.stdout.on('data', function(chunk) {
+      if (errored) return;
+      var c = chunk instanceof Buffer ? chunk : Buffer.from(chunk);
+      stdoutLen += c.length;
+      if (stdoutLen > maxBuffer) {
+        errored = new RangeError('stdout maxBuffer length exceeded');
+        errored.code = 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER';
+        try { child.kill(); } catch (e) { void e; }
+        return;
+      }
+      stdoutChunks.push(c);
+    });
+    if (child.stderr) child.stderr.on('data', function(chunk) {
+      if (errored) return;
+      var c = chunk instanceof Buffer ? chunk : Buffer.from(chunk);
+      stderrLen += c.length;
+      if (stderrLen > maxBuffer) {
+        errored = new RangeError('stderr maxBuffer length exceeded');
+        errored.code = 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER';
+        try { child.kill(); } catch (e) { void e; }
+        return;
+      }
+      stderrChunks.push(c);
+    });
+    function settle(err, code, sig) {
+      if (settled) return;
+      settled = true;
+      var stdoutOut = Buffer.concat(stdoutChunks, stdoutLen);
+      var stderrOut = Buffer.concat(stderrChunks, stderrLen);
+      if (encoding && encoding !== 'buffer') {
+        stdoutOut = stdoutOut.toString(encoding);
+        stderrOut = stderrOut.toString(encoding);
+      }
+      if (errored && !err) err = errored;
+      if (!err && (code !== 0 || sig != null)) {
+        err = new Error('Command failed: ' + file + (args.length ? ' ' + args.join(' ') : ''));
+        err.code = code;
+        err.killed = sig != null;
+        err.signal = sig;
+        err.cmd = file + (args.length ? ' ' + args.join(' ') : '');
+      }
+      if (typeof callback === 'function') callback(err, stdoutOut, stderrOut);
+    }
+    child.on('error', function(err) { settle(err, null, null); });
+    child.on('close', function(code, sig) { settle(null, code, sig); });
+    return child;
+  };
+
+  cp.exec = function exec(command, options, callback) {
+    if (typeof options === 'function') { callback = options; options = {}; }
+    options = options || {};
+    // exec runs through a shell -- pass the full command to /bin/sh -c
+    // (or the user's executor for the 'sh' command). Node uses
+    // {shell: '/bin/sh', '-c', command} convention. For our model we
+    // mirror that exactly so the executor can dispatch as it wishes.
+    var shell = options.shell || (process.platform === 'win32' ? 'cmd.exe' : '/bin/sh');
+    var args = (process.platform === 'win32') ? ['/d', '/s', '/c', command] : ['-c', command];
+    return cp.execFile(shell, args, options, callback);
+  };
+})();
+`;
+
 export const childProcessViaExecutor: Policy = {
   name: "child-process-via-executor",
   description:
     "Replace internalBinding('spawn_sync').spawn with a JS impl that delegates to a user-pluggable executor (default: small fake shell). Avoids the JSPI SuspendError from native spawn_sync's uv_run loop. Supports sync executors on the wasm worker (fast path) and async executors on the host worker (via sync RPC + Atomics.wait).",
   builtinOverrides: {
-    "internal/child_process": { pre: PRE_PATCH, post: POST_PATCH },
+    "internal/child_process": { pre: PRE_PATCH, post: INTERNAL_POST_PATCH },
+    "child_process": { post: PUBLIC_POST_PATCH },
   },
 };

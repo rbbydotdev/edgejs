@@ -48,6 +48,11 @@ import {
   OP_DELIVER_MESSAGE_TO_CHILD,
   OP_DELIVER_MESSAGE_FROM_CHILD,
   OP_RUN_CHILD_PROCESS,
+  OP_SPAWN_ASYNC_START,
+  OP_SPAWN_ASYNC_KILL,
+  OP_SPAWN_STDIN_WRITE,
+  OP_SPAWN_STDIN_END,
+  OP_SPAWN_ASYNC_EVENT,
   DIGEST_STAGING_OFFSET,
   REPLY_STATUS_OK,
   REPLY_STATUS_HOST_ERROR,
@@ -411,6 +416,358 @@ function packChildProcReply(result: ChildProcExecResult | { __noExecutor: true }
   dv.setUint32(off, stderrBytes.byteLength, true); off += 4;
   buf.set(stderrBytes, off);
   return buf;
+}
+
+// =================================================================
+// Async child_process spawn() / exec() / execFile() machinery.
+//
+// Each START call invokes the executor (sync or async) and registers
+// a long-lived child handle. Events (stdout/stderr chunks, exit) get
+// pushed to wasm via reverse-RPC OP_SPAWN_ASYNC_EVENT. KILL sends an
+// abort signal that the executor can cooperate with (via opts.signal).
+//
+// Executor protocol for async spawn (extends the sync executor shape):
+//   - Returns Promise<ExecResult> (single-chunk delivery)
+//   - OR returns { onStdout, onStderr, exit, kill } object for true
+//     streaming (P3.1; not in MVP -- current build delivers result
+//     as a single chunk on exit).
+// =================================================================
+
+interface StdinPipe {
+  // Chunks queued from wasm-side child.stdin.write() that haven't been
+  // pulled by the executor yet.
+  buffered: Uint8Array[];
+  // Set when wasm-side child.stdin.end() arrives. Iterator returns done
+  // after draining buffered.
+  ended: boolean;
+  // Awaiters: promise resolvers parked when the executor's iterator
+  // outpaced the producer (no buffered chunks; not ended). Each call
+  // to push() resolves at most one (FIFO).
+  waiters: Array<(v: { value?: Uint8Array; done: boolean }) => void>;
+}
+interface SpawnAsyncChild {
+  childId: number;
+  abortController: AbortController;
+  done: boolean;
+  stdinPipe: StdinPipe;
+}
+const asyncSpawnChildren = new Map<number, SpawnAsyncChild>();
+let nextSpawnChildId = 1;
+
+// Build an AsyncIterable<Uint8Array> backed by a per-child queue.
+// The executor reads via `for await (const chunk of opts.stdin)`,
+// receiving chunks as wasm-side child.stdin.write() pushes them.
+// Iterator returns done when wasm calls child.stdin.end() AND the
+// queue is drained.
+function makeStdinAsyncIterable(pipe: StdinPipe): AsyncIterable<Uint8Array> {
+  return {
+    [Symbol.asyncIterator](): AsyncIterator<Uint8Array> {
+      return {
+        next(): Promise<IteratorResult<Uint8Array>> {
+          if (pipe.buffered.length > 0) {
+            const chunk = pipe.buffered.shift()!;
+            return Promise.resolve({ value: chunk, done: false });
+          }
+          if (pipe.ended) {
+            return Promise.resolve({ value: undefined as unknown as Uint8Array, done: true });
+          }
+          return new Promise((resolve) => {
+            pipe.waiters.push((v) => {
+              if (v.done) resolve({ value: undefined as unknown as Uint8Array, done: true });
+              else resolve({ value: v.value!, done: false });
+            });
+          });
+        },
+        return(): Promise<IteratorResult<Uint8Array>> {
+          pipe.ended = true;
+          pipe.buffered.length = 0;
+          while (pipe.waiters.length > 0) pipe.waiters.shift()!({ done: true });
+          return Promise.resolve({ value: undefined as unknown as Uint8Array, done: true });
+        },
+      };
+    },
+  };
+}
+
+function pushStdinChunk(pipe: StdinPipe, chunk: Uint8Array): void {
+  if (pipe.ended) return;
+  const waiter = pipe.waiters.shift();
+  if (waiter) {
+    waiter({ value: chunk, done: false });
+  } else {
+    pipe.buffered.push(chunk);
+  }
+}
+
+function endStdinPipe(pipe: StdinPipe): void {
+  if (pipe.ended) return;
+  pipe.ended = true;
+  while (pipe.waiters.length > 0) pipe.waiters.shift()!({ done: true });
+}
+
+function packAsyncEvent(childId: number, kind: number, payload: Uint8Array): Uint8Array {
+  const buf = new Uint8Array(4 + 1 + payload.byteLength);
+  const dv = new DataView(buf.buffer);
+  dv.setUint32(0, childId, true);
+  buf[4] = kind;
+  buf.set(payload, 5);
+  return buf;
+}
+
+function emitAsyncEvent(childId: number, kind: number, payload: Uint8Array): void {
+  if (!reverseClient) {
+    log(`spawn-async: reverseClient not attached, dropping event for childId=${childId}`, "warn");
+    return;
+  }
+  const buf = packAsyncEvent(childId, kind, payload);
+  void reverseClient.call(OP_SPAWN_ASYNC_EVENT, hostWorkerId, 0, buf)
+    .catch((err) => log(`spawn-async event delivery failed: ${(err as Error).message}`, "warn"));
+}
+
+// Best-effort chunking: if executor returned > CHUNK_SIZE of stdout,
+// split into multiple data events. Reflects what async spawn observers
+// expect (multiple 'data' events). For tiny outputs there's one event.
+const ASYNC_CHUNK_SIZE = 16 * 1024;
+
+function emitChunked(childId: number, kind: number, bytes: Uint8Array): void {
+  if (bytes.byteLength === 0) return;
+  for (let off = 0; off < bytes.byteLength; off += ASYNC_CHUNK_SIZE) {
+    const chunk = bytes.subarray(off, Math.min(off + ASYNC_CHUNK_SIZE, bytes.byteLength));
+    emitAsyncEvent(childId, kind, chunk);
+  }
+}
+
+function packExitPayload(code: number | null, signal: string | null): Uint8Array {
+  const sigBytes = signal ? new TextEncoder().encode(signal) : new Uint8Array(0);
+  const buf = new Uint8Array(4 + 4 + sigBytes.byteLength);
+  const dv = new DataView(buf.buffer);
+  dv.setInt32(0, code != null ? code : -1, true);
+  dv.setUint32(4, sigBytes.byteLength, true);
+  buf.set(sigBytes, 8);
+  return buf;
+}
+
+// Default async fake-shell executor. Mirrors the wasm-side fake shell so
+// async spawn() works without a user-installed executor (matches the sync
+// path's fallback behavior). Resolves by command basename.
+function defaultAsyncFakeShellExecutor(
+  command: string,
+  args: string[],
+  opts: { env?: Record<string, string>; cwd?: string; input?: Uint8Array | string },
+): ChildProcExecResult {
+  const basename = (p: string): string => {
+    const s = String(p || "");
+    const i = s.lastIndexOf("/");
+    return i < 0 ? s : s.slice(i + 1);
+  };
+  const name = basename(command);
+  switch (name) {
+    case "echo": {
+      let noNewline = false;
+      let i = 0;
+      if (args[0] === "-n") { noNewline = true; i = 1; }
+      const out = args.slice(i).join(" ");
+      return { stdout: noNewline ? out : out + "\n", stderr: "", code: 0 };
+    }
+    case "true":
+      return { stdout: "", stderr: "", code: 0 };
+    case "false":
+      return { stdout: "", stderr: "", code: 1 };
+    case "cat": {
+      const input = opts.input;
+      if (input == null) return { stdout: "", stderr: "", code: 0 };
+      if (input instanceof Uint8Array) return { stdout: input, stderr: "", code: 0 };
+      return { stdout: String(input), stderr: "", code: 0 };
+    }
+    case "env": {
+      const env = opts.env || {};
+      const lines: string[] = [];
+      for (const k in env) {
+        if (Object.prototype.hasOwnProperty.call(env, k)) lines.push(k + "=" + env[k]);
+      }
+      return { stdout: lines.join("\n") + (lines.length ? "\n" : ""), stderr: "", code: 0 };
+    }
+    case "pwd":
+      return { stdout: (opts.cwd || "/") + "\n", stderr: "", code: 0 };
+    default:
+      return {
+        stdout: "",
+        stderr: name + ": command not found\n",
+        code: 127,
+        signal: null,
+        error: { code: "ENOENT", message: "spawn " + name + " ENOENT" },
+      };
+  }
+}
+
+async function startAsyncSpawn(requestBytes: Uint8Array): Promise<Uint8Array> {
+  const req = unpackChildProcRequest(requestBytes);
+  if (!req) {
+    // Malformed -- reply with childId=0 + status=EINVAL
+    const buf = new Uint8Array(8);
+    const dv = new DataView(buf.buffer);
+    dv.setUint32(0, 0, true);
+    dv.setInt32(4, -22, true); // EINVAL
+    return buf;
+  }
+  const userExecutor = (self as unknown as { __edgeChildProcessExecutor?: ChildProcExecutor })
+    .__edgeChildProcessExecutor;
+  // Fall back to the default async fake shell when no user executor is
+  // installed -- mirrors the sync path's fake-shell fallback so async
+  // spawn() behaves the same way (echo/true/false/cat/env/pwd just work,
+  // anything else returns ENOENT). Without this fallback the async API
+  // would surface 'error' for every command on deployments that haven't
+  // wired up a real executor.
+  const executor: ChildProcExecutor = (typeof userExecutor === "function")
+    ? userExecutor
+    : (cmd, a, o) => defaultAsyncFakeShellExecutor(cmd, a, o as { env?: Record<string, string>; cwd?: string; input?: Uint8Array | string });
+
+  const childId = nextSpawnChildId++;
+  const ac = new AbortController();
+  const stdinPipe: StdinPipe = { buffered: [], ended: false, waiters: [] };
+  // Pre-queue any one-shot input from spawn options; close immediately
+  // so the executor's iterator drains and ends without waiting for
+  // child.stdin.write() calls. This keeps backward compat with
+  // spawn(..., { input: 'some text' }).
+  if (req.input && req.input.byteLength > 0) {
+    pushStdinChunk(stdinPipe, req.input);
+    endStdinPipe(stdinPipe);
+  }
+  asyncSpawnChildren.set(childId, { childId, abortController: ac, done: false, stdinPipe });
+
+  // Fire 'spawned' event on next microtask so the wasm side has time
+  // to register listeners after the START reply arrives.
+  queueMicrotask(() => {
+    const pidBytes = new Uint8Array(4);
+    new DataView(pidBytes.buffer).setUint32(0, childId, true);
+    emitAsyncEvent(childId, 4 /*spawned*/, pidBytes);
+  });
+
+  // Invoke executor; deliver events as the result resolves.
+  //
+  // Streaming protocol (P3.1): the executor receives `onStdout` and
+  // `onStderr` callbacks via opts and can push chunks AS THEY ARRIVE
+  // instead of accumulating into a single final result. Each call
+  // emits an OP_SPAWN_ASYNC_EVENT immediately, which the wasm side
+  // surfaces as a `data` event on child.stdout/child.stderr. Matches
+  // Node: a REPL-style child that prompts can be answered, large
+  // outputs don't buffer in host RAM, line-by-line consumers see
+  // lines as they're produced.
+  //
+  // Backward-compatible: executors that ignore the callbacks and
+  // return {stdout, stderr, code} still work (the default fake-shell
+  // does this -- echo's output is instantaneous, no value in streaming).
+  // We track whether onStdout/onStderr was ever called; if so, we skip
+  // emitting result.stdout/stderr at the end to avoid duplicating bytes.
+  const toBytesForChunk = (v: Uint8Array | string | number[]): Uint8Array => {
+    if (v instanceof Uint8Array) return v;
+    if (typeof v === "string") return new TextEncoder().encode(v);
+    if (Array.isArray(v)) return new Uint8Array(v);
+    return new TextEncoder().encode(String(v));
+  };
+  let usedStdoutStream = false;
+  let usedStderrStream = false;
+  const opts: Record<string, unknown> = {
+    signal: ac.signal,
+    onStdout: (chunk: Uint8Array | string | number[]) => {
+      usedStdoutStream = true;
+      const bytes = toBytesForChunk(chunk);
+      if (bytes.byteLength > 0) emitChunked(childId, 0 /*stdout*/, bytes);
+    },
+    onStderr: (chunk: Uint8Array | string | number[]) => {
+      usedStderrStream = true;
+      const bytes = toBytesForChunk(chunk);
+      if (bytes.byteLength > 0) emitChunked(childId, 1 /*stderr*/, bytes);
+    },
+    // Streaming stdin (P3.2). Executors can `for await` on this iterable
+    // to receive chunks as wasm-side `child.stdin.write()` calls push
+    // them. When wasm calls `child.stdin.end()` the iterator returns
+    // done. Backward-compatible: if the caller passed `input`, it's
+    // pre-queued and the pipe is closed -- the iterator drains it
+    // once and ends, identical to the one-shot input behavior.
+    stdin: makeStdinAsyncIterable(stdinPipe),
+  };
+  if (req.env) opts.env = req.env;
+  if (req.cwd != null) opts.cwd = req.cwd;
+  if (req.input) opts.input = req.input;
+  if (typeof req.timeout === "number") opts.timeout = req.timeout;
+  if (req.killSignal) opts.killSignal = req.killSignal;
+
+  // Run executor; on resolve, fan out chunks + exit; on reject, exit with error.
+  void (async () => {
+    let result: ChildProcExecResult;
+    try {
+      result = await Promise.resolve(executor(req.command, req.args || [], opts));
+    } catch (e) {
+      const err = e instanceof Error ? e : new Error(String(e));
+      const payload = new TextEncoder().encode(err.message);
+      emitAsyncEvent(childId, 3 /*error*/, payload);
+      emitAsyncEvent(childId, 2 /*exit*/, packExitPayload(null, ac.signal.aborted ? (req.killSignal || "SIGTERM") : null));
+      const child = asyncSpawnChildren.get(childId);
+      if (child) { child.done = true; asyncSpawnChildren.delete(childId); }
+      return;
+    }
+    // Convert result bytes; emit as one or more chunks.
+    const toBytes = (v: Uint8Array | string | number[] | undefined): Uint8Array => {
+      if (v == null) return new Uint8Array(0);
+      if (v instanceof Uint8Array) return v;
+      if (typeof v === "string") return new TextEncoder().encode(v);
+      if (Array.isArray(v)) return new Uint8Array(v);
+      return new TextEncoder().encode(String(v));
+    };
+    // Only emit final-buffer stdout/stderr for the streams the executor
+    // did NOT push incrementally. Streaming executors return {code} (or
+    // {code, error}) with no stdout/stderr field; batch executors return
+    // {stdout, stderr, code}. The flag distinguishes the two.
+    if (!usedStdoutStream) emitChunked(childId, 0 /*stdout*/, toBytes(result.stdout));
+    if (!usedStderrStream) emitChunked(childId, 1 /*stderr*/, toBytes(result.stderr));
+    // Emit 'error' event when the executor reports a spawn-level failure
+    // (e.g. fake shell ENOENT for unknown commands). Matches Node where
+    // spawn() emits 'error' for spawn failures separately from non-zero
+    // exits. Encoded as JSON so the wasm side can reconstruct the Error
+    // with code/message.
+    if (result.error) {
+      const errJson = JSON.stringify({
+        code: result.error.code || "ESPAWN",
+        message: result.error.message || ("spawn " + req.command + " " + (result.error.code || "ESPAWN")),
+      });
+      emitAsyncEvent(childId, 3 /*error*/, new TextEncoder().encode(errJson));
+    }
+    const sigName = ac.signal.aborted
+      ? (req.killSignal || "SIGTERM")
+      : (result.signal != null ? String(result.signal) : null);
+    const code = typeof result.code === "number" ? result.code : (sigName ? null : 0);
+    emitAsyncEvent(childId, 2 /*exit*/, packExitPayload(code, sigName));
+    const child = asyncSpawnChildren.get(childId);
+    if (child) { child.done = true; asyncSpawnChildren.delete(childId); }
+  })();
+
+  // Immediate START reply: childId + status=ok.
+  const reply = new Uint8Array(8);
+  const dv = new DataView(reply.buffer);
+  dv.setUint32(0, childId, true);
+  dv.setInt32(4, 0, true);
+  return reply;
+}
+
+function killAsyncSpawn(requestBytes: Uint8Array): Uint8Array {
+  if (requestBytes.byteLength < 8) {
+    const buf = new Uint8Array(4);
+    new DataView(buf.buffer).setUint32(0, 1, true); // invalid args
+    return buf;
+  }
+  const dv = new DataView(requestBytes.buffer, requestBytes.byteOffset, requestBytes.byteLength);
+  const childId = dv.getUint32(0, true);
+  const child = asyncSpawnChildren.get(childId);
+  const reply = new Uint8Array(4);
+  if (!child) {
+    new DataView(reply.buffer).setUint32(0, 1, true); // no such child
+    return reply;
+  }
+  // Signal abort -- executor can cooperate via opts.signal.
+  try { child.abortController.abort(); } catch (e) { void e; }
+  new DataView(reply.buffer).setUint32(0, 0, true);
+  return reply;
 }
 
 async function runChildProcessInHostWorker(requestBytes: Uint8Array): Promise<Uint8Array> {
@@ -1055,6 +1412,67 @@ function registerHandlers(srv: RpcServer): void {
         status: REPLY_STATUS_HOST_ERROR,
       };
     }
+  });
+
+  // Async spawn() / exec() / execFile() start. Reply is immediate
+  // (childId + status); events stream back via OP_SPAWN_ASYNC_EVENT
+  // reverse RPC.
+  srv.register(OP_SPAWN_ASYNC_START, async (_ctx, args) => {
+    const argsCopy = new Uint8Array(args.byteLength);
+    argsCopy.set(args);
+    const replyBytes = await startAsyncSpawn(argsCopy);
+    return { payload: replyBytes, status: REPLY_STATUS_OK };
+  });
+
+  // Async kill. Aborts the executor via AbortSignal; events fire as
+  // executor cooperates (or as it finishes naturally if it doesn't).
+  srv.register(OP_SPAWN_ASYNC_KILL, async (_ctx, args) => {
+    const argsCopy = new Uint8Array(args.byteLength);
+    argsCopy.set(args);
+    const replyBytes = killAsyncSpawn(argsCopy);
+    return { payload: replyBytes, status: REPLY_STATUS_OK };
+  });
+
+  // P3.2: streaming stdin. Wasm-side `child.stdin.write()` lands here
+  // as a sync RPC; we push the bytes into the child's stdinPipe, which
+  // the executor reads via `for await (const chunk of opts.stdin)`.
+  // Status: 0=ok, 1=no-such-child (child already exited or never
+  // existed), 2=already-ended (write after end).
+  srv.register(OP_SPAWN_STDIN_WRITE, async (_ctx, args) => {
+    const reply = new Uint8Array(4);
+    const dv = new DataView(reply.buffer);
+    if (args.byteLength < 4) {
+      dv.setUint32(0, 1, true);
+      return { payload: reply, status: REPLY_STATUS_OK };
+    }
+    const inDv = new DataView(args.buffer, args.byteOffset, args.byteLength);
+    const childId = inDv.getUint32(0, true);
+    const child = asyncSpawnChildren.get(childId);
+    if (!child) { dv.setUint32(0, 1, true); return { payload: reply, status: REPLY_STATUS_OK }; }
+    if (child.stdinPipe.ended) { dv.setUint32(0, 2, true); return { payload: reply, status: REPLY_STATUS_OK }; }
+    // Copy data out of the SAB slot view since the slot may be reused
+    // before the executor consumes the chunk.
+    const chunk = new Uint8Array(args.byteLength - 4);
+    chunk.set(args.subarray(4));
+    pushStdinChunk(child.stdinPipe, chunk);
+    dv.setUint32(0, 0, true);
+    return { payload: reply, status: REPLY_STATUS_OK };
+  });
+
+  // P3.2: signal end-of-stream for child.stdin. After this, the
+  // executor's async iterator yields done and exits its `for await`
+  // loop. Idempotent -- a second END is a no-op.
+  srv.register(OP_SPAWN_STDIN_END, async (_ctx, args) => {
+    const reply = new Uint8Array(4);
+    const dv = new DataView(reply.buffer);
+    if (args.byteLength < 4) { dv.setUint32(0, 1, true); return { payload: reply, status: REPLY_STATUS_OK }; }
+    const inDv = new DataView(args.buffer, args.byteOffset, args.byteLength);
+    const childId = inDv.getUint32(0, true);
+    const child = asyncSpawnChildren.get(childId);
+    if (!child) { dv.setUint32(0, 1, true); return { payload: reply, status: REPLY_STATUS_OK }; }
+    endStdinPipe(child.stdinPipe);
+    dv.setUint32(0, 0, true);
+    return { payload: reply, status: REPLY_STATUS_OK };
   });
 
   // Worker_threads phase 2: parent's wasm calls this when user JS does
