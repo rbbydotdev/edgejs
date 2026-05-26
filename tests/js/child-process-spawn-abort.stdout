@@ -1,0 +1,4 @@
+plain status: 0 err: null
+unaborted status: 0 err: null
+aborted status: null sig: SIGTERM err.code: ABORT_ERR
+abort-kill status: null sig: SIGKILL

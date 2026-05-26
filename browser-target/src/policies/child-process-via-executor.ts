@@ -400,6 +400,31 @@ const PRE_PATCH = `
     }
     var command = String(options.file != null ? options.file : '');
     var args = Array.isArray(options.args) ? options.args.slice(1) : [];
+
+    // options.signal (AbortSignal): Node's spawnSync ignores this in
+    // practice (sync call can't react to mid-call abort since the JS
+    // event loop is blocked). We do a pre-check at entry: if the
+    // signal is already aborted, return immediately with an
+    // AbortError-shaped result. Doesn't forward the signal to the
+    // executor (would need a bidirectional abort channel across
+    // threads; the executor can implement its own timeout instead).
+    if (options.signal && options.signal.aborted) {
+      var killSig = normalizeSignalToName(options.killSignal) || 'SIGTERM';
+      return {
+        pid: 0,
+        output: [null, Buffer.alloc(0), Buffer.alloc(0)],
+        stdout: Buffer.alloc(0),
+        stderr: Buffer.alloc(0),
+        status: null,
+        signal: killSig,
+        error: null,
+        __edgeError: {
+          code: 'ABORT_ERR',
+          message: 'The operation was aborted',
+          syscall: 'spawnSync ' + command,
+        },
+      };
+    }
     // env_pairs is a string[] of "KEY=VALUE" -- repack into a map for
     // the executor's friendlier interface.
     var env;
