@@ -1,0 +1,32 @@
+browser-target/src/policies/child-process-via-executor.ts
+  s_92c1b47c0d6ee8::t_1ece768fca6664 200-202,216-218
+  s_92c1b47c0d6ee8::t_78ba187d11649e 128-129
+  s_92c1b47c0d6ee8::t_29b1fc7e680b78 110-119
+  s_92c1b47c0d6ee8::t_dd179e1bd1972b 1-109,120-127,130-199,203-215,219-236
+tests/js/child-process-spawn-echo.js
+  s_92c1b47c0d6ee8::t_c309e99e8cbf83 1-10
+tests/js/child-process-spawn-echo.harness-args
+  s_92c1b47c0d6ee8::t_fae8cd21af0b0b 1
+browser-target/src/policies/index.ts
+  s_92c1b47c0d6ee8::t_a5d0dca898d47d 152
+  s_92c1b47c0d6ee8::t_fc3ec3e1c91073 133
+  s_92c1b47c0d6ee8::t_336cc3fa14ee07 244
+tests/js/child-process-spawn-echo.stdout
+  s_92c1b47c0d6ee8::t_6be4b1e61a5d79 1-3
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "42bbd0f9e4bf1320ec4a0a865f7acf278429d254",
+  "prompts": {},
+  "sessions": {
+    "s_92c1b47c0d6ee8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "dca99c1c-d946-4444-9a53-9ba89db5d748",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
