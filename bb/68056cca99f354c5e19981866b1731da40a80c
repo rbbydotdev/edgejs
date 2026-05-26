@@ -1,0 +1,23 @@
+NOTES.md
+  s_92c1b47c0d6ee8::t_198acca63cdb7a 93-106
+patches/wasmer-compiler-llvm-7.1.0-call-indirect-phi-fix.patch
+  s_92c1b47c0d6ee8::t_11ccb8efa75cd5 1-32
+src/edge_environment.cc
+  s_92c1b47c0d6ee8::t_48e5f711ce65b2 78-84
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "bb68056cca99f354c5e19981866b1731da40a80c",
+  "prompts": {},
+  "sessions": {
+    "s_92c1b47c0d6ee8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "dca99c1c-d946-4444-9a53-9ba89db5d748",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
