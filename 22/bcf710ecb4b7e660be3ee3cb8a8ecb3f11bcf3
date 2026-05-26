@@ -1,0 +1,52 @@
+NOTES.md
+  s_92c1b47c0d6ee8::t_fe52388c04b64b 93-108
+src/edge_runtime.cc
+  s_92c1b47c0d6ee8::t_f0340dd1f70dcd 1882-1885
+  s_92c1b47c0d6ee8::t_469f2ae264fde9 1874-1881
+experiments/e41-process-exit-diagnostic/probe-3-microtask.js
+  s_92c1b47c0d6ee8::t_b63084127ce3ff 1-16
+experiments/e41-process-exit-diagnostic/FINDINGS.md
+  s_92c1b47c0d6ee8::t_4c689ee40a9867 1-125
+src/edge_environment.cc
+  s_92c1b47c0d6ee8::t_d221bd0dad65cf 525
+  s_92c1b47c0d6ee8::t_f485d06b3b54b8 542,545,551,555
+  s_92c1b47c0d6ee8::t_c0ddb7f82b21f1 431,439-449
+  s_92c1b47c0d6ee8::t_17bf2aa3da8d8c 654
+  s_92c1b47c0d6ee8::t_8cfe0cf43f700e 584-597
+  s_92c1b47c0d6ee8::t_994fbf088b0576 1447-1461
+  s_92c1b47c0d6ee8::t_f6f0e553dd756e 642-651
+experiments/e41-process-exit-diagnostic/probe-5-wake-test.js
+  s_92c1b47c0d6ee8::t_c2df00349a5cc4 1-19
+experiments/e41-process-exit-diagnostic/run-probe.mjs
+  s_92c1b47c0d6ee8::t_af4faffb568395 1-47
+experiments/e41-process-exit-diagnostic/probe-4-flags.js
+  s_92c1b47c0d6ee8::t_6a6223f38aa77f 1-21
+src/edge_environment.h
+  s_92c1b47c0d6ee8::t_1ef15f16d77fd9 340-341,348,353
+  s_92c1b47c0d6ee8::t_31a3d2a7af3935 409-416
+browser-target/src/wasi-shim.ts
+  s_92c1b47c0d6ee8::t_b9a0ab3125d036 1122
+experiments/e41-process-exit-diagnostic/probe-2-context.js
+  s_92c1b47c0d6ee8::t_3783e15ac56ca3 1-28
+experiments/e41-process-exit-diagnostic/run-probe-with-stderr.mjs
+  s_92c1b47c0d6ee8::t_d6f0de05ca478b 43-50
+  s_92c1b47c0d6ee8::t_3e9fcda316d8db 1-42,51-61
+experiments/e41-process-exit-diagnostic/probe-1-reallyexit.js
+  s_92c1b47c0d6ee8::t_978aa5e27becd5 1-29
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.1",
+  "base_commit_sha": "22bcf710ecb4b7e660be3ee3cb8a8ecb3f11bcf3",
+  "prompts": {},
+  "sessions": {
+    "s_92c1b47c0d6ee8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "dca99c1c-d946-4444-9a53-9ba89db5d748",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
