@@ -1,0 +1,45 @@
+tests/js/child-process-ipc-advanced.js
+  s_92c1b47c0d6ee8::t_afdeb6022002ed 1-43
+tests/js/child-process-ipc-advanced.executor.js
+  s_92c1b47c0d6ee8::t_01c10531f5c1d6 1-14
+browser-target/src/host-worker/host-worker.ts
+  s_92c1b47c0d6ee8::t_142ac3a54a8c26 2155-2166
+  s_92c1b47c0d6ee8::t_d2bdefef3970c1 460-463,465-466
+  s_92c1b47c0d6ee8::t_784968396091c9 854
+  s_92c1b47c0d6ee8::t_904cf1ba965333 483-521
+  s_92c1b47c0d6ee8::t_97fa3b657f8263 932
+  s_92c1b47c0d6ee8::t_7524aea1c1e9e5 354
+  s_92c1b47c0d6ee8::t_aedb744f88e05d 962
+  s_92c1b47c0d6ee8::t_d826ef0c6340fe 529,536-547,551-555,567-572
+  s_92c1b47c0d6ee8::t_0e46aa175fa7d7 385
+browser-target/src/main.ts
+  s_92c1b47c0d6ee8::t_b9875704759e0a 111-130
+  s_92c1b47c0d6ee8::t_0d1910e479a49f 940-941,946-954
+browser-target/src/worker.ts
+  s_92c1b47c0d6ee8::t_70787b0fed8fb5 777-782
+  s_92c1b47c0d6ee8::t_476f1e18cedaeb 712-772
+browser-target/src/policies/child-process-via-executor.ts
+  s_92c1b47c0d6ee8::t_3419ff7d8799c1 1167-1250
+  s_92c1b47c0d6ee8::t_e9ebacf60d5a82 887-891
+  s_92c1b47c0d6ee8::t_3a9b1662fa2ba0 104-109
+tests/js/child-process-ipc-advanced.harness-args
+  s_92c1b47c0d6ee8::t_923b14f6b072bf 1
+tests/js/child-process-ipc-advanced.stdout
+  s_92c1b47c0d6ee8::t_29ddd9753c218d 1-6
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "4ea10fa743631c31fea93c337e3604221a159986",
+  "prompts": {},
+  "sessions": {
+    "s_92c1b47c0d6ee8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "dca99c1c-d946-4444-9a53-9ba89db5d748",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
