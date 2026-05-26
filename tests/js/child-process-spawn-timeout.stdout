@@ -1,0 +1,3 @@
+fast status: 0 sig: null out: "fast\n"
+timeout status: null sig: SIGTERM err.code: ETIMEDOUT
+killsig status: null sig: SIGKILL

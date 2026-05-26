@@ -98,11 +98,12 @@ const PRE_PATCH = `
   }
 
   // Async path. Calls into the worker.ts-installed global that does a
-  // sync RPC -> host -> postMessage main -> main's
-  // __edgeChildProcessExecutor (sync OR async). Wasm thread blocks on
-  // Atomics.wait inside the sync RPC client. Returns the parsed result
-  // object, or null if main has no executor installed (sentinel
-  // \`__noExecutor: true\`) so the caller falls back to fake shell.
+  // sync RPC to the host worker, which runs the user-installed executor
+  // (installed via host-worker init bootScript) in its own event loop.
+  // Wasm thread blocks on Atomics.wait inside the sync RPC client.
+  // Returns the parsed result object, or null if no executor is
+  // installed (sentinel \`__noExecutor: true\`) so the caller falls back
+  // to the default fake shell.
   function tryAsyncPath(command, args, opts) {
     var g = getGlobalThis();
     var spawnSync = g && g.__edgeChildProcessSpawnSync;
@@ -123,6 +124,7 @@ const PRE_PATCH = `
       cwd: opts && opts.cwd,
       input: inputNums,
       timeout: opts && typeof opts.timeout === 'number' ? opts.timeout : undefined,
+      killSignal: opts && opts.killSignal,
     };
     var replyJson;
     try {
@@ -133,11 +135,11 @@ const PRE_PATCH = `
     }
     var parsed;
     try { parsed = JSON.parse(replyJson); } catch (e) { void e; return null; }
-    if (parsed && parsed.__noExecutor) return null; // main has none.
+    if (parsed && parsed.__noExecutor) return null; // host has none.
     return {
       stdout: parsed.stdout ? new Uint8Array(parsed.stdout) : '',
       stderr: parsed.stderr ? new Uint8Array(parsed.stderr) : '',
-      code: typeof parsed.code === 'number' ? parsed.code : 0,
+      code: typeof parsed.code === 'number' ? parsed.code : null,
       signal: parsed.signal != null ? parsed.signal : null,
       error: parsed.error || null,
     };
@@ -240,50 +242,105 @@ const PRE_PATCH = `
     return Buffer.from(String(v), 'utf8');
   }
 
+  // Convert string signal name to numeric (NodeJS conventional values)
+  // so we have a value either way. lib's spawnSync expects the signal
+  // field to be a STRING -- a wrapper post-patch below ensures that.
+  var SIG_NAME_TO_NUM = {
+    SIGHUP:1, SIGINT:2, SIGQUIT:3, SIGILL:4, SIGTRAP:5, SIGABRT:6, SIGBUS:7,
+    SIGFPE:8, SIGKILL:9, SIGUSR1:10, SIGSEGV:11, SIGUSR2:12, SIGPIPE:13,
+    SIGALRM:14, SIGTERM:15, SIGCHLD:17, SIGCONT:18, SIGSTOP:19, SIGTSTP:20,
+  };
+  var SIG_NUM_TO_NAME = {};
+  for (var sk in SIG_NAME_TO_NUM) {
+    if (Object.prototype.hasOwnProperty.call(SIG_NAME_TO_NUM, sk)) {
+      SIG_NUM_TO_NAME[SIG_NAME_TO_NUM[sk]] = sk;
+    }
+  }
+  function normalizeSignalToName(s) {
+    if (s == null) return null;
+    if (typeof s === 'string') {
+      // Already a name? Could also be a stringified number ("9").
+      return SIG_NAME_TO_NUM[s] ? s
+        : (SIG_NUM_TO_NAME[Number(s)] || s);
+    }
+    if (typeof s === 'number') return SIG_NUM_TO_NAME[s] || ('SIG' + s);
+    return null;
+  }
+
   // edge.js's C++ SpawnSync returns a result object whose shape matches
   // what lib's internal/child_process.js expects:
   //   { pid: 0, output: [stdin, stdout, stderr], stdout, stderr,
   //     status: 0|null, signal: null|str, error: Error|null }
   // Build that shape from the executor's simpler return value.
+  //
+  // ERROR REPRESENTATION:
+  //
+  // lib's spawnSync wraps result.error via \`new ErrnoException(N, ...)\`
+  // which expects a libuv error NUMBER and maps N -> error.code via
+  // util.getSystemErrorName. The number-to-code mapping is build-specific
+  // (wasi-libc differs from macOS / Linux libuv), so hardcoding negative
+  // numbers (like -110 for ETIMEDOUT) is wrong on our build.
+  //
+  // Instead we leave result.error null in the binding, attach a
+  // \`__edgeError\` marker carrying the exact string code we want, and
+  // a post-patch on lib's spawnSync re-constructs result.error from the
+  // marker. That sidesteps the libuv-number mapping entirely.
+  //
+  // MAXBUFFER:
+  //
+  // Node spawnSync default is 1 MB per stream. If exceeded we truncate
+  // the buffers to maxBuffer and surface an ENOBUFS error. We mark
+  // status=null, signal=killSignal (Node's behavior is to kill the
+  // child when the limit is hit).
   function shapeResult(execResult, options) {
     var stdoutBytes = toBuffer(execResult.stdout);
     var stderrBytes = toBuffer(execResult.stderr);
 
-    // Node's lib uses Buffers; we use Uint8Array, which Buffer.from()
-    // wraps cheaply. lib will Buffer-ify when needed downstream.
+    var maxBuffer = (options && typeof options.maxBuffer === 'number' && options.maxBuffer > 0)
+      ? options.maxBuffer : 1024 * 1024;
+    var maxBufExceeded = false;
+    if (stdoutBytes.length > maxBuffer) {
+      stdoutBytes = stdoutBytes.subarray(0, maxBuffer);
+      maxBufExceeded = true;
+    }
+    if (stderrBytes.length > maxBuffer) {
+      stderrBytes = stderrBytes.subarray(0, maxBuffer);
+      maxBufExceeded = true;
+    }
+
     var stdio = options && options.stdio ? options.stdio : [];
     var output = new Array(Math.max(3, stdio.length || 3));
-    // output[0] is stdin -- always null on result.
     output[0] = null;
     output[1] = stdoutBytes;
     output[2] = stderrBytes;
-    // Higher stdio slots not supported -- fill with null.
     for (var i = 3; i < output.length; i++) output[i] = null;
 
+    var signalName = normalizeSignalToName(execResult.signal);
     var result = {
       pid: 0,
       output: output,
       stdout: stdoutBytes,
       stderr: stderrBytes,
-      status: execResult.code,
-      signal: execResult.signal != null ? execResult.signal : null,
+      status: (maxBufExceeded || signalName != null) ? null : execResult.code,
+      signal: signalName,
       error: null,
     };
-    // lib's internal/child_process.js spawnSync wraps result.error via
-    // \`new ErrnoException(result.error, 'spawnSync ' + file)\` -- which
-    // expects a libuv error NUMBER (negative). If our executor reports
-    // an error code as a string ('ENOENT'), map to the closest libuv
-    // numeric code. Unknown codes default to -EINVAL.
+    if (maxBufExceeded) {
+      result.__edgeError = {
+        code: 'ENOBUFS',
+        message: 'stdout maxBuffer length exceeded',
+        syscall: 'spawnSync ' + String(options && options.file != null ? options.file : ''),
+      };
+      // Mark signal too -- Node kills the child when maxBuffer exceeded.
+      result.signal = signalName || normalizeSignalToName(options && options.killSignal) || 'SIGTERM';
+      return result;
+    }
     if (execResult.error) {
-      var code = execResult.error.code;
-      var n = -22; // EINVAL
-      if (code === 'ENOENT' || code === 'ESPAWN') n = -2;
-      else if (code === 'EACCES') n = -13;
-      else if (code === 'EPERM') n = -1;
-      else if (code === 'ENOMEM') n = -12;
-      else if (code === 'ETIMEDOUT') n = -110;
-      else if (typeof code === 'number') n = code;
-      result.error = n;
+      result.__edgeError = {
+        code: execResult.error.code || 'ESPAWN',
+        message: execResult.error.message || String(execResult.error.code || 'spawn error'),
+        syscall: 'spawnSync ' + String(options && options.file != null ? options.file : ''),
+      };
     }
     return result;
   }
@@ -315,13 +372,17 @@ const PRE_PATCH = `
     }
     // Three-tier executor resolution:
     //   1. wasm-worker sync executor (fast path, no RPC)
-    //   2. main-thread executor via host RPC (async-capable)
+    //   2. host-worker async executor via sync RPC (async-capable)
     //   3. default fake shell (sync, on wasm-worker)
+    //
+    // Node's killSignal default is 'SIGTERM' (per spawnSync docs).
     var execOpts = {
       env: env,
       cwd: options.cwd != null ? String(options.cwd) : undefined,
       input: input,
-      timeout: typeof options.timeout === 'number' ? options.timeout : undefined,
+      timeout: typeof options.timeout === 'number' && options.timeout > 0
+        ? options.timeout : undefined,
+      killSignal: options.killSignal != null ? String(options.killSignal) : 'SIGTERM',
     };
     var execResult;
     var localExec = resolveLocalExecutor();
@@ -372,11 +433,43 @@ const PRE_PATCH = `
 })();
 `;
 
+// Post-patch on lib/internal/child_process: wrap the exported spawnSync
+// so when our binding attached a __edgeError marker on the result, we
+// reconstruct result.error from it AFTER lib's ErrnoException wrap.
+// This lets us deliver an Error with the EXACT code we want (e.g.
+// 'ETIMEDOUT', 'ENOBUFS') without depending on the build-specific
+// libuv error-number mapping.
+const POST_PATCH = `
+(function installSpawnSyncErrorPostPatch() {
+  if (!module || !module.exports || typeof module.exports.spawnSync !== 'function') return;
+  if (module.exports.__edgeSpawnSyncWrapped) return;
+  var orig = module.exports.spawnSync;
+  module.exports.spawnSync = function(options) {
+    var r = orig.call(this, options);
+    if (r && r.__edgeError) {
+      var info = r.__edgeError;
+      var err = new Error(info.message || ('spawn ' + info.code));
+      err.code = info.code;
+      err.errno = 0;
+      err.syscall = info.syscall || 'spawnSync';
+      if (options && options.file) err.path = options.file;
+      if (options && Array.isArray(options.args)) {
+        err.spawnargs = options.args.slice(1);
+      }
+      r.error = err;
+      delete r.__edgeError;
+    }
+    return r;
+  };
+  module.exports.__edgeSpawnSyncWrapped = true;
+})();
+`;
+
 export const childProcessViaExecutor: Policy = {
   name: "child-process-via-executor",
   description:
-    "Replace internalBinding('spawn_sync').spawn with a JS impl that delegates to a user-pluggable executor (default: echo). Avoids the JSPI SuspendError from native spawn_sync's uv_run loop.",
+    "Replace internalBinding('spawn_sync').spawn with a JS impl that delegates to a user-pluggable executor (default: small fake shell). Avoids the JSPI SuspendError from native spawn_sync's uv_run loop. Supports sync executors on the wasm worker (fast path) and async executors on the host worker (via sync RPC + Atomics.wait).",
   builtinOverrides: {
-    "internal/child_process": { pre: PRE_PATCH },
+    "internal/child_process": { pre: PRE_PATCH, post: POST_PATCH },
   },
 };

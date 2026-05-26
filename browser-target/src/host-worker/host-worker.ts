@@ -342,6 +342,7 @@ async function runChildProcessInHostWorker(requestJson: string): Promise<string>
     cwd?: string;
     input?: number[];
     timeout?: number;
+    killSignal?: string;
   }
   const req = JSON.parse(requestJson) as Req;
   const executor = (self as unknown as { __edgeChildProcessExecutor?: ChildProcExecutor })
@@ -355,7 +356,39 @@ async function runChildProcessInHostWorker(requestJson: string): Promise<string>
   if (req.cwd != null) opts.cwd = req.cwd;
   if (inputBytes) opts.input = inputBytes;
   if (typeof req.timeout === "number") opts.timeout = req.timeout;
-  const result = await Promise.resolve(executor(req.command, req.args || [], opts));
+  if (req.killSignal) opts.killSignal = req.killSignal;
+
+  // Timeout enforcement: race executor against a timer if req.timeout > 0.
+  // When the timer wins, we return a synthetic "killed by signal" result
+  // (Node's spawnSync sets result.signal = options.killSignal || 'SIGTERM',
+  // result.status = null, result.error = ETIMEDOUT). The executor keeps
+  // running in the background -- we can't synchronously abort an arbitrary
+  // user function; AbortSignal support (task P2) gives the executor a way
+  // to cooperate. Until then this is a leak on timeout, but a bounded one
+  // (the call returns and the wasm thread is freed).
+  const executorPromise = Promise.resolve(executor(req.command, req.args || [], opts));
+  let result: ChildProcExecResult;
+  if (typeof req.timeout === "number" && req.timeout > 0) {
+    const timeoutSentinel: unique symbol = Symbol("timeout") as never;
+    const timer = new Promise<typeof timeoutSentinel>((resolve) =>
+      setTimeout(() => resolve(timeoutSentinel), req.timeout),
+    );
+    const raced = await Promise.race([executorPromise, timer]);
+    if (raced === timeoutSentinel) {
+      result = {
+        stdout: new Uint8Array(0),
+        stderr: new Uint8Array(0),
+        code: null,
+        signal: req.killSignal || "SIGTERM",
+        error: { code: "ETIMEDOUT", message: "spawnSync timed out after " + req.timeout + "ms" },
+      };
+    } else {
+      result = raced as ChildProcExecResult;
+    }
+  } else {
+    result = await executorPromise;
+  }
+
   const toNums = (v: Uint8Array | string | number[] | undefined): number[] => {
     if (v == null) return [];
     if (typeof v === "string") return Array.from(new TextEncoder().encode(v));
@@ -366,7 +399,7 @@ async function runChildProcessInHostWorker(requestJson: string): Promise<string>
   return JSON.stringify({
     stdout: toNums(result.stdout),
     stderr: toNums(result.stderr),
-    code: typeof result.code === "number" ? result.code : 0,
+    code: typeof result.code === "number" ? result.code : null,
     signal: result.signal != null ? result.signal : null,
     error: result.error || null,
   });
