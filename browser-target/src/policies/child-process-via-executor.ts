@@ -90,20 +90,91 @@ const PRE_PATCH = `
             (typeof global !== 'undefined' && global);
     var ex = g && g.__edgeChildProcessExecutor;
     if (typeof ex === 'function') return ex;
-    return defaultEchoExecutor;
+    return defaultFakeShellExecutor;
   }
 
-  // Default executor: echoes the command + args back to stdout. Just
-  // enough for "the intercept is wired and routes through this layer".
-  function defaultEchoExecutor(command, args, _opts) {
-    var line = String(command);
-    if (args && args.length > 0) line += ' ' + args.join(' ');
+  // Default executor: a tiny fake shell with a handful of authentic
+  // UNIX commands. Enough to demonstrate the executor interface and
+  // make trivial spawnSync calls do what callers expect ("echo hi"
+  // returns "hi\\n"). Users who need more should install their own
+  // executor; see file header.
+  //
+  // Command resolution: matches by basename (so /bin/echo, ./echo,
+  // and "echo" all hit the same handler).
+  function basename(p) {
+    var s = String(p || '');
+    var i = s.lastIndexOf('/');
+    return i < 0 ? s : s.slice(i + 1);
+  }
+
+  var FAKE_SHELL = {
+    // \`echo [-n] [args...]\` -- args joined by space, newline unless -n.
+    echo: function(args, _opts) {
+      var noNewline = false;
+      var i = 0;
+      if (args[0] === '-n') { noNewline = true; i = 1; }
+      var out = args.slice(i).join(' ');
+      return { stdout: noNewline ? out : out + '\\n', stderr: '', code: 0 };
+    },
+    // \`true\` -- exit 0, no output. \`false\` -- exit 1, no output.
+    true: function() { return { stdout: '', stderr: '', code: 0 }; },
+    false: function() { return { stdout: '', stderr: '', code: 1 }; },
+    // \`cat\` -- write stdin to stdout (file args not supported in MVP).
+    cat: function(_args, opts) {
+      var input = opts && opts.input;
+      if (input == null) input = '';
+      if (input instanceof Uint8Array) {
+        return { stdout: input, stderr: '', code: 0 };
+      }
+      return { stdout: String(input), stderr: '', code: 0 };
+    },
+    // \`env\` -- print KEY=VALUE for each env var, one per line.
+    env: function(_args, opts) {
+      var env = (opts && opts.env) || {};
+      var lines = [];
+      for (var k in env) {
+        if (Object.prototype.hasOwnProperty.call(env, k)) {
+          lines.push(k + '=' + env[k]);
+        }
+      }
+      return { stdout: lines.join('\\n') + (lines.length ? '\\n' : ''), stderr: '', code: 0 };
+    },
+    // \`pwd\` -- print cwd.
+    pwd: function(_args, opts) {
+      var cwd = (opts && opts.cwd) || '/';
+      return { stdout: cwd + '\\n', stderr: '', code: 0 };
+    },
+  };
+
+  function defaultFakeShellExecutor(command, args, opts) {
+    var name = basename(command);
+    var handler = FAKE_SHELL[name];
+    if (typeof handler === 'function') {
+      try {
+        var res = handler(args || [], opts || {});
+        // Normalize: missing fields default sensibly.
+        return {
+          stdout: res.stdout != null ? res.stdout : '',
+          stderr: res.stderr != null ? res.stderr : '',
+          code: typeof res.code === 'number' ? res.code : 0,
+          signal: res.signal != null ? res.signal : null,
+          error: res.error || null,
+        };
+      } catch (e) {
+        return {
+          stdout: '', stderr: String(e && e.message ? e.message : e), code: 1,
+          signal: null,
+          error: { code: 'EFAKESHELL', message: String(e && e.message ? e.message : e) },
+        };
+      }
+    }
+    // Unknown command: behave like a real shell -- ENOENT, exit 127.
     return {
-      stdout: line + '\\n',
-      stderr: '',
-      code: 0,
+      stdout: '',
+      stderr: name + ': command not found\\n',
+      code: 127,
       signal: null,
-      error: null,
+      error: { code: 'ENOENT', message: 'spawn ' + name + ' ENOENT' },
     };
   }
 
@@ -148,11 +219,21 @@ const PRE_PATCH = `
       signal: execResult.signal != null ? execResult.signal : null,
       error: null,
     };
+    // lib's internal/child_process.js spawnSync wraps result.error via
+    // \`new ErrnoException(result.error, 'spawnSync ' + file)\` -- which
+    // expects a libuv error NUMBER (negative). If our executor reports
+    // an error code as a string ('ENOENT'), map to the closest libuv
+    // numeric code. Unknown codes default to -EINVAL.
     if (execResult.error) {
-      var err = new Error(execResult.error.message || 'spawn error');
-      err.code = execResult.error.code || 'ESPAWN';
-      err.errno = 0;
-      result.error = err;
+      var code = execResult.error.code;
+      var n = -22; // EINVAL
+      if (code === 'ENOENT' || code === 'ESPAWN') n = -2;
+      else if (code === 'EACCES') n = -13;
+      else if (code === 'EPERM') n = -1;
+      else if (code === 'ENOMEM') n = -12;
+      else if (code === 'ETIMEDOUT') n = -110;
+      else if (typeof code === 'number') n = code;
+      result.error = n;
     }
     return result;
   }
@@ -192,9 +273,8 @@ const PRE_PATCH = `
         timeout: typeof options.timeout === 'number' ? options.timeout : undefined,
       });
     } catch (e) {
-      // Executor itself threw -- surface as a spawn error.
-      var sysErr = new Error(e && e.message ? e.message : String(e));
-      sysErr.code = (e && e.code) || 'ESPAWN_EXECUTOR';
+      // Executor itself threw -- surface as a spawn error (-EINVAL).
+      void e;
       return {
         pid: 0,
         output: [null, Buffer.alloc(0), Buffer.alloc(0)],
@@ -202,15 +282,11 @@ const PRE_PATCH = `
         stderr: Buffer.alloc(0),
         status: null,
         signal: null,
-        error: sysErr,
+        error: -22,
       };
     }
     // Detect accidentally-async executors so users get a clear message.
     if (execResult && typeof execResult.then === 'function') {
-      var asyncErr = new Error(
-        'edgejs child-process executor returned a Promise; MVP only supports sync return',
-      );
-      asyncErr.code = 'ERR_NOT_IMPLEMENTED';
       return {
         pid: 0,
         output: [null, Buffer.alloc(0), Buffer.alloc(0)],
@@ -218,7 +294,7 @@ const PRE_PATCH = `
         stderr: Buffer.alloc(0),
         status: null,
         signal: null,
-        error: asyncErr,
+        error: -38, // ENOSYS - function not implemented
       };
     }
     return shapeResult(execResult || {}, options);

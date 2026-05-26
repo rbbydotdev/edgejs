@@ -1,3 +1,7 @@
-status: 0
-stdout: echo hello world
-stderr.length: 0
+echo status: 0 out: "hello world\n"
+echo -n out: "no-newline"
+true status: 0
+false status: 1
+cat out: "piped through cat\n"
+unknown status: 127 err: "nope-not-a-real-cmd: command not found"
+/bin/echo out: "from-path\n"
