@@ -108,6 +108,26 @@ async function spawnHostThenRuntime(): Promise<void> {
     await runUserScriptOnHost(userScript, "test-runner");
     return;
   }
+  // P3.9: structured-clone IPC channel. A MessageChannel between the
+  // wasm-runtime worker and the host worker lets cp.send/process.send
+  // round-trip values via native postMessage (Map, Set, Date,
+  // ArrayBuffer, circular refs all preserved with full V8 fidelity --
+  // free, because postMessage IS structured-clone). Activates when
+  // spawn(..., { serialization: 'advanced' }). json mode keeps the
+  // existing byte-stream RPC path.
+  //
+  // Main orchestrates: creates the channel, transfers one port to each
+  // worker. After this, the two workers postMessage on their ports
+  // directly with no main-thread relay.
+  const ipcStructuredChannel = new MessageChannel();
+  if (hostHandle) {
+    hostHandle.worker.postMessage(
+      { kind: "edge-ipc-structured-port", port: ipcStructuredChannel.port1 },
+      [ipcStructuredChannel.port1],
+    );
+  }
+  // Stash the runtime side for spawnRuntimeWorker to ship.
+  pendingIpcStructuredPort = ipcStructuredChannel.port2;
   spawnRuntimeWorker();
   // L4 reverse-echo probe: after runtime worker spawns and attaches its
   // reverse-channel server, the host worker can echo via that channel.
@@ -917,10 +937,21 @@ async function runEchoBench(iters: number, payloadBytes: number): Promise<void> 
   );
 }
 
+let pendingIpcStructuredPort: MessagePort | null = null;
+
 function spawnRuntimeWorker() {
   worker = new Worker(new URL("./worker.ts", import.meta.url), { type: "module" });
   // Hand the FS snapshot SAB to runtime before any other message.
   worker.postMessage({ kind: "edge-fs-snapshot-sab", sab: fsSnapshotSab });
+  // P3.9: ship the structured-clone IPC port to runtime (other half is
+  // already with the host worker).
+  if (pendingIpcStructuredPort) {
+    worker.postMessage(
+      { kind: "edge-ipc-structured-port", port: pendingIpcStructuredPort },
+      [pendingIpcStructuredPort],
+    );
+    pendingIpcStructuredPort = null;
+  }
   // Hand the host worker's RPC SABs so the runtime can talk to it.
   if (hostHandle) {
     worker.postMessage({

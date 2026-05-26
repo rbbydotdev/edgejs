@@ -351,6 +351,7 @@ function unpackChildProcRequest(buf: Uint8Array): {
   killSignal?: string;
   input?: Uint8Array;
   ipc?: boolean;
+  ipcAdvanced?: boolean;
 } | null {
   if (buf.byteLength < 8) return null;
   const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
@@ -381,6 +382,7 @@ function unpackChildProcRequest(buf: Uint8Array): {
     killSignal: typeof header.killSignal === "string" ? header.killSignal : undefined,
     input,
     ipc: header.ipc === true,
+    ipcAdvanced: header.ipcAdvanced === true,
   };
 }
 
@@ -455,8 +457,13 @@ interface IpcChannel {
   // (status=1, same as no-such-child) and opts.ipc is absent.
   enabled: boolean;
   connected: boolean;
+  // P3.9: 'advanced' serialization uses the MessageChannel port for
+  // full structured-clone fidelity. 'json' (default) uses byte-stream
+  // RPC with JSON.stringify.
+  advanced: boolean;
   // Handlers registered by the executor via opts.ipc.on('message', cb).
-  // Called when wasm-side .send(msg) is forwarded by OP_SPAWN_IPC_SEND.
+  // Called when wasm-side .send(msg) is forwarded by OP_SPAWN_IPC_SEND
+  // (json) or by MessagePort dispatch (advanced).
   messageHandlers: Array<(msg: unknown) => void>;
   // Handlers registered by the executor via opts.ipc.on('disconnect', cb).
   disconnectHandlers: Array<() => void>;
@@ -473,6 +480,45 @@ interface SpawnAsyncChild {
   ipc: IpcChannel;
 }
 
+// P3.9: structured-clone IPC port (one half of a MessageChannel between
+// host and wasm-runtime). Routes per-childId messages with full V8
+// postMessage fidelity. Activates only for serialization: 'advanced'
+// spawns; json-mode spawns keep using the byte-stream RPC path.
+let ipcStructuredPort: MessagePort | null = null;
+const ipcStructuredHandlers = new Map<number, (msg: unknown) => void>();
+function attachIpcStructuredPort(port: MessagePort): void {
+  if (ipcStructuredPort) {
+    log("ipc-structured-port received twice; replacing", "warn");
+  }
+  ipcStructuredPort = port;
+  port.onmessage = (e: MessageEvent) => {
+    const data = e.data as { childId?: number; msg?: unknown; kind?: string };
+    if (!data || typeof data.childId !== "number") return;
+    if (data.kind === "disconnect") {
+      const child = asyncSpawnChildren.get(data.childId);
+      if (child && child.ipc.connected) {
+        child.ipc.connected = false;
+        for (const cb of child.ipc.disconnectHandlers.splice(0)) {
+          try { cb(); } catch (_e) { void _e; }
+        }
+      }
+      return;
+    }
+    const handler = ipcStructuredHandlers.get(data.childId);
+    if (handler) handler(data.msg);
+  };
+  port.start?.();
+}
+function sendIpcStructuredMessage(childId: number, msg: unknown, transfer?: Transferable[]): boolean {
+  if (!ipcStructuredPort) return false;
+  ipcStructuredPort.postMessage({ childId, msg }, transfer || []);
+  return true;
+}
+function sendIpcStructuredDisconnect(childId: number): void {
+  if (!ipcStructuredPort) return;
+  ipcStructuredPort.postMessage({ childId, kind: "disconnect" });
+}
+
 // Build the executor-facing IPC handle (`opts.ipc`). Mirrors Node's
 // process.send / 'message' / 'disconnect' surface but lives in the
 // host-worker JS realm. Symmetric with wasm-side child.send / child.on:
@@ -480,15 +526,33 @@ interface SpawnAsyncChild {
 function makeIpcHandle(
   childId: number,
   channel: IpcChannel,
+  advanced: boolean,
 ): {
   send: (msg: unknown) => boolean;
   on: (event: "message" | "disconnect", cb: (...args: unknown[]) => void) => void;
   disconnect: () => void;
   readonly connected: boolean;
 } {
+  // For 'advanced' mode, register a structured-handler that gets
+  // values straight from the MessageChannel port (already cloned by
+  // the browser). For 'json' mode, the byte-stream RPC path handles
+  // message delivery via OP_SPAWN_IPC_SEND -> microtask -> messageHandlers.
+  if (advanced) {
+    ipcStructuredHandlers.set(childId, (msg) => {
+      if (!channel.connected) return;
+      for (const cb of channel.messageHandlers) {
+        try { cb(msg); } catch (_e) { void _e; }
+      }
+    });
+  }
   return {
     send(msg: unknown): boolean {
       if (!channel.connected) return false;
+      if (advanced) {
+        // postMessage carries the live value across the realm; full
+        // structured-clone semantics (Map/Set/Date/ArrayBuffer/cycles).
+        return sendIpcStructuredMessage(childId, msg);
+      }
       const json = JSON.stringify(msg);
       emitAsyncEvent(childId, 5 /*ipc-message*/, new TextEncoder().encode(json));
       return true;
@@ -500,8 +564,12 @@ function makeIpcHandle(
     disconnect(): void {
       if (!channel.connected) return;
       channel.connected = false;
-      // Notify wasm side so EdgeChildProcess emits 'disconnect' there.
-      emitAsyncEvent(childId, 6 /*ipc-disconnect*/, new Uint8Array(0));
+      if (advanced) {
+        sendIpcStructuredDisconnect(childId);
+      } else {
+        // Notify wasm side so EdgeChildProcess emits 'disconnect' there.
+        emitAsyncEvent(childId, 6 /*ipc-disconnect*/, new Uint8Array(0));
+      }
       for (const cb of channel.disconnectHandlers.splice(0)) {
         try { cb(); } catch (_e) { void _e; }
       }
@@ -783,6 +851,7 @@ async function startAsyncSpawn(requestBytes: Uint8Array): Promise<Uint8Array> {
   const ipc: IpcChannel = {
     enabled: req.ipc === true,
     connected: req.ipc === true,
+    advanced: req.ipcAdvanced === true,
     messageHandlers: [],
     disconnectHandlers: [],
   };
@@ -860,7 +929,7 @@ async function startAsyncSpawn(requestBytes: Uint8Array): Promise<Uint8Array> {
   // 'ipc' entry (cp.fork default). Executors that ignore opts.ipc
   // mean the wasm-side child.send() will succeed at the RPC layer
   // but the message will be dropped on the host (no handler).
-  if (ipc.enabled) opts.ipc = makeIpcHandle(childId, ipc);
+  if (ipc.enabled) opts.ipc = makeIpcHandle(childId, ipc, ipc.advanced);
   if (req.env) opts.env = req.env;
   if (req.cwd != null) opts.cwd = req.cwd;
   if (req.input) opts.input = req.input;
@@ -890,6 +959,7 @@ async function startAsyncSpawn(requestBytes: Uint8Array): Promise<Uint8Array> {
       }
       const child = asyncSpawnChildren.get(childId);
       if (child) { child.done = true; asyncSpawnChildren.delete(childId); }
+      ipcStructuredHandlers.delete(childId);
       return;
     }
     // Convert result bytes; emit as one or more chunks.
@@ -2080,6 +2150,18 @@ self.addEventListener("message", (e: MessageEvent) => {
   }
   if (data?.kind === "deliver-message-from-child") {
     deliverMessageFromChild(data.workerId, data.bytes);
+    return;
+  }
+  // P3.9: structured-clone IPC port (one half of a MessageChannel from
+  // main; the other half is on the wasm runtime worker). This port
+  // delivers parent->child cp.send(msg) values with FULL postMessage
+  // structured-clone fidelity (Map, Set, Date, ArrayBuffer, circular
+  // refs all preserved). Routes per-childId to the matching executor's
+  // opts.ipc message handlers; sends from the executor go back via the
+  // same port. Activates when spawn(..., { serialization: 'advanced' }).
+  if ((data as { kind?: string })?.kind === "edge-ipc-structured-port") {
+    const port = (data as { port: MessagePort }).port;
+    attachIpcStructuredPort(port);
     return;
   }
   if (!data || data.kind !== "init") return;

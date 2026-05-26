@@ -709,10 +709,77 @@ function installPostMessageGlobals(): void {
 let sharedWasmModule: WebAssembly.Module | null = null;
 let userWorkerMode: { workerId: number; bootstrapScript: string; workerData: Uint8Array } | null = null;
 
+// P3.9: structured-clone IPC port (paired with host worker's half).
+// Used when spawn(..., { serialization: 'advanced' }) creates a
+// ChildProcess: cp.send / 'message' route through this port instead
+// of the byte-stream RPC, giving full V8 postMessage fidelity
+// (Map/Set/Date/ArrayBuffer/circular refs all preserved).
+let ipcStructuredPort: MessagePort | null = null;
+const ipcStructuredChildHandlers = new Map<number, (msg: unknown) => void>();
+const ipcStructuredDisconnectHandlers = new Map<number, () => void>();
+function attachIpcStructuredPort(port: MessagePort): void {
+  if (ipcStructuredPort) {
+    post("log", { text: "[runtime] ipc-structured-port received twice; replacing", level: "warn" });
+  }
+  ipcStructuredPort = port;
+  port.onmessage = (e: MessageEvent) => {
+    const data = e.data as { childId?: number; msg?: unknown; kind?: string };
+    if (!data || typeof data.childId !== "number") return;
+    if (data.kind === "disconnect") {
+      const cb = ipcStructuredDisconnectHandlers.get(data.childId);
+      if (cb) {
+        ipcStructuredDisconnectHandlers.delete(data.childId);
+        try { cb(); } catch (_e) { void _e; }
+      }
+      return;
+    }
+    const handler = ipcStructuredChildHandlers.get(data.childId);
+    if (handler) handler(data.msg);
+  };
+  port.start?.();
+  // Expose to JS land for the child-process policy to use.
+  type IpcSendStructured = (childId: number, msg: unknown, transfer?: Transferable[]) => boolean;
+  type IpcDisconnectStructured = (childId: number) => boolean;
+  type IpcRegister = (
+    childId: number,
+    onMessage: (msg: unknown) => void,
+    onDisconnect: () => void,
+  ) => void;
+  type IpcUnregister = (childId: number) => void;
+  const sender: IpcSendStructured = (childId, msg, transfer) => {
+    if (!ipcStructuredPort) return false;
+    ipcStructuredPort.postMessage({ childId, msg }, transfer || []);
+    return true;
+  };
+  const disconnecter: IpcDisconnectStructured = (childId) => {
+    if (!ipcStructuredPort) return false;
+    ipcStructuredPort.postMessage({ childId, kind: "disconnect" });
+    return true;
+  };
+  const register: IpcRegister = (childId, onMessage, onDisconnect) => {
+    ipcStructuredChildHandlers.set(childId, onMessage);
+    ipcStructuredDisconnectHandlers.set(childId, onDisconnect);
+  };
+  const unregister: IpcUnregister = (childId) => {
+    ipcStructuredChildHandlers.delete(childId);
+    ipcStructuredDisconnectHandlers.delete(childId);
+  };
+  (globalThis as { __edgeChildProcessIpcStructuredSend?: IpcSendStructured }).__edgeChildProcessIpcStructuredSend = sender;
+  (globalThis as { __edgeChildProcessIpcStructuredDisconnect?: IpcDisconnectStructured }).__edgeChildProcessIpcStructuredDisconnect = disconnecter;
+  (globalThis as { __edgeChildProcessIpcStructuredRegister?: IpcRegister }).__edgeChildProcessIpcStructuredRegister = register;
+  (globalThis as { __edgeChildProcessIpcStructuredUnregister?: IpcUnregister }).__edgeChildProcessIpcStructuredUnregister = unregister;
+}
+
 self.addEventListener("message", (e: MessageEvent) => {
   const data = e.data as { kind?: string; sab?: SharedArrayBuffer; requestSab?: SharedArrayBuffer; replySab?: SharedArrayBuffer; hostWorkerId?: number } | null;
   if (data?.kind === "edge-fs-snapshot-sab" && data.sab) {
     fsSnapshotSab = data.sab;
+  } else if ((data as { kind?: string })?.kind === "edge-ipc-structured-port") {
+    // P3.9: structured-clone IPC port (paired with the half on the host
+    // worker). Used by child-process IPC when serialization:'advanced'
+    // is requested. Stash + wire dispatch.
+    const port = (data as { port: MessagePort }).port;
+    attachIpcStructuredPort(port);
   } else if (data?.kind === "edge-host-rpc-sab" && data.requestSab && data.replySab) {
     hostWorkerId = data.hostWorkerId ?? 0;
     // Expose to JS land (policy patches use this to set originWorkerId
