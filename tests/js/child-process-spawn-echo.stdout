@@ -1,0 +1,3 @@
+status: 0
+stdout: echo hello world
+stderr.length: 0

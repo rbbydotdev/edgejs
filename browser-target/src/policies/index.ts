@@ -130,6 +130,7 @@ export { outboundThrow } from "./outbound-throw";
 export { outboundFetchTunnel } from "./outbound-fetch-tunnel";
 export { fastReadFile } from "./fast-readfile";
 export { workerThreadsPerThread } from "./worker-threads-per-thread";
+export { childProcessViaExecutor } from "./child-process-via-executor";
 
 import { bufferPoolDisable } from "./buffer-pool-disable";
 import { bufferWriteSync } from "./buffer-write-sync";
@@ -148,6 +149,7 @@ import { outboundThrow } from "./outbound-throw";
 import { outboundFetchTunnel } from "./outbound-fetch-tunnel";
 import { fastReadFile } from "./fast-readfile";
 import { workerThreadsPerThread } from "./worker-threads-per-thread";
+import { childProcessViaExecutor } from "./child-process-via-executor";
 
 // =============================================================================
 // SANE DEFAULTS
@@ -239,4 +241,5 @@ export const policyRegistry: Record<string, Policy> = {
   [outboundFetchTunnel.name]: outboundFetchTunnel,
   [fastReadFile.name]: fastReadFile,
   [workerThreadsPerThread.name]: workerThreadsPerThread,
+  [childProcessViaExecutor.name]: childProcessViaExecutor,
 };
