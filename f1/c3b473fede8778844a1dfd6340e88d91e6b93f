@@ -1,0 +1,27 @@
+experiments/e35-uv-async-keepalive-probe/FINDINGS.md
+  s_92c1b47c0d6ee8::t_283c551e342a6d 3-8
+experiments/e36-async-wfd-probe/FINDINGS.md
+  s_92c1b47c0d6ee8::t_393df4be80f68c 3-11
+experiments/e37-uvrun-blocks/FINDINGS.md
+  s_92c1b47c0d6ee8::t_3cd3c265f55ad7 3-9
+experiments/e38-polloneoff-trace/FINDINGS.md
+  s_92c1b47c0d6ee8::t_9bc45f5205753b 3-8
+experiments/archived/e39-double-fire/FINDINGS.md
+  s_92c1b47c0d6ee8::t_69a02048f13695 3-9
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.1",
+  "base_commit_sha": "f1c3b473fede8778844a1dfd6340e88d91e6b93f",
+  "prompts": {},
+  "sessions": {
+    "s_92c1b47c0d6ee8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "dca99c1c-d946-4444-9a53-9ba89db5d748",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
