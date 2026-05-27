@@ -1,0 +1,73 @@
+tests/js/child-process-kill-uncooperative.stdout
+  s_92c1b47c0d6ee8::t_d4007b0ba71847 1-5
+tests/js/child-process-kill-uncooperative.harness-args
+  s_92c1b47c0d6ee8::t_902d5b251d06a2 1
+browser-target/src/host-worker/rpc-protocol.ts
+  s_92c1b47c0d6ee8::t_68efe3971b0d72 789-806
+  s_92c1b47c0d6ee8::t_031f7476b81c1f 807-829
+tests/js/child-process-ipc-burst-limit.js
+  s_92c1b47c0d6ee8::t_eb3438dfe0b3e5 1-33
+tests/js/child-process-shell-true.executor.js
+  s_92c1b47c0d6ee8::t_47174bdb62123c 1-33
+browser-target/src/worker.ts
+  s_92c1b47c0d6ee8::t_7ffe2f8a644247 108
+  s_92c1b47c0d6ee8::t_6a6cd33714769d 111
+  s_92c1b47c0d6ee8::t_fbc683fb26c0e1 104
+  s_92c1b47c0d6ee8::t_6cb5015a13e9ca 708-709,712,714,717-723,725,728-729,731,733-736,745-746
+tests/js/child-process-shell-true.stdout
+  s_92c1b47c0d6ee8::t_d3b56d8103999f 1-2
+browser-target/src/host-worker/worker-pool.ts
+  s_92c1b47c0d6ee8::t_cc83d9335c7f91 12-13
+browser-target/src/host-worker/ipc-structured-port.ts
+  s_92c1b47c0d6ee8::t_0ad750805898f2 1-53
+browser-target/src/main.ts
+  s_92c1b47c0d6ee8::t_07cd2d5626faaa 169,237,688,790,844,896
+  s_92c1b47c0d6ee8::t_e474b04ac9d54e 74
+tests/js/child-process-shell-true.js
+  s_92c1b47c0d6ee8::t_d8c665081e75ec 1-20
+tests/js/child-process-shell-true.harness-args
+  s_92c1b47c0d6ee8::t_49f7379d97e3ff 1
+browser-target/src/policies/child-process-via-executor.ts
+  s_92c1b47c0d6ee8::t_8e18bce995ce44 1017
+  s_92c1b47c0d6ee8::t_1a2666e9a01fc8 616
+  s_92c1b47c0d6ee8::t_7c1187768c664f 965-966,971,976,986,990,1002
+  s_92c1b47c0d6ee8::t_94d79a6758d3a1 2
+tests/js/child-process-kill-uncooperative.executor.js
+  s_92c1b47c0d6ee8::t_08e8bc4af91008 1-11
+tests/js/child-process-ipc-burst-limit.executor.js
+  s_92c1b47c0d6ee8::t_dac5a28409162e 1-16
+tests/js/child-process-ipc-burst-limit.harness-args
+  s_92c1b47c0d6ee8::t_e1da7b4622602a 1
+tests/js/child-process-ipc-burst-limit.stdout
+  s_92c1b47c0d6ee8::t_1d358fff8fbb50 1-3
+browser-target/src/host-worker/host-worker.ts
+  s_92c1b47c0d6ee8::t_220948cbe8aaf4 554,574,699,707,873,905,910,929,933,961,965-966,985-986,997,1003
+  s_92c1b47c0d6ee8::t_8f08d3f0bd278f 63
+  s_92c1b47c0d6ee8::t_37d8044ca3dd1e 62
+  s_92c1b47c0d6ee8::t_69342442721dc8 566-571
+  s_92c1b47c0d6ee8::t_01f967965329b8 97-99
+  s_92c1b47c0d6ee8::t_79195384c19b2e 1823-1825
+  s_92c1b47c0d6ee8::t_0695c2a6a2d554 487-488,490,492,495-501,504,509-510,513,516
+  s_92c1b47c0d6ee8::t_d4c39906f4d69a 26
+  s_92c1b47c0d6ee8::t_ecbd51b5ab4407 1052-1060
+  s_92c1b47c0d6ee8::t_7888035ef953a9 1076-1080
+tests/js/child-process-kill-uncooperative.js
+  s_92c1b47c0d6ee8::t_862cd1629ed184 6-15
+  s_92c1b47c0d6ee8::t_d36b65ad9d7d6f 1-5,16-33
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "6d0295c408bfe86ff328a253fd03801dedc5f3ab",
+  "prompts": {},
+  "sessions": {
+    "s_92c1b47c0d6ee8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "dca99c1c-d946-4444-9a53-9ba89db5d748",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
