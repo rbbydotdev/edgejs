@@ -19,7 +19,7 @@ import {
   freeSlot,
   readWakeCounter,
   waitForReadyAsync,
-  STATUS_READY,
+  type RingMessage,
 } from "../wasi-shim/sab-ring";
 import {
   REPLY_HEADER_SIZE,
@@ -93,6 +93,7 @@ export class RpcServer {
       // drains it. Either way, no slot is stranded.
       const lastSeen = readWakeCounter(this.requestRing);
       const messages = drainRing(this.requestRing);
+      sortByRequestId(messages);
       for (const m of messages) {
         // Copy header out before processing — payload aliases SAB and
         // we'll free the slot before the handler resolves.
@@ -119,37 +120,20 @@ export class RpcServer {
   }
 
   /** Synchronously drain whatever request slots are ready RIGHT NOW and
-   *  dispatch their handlers, but ONLY when the ring is under real
-   *  pressure (more than half full). Wired into SyncRpcClient as
-   *  drainReverseRequests so that bursty reverse traffic (cp.send loops,
-   *  many concurrent callbacks) doesn't exhaust the host's reverseClient
-   *  backoff and silently drop events; see NOTES.md
-   *  "host-rpc-sync-reverse-drain".
+   *  dispatch their handlers. Wired into SyncRpcClient as
+   *  drainReverseRequests so that while the wasm thread is parked in
+   *  Atomics.wait for a forward reply, inbound reverse requests still
+   *  flow -- otherwise the reverse-RPC ring fills up and host's
+   *  fire-and-forget reverseClient.call drops events after backoff.
    *
-   *  Why gate on pressure: the async start() loop spreads dispatches
-   *  across libuv ticks, and lib's Readable.push() queues a setImmediate
-   *  per chunk to emit 'data'. If we drain STDOUT and EXIT into the same
-   *  tick, 'data' lands on the NEXT tick (after 'exit' fired and the
-   *  user's process.exit() ran), losing the buffered bytes. Under
-   *  normal load, leaving the async loop in charge preserves that
-   *  ordering. Under burst load, the ring would overflow anyway, so we
-   *  accept the timing risk in exchange for not dropping events. */
+   *  Eager (no pressure gate) is safe because sortByRequestId restores
+   *  publish-order via the monotonic per-client requestId, fixing the
+   *  drainRing-returns-slot-index-order vs tryClaimSlot-recycles-low-slots
+   *  reorder race that previously corrupted streamed stdout chunks.
+   *  See `ring-publish-order-vs-slot-index` in NOTES.md. */
   drainOnce(): void {
-    const numSlots = this.requestRing.config.numSlots;
-    const slotSize = this.requestRing.config.slotSize;
-    const pressureThreshold = numSlots >>> 1; // half-full
-    let ready = 0;
-    for (let slot = 0; slot < numSlots; slot++) {
-      // GLOBAL_HEADER_SIZE=16 + slot*slotSize + SLOT_HEADER_STATUS(=0), /4.
-      const statusIdx = (16 + slot * slotSize) >>> 2;
-      if (NativeAtomics.load(this.requestRing.i32, statusIdx) === STATUS_READY) {
-        ready++;
-        if (ready > pressureThreshold) break;
-      }
-    }
-    if (ready <= pressureThreshold) return;
-
     const messages = drainRing(this.requestRing);
+    sortByRequestId(messages);
     for (const m of messages) {
       const hdr = readRequestHeader(m.payload);
       const argsCopy = new Uint8Array(m.payload.byteLength - REQUEST_HEADER_SIZE);
@@ -239,3 +223,30 @@ export class RpcServer {
 }
 
 export { EMPTY_BYTES };
+
+/** Sort drained ring messages into publish order using the monotonic
+ *  per-client requestId embedded in each request header. drainRing
+ *  itself returns slots in slot-INDEX order, which doesn't match
+ *  publish order when the writer's tryClaimSlot (always scans from
+ *  slot 0) recycles a freed low-index slot while higher slots still
+ *  hold older messages. Sorting here lets us drain the ring eagerly
+ *  without reordering data the consumer relies on (e.g. chunked stdout
+ *  from emitChunked).
+ *
+ *  Wraparound-safe via signed difference: (a - b) | 0 is negative
+ *  when a comes before b modulo 2^32. In practice the in-flight
+ *  requestId window is bounded by ring size (≤ numSlots), so naive
+ *  unsigned compare works ~always but the signed-diff form removes
+ *  the corner case at u32 wrap (after 0xFFFFFFF0 calls). */
+function sortByRequestId(messages: RingMessage[]): void {
+  if (messages.length < 2) return;
+  messages.sort((a, b) => {
+    // requestId lives at offset 4 of REQUEST_HEADER (after opCode).
+    if (a.payload.byteLength < 8 || b.payload.byteLength < 8) return 0;
+    const aDv = new DataView(a.payload.buffer, a.payload.byteOffset, a.payload.byteLength);
+    const bDv = new DataView(b.payload.buffer, b.payload.byteOffset, b.payload.byteLength);
+    const aId = aDv.getUint32(4, true);
+    const bId = bDv.getUint32(4, true);
+    return (aId - bId) | 0;
+  });
+}

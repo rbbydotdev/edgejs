@@ -93,21 +93,33 @@ the browser-target tree.
 ### Newly opened
 
 - **`child-process-ipc-sendhandle`** (2026-05-27, P3.3; PARTIALLY
-  RESOLVED 2026-05-27 P4.5) — `cp.send(msg, handle)` in advanced mode
-  now wraps the handle in an `{__edgeSendHandle, msg, handle}` envelope
-  and transfers it via the existing structured port; receiver unwraps
-  and emits `'message'` with (msg, handle). Works for `ArrayBuffer`
-  (verified by `child-process-sendhandle-transferable`). Does NOT yet
-  work for `MessagePort` / `ReadableStream` / `WritableStream` because
-  edge.js's `MessageChannel` shim produces ports that the host structured
-  port's `postMessage` doesn't recognize as native transferables
-  ("Value at index 0 does not have a transferable type"). Replacing
-  edge's shim with the platform native MessageChannel (or writing a
-  port-proxy protocol) would extend coverage. `net.Server` / `net.Socket`
-  remain structurally impossible (no OS → no SCM_RIGHTS / DuplicateHandle);
-  `cluster.js` socket-sharing still won't work. The warn-once message
-  now lists ArrayBuffer as the working type and explains the rest.
-  Marker site: `policies/child-process-via-executor.ts:97`.
+  RESOLVED 2026-05-28 — MessagePort now works via NativePortBridge) —
+  `cp.send(msg, handle)` in advanced mode wraps the handle in an
+  `{__edgeSendHandle, msg, handle}` envelope and transfers via the
+  existing structured port; receiver unwraps and emits `'message'`
+  with (msg, handle). Supported handles:
+    * **`ArrayBuffer`** — direct native transfer.
+      `child-process-sendhandle-transferable`.
+    * **`MessagePort`** (edge.js Node-style) — bridged via
+      `NativePortBridge`: the send override creates a native
+      `MessageChannel` (the ctor is cached at `worker.ts` module load
+      as `globalThis.__edgeNativeMessageChannel` before edge.js mutates
+      globalThis), proxies messages bidirectionally between the user's
+      edge.js port and the local native half, and transfers the native
+      remote half across the wire. Receiver gets a real native
+      MessagePort.
+      `child-process-sendhandle-messageport`.
+  Still unsupported:
+    * `net.Server` / `net.Socket` — need OS fd-passing (SCM_RIGHTS on
+      Unix, DuplicateHandle on Windows); not possible without a kernel.
+      `cluster.js` socket-sharing remains blocked here, not on
+      MessagePort. (Note: these are the ONLY handle types Node itself
+      supports for `cp.send` — ReadableStream/WritableStream were
+      mentioned in earlier session notes as speculative followups but
+      Node doesn't accept them either, so a bridge would add API
+      surface that isn't Node-portable.)
+  Warn-once at `internal-post-patch.runtime.js` reflects the supported
+  list + the why-not.
 
 - **`child-process-kill-cooperation`** (2026-05-27, P3.8) — `child.kill(sig)`
   fires the executor's `opts.signal` (AbortSignal) and returns 0
@@ -120,30 +132,58 @@ the browser-target tree.
   Marker site: `policies/child-process-via-executor.ts:100`.
 
 - **`child-process-ipc-advanced-serialization-types`** (2026-05-27, P3.7;
-  RESOLVED 2026-05-27 P4.6) — the JSON-backed Serializer/Deserializer in
-  the `serdes` binding was replaced with a real structured-clone-style
-  implementation (`policies/child-process-via-executor/serdes-shim.runtime.js`).
-  Round-trips Map, Set, Date, BigInt, RegExp, ArrayBuffer, TypedArray,
-  primitives, plain object/array, and back-references for cyclic graphs.
-  Wire format is custom (NOT V8-compatible -- so the bytes won't
-  deserialize in real Node.js); if cross-runtime interop ever matters
-  we'd vendor a published js-structured-clone. Verified by
-  `v8-serdes-types`. Installed as a pre-patch on both `v8` and
-  `internal/child_process` so whichever module is required first sees
-  the binding populated.
+  RESOLVED 2026-05-28) — the `serdes` binding's Serializer/Deserializer
+  now emits/reads **V8's actual wire format** (kVersion=15), making
+  bytes byte-for-byte compatible with Node.js `v8.serialize()` and
+  `v8.deserialize()`. Implementation lives in
+  `policies/child-process-via-executor/serdes-shim.runtime.js`; the
+  SerializationTag enum + varint/zigzag/double helpers are ported
+  directly from `deps/v8/src/objects/value-serializer.cc` (the file
+  is referenced inline as the canonical spec). Round-trips Map, Set,
+  Date, BigInt, RegExp, ArrayBuffer, all TypedArrays + DataView,
+  primitives, plain object/array, and refs/cycles. Verified by
+  `v8-serdes-wire-format` (21 byte-exact assertions vs Node) and
+  `v8-serdes-types` (type-fidelity round-trip). Coverage gaps tracked
+  inline at the top of the file: SharedArrayBuffer transfer, Wasm
+  module/memory transfer, Error subtype subtags, JSPrimitiveWrapper
+  serialization, host-object hook protocol — these are the long-tail
+  ~20% real build-tool caches almost never touch.
 
 - **`host-rpc-sync-reverse-drain`** (2026-05-27, P3.6; RESOLVED
-  2026-05-27 P4.4) — `SyncRpcClient` now takes a `drainReverseRequests`
+  2026-05-28) — `SyncRpcClient` takes a `drainReverseRequests`
   callback that `RpcServer.drainOnce()` plugs into. While the wasm
   worker is parked in `Atomics.wait` for a forward reply, the wait
-  loop checks ring pressure and -- if more than half the slots are
-  READY -- drains them inline and dispatches handlers. The
-  pressure-gate matters: draining unconditionally batches STDOUT and
-  EXIT into one libuv tick, causing lib's deferred `'data'` setImmediate
-  to lose its race against the user's `'exit'` handler (which often
-  calls `process.exit`); the half-full gate keeps normal traffic on the
-  async loop's natural cadence and only kicks in for bursts. Verified
-  by `child-process-ipc-burst-limit` (1000 cp.sends, all received).
+  loop drains EAGERLY (no pressure gate) and dispatches handlers.
+  Verified by `child-process-ipc-burst-limit` (1000 cp.sends, all
+  received). Eager draining is safe because of the two consumer-side
+  fixes below.
+
+- **`ring-publish-order-vs-slot-index`** (2026-05-27, P5; RESOLVED
+  2026-05-28) — `drainRing` returns READY slots in slot-INDEX order,
+  not publish order: `tryClaimSlot` always scans from slot 0, so eager
+  draining can free a low-index slot fast enough that a later chunk
+  re-uses it, and the next `drainRing` returns it before older still-
+  pending slots. Used to corrupt `child-process-spawn-streaming-large`
+  at chunk boundaries. **Fix**: `sortByRequestId` in `rpc-server.ts`
+  sorts each drained batch by the monotonic per-client `requestId`
+  (already in the request header at offset 4) before dispatching. No
+  SAB-protocol change needed. Wraparound-safe via signed difference.
+
+- **`advanced-ipc-channel-null-race`** (2026-05-28, RESOLVED in same
+  commit) — In advanced-mode IPC, the IPC pipe (stdio[3]) is bypassed
+  entirely — messages go via the wasm<->host structured port — but
+  EdgeProcess._handleEvent EXIT used to _endRead it anyway, which
+  triggered lib's setupChannel onread to see UV_EOF and null
+  `target.channel`. The advanced-mode `register` handler's
+  `if (self.channel)` guard then dropped the in-flight 'message'
+  nextTick for the final IPC reply (typically the bye-echo).
+  **Fix**: EdgeProcess tracks `_isAdvancedIpc` (set from
+  `options.serialization === 'advanced'` in `spawn()`). EXIT/ERROR
+  branches in `_handleEvent` skip `_endRead` on the IPC pipe when
+  `_isAdvancedIpc` is set. lib's onexit still fires 'exit' normally;
+  if the user wants disconnect semantics they call `child.disconnect()`
+  explicitly (our override handles it). Verified by
+  `child-process-hard-kill-ipc-advanced` (10/10 in isolation).
 
 - **`async-spawn-chunk-size-from-ring`** (2026-05-27, P0.1) — RESOLVED in
   the same commit it was opened: `ASYNC_CHUNK_SIZE` was hard-coded to
@@ -154,16 +194,13 @@ the browser-target tree.
   `child-process-spawn-streaming-large`. Marker site: `host-worker.ts`
   (no longer marked; moved to derived constant).
 
-- **`async-spawn-pipe-keepalive-imbalance`** (2026-05-27, P0 audit) —
-  `EdgePipe` starts with `_refed: true` but never calls
-  `keepaliveAcquire()` on construction; the only acquire is one per
-  `EdgeProcess.spawn()`. A user who calls `pipe.unref()` then `pipe.ref()`
-  triggers an unmatched `keepaliveAcquire()` that pins the keepalive
-  timer forever. Conversely `pipe.close()` while `_refed === true`
-  calls `keepaliveRelease()` for a counter that wasn't paired-up. Fix:
-  remove pipe-level ref/unref (delegate solely to Process), or pair
-  acquire on `_childId` assignment with release on close. Tracked for
-  P1.5.
+- **`async-spawn-pipe-keepalive-imbalance`** (2026-05-27, P0 audit;
+  RESOLVED 2026-05-27 P1.5) — `EdgePipe` now uses an opt-in
+  `_heldKeepalive` flag so ref/unref/close only adjust the keepalive
+  counter when the pipe actually holds an acquire. Construction no
+  longer auto-pins; the per-child Process keepalive is the baseline.
+  See `bindings-shim.runtime.js:142-156` (ref/unref) and 268-283
+  (close). Verified by `child-process-ref-unref`.
 
 - **`slot-deleters-stubbed-for-wasi-cli`** (2026-05-26) — One of the
   slot deleters in `Environment::slots_` triggers an out-of-bounds wasm
@@ -424,22 +461,25 @@ the browser-target tree.
   Date, and circular refs by value.  See
   `tests/js/worker-threads-message-roundtrip.js` for the end-to-end
   proof (parent → child → parent roundtrip with a nested object).
-- `worker-threads-no-workerdata` — `options.workerData` is plumbed
-  end-to-end as bytes through `__edgeSpawnNodeWorker` (phase 1 set up
-  the payload, phase 2 wires marshal) but the child-side policy patch
-  does NOT yet unmarshal the bytes into `require('worker_threads').
-  workerData`.  Deferred to phase 2.x because the marshal call must
-  happen inside lib's `Worker` constructor (which reads `options.
-  workerData` at line 342) AFTER our EdgeWorkerImpl returns — needs a
-  post-construction "first message" trick or wrapping the user-facing
-  Worker class with a subclass that extracts options.workerData and
-  marshals it via a side-channel.
-- `worker-threads-no-terminate` — `worker.terminate()` is a no-op.
-  Phase 3 wires a 'terminate' message that the child wasm honors.
-- `worker-threads-no-error-event` — uncaught child exceptions exit the
-  child with a non-zero code; the `exit` event fires with that code
-  but `error` event does not.  Phase 3 wires structured error
-  propagation via reverse RPC.
+- ~~`worker-threads-no-workerdata`~~ — **RESOLVED** (Phase 3a, e33+).
+  Parent-side: wrapping Worker subclass grabs `options.workerData`
+  before super() and stashes via `globalThis.__edgePendingWorkerData`
+  (packed bytes), which EdgeWorkerImpl picks up and ships to the
+  child via `__edgeSpawnNodeWorker`. Child-side: WORKER_THREADS_POST_PATCH
+  unmarshals `globalThis.__edgeUserWorkerDataBytes` and exposes as
+  `require('worker_threads').workerData`. Verified by
+  `e33-phase3-integration` (workerData round-trip with nested obj +
+  `e34-phase5-eval-mode`).
+- ~~`worker-threads-no-terminate`~~ — **RESOLVED** (Phase 3b, e33+;
+  spoof-proof envelope e34+). `worker.terminate()` flows lib →
+  `kHandle.stopThread()` → control-channel TERMINATE message that the
+  child wasm honors; terminate Promise resolves with code 1. Verified
+  by `e33-phase3b-terminate`.
+- ~~`worker-threads-no-error-event`~~ — **RESOLVED** (Phase 3, e33+).
+  Child installs `process.on('uncaughtException', ...)` handler that
+  packs the error via `packPostMessage` and sends back through
+  reverse-RPC; parent receives, emits `'error'` then `'exit'` with
+  non-zero code. Same wiring for unhandledRejection.
 - `worker-threads-file-mode-needs-fs-visibility` — file-mode `new
   Worker('/abs/path.js')` requires the path to be visible to the
   child's wasm FS adapter (`/node-lib/**` works; `/tmp/*` does not
@@ -517,7 +557,15 @@ the browser-target tree.
   edge.js's internal handle table; tracked separately if/when it
   matters for a real consumer.
 
-- `crypto-randombytes-v2-mirror-gap` (2026-05-25, v2 cutover regression)
+- `crypto-randombytes-v2-mirror-gap` (2026-05-25, v2 cutover regression;
+  WORKED AROUND via `crypto-host-random` policy which routes
+  `randomBytes`/`randomFill`/`randomUUID` through
+  `globalThis.crypto.getRandomValues` -- avoids the broken wasm crypto
+  path entirely. `crypto-randombytes` passes. The underlying emnapi v2
+  ArrayBuffer-mirror divergence is still the root cause of any future
+  wasm-crypto regression that hits the FastBuffer alloc path;
+  root-cause fix (options a/b/c below) still deferred but no longer
+  blocking any visible test.)
   — `crypto.randomBytes(N)` returns all-zero buffers on v2; suite
   shows 40/1/0/3 vs. v1's 41/0/0/3 baseline.  Diagnosed in a worktree
   probe (instrumentation removed): edge.js's wasm crypto path allocates

@@ -60,6 +60,10 @@
       // listeners get a clean stack. If our send-side wrapped a
       // transferable sendHandle (P4.5), unpack the envelope and emit
       // 'message' with two args (msg, handle) the way Node does.
+      // The EdgeProcess._isAdvancedIpc flag suppresses lib's UV_EOF
+      // channel-null on EXIT for advanced-mode children, so the
+      // `if (self.channel)` guard stays meaningful (user-called
+      // disconnect still nulls channel; we don't fire post-disconnect).
       process.nextTick(function() {
         if (!self.channel) return;
         if (msg && typeof msg === 'object' && msg.__edgeSendHandle === true) {
@@ -100,25 +104,63 @@
       // sockets, which is structurally impossible without an OS -- but
       // it does enable Transferable-based handle-sharing patterns.
       if (sendHandle != null) {
-        // Supported handles: ArrayBuffer-based transferables. MessagePort
-        // would be in this list except edge.js's MessageChannel ports
-        // aren't recognized by the host port's postMessage as native
-        // transferables (likely a polyfill divergence) -- attempting to
-        // transfer one throws "Value at index 0 does not have a
-        // transferable type". Same applies to Readable/WritableStream
-        // until we either replace edge's stream polyfills with the
-        // platform native or build a proxy protocol. Tracked as
-        // #!~debt child-process-ipc-sendhandle.
-        var isTransferable = (sendHandle instanceof ArrayBuffer);
-        if (isTransferable) {
+        // Supported handles:
+        //   * ArrayBuffer -- natively transferable, ships directly.
+        //   * MessagePort (edge.js shim) -- bridged via NativePortBridge:
+        //     edge.js's MessagePort instances aren't recognized as
+        //     transferable by the host port's postMessage ("Value at
+        //     index 0 does not have a transferable type"), so we create
+        //     a NATIVE MessageChannel pair, proxy messages bidirectionally
+        //     between the user's edge.js port and our native local port,
+        //     and transfer the native remote port across the wire. The
+        //     receiver gets a real native MessagePort that works for
+        //     postMessage on its side.
+        // Unsupported:
+        //   * net.Server / net.Socket -- need OS fd-passing (no kernel).
+        //   * Readable/Writable streams -- same shim divergence as
+        //     MessagePort but no equivalent native-transferable to bridge to.
+        var nativeMessageChannel = (typeof globalThis !== 'undefined') && globalThis.__edgeNativeMessageChannel;
+        var isEdgePort = nativeMessageChannel && sendHandle != null
+          && typeof sendHandle === 'object'
+          && typeof sendHandle.postMessage === 'function'
+          && typeof sendHandle.on === 'function'
+          && typeof sendHandle.start === 'function';
+        if (sendHandle instanceof ArrayBuffer) {
           outboundMessage = { __edgeSendHandle: true, msg: message, handle: sendHandle };
           if (!transferList) transferList = [];
           if (transferList.indexOf(sendHandle) === -1) transferList.push(sendHandle);
+        } else if (isEdgePort) {
+          // NativePortBridge: pair edge.js port <-> native channel.
+          var bridge = new nativeMessageChannel();
+          var localNative = bridge.port1;
+          var remoteNative = bridge.port2;
+          // edge.js port -> local native (user's port emits 'message' on
+          // outgoing, we forward to native side).
+          sendHandle.on('message', function(payload) {
+            try { localNative.postMessage(payload); } catch (e) { void e; }
+          });
+          // local native -> edge.js port (incoming on native side, fan
+          // back to user's port). Setting onmessage auto-starts dispatch.
+          localNative.onmessage = function(e) {
+            try { sendHandle.postMessage(e.data); } catch (e2) { void e2; }
+          };
+          // Best-effort teardown: when user closes the edge.js port,
+          // close the native local side too. (No 'close' event in Node
+          // MessagePort but listening doesn't hurt; teardown also happens
+          // naturally when the user code GCs the bridge.)
+          if (typeof sendHandle.on === 'function') {
+            sendHandle.on('close', function() {
+              try { localNative.close(); } catch (e3) { void e3; }
+            });
+          }
+          outboundMessage = { __edgeSendHandle: true, msg: message, handle: remoteNative };
+          if (!transferList) transferList = [];
+          transferList.push(remoteNative);
         } else {
           try {
             if (!self._edgeSendHandleWarned) {
               self._edgeSendHandleWarned = true;
-              console.warn('[child-process-via-executor] child.send(msg, handle): only ArrayBuffer is supported as a sendHandle in browser-target. net.Server / net.Socket need OS fd-passing (not possible without a kernel); MessagePort + Readable/Writable streams need an edge.js shim that produces natively-transferable instances (not yet wired). Tracked as #!~debt child-process-ipc-sendhandle.');
+              console.warn('[child-process-via-executor] child.send(msg, handle): supported handles are ArrayBuffer (direct transfer) and MessagePort (bridged to a native MessageChannel). net.Server / net.Socket -- the only handles Node itself supports here -- need OS fd-passing (SCM_RIGHTS / DuplicateHandle), which has no in-browser equivalent. Tracked as #!~debt child-process-ipc-sendhandle.');
             }
           } catch (_w) { void _w; }
         }

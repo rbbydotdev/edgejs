@@ -24,6 +24,11 @@ import {
 } from "../wasi-shim/sab-ring";
 import { RpcServer } from "./rpc-server";
 import { attachIpcStructuredPort as attachStructuredPort } from "./ipc-structured-port";
+import {
+  buildExecutorContext,
+  type ChildProcExecResult,
+  type ExecutorEventSource,
+} from "./executor-context";
 import { RpcClient } from "./rpc-client";
 import { SyncRpcClient } from "./rpc-client-sync";
 import {
@@ -326,15 +331,9 @@ function handleMainSpawnReply(data: { requestId: number; workerId?: number; erro
 // return. Wasm side blocks on Atomics.wait the entire time -- host
 // worker's event loop stays free because it's a separate thread.
 //
-// Result shaped to match the wasm-side patch's parser in
-// child-process-via-executor.ts.
-interface ChildProcExecResult {
-  stdout?: Uint8Array | string | number[];
-  stderr?: Uint8Array | string | number[];
-  code?: number | null;
-  signal?: string | null;
-  error?: { code: string; message: string } | null;
-}
+// Result shape matches the wasm-side patch's parser in
+// child-process-via-executor.ts; canonical definition lives in
+// executor-context.ts and is imported above.
 type ChildProcExecutor = (
   command: string,
   args: string[],
@@ -441,45 +440,17 @@ function packChildProcReply(result: ChildProcExecResult | { __noExecutor: true }
 //     as a single chunk on exit).
 // =================================================================
 
-interface StdinPipe {
-  // Chunks queued from wasm-side child.stdin.write() that haven't been
-  // pulled by the executor yet.
-  buffered: Uint8Array[];
-  // Set when wasm-side child.stdin.end() arrives. Iterator returns done
-  // after draining buffered.
-  ended: boolean;
-  // Awaiters: promise resolvers parked when the executor's iterator
-  // outpaced the producer (no buffered chunks; not ended). Each call
-  // to push() resolves at most one (FIFO).
-  waiters: Array<(v: { value?: Uint8Array; done: boolean }) => void>;
-}
-interface IpcChannel {
-  // Set when the spawn options requested stdio with an 'ipc' entry.
-  // If false, the wasm-side .send() RPC returns "no-such-channel"
-  // (status=1, same as no-such-child) and opts.ipc is absent.
-  enabled: boolean;
-  connected: boolean;
-  // P3.9: 'advanced' serialization uses the MessageChannel port for
-  // full structured-clone fidelity. 'json' (default) uses byte-stream
-  // RPC with JSON.stringify.
-  advanced: boolean;
-  // Handlers registered by the executor via opts.ipc.on('message', cb).
-  // Called when wasm-side .send(msg) is forwarded by OP_SPAWN_IPC_SEND
-  // (json) or by MessagePort dispatch (advanced).
-  messageHandlers: Array<(msg: unknown) => void>;
-  // Handlers registered by the executor via opts.ipc.on('disconnect', cb).
-  disconnectHandlers: Array<() => void>;
-}
 interface SpawnAsyncChild {
   childId: number;
   abortController: AbortController;
   done: boolean;
-  stdinPipe: StdinPipe;
-  // P3.5: stdio[3+] extra pipes. Keyed by fd index. Created lazily on
-  // first write/end RPC for that fd (the wasm side knows which indices
-  // were declared in spawn options; we don't pre-register them here).
-  extraStdio: Map<number, StdinPipe>;
-  ipc: IpcChannel;
+  // ExecutorEventSource owns the per-fd pipes + IPC handler list; RPC
+  // handlers route inbound STDIO_WRITE/IPC_SEND through this surface,
+  // ipcStructuredHandlers fans wasm->executor messages through it too.
+  // Shared implementation lives in executor-context.ts.
+  source: ExecutorEventSource;
+  ipcEnabled: boolean;
+  ipcAdvanced: boolean;
 }
 
 // P3.9: structured-clone IPC port (one half of a MessageChannel between
@@ -658,12 +629,10 @@ function attachIpcStructuredPort(port: MessagePort): void {
     },
     onDisconnect(childId) {
       const child = asyncSpawnChildren.get(childId);
-      if (child && child.ipc.connected) {
-        child.ipc.connected = false;
+      if (child && child.ipcEnabled) {
+        child.ipcEnabled = false;
         ipcStructuredHandlers.delete(childId);
-        for (const cb of child.ipc.disconnectHandlers.splice(0)) {
-          try { cb(); } catch (_e) { void _e; }
-        }
+        child.source.pushIpcDisconnect();
       }
     },
   });
@@ -675,221 +644,8 @@ function sendIpcStructuredDisconnect(childId: number): void {
   if (ipcStructuredOutbound) ipcStructuredOutbound.disconnect(childId);
 }
 
-// Build the executor-facing IPC handle (`opts.ipc`). Mirrors Node's
-// process.send / 'message' / 'disconnect' surface but lives in the
-// host-worker JS realm. Symmetric with wasm-side child.send / child.on:
-// each direction routes through one RPC op (SEND forward, EVENT reverse).
-function makeIpcHandle(
-  childId: number,
-  channel: IpcChannel,
-  advanced: boolean,
-): {
-  send: (msg: unknown) => boolean;
-  on: (event: "message" | "disconnect", cb: (...args: unknown[]) => void) => void;
-  disconnect: () => void;
-  readonly connected: boolean;
-} {
-  // For 'advanced' mode, register a structured-handler that gets
-  // values straight from the MessageChannel port (already cloned by
-  // the browser). For 'json' mode, the byte-stream RPC path handles
-  // message delivery via OP_SPAWN_IPC_SEND -> microtask -> messageHandlers.
-  if (advanced) {
-    ipcStructuredHandlers.set(childId, (msg) => {
-      if (!channel.connected) return;
-      // P4.5: unwrap {__edgeSendHandle:true, msg, handle} envelope so
-      // executors that opt into the two-arg signature see (msg, handle)
-      // like Node does. Single-arg listeners still work (extra arg ignored).
-      let userMsg: unknown = msg;
-      let handle: unknown = undefined;
-      if (msg && typeof msg === "object" && (msg as { __edgeSendHandle?: boolean }).__edgeSendHandle === true) {
-        userMsg = (msg as { msg: unknown }).msg;
-        handle = (msg as { handle: unknown }).handle;
-      }
-      for (const cb of channel.messageHandlers) {
-        try { (cb as (m: unknown, h?: unknown) => void)(userMsg, handle); } catch (_e) { void _e; }
-      }
-    });
-  }
-  return {
-    send(msg: unknown): boolean {
-      if (!channel.connected) return false;
-      if (advanced) {
-        // postMessage carries the live value across the realm; full
-        // structured-clone semantics (Map/Set/Date/ArrayBuffer/cycles).
-        return sendIpcStructuredMessage(childId, msg);
-      }
-      const json = JSON.stringify(msg);
-      emitAsyncEvent(childId, EK.IPC_MESSAGE, new TextEncoder().encode(json));
-      return true;
-    },
-    on(event, cb): void {
-      if (event === "message") channel.messageHandlers.push(cb as (m: unknown) => void);
-      else if (event === "disconnect") channel.disconnectHandlers.push(cb as () => void);
-    },
-    disconnect(): void {
-      if (!channel.connected) return;
-      channel.connected = false;
-      if (advanced) {
-        sendIpcStructuredDisconnect(childId);
-        // P2 #17 audit fix: explicit disconnect must drop the
-        // structured handler too; otherwise the (childId -> handler)
-        // entry stays in the Map until the executor naturally exits.
-        // Minor leak (one closure per disconnect) but unbounded over
-        // long-lived runtimes that spawn-disconnect repeatedly.
-        ipcStructuredHandlers.delete(childId);
-      } else {
-        // Notify wasm side so EdgeChildProcess emits 'disconnect' there.
-        emitAsyncEvent(childId, EK.IPC_DISCONNECT, new Uint8Array(0));
-      }
-      for (const cb of channel.disconnectHandlers.splice(0)) {
-        try { cb(); } catch (_e) { void _e; }
-      }
-    },
-    get connected(): boolean { return channel.connected; },
-  };
-}
 const asyncSpawnChildren = new Map<number, SpawnAsyncChild>();
 let nextSpawnChildId = 1;
-
-// Build an AsyncIterable<Uint8Array> backed by a per-child queue.
-// The executor reads via `for await (const chunk of opts.stdin)`,
-// receiving chunks as wasm-side child.stdin.write() pushes them.
-// Iterator returns done when wasm calls child.stdin.end() AND the
-// queue is drained.
-function makeStdinAsyncIterable(pipe: StdinPipe): AsyncIterable<Uint8Array> {
-  return {
-    [Symbol.asyncIterator](): AsyncIterator<Uint8Array> {
-      return {
-        next(): Promise<IteratorResult<Uint8Array>> {
-          if (pipe.buffered.length > 0) {
-            const chunk = pipe.buffered.shift()!;
-            return Promise.resolve({ value: chunk, done: false });
-          }
-          if (pipe.ended) {
-            return Promise.resolve({ value: undefined as unknown as Uint8Array, done: true });
-          }
-          return new Promise((resolve) => {
-            pipe.waiters.push((v) => {
-              if (v.done) resolve({ value: undefined as unknown as Uint8Array, done: true });
-              else resolve({ value: v.value!, done: false });
-            });
-          });
-        },
-        return(): Promise<IteratorResult<Uint8Array>> {
-          pipe.ended = true;
-          pipe.buffered.length = 0;
-          while (pipe.waiters.length > 0) pipe.waiters.shift()!({ done: true });
-          return Promise.resolve({ value: undefined as unknown as Uint8Array, done: true });
-        },
-      };
-    },
-  };
-}
-
-function pushStdinChunk(pipe: StdinPipe, chunk: Uint8Array): void {
-  if (pipe.ended) return;
-  const waiter = pipe.waiters.shift();
-  if (waiter) {
-    waiter({ value: chunk, done: false });
-  } else {
-    pipe.buffered.push(chunk);
-  }
-}
-
-function endStdinPipe(pipe: StdinPipe): void {
-  if (pipe.ended) return;
-  pipe.ended = true;
-  while (pipe.waiters.length > 0) pipe.waiters.shift()!({ done: true });
-}
-
-// P3.5: build opts.stdio accessor for the executor. Returns a Proxy that
-// resolves arbitrary index N into a per-fd handle. fd 0 -> stdin reader,
-// fd 1 -> stdout writer (calls onStdout), fd 2 -> stderr writer
-// (calls onStderr), fd N>=3 -> bidirectional pipe backed by extraStdio.
-// The bidirectional case exposes both async-iterator semantics
-// (`for await` to read inbound bytes from wasm) AND .write/.end methods
-// (push outbound bytes back to wasm as kind=7 events). Mirrors what
-// Node's executor sees as fd 3/4/5/... in a real spawn().
-function makeExecutorStdioAccessor(
-  childId: number,
-  stdinPipe: StdinPipe,
-  onStdoutCb: (chunk: Uint8Array | string | number[]) => void,
-  onStderrCb: (chunk: Uint8Array | string | number[]) => void,
-  getChild: () => SpawnAsyncChild | undefined,
-): unknown {
-  const toBytes = (v: Uint8Array | string | number[]): Uint8Array => {
-    if (v instanceof Uint8Array) return v;
-    if (typeof v === "string") return new TextEncoder().encode(v);
-    if (Array.isArray(v)) return new Uint8Array(v);
-    return new TextEncoder().encode(String(v));
-  };
-  // fd 1/2 wrappers: pure writers, no read side.
-  const stdoutWriter = {
-    write(chunk: Uint8Array | string | number[]): boolean { onStdoutCb(chunk); return true; },
-    end(chunk?: Uint8Array | string | number[]): void { if (chunk != null) onStdoutCb(chunk); },
-  };
-  const stderrWriter = {
-    write(chunk: Uint8Array | string | number[]): boolean { onStderrCb(chunk); return true; },
-    end(chunk?: Uint8Array | string | number[]): void { if (chunk != null) onStderrCb(chunk); },
-  };
-  // fd 0: async-iterable reader (alias for opts.stdin).
-  const stdinIterable = makeStdinAsyncIterable(stdinPipe);
-  // fd N>=3: build a duplex on-demand. Bytes inbound from wasm land
-  // in child.extraStdio[N] (created by the OP_SPAWN_STDIO_WRITE handler);
-  // outbound bytes go via emitAsyncEvent kind=7 with [u32 fdIndex][bytes].
-  const extraHandles = new Map<number, unknown>();
-  function buildExtraHandle(fdIndex: number): unknown {
-    const ensurePipe = (): StdinPipe | null => {
-      const child = getChild();
-      if (!child) return null;
-      let p = child.extraStdio.get(fdIndex);
-      if (!p) {
-        p = { buffered: [], ended: false, waiters: [] };
-        child.extraStdio.set(fdIndex, p);
-      }
-      return p;
-    };
-    return {
-      [Symbol.asyncIterator](): AsyncIterator<Uint8Array> {
-        const p = ensurePipe();
-        if (!p) {
-          return { next: () => Promise.resolve({ value: undefined as unknown as Uint8Array, done: true }) };
-        }
-        return makeStdinAsyncIterable(p)[Symbol.asyncIterator]();
-      },
-      write(chunk: Uint8Array | string | number[]): boolean {
-        const bytes = toBytes(chunk);
-        if (bytes.byteLength === 0) return true;
-        // Frame as [u32 fdIndex][bytes].
-        const payload = new Uint8Array(4 + bytes.byteLength);
-        new DataView(payload.buffer).setUint32(0, fdIndex, true);
-        payload.set(bytes, 4);
-        emitAsyncEvent(childId, EK.STDIO_FDN, payload);
-        return true;
-      },
-      end(chunk?: Uint8Array | string | number[]): void {
-        if (chunk != null) (this as { write: (c: unknown) => void }).write(chunk);
-        // Out-of-band end signal: zero-length frame.
-        const payload = new Uint8Array(4);
-        new DataView(payload.buffer).setUint32(0, fdIndex, true);
-        emitAsyncEvent(childId, EK.STDIO_FDN, payload);
-      },
-    };
-  }
-  return new Proxy({}, {
-    get(_t, prop): unknown {
-      if (typeof prop !== "string") return undefined;
-      if (prop === "0") return stdinIterable;
-      if (prop === "1") return stdoutWriter;
-      if (prop === "2") return stderrWriter;
-      const idx = Number(prop);
-      if (!Number.isInteger(idx) || idx < 0) return undefined;
-      let h = extraHandles.get(idx);
-      if (!h) { h = buildExtraHandle(idx); extraHandles.set(idx, h); }
-      return h;
-    },
-  });
-}
 
 function packAsyncEvent(childId: number, kind: number, payload: Uint8Array): Uint8Array {
   const buf = new Uint8Array(4 + 1 + payload.byteLength);
@@ -1025,23 +781,67 @@ async function startAsyncSpawn(requestBytes: Uint8Array): Promise<Uint8Array> {
     return startHardKillableSpawn(childId, req);
   }
   const ac = new AbortController();
-  const stdinPipe: StdinPipe = { buffered: [], ended: false, waiters: [] };
-  // Pre-queue any one-shot input from spawn options; close immediately
-  // so the executor's iterator drains and ends without waiting for
-  // child.stdin.write() calls. This keeps backward compat with
-  // spawn(..., { input: 'some text' }).
-  if (req.input && req.input.byteLength > 0) {
-    pushStdinChunk(stdinPipe, req.input);
-    endStdinPipe(stdinPipe);
+  const wantsAdvancedIpc = req.ipc === true && req.ipcAdvanced === true;
+
+  // Build the executor-facing opts via the shared context builder. The
+  // sink encodes WHERE outbound bytes/messages go (reverse-RPC events
+  // for the cooperative path); the source is what RPC handlers feed
+  // into when wasm-side child.stdin.write() / .send() etc. arrive.
+  const ctx = buildExecutorContext({
+    sink: {
+      stdout(bytes) { emitChunked(childId, EK.STDOUT, bytes); },
+      stderr(bytes) { emitChunked(childId, EK.STDERR, bytes); },
+      stdioOut(fd, bytes, _end) {
+        // Frame as [u32 fdIndex][bytes]; zero-length payload = EOF.
+        const payload = new Uint8Array(4 + bytes.byteLength);
+        new DataView(payload.buffer).setUint32(0, fd, true);
+        if (bytes.byteLength > 0) payload.set(bytes, 4);
+        emitAsyncEvent(childId, EK.STDIO_FDN, payload);
+      },
+      ipcSend(msg) {
+        if (wantsAdvancedIpc) {
+          // Full structured-clone via the host<->wasm-runtime port.
+          sendIpcStructuredMessage(childId, msg);
+        } else {
+          const json = JSON.stringify(msg);
+          emitAsyncEvent(childId, EK.IPC_MESSAGE, new TextEncoder().encode(json));
+        }
+      },
+      ipcDisconnect() {
+        if (wantsAdvancedIpc) {
+          sendIpcStructuredDisconnect(childId);
+          ipcStructuredHandlers.delete(childId);
+        } else {
+          emitAsyncEvent(childId, EK.IPC_DISCONNECT, new Uint8Array(0));
+        }
+      },
+    },
+    ipcEnabled: req.ipc === true,
+    signal: ac.signal,
+    env: req.env,
+    cwd: req.cwd,
+    input: req.input,
+    timeout: req.timeout,
+    killSignal: req.killSignal,
+    initialStdin: req.input,
+    initialStdinEnded: req.input != null && req.input.byteLength > 0,
+  });
+  asyncSpawnChildren.set(childId, {
+    childId,
+    abortController: ac,
+    done: false,
+    source: ctx.source,
+    ipcEnabled: req.ipc === true,
+    ipcAdvanced: wantsAdvancedIpc,
+  });
+  // Advanced IPC: route wasm->executor messages from the host structured
+  // port into the executor via the same source the RPC handlers use.
+  if (wantsAdvancedIpc) {
+    ipcStructuredHandlers.set(childId, (msg) => {
+      const child = asyncSpawnChildren.get(childId);
+      if (child) child.source.pushIpcMessage(msg);
+    });
   }
-  const ipc: IpcChannel = {
-    enabled: req.ipc === true,
-    connected: req.ipc === true,
-    advanced: req.ipcAdvanced === true,
-    messageHandlers: [],
-    disconnectHandlers: [],
-  };
-  asyncSpawnChildren.set(childId, { childId, abortController: ac, done: false, stdinPipe, extraStdio: new Map(), ipc });
 
   // Fire 'spawned' event on next microtask so the wasm side has time
   // to register listeners after the START reply arrives.
@@ -1051,82 +851,11 @@ async function startAsyncSpawn(requestBytes: Uint8Array): Promise<Uint8Array> {
     emitAsyncEvent(childId, EK.SPAWNED, pidBytes);
   });
 
-  // Invoke executor; deliver events as the result resolves.
-  //
-  // Streaming protocol (P3.1): the executor receives `onStdout` and
-  // `onStderr` callbacks via opts and can push chunks AS THEY ARRIVE
-  // instead of accumulating into a single final result. Each call
-  // emits an OP_SPAWN_ASYNC_EVENT immediately, which the wasm side
-  // surfaces as a `data` event on child.stdout/child.stderr. Matches
-  // Node: a REPL-style child that prompts can be answered, large
-  // outputs don't buffer in host RAM, line-by-line consumers see
-  // lines as they're produced.
-  //
-  // Backward-compatible: executors that ignore the callbacks and
-  // return {stdout, stderr, code} still work (the default fake-shell
-  // does this -- echo's output is instantaneous, no value in streaming).
-  // We track whether onStdout/onStderr was ever called; if so, we skip
-  // emitting result.stdout/stderr at the end to avoid duplicating bytes.
-  const toBytesForChunk = (v: Uint8Array | string | number[]): Uint8Array => {
-    if (v instanceof Uint8Array) return v;
-    if (typeof v === "string") return new TextEncoder().encode(v);
-    if (Array.isArray(v)) return new Uint8Array(v);
-    return new TextEncoder().encode(String(v));
-  };
-  let usedStdoutStream = false;
-  let usedStderrStream = false;
-  const opts: Record<string, unknown> = {
-    signal: ac.signal,
-    onStdout: (chunk: Uint8Array | string | number[]) => {
-      usedStdoutStream = true;
-      const bytes = toBytesForChunk(chunk);
-      if (bytes.byteLength > 0) emitChunked(childId, EK.STDOUT, bytes);
-    },
-    onStderr: (chunk: Uint8Array | string | number[]) => {
-      usedStderrStream = true;
-      const bytes = toBytesForChunk(chunk);
-      if (bytes.byteLength > 0) emitChunked(childId, EK.STDERR, bytes);
-    },
-    // Streaming stdin (P3.2). Executors can `for await` on this iterable
-    // to receive chunks as wasm-side `child.stdin.write()` calls push
-    // them. When wasm calls `child.stdin.end()` the iterator returns
-    // done. Backward-compatible: if the caller passed `input`, it's
-    // pre-queued and the pipe is closed -- the iterator drains it
-    // once and ends, identical to the one-shot input behavior.
-    stdin: makeStdinAsyncIterable(stdinPipe),
-    // P3.5: opts.stdio[N] -- per-fd accessor that lets the executor:
-    //   * `for await` to read inbound bytes (wasm-side child.stdio[N].write())
-    //   * `.write(bytes)` to push outbound bytes (wasm-side reads via
-    //     child.stdio[N].on('data')); routed through OP_SPAWN_ASYNC_EVENT
-    //     kind=7 with [u32 fdIndex][bytes] payload.
-    // fd 0 / 1 / 2 alias to stdin / onStdout / onStderr respectively so
-    // executors written against just stdin/stdout/stderr still work.
-    stdio: makeExecutorStdioAccessor(childId, stdinPipe, (chunk: Uint8Array | string | number[]) => {
-      usedStdoutStream = true;
-      const bytes = toBytesForChunk(chunk);
-      if (bytes.byteLength > 0) emitChunked(childId, EK.STDOUT, bytes);
-    }, (chunk: Uint8Array | string | number[]) => {
-      usedStderrStream = true;
-      const bytes = toBytesForChunk(chunk);
-      if (bytes.byteLength > 0) emitChunked(childId, EK.STDERR, bytes);
-    }, () => asyncSpawnChildren.get(childId)),
-  };
-  // P3.3 IPC: only exposed when the caller requested stdio with an
-  // 'ipc' entry (cp.fork default). Executors that ignore opts.ipc
-  // mean the wasm-side child.send() will succeed at the RPC layer
-  // but the message will be dropped on the host (no handler).
-  if (ipc.enabled) opts.ipc = makeIpcHandle(childId, ipc, ipc.advanced);
-  if (req.env) opts.env = req.env;
-  if (req.cwd != null) opts.cwd = req.cwd;
-  if (req.input) opts.input = req.input;
-  if (typeof req.timeout === "number") opts.timeout = req.timeout;
-  if (req.killSignal) opts.killSignal = req.killSignal;
-
   // Run executor; on resolve, fan out chunks + exit; on reject, exit with error.
   void (async () => {
     let result: ChildProcExecResult;
     try {
-      result = await Promise.resolve(executor(req.command, req.args || [], opts));
+      result = await Promise.resolve(executor(req.command, req.args || [], ctx.opts));
     } catch (e) {
       // Distinguish abort-driven exits from genuine spawn errors:
       // - If ac.signal.aborted, this is a kill() reaction (cooperative
@@ -1148,7 +877,6 @@ async function startAsyncSpawn(requestBytes: Uint8Array): Promise<Uint8Array> {
       ipcStructuredHandlers.delete(childId);
       return;
     }
-    // Convert result bytes; emit as one or more chunks.
     const toBytes = (v: Uint8Array | string | number[] | undefined): Uint8Array => {
       if (v == null) return new Uint8Array(0);
       if (v instanceof Uint8Array) return v;
@@ -1156,17 +884,10 @@ async function startAsyncSpawn(requestBytes: Uint8Array): Promise<Uint8Array> {
       if (Array.isArray(v)) return new Uint8Array(v);
       return new TextEncoder().encode(String(v));
     };
-    // Only emit final-buffer stdout/stderr for the streams the executor
-    // did NOT push incrementally. Streaming executors return {code} (or
-    // {code, error}) with no stdout/stderr field; batch executors return
-    // {stdout, stderr, code}. The flag distinguishes the two.
-    if (!usedStdoutStream) emitChunked(childId, EK.STDOUT, toBytes(result.stdout));
-    if (!usedStderrStream) emitChunked(childId, EK.STDERR, toBytes(result.stderr));
-    // Emit 'error' event when the executor reports a spawn-level failure
-    // (e.g. fake shell ENOENT for unknown commands). Matches Node where
-    // spawn() emits 'error' for spawn failures separately from non-zero
-    // exits. Encoded as JSON so the wasm side can reconstruct the Error
-    // with code/message.
+    // Only emit final-buffer stdout/stderr for streams the executor
+    // didn't push incrementally (avoid duplicating bytes).
+    if (!ctx.usedStdoutStream()) emitChunked(childId, EK.STDOUT, toBytes(result.stdout));
+    if (!ctx.usedStderrStream()) emitChunked(childId, EK.STDERR, toBytes(result.stderr));
     if (result.error) {
       const errJson = JSON.stringify({
         code: result.error.code || "ESPAWN",
@@ -1901,26 +1622,12 @@ function registerHandlers(srv: RpcServer): void {
     return { payload: replyBytes, status: REPLY_STATUS_OK };
   });
 
-  // Pick the StdinPipe instance for (childId, fdIndex). fd 0 -> stdinPipe.
-  // fd >=3 -> lazy-create in child.extraStdio (executor reads via opts.stdio[N]).
-  // fd 1/2 are output directions (executor writes, wasm reads) so writing
-  // TO them from the wasm side is a no-op error (status 1).
-  function pipeForFd(child: SpawnAsyncChild, fdIndex: number): StdinPipe | null {
-    if (fdIndex === 0) return child.stdinPipe;
-    if (fdIndex === 1 || fdIndex === 2) return null; // wrong direction
-    let p = child.extraStdio.get(fdIndex);
-    if (!p) {
-      p = { buffered: [], ended: false, waiters: [] };
-      child.extraStdio.set(fdIndex, p);
-    }
-    return p;
-  }
-
   // P3.2 + P3.5: streaming stdio. Wasm-side child.stdin.write() (fd 0)
-  // or child.stdio[N].write() (fd N>=3) lands here as sync RPC; we push
-  // the bytes into the right per-fd pipe. The executor reads via
-  // opts.stdin (fd 0) or opts.stdio[N] (other fds). Status: 0=ok,
-  // 1=no-such-child / invalid fd, 2=already-ended.
+  // or child.stdio[N].write() (fd N>=3) lands here as sync RPC; we route
+  // the bytes through the executor-context source (cooperative path) or
+  // forward to the runner worker (hard-kill path). fd 1/2 are output
+  // directions (executor writes, wasm reads) -- writing TO them is a
+  // protocol error (status 1). Status: 0=ok, 1=no-such-child / invalid fd.
   srv.register(OP_SPAWN_STDIO_WRITE, async (_ctx, args) => {
     const reply = new Uint8Array(4);
     const dv = new DataView(reply.buffer);
@@ -1931,16 +1638,13 @@ function registerHandlers(srv: RpcServer): void {
     const inDv = new DataView(args.buffer, args.byteOffset, args.byteLength);
     const childId = inDv.getUint32(0, true);
     const fdIndex = inDv.getUint32(4, true);
-    // Hard-kill fast-path: forward fd 0 writes as stdin-chunk and
-    // fd >= 3 writes as stdio-chunk (the runner exposes opts.stdio[N]
-    // duplex handles for fd >= 3, matching the cooperative path).
-    // fd 1 / 2 are output directions; writing TO them from wasm is a
-    // protocol error (status 1) -- same as the cooperative path.
+    if (fdIndex === 1 || fdIndex === 2) { dv.setUint32(0, 1, true); return { payload: reply, status: REPLY_STATUS_OK }; }
+    // Copy data out of the SAB slot view since the slot may be reused
+    // before the executor consumes the chunk.
+    const chunk = new Uint8Array(args.byteLength - 8);
+    chunk.set(args.subarray(8));
     const hk = hardKillRunners.get(childId);
     if (hk) {
-      if (fdIndex === 1 || fdIndex === 2) { dv.setUint32(0, 1, true); return { payload: reply, status: REPLY_STATUS_OK }; }
-      const chunk = new Uint8Array(args.byteLength - 8);
-      chunk.set(args.subarray(8));
       if (fdIndex === 0) hk.worker.postMessage({ kind: "stdin-chunk", bytes: chunk });
       else hk.worker.postMessage({ kind: "stdio-chunk", fd: fdIndex, bytes: chunk });
       dv.setUint32(0, 0, true);
@@ -1948,14 +1652,8 @@ function registerHandlers(srv: RpcServer): void {
     }
     const child = asyncSpawnChildren.get(childId);
     if (!child) { dv.setUint32(0, 1, true); return { payload: reply, status: REPLY_STATUS_OK }; }
-    const pipe = pipeForFd(child, fdIndex);
-    if (!pipe) { dv.setUint32(0, 1, true); return { payload: reply, status: REPLY_STATUS_OK }; }
-    if (pipe.ended) { dv.setUint32(0, 2, true); return { payload: reply, status: REPLY_STATUS_OK }; }
-    // Copy data out of the SAB slot view since the slot may be reused
-    // before the executor consumes the chunk.
-    const chunk = new Uint8Array(args.byteLength - 8);
-    chunk.set(args.subarray(8));
-    pushStdinChunk(pipe, chunk);
+    if (fdIndex === 0) child.source.pushStdin(chunk);
+    else child.source.pushStdio(fdIndex, chunk);
     dv.setUint32(0, 0, true);
     return { payload: reply, status: REPLY_STATUS_OK };
   });
@@ -1968,9 +1666,9 @@ function registerHandlers(srv: RpcServer): void {
     const inDv = new DataView(args.buffer, args.byteOffset, args.byteLength);
     const childId = inDv.getUint32(0, true);
     const fdIndex = inDv.getUint32(4, true);
+    if (fdIndex === 1 || fdIndex === 2) { dv.setUint32(0, 1, true); return { payload: reply, status: REPLY_STATUS_OK }; }
     const hk = hardKillRunners.get(childId);
     if (hk) {
-      if (fdIndex === 1 || fdIndex === 2) { dv.setUint32(0, 1, true); return { payload: reply, status: REPLY_STATUS_OK }; }
       if (fdIndex === 0) hk.worker.postMessage({ kind: "stdin-end" });
       else hk.worker.postMessage({ kind: "stdio-end", fd: fdIndex });
       dv.setUint32(0, 0, true);
@@ -1978,17 +1676,17 @@ function registerHandlers(srv: RpcServer): void {
     }
     const child = asyncSpawnChildren.get(childId);
     if (!child) { dv.setUint32(0, 1, true); return { payload: reply, status: REPLY_STATUS_OK }; }
-    const pipe = pipeForFd(child, fdIndex);
-    if (!pipe) { dv.setUint32(0, 1, true); return { payload: reply, status: REPLY_STATUS_OK }; }
-    endStdinPipe(pipe);
+    if (fdIndex === 0) child.source.endStdin();
+    else child.source.endStdio(fdIndex);
     dv.setUint32(0, 0, true);
     return { payload: reply, status: REPLY_STATUS_OK };
   });
 
   // P3.3: parent -> child IPC message. Wasm-side child.send(obj)
-  // serializes to JSON, lands here as sync RPC. We deliver to all
-  // registered executor handlers (opts.ipc.on('message', cb)).
-  // status: 0=ok, 1=no-such-child, 2=disconnected, 3=invalid-json.
+  // serializes to JSON, lands here as sync RPC. We route through the
+  // executor-context source (cooperative path) or forward to the runner
+  // (hard-kill path). status: 0=ok, 1=no-such-child, 2=disconnected,
+  // 3=invalid-json.
   srv.register(OP_SPAWN_IPC_SEND, async (_ctx, args) => {
     const reply = new Uint8Array(4);
     const dv = new DataView(reply.buffer);
@@ -1997,9 +1695,6 @@ function registerHandlers(srv: RpcServer): void {
     const childId = inDv.getUint32(0, true);
     const jsonLen = inDv.getUint32(4, true);
     if (8 + jsonLen > args.byteLength) { dv.setUint32(0, 1, true); return { payload: reply, status: REPLY_STATUS_OK }; }
-    // Hard-kill fast-path: forward parsed IPC msg to the runner worker.
-    // Same JSON-only semantics as the cooperative json-mode IPC path
-    // (advanced/structured-clone IPC isn't wired to the runner in V1).
     const hk = hardKillRunners.get(childId);
     if (hk) {
       if (!hk.ipcEnabled) { dv.setUint32(0, 2, true); return { payload: reply, status: REPLY_STATUS_OK }; }
@@ -2012,38 +1707,29 @@ function registerHandlers(srv: RpcServer): void {
     }
     const child = asyncSpawnChildren.get(childId);
     if (!child) { dv.setUint32(0, 1, true); return { payload: reply, status: REPLY_STATUS_OK }; }
-    if (!child.ipc.connected) { dv.setUint32(0, 2, true); return { payload: reply, status: REPLY_STATUS_OK }; }
+    if (!child.ipcEnabled) { dv.setUint32(0, 2, true); return { payload: reply, status: REPLY_STATUS_OK }; }
     let msg: unknown;
     try { msg = JSON.parse(new TextDecoder().decode(args.subarray(8, 8 + jsonLen))); }
     catch { dv.setUint32(0, 3, true); return { payload: reply, status: REPLY_STATUS_OK }; }
     // Dispatch in microtask so handlers don't run synchronously inside
     // the RPC reply path (avoid blocking the wasm RPC client longer
     // than necessary -- it's parked in Atomics.wait waiting for our reply).
-    queueMicrotask(() => {
-      for (const cb of child.ipc.messageHandlers) {
-        try { cb(msg); } catch (_e) { void _e; }
-      }
-    });
+    queueMicrotask(() => child.source.pushIpcMessage(msg));
     dv.setUint32(0, 0, true);
     return { payload: reply, status: REPLY_STATUS_OK };
   });
 
   // P3.3: parent-initiated disconnect. Marks IPC channel closed; fires
   // executor's onDisconnect handlers. Subsequent send() from either
-  // side returns status=2 (disconnected). Note: child.disconnect() on
-  // wasm side already emits 'disconnect' locally before sending us
-  // this RPC, and the executor's onDisconnect handlers don't need a
-  // reverse event because the executor already knows the channel is
-  // dead. Symmetric path (child calls opts.ipc.disconnect()) emits
-  // OP_SPAWN_ASYNC_EVENT kind=6 toward wasm.
+  // side returns status=2. Symmetric path (executor opts.ipc.disconnect)
+  // routes through the sink, which fires OP_SPAWN_ASYNC_EVENT IPC_DISCONNECT
+  // toward wasm.
   srv.register(OP_SPAWN_IPC_DISCONNECT, async (_ctx, args) => {
     const reply = new Uint8Array(4);
     const dv = new DataView(reply.buffer);
     if (args.byteLength < 4) { dv.setUint32(0, 1, true); return { payload: reply, status: REPLY_STATUS_OK }; }
     const inDv = new DataView(args.buffer, args.byteOffset, args.byteLength);
     const childId = inDv.getUint32(0, true);
-    // Hard-kill fast-path: notify runner; flip ipcEnabled so subsequent
-    // executor opts.ipc.send() and OP_SPAWN_IPC_SEND become no-ops.
     const hk = hardKillRunners.get(childId);
     if (hk) {
       if (hk.ipcEnabled) {
@@ -2055,14 +1741,10 @@ function registerHandlers(srv: RpcServer): void {
     }
     const child = asyncSpawnChildren.get(childId);
     if (!child) { dv.setUint32(0, 1, true); return { payload: reply, status: REPLY_STATUS_OK }; }
-    if (child.ipc.connected) {
-      child.ipc.connected = false;
-      // P2 #17: clean up structured-handler too (advanced-mode path).
-      // No-op for json mode children since they never registered one.
+    if (child.ipcEnabled) {
+      child.ipcEnabled = false;
       ipcStructuredHandlers.delete(childId);
-      for (const cb of child.ipc.disconnectHandlers.splice(0)) {
-        try { cb(); } catch (_e) { void _e; }
-      }
+      child.source.pushIpcDisconnect();
     }
     dv.setUint32(0, 0, true);
     return { payload: reply, status: REPLY_STATUS_OK };

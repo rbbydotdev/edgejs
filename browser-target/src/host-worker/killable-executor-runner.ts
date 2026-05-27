@@ -37,6 +37,7 @@
 // (for executors that don't use the onStdout/onStderr callbacks); host
 // emits them as one last chunk before EXIT so the wire-side semantics
 // match the cooperative path.
+import { buildExecutorContext, type ChildProcExecResult } from "./executor-context";
 
 interface RunRequest {
   kind: "run";
@@ -52,85 +53,6 @@ interface RunRequest {
   initialStdinEnded: boolean;
 }
 
-interface ChildProcExecResult {
-  stdout?: Uint8Array | string | number[];
-  stderr?: Uint8Array | string | number[];
-  code?: number | null;
-  signal?: string | null;
-  error?: { code: string; message: string } | null;
-}
-
-interface FdPipe {
-  buffered: Uint8Array[];
-  ended: boolean;
-  waiters: Array<(v: { value?: Uint8Array; done: boolean }) => void>;
-}
-
-// fd 0 = stdin (always present). fd >= 3 = lazy per-fd read-side pipe
-// (created on first inbound chunk OR first executor read).
-const fdPipes = new Map<number, FdPipe>();
-function ensureFdPipe(fd: number): FdPipe {
-  let p = fdPipes.get(fd);
-  if (!p) {
-    p = { buffered: [], ended: false, waiters: [] };
-    fdPipes.set(fd, p);
-  }
-  return p;
-}
-const stdinPipe = ensureFdPipe(0); // alias for the fd 0 entry
-
-const ipcState = {
-  connected: false,
-  messageHandlers: [] as Array<(msg: unknown) => void>,
-  disconnectHandlers: [] as Array<() => void>,
-};
-
-function pushFd(fd: number, bytes: Uint8Array): void {
-  const pipe = ensureFdPipe(fd);
-  if (pipe.ended) return;
-  const w = pipe.waiters.shift();
-  if (w) w({ value: bytes, done: false });
-  else pipe.buffered.push(bytes);
-}
-function endFd(fd: number): void {
-  const pipe = ensureFdPipe(fd);
-  if (pipe.ended) return;
-  pipe.ended = true;
-  while (pipe.waiters.length > 0) pipe.waiters.shift()!({ done: true });
-}
-function pushStdin(bytes: Uint8Array): void { pushFd(0, bytes); }
-function endStdin(): void { endFd(0); }
-
-function makeFdAsyncIterable(fd: number): AsyncIterable<Uint8Array> {
-  return {
-    [Symbol.asyncIterator](): AsyncIterator<Uint8Array> {
-      const pipe = ensureFdPipe(fd);
-      return {
-        next(): Promise<IteratorResult<Uint8Array>> {
-          if (pipe.buffered.length > 0) {
-            const chunk = pipe.buffered.shift()!;
-            return Promise.resolve({ value: chunk, done: false });
-          }
-          if (pipe.ended) {
-            return Promise.resolve({ value: undefined as unknown as Uint8Array, done: true });
-          }
-          return new Promise((resolve) => {
-            pipe.waiters.push((v) => {
-              if (v.done) resolve({ value: undefined as unknown as Uint8Array, done: true });
-              else resolve({ value: v.value!, done: false });
-            });
-          });
-        },
-        return(): Promise<IteratorResult<Uint8Array>> {
-          endFd(fd);
-          return Promise.resolve({ value: undefined as unknown as Uint8Array, done: true });
-        },
-      };
-    },
-  };
-}
-function makeStdinAsyncIterable(): AsyncIterable<Uint8Array> { return makeFdAsyncIterable(0); }
-
 function toBytes(v: Uint8Array | string | number[] | undefined): Uint8Array {
   if (v == null) return new Uint8Array(0);
   if (v instanceof Uint8Array) return v;
@@ -139,6 +61,9 @@ function toBytes(v: Uint8Array | string | number[] | undefined): Uint8Array {
   return new TextEncoder().encode(String(v));
 }
 
+// One executor per runner instance, so we can stash the context at
+// module level and route incoming messages through its source.
+let ctx: ReturnType<typeof buildExecutorContext> | null = null;
 let started = false;
 
 self.addEventListener("message", (e: MessageEvent) => {
@@ -152,33 +77,12 @@ self.addEventListener("message", (e: MessageEvent) => {
     | { kind: "ipc-disconnect" }
     | null;
   if (!msg) return;
-  if (msg.kind === "stdin-chunk") { pushStdin(msg.bytes); return; }
-  if (msg.kind === "stdin-end")   { endStdin(); return; }
-  if (msg.kind === "stdio-chunk") { pushFd(msg.fd, msg.bytes); return; }
-  if (msg.kind === "stdio-end")   { endFd(msg.fd); return; }
-  if (msg.kind === "ipc-msg") {
-    if (!ipcState.connected) return;
-    // Unwrap {__edgeSendHandle, msg, handle} envelope so executors can
-    // see (msg, handle) per the sendHandle support added in P4.5.
-    let userMsg: unknown = msg.msg;
-    let handle: unknown = undefined;
-    if (userMsg && typeof userMsg === "object" && (userMsg as { __edgeSendHandle?: boolean }).__edgeSendHandle === true) {
-      handle = (userMsg as { handle: unknown }).handle;
-      userMsg = (userMsg as { msg: unknown }).msg;
-    }
-    for (const cb of ipcState.messageHandlers) {
-      try { (cb as (m: unknown, h?: unknown) => void)(userMsg, handle); } catch (_e) { void _e; }
-    }
-    return;
-  }
-  if (msg.kind === "ipc-disconnect") {
-    if (!ipcState.connected) return;
-    ipcState.connected = false;
-    for (const cb of ipcState.disconnectHandlers.splice(0)) {
-      try { cb(); } catch (_e) { void _e; }
-    }
-    return;
-  }
+  if (msg.kind === "stdin-chunk") { ctx?.source.pushStdin(msg.bytes); return; }
+  if (msg.kind === "stdin-end")   { ctx?.source.endStdin(); return; }
+  if (msg.kind === "stdio-chunk") { ctx?.source.pushStdio(msg.fd, msg.bytes); return; }
+  if (msg.kind === "stdio-end")   { ctx?.source.endStdio(msg.fd); return; }
+  if (msg.kind === "ipc-msg")     { ctx?.source.pushIpcMessage(msg.msg); return; }
+  if (msg.kind === "ipc-disconnect") { ctx?.source.pushIpcDisconnect(); return; }
   if (msg.kind !== "run") return;
   if (started) return; // ignore double-start
   started = true;
@@ -186,11 +90,6 @@ self.addEventListener("message", (e: MessageEvent) => {
 });
 
 async function handleRun(req: RunRequest): Promise<void> {
-  // Pre-queue one-shot stdin if provided (parity with cooperative path
-  // and Node's spawn(..., {input:'...'}) shortcut).
-  if (req.initialStdin && req.initialStdin.byteLength > 0) pushStdin(req.initialStdin);
-  if (req.initialStdinEnded) endStdin();
-
   try { new Function(req.executorSrc)(); }
   catch (e) {
     const err = e as Error;
@@ -222,111 +121,32 @@ async function handleRun(req: RunRequest): Promise<void> {
     return;
   }
 
-  let usedStdoutStream = false;
-  let usedStderrStream = false;
-
-  const onStdoutCb = (chunk: Uint8Array | string | number[]): void => {
-    const b = toBytes(chunk);
-    if (b.byteLength > 0) { usedStdoutStream = true; self.postMessage({ kind: "stdout", bytes: b }); }
-  };
-  const onStderrCb = (chunk: Uint8Array | string | number[]): void => {
-    const b = toBytes(chunk);
-    if (b.byteLength > 0) { usedStderrStream = true; self.postMessage({ kind: "stderr", bytes: b }); }
-  };
-  // opts.stdio[N] accessor: mirrors the cooperative path's surface so
-  // executors written against opts.stdio[3..N] work uniformly.
-  // fd 0 = stdin AsyncIterable (alias for opts.stdin);
-  // fd 1 = stdout writer (calls onStdout); fd 2 = stderr writer;
-  // fd N >= 3 = duplex (AsyncIterable + write/end). Writes post
-  // {kind:'stdio-out', fd, bytes} so the host can emit EK.STDIO_FDN
-  // toward wasm. Reads come from inbound stdio-chunk messages.
-  const stdoutWriter = {
-    write(chunk: Uint8Array | string | number[]): boolean { onStdoutCb(chunk); return true; },
-    end(chunk?: Uint8Array | string | number[]): void { if (chunk != null) onStdoutCb(chunk); },
-  };
-  const stderrWriter = {
-    write(chunk: Uint8Array | string | number[]): boolean { onStderrCb(chunk); return true; },
-    end(chunk?: Uint8Array | string | number[]): void { if (chunk != null) onStderrCb(chunk); },
-  };
-  const extraHandles = new Map<number, unknown>();
-  function buildExtraHandle(fd: number): unknown {
-    return {
-      [Symbol.asyncIterator](): AsyncIterator<Uint8Array> {
-        return makeFdAsyncIterable(fd)[Symbol.asyncIterator]();
+  // Build the executor context. The sink routes outbound bytes/messages
+  // via self.postMessage; host's runner-message handler translates those
+  // into reverse-RPC OP_SPAWN_ASYNC_EVENT events toward wasm.
+  ctx = buildExecutorContext({
+    sink: {
+      stdout(bytes) { self.postMessage({ kind: "stdout", bytes }); },
+      stderr(bytes) { self.postMessage({ kind: "stderr", bytes }); },
+      stdioOut(fd, bytes, end) {
+        if (bytes.byteLength > 0) self.postMessage({ kind: "stdio-out", fd, bytes });
+        if (end) self.postMessage({ kind: "stdio-out", fd, bytes: new Uint8Array(0) });
       },
-      write(chunk: Uint8Array | string | number[]): boolean {
-        const bytes = toBytes(chunk);
-        if (bytes.byteLength === 0) return true;
-        self.postMessage({ kind: "stdio-out", fd, bytes });
-        return true;
-      },
-      end(chunk?: Uint8Array | string | number[]): void {
-        if (chunk != null) {
-          const bytes = toBytes(chunk);
-          if (bytes.byteLength > 0) self.postMessage({ kind: "stdio-out", fd, bytes });
-        }
-        // Zero-byte signal indicates end-of-stream for the wasm-side
-        // reader (matches the cooperative path's STDIO_FDN convention).
-        self.postMessage({ kind: "stdio-out", fd, bytes: new Uint8Array(0) });
-      },
-    };
-  }
-  const stdioProxy = new Proxy({}, {
-    get(_t, prop): unknown {
-      if (typeof prop !== "string") return undefined;
-      if (prop === "0") return makeStdinAsyncIterable();
-      if (prop === "1") return stdoutWriter;
-      if (prop === "2") return stderrWriter;
-      const idx = Number(prop);
-      if (!Number.isInteger(idx) || idx < 0) return undefined;
-      let h = extraHandles.get(idx);
-      if (!h) { h = buildExtraHandle(idx); extraHandles.set(idx, h); }
-      return h;
+      ipcSend(msg) { self.postMessage({ kind: "ipc-msg", msg }); },
+      ipcDisconnect() { self.postMessage({ kind: "ipc-disconnect" }); },
     },
-  });
-
-  const opts: Record<string, unknown> = {
+    ipcEnabled: req.ipc,
     signal: new AbortController().signal, // never aborts on hard-kill path; terminate() halts JS instead
-    onStdout: onStdoutCb,
-    onStderr: onStderrCb,
-    stdin: makeStdinAsyncIterable(),
-    stdio: stdioProxy,
-  };
-  if (req.env) opts.env = req.env;
-  if (req.cwd != null) opts.cwd = req.cwd;
-  if (req.killSignal) opts.killSignal = req.killSignal;
-  if (req.ipc) {
-    ipcState.connected = true;
-    // Single uniform path: post msg via worker's main channel. Browser
-    // structured-clone preserves Map/Set/Date/etc., so advanced mode
-    // gets fidelity for free. Host re-routes to wasm via the structured
-    // port (advanced) or JSON-encoded EK.IPC_MESSAGE (json) -- the
-    // mode-specific encoding decision lives on the host side.
-    opts.ipc = {
-      send(msg: unknown): boolean {
-        if (!ipcState.connected) return false;
-        self.postMessage({ kind: "ipc-msg", msg });
-        return true;
-      },
-      on(event: "message" | "disconnect", cb: (...args: unknown[]) => void): void {
-        if (event === "message") ipcState.messageHandlers.push(cb as (m: unknown) => void);
-        else if (event === "disconnect") ipcState.disconnectHandlers.push(cb as () => void);
-      },
-      disconnect(): void {
-        if (!ipcState.connected) return;
-        ipcState.connected = false;
-        self.postMessage({ kind: "ipc-disconnect" });
-        for (const cb of ipcState.disconnectHandlers.splice(0)) {
-          try { cb(); } catch (_e) { void _e; }
-        }
-      },
-      get connected(): boolean { return ipcState.connected; },
-    };
-  }
+    env: req.env,
+    cwd: req.cwd,
+    killSignal: req.killSignal,
+    initialStdin: req.initialStdin,
+    initialStdinEnded: req.initialStdinEnded,
+  });
 
   let result: ChildProcExecResult;
   try {
-    result = await Promise.resolve(executor(req.command, req.args, opts));
+    result = await Promise.resolve(executor(req.command, req.args, ctx.opts));
   } catch (e) {
     const err = e as Error;
     self.postMessage({
@@ -342,8 +162,8 @@ async function handleRun(req: RunRequest): Promise<void> {
   // (or in addition to) streaming via onStdout/onStderr. We send them
   // as finalStdout/finalStderr so host can emit them BEFORE the EXIT
   // event, preserving Node's "all data events fire before exit" ordering.
-  const finalStdout = !usedStdoutStream && result.stdout != null ? toBytes(result.stdout) : undefined;
-  const finalStderr = !usedStderrStream && result.stderr != null ? toBytes(result.stderr) : undefined;
+  const finalStdout = !ctx.usedStdoutStream() && result.stdout != null ? toBytes(result.stdout) : undefined;
+  const finalStderr = !ctx.usedStderrStream() && result.stderr != null ? toBytes(result.stderr) : undefined;
 
   self.postMessage({
     kind: "done",

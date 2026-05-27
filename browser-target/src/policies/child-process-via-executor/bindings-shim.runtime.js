@@ -295,12 +295,14 @@
     this.onexit = null;
     this._stdioPipes = [];
     this._ipcPipe = null;
+    this._isAdvancedIpc = false;
     this._refed = true;
     this._exited = false;
   }
   EdgeProcess.prototype.spawn = function(options) {
     var startAsync = g.__edgeChildProcessSpawnAsync;
     if (typeof startAsync !== 'function') return UV_ENOSYS;
+    this._isAdvancedIpc = options && options.serialization === 'advanced';
     var stdio = options.stdio || [];
     var hasIpc = false;
     for (var i = 0; i < stdio.length; i++) {
@@ -333,10 +335,11 @@
       // P4.3: opt-in hard kill via {killable:'hard'}. Runs the
       // executor in a dedicated Worker; kill() terminate()s the
       // worker -- halts runaway loops that ignore opts.signal.
-      // Streaming stdout/stderr, json-mode IPC, and streaming stdin
-      // are routed through the runner worker; advanced (structured-
-      // clone) IPC is the only feature still gated to the cooperative
-      // path because the structured port belongs to the wasm runtime.
+      // Feature parity with the cooperative path: streaming stdout/
+      // stderr, json+advanced IPC (Worker.postMessage's built-in
+      // structured-clone preserves Map/Set/Date/etc. through the
+      // runner's main channel), streaming stdin, and fd >= 3 extra
+      // pipes all work. ~50ms extra spawn latency is the trade-off.
       killable: options.killable === 'hard' ? 'hard' : undefined,
     };
     var headerBytes = new TextEncoder().encode(JSON.stringify(headerObj));
@@ -407,9 +410,12 @@
       // spawn-failure error path (emits 'error' event with ErrnoException).
       // Also EOF all read-side pipes so the wrapping net.Sockets close
       // and lib's maybeClose() can fire 'close' on the ChildProcess.
+      // IPC pipe skipped in advanced mode -- see EXIT branch comment.
       for (var i3 = 0; i3 < this._stdioPipes.length; i3++) {
         var sp3 = this._stdioPipes[i3];
-        if (sp3 && i3 !== 0) sp3._endRead();
+        if (!sp3 || i3 === 0) continue;
+        if (sp3._isIpc && this._isAdvancedIpc) continue;
+        sp3._endRead();
       }
       this._exited = true;
       if (this.onexit) this.onexit(UV_ENOENT, null);
@@ -426,9 +432,19 @@
         : null;
       var code = (codeRaw === -1 && sig != null) ? 0 : codeRaw;
       // EOF on all read-side pipes (stdout, stderr, extras, IPC).
+      // EXCEPT: in advanced-IPC mode we bypass the IPC pipe entirely
+      // (messages go via the wasm<->host structured port), so EOF'ing
+      // it triggers lib's setupChannel onread → target.channel = null,
+      // which races against the structured-port 'message' delivery for
+      // the last reply (typically a "bye-echo"). Skipping the EOF
+      // leaves the channel marked connected; lib's onexit still fires
+      // 'exit'; if the user wants disconnect semantics they can call
+      // child.disconnect() explicitly (which our override handles).
       for (var i2 = 0; i2 < this._stdioPipes.length; i2++) {
         var sp = this._stdioPipes[i2];
-        if (sp && i2 !== 0) sp._endRead();
+        if (!sp || i2 === 0) continue;
+        if (sp._isIpc && this._isAdvancedIpc) continue;
+        sp._endRead();
       }
       this._exited = true;
       if (this.onexit) this.onexit(code, sig);

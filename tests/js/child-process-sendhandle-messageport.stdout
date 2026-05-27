@@ -1,0 +1,5 @@
+bridge round-trips: 2
+executor got msg={"greeting":"hello-port"} port?=true
+executor got via port: parent-ack
+executor exiting
+exit: 0

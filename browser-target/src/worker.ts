@@ -28,6 +28,14 @@ declare const self: DedicatedWorkerGlobalScope;
 // Capture native APIs we need *before* we hand control to the wasm so edge
 // can't shadow them mid-run.
 const nowMs = performance.now.bind(performance);
+// Native MessageChannel ctor used by the cp.send sendHandle bridge in
+// internal-post-patch.runtime.js: when user code passes an edge.js
+// MessagePort, we wrap it with a native channel pair so the *native*
+// port can be transferred across the structured-clone wire (edge's
+// MessagePort instances aren't recognized as transferable).
+const NativeMessageChannel = MessageChannel;
+(globalThis as { __edgeNativeMessageChannel?: typeof MessageChannel })
+  .__edgeNativeMessageChannel = NativeMessageChannel;
 
 // Reverse-RPC dispatcher.  Wraps the user-facing dispatch callback in
 // `setImmediate` so it runs OUTSIDE the reverse-RPC handler's try/catch
