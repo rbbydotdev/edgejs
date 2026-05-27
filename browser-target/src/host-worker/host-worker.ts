@@ -739,10 +739,15 @@ function emitAsyncEvent(childId: number, kind: number, payload: Uint8Array): voi
     .catch((err) => log(`spawn-async event delivery failed: ${(err as Error).message}`, "warn"));
 }
 
-// Best-effort chunking: if executor returned > CHUNK_SIZE of stdout,
-// split into multiple data events. Reflects what async spawn observers
-// expect (multiple 'data' events). For tiny outputs there's one event.
-const ASYNC_CHUNK_SIZE = 16 * 1024;
+// Chunk size MUST be derived from the ring slot size, not a free
+// constant. The OP_SPAWN_ASYNC_EVENT payload format is
+// [u32 childId][u8 kind][N data bytes], framed inside the RPC slot
+// (SLOT_HEADER_SIZE=16, REQUEST_HEADER_SIZE=8). Anything larger than
+// slot-capacity throws RangeError from payload.set() and -- because
+// emitAsyncEvent is fire-and-forget -- the event is silently dropped.
+// Pre-fix (16 KB chunks into 4 KB slots) lost any single stdout write
+// over ~4 KB; regression covered by child-process-spawn-streaming-large.
+const ASYNC_CHUNK_SIZE = RING_CONFIG.slotSize - 16 /*sab slot hdr*/ - 8 /*req hdr*/ - 5 /*event frame*/ - 8 /*safety*/;
 
 function emitChunked(childId: number, kind: number, bytes: Uint8Array): void {
   if (bytes.byteLength === 0) return;
@@ -1076,6 +1081,14 @@ async function runChildProcessInHostWorker(requestBytes: Uint8Array): Promise<Ui
   } else {
     result = await executorPromise;
   }
+  // Executor contract: returning null/undefined means "I don't handle
+  // this command -- fall back to the wasm-side default fake shell."
+  // Signal that to wasm via __noExecutor (same protocol as
+  // "no executor installed at all"). Pre-P1.4 fix this fell through
+  // by THROWING (packChildProcReply on null hit `"__noExecutor" in null`),
+  // which the wasm-side caught and silently downgraded to fake-shell --
+  // hiding real RPC errors at the same time.
+  if (result == null) return packChildProcReply({ __noExecutor: true });
   return packChildProcReply(result);
 }
 

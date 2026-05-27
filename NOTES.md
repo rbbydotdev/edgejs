@@ -92,6 +92,67 @@ the browser-target tree.
 
 ### Newly opened
 
+- **`child-process-ipc-sendhandle`** (2026-05-27, P3.3) — `cp.send(msg,
+  handle)` silently drops the `handle` argument. Real Node delivers fds/
+  sockets/servers via kernel fd-passing over the IPC pipe; we have no
+  equivalent in-browser. `cluster.js` depends on this for worker
+  socket-sharing; bare `fork()` does not. Fix path: a separate transport
+  for "named handle" values that the executor can map to its own
+  resources, or hard-fail when handle != null so users see the gap.
+  Marker site: `policies/child-process-via-executor.ts:97`.
+
+- **`child-process-kill-cooperation`** (2026-05-27, P3.8) — `child.kill(sig)`
+  fires the executor's `opts.signal` (AbortSignal) and returns 0
+  unconditionally. The executor MUST poll `opts.signal` to honor the
+  kill; non-cooperating executors run to completion. Real Node delivers
+  an OS signal that interrupts the syscall the child is in — impossible
+  without a real OS process. Documented; test
+  `child-process-kill-cooperative` demonstrates the cooperator case.
+  No test for non-cooperator (would need a deliberately-broken executor).
+  Marker site: `policies/child-process-via-executor.ts:100`.
+
+- **`child-process-ipc-advanced-serialization-types`** (2026-05-27, P3.7)
+  — superseded by the P3.9 MessageChannel bridge for the common case,
+  but the JSON-backed fallback Serializer/Deserializer in `serdes`
+  stub still exists for non-MessageChannel paths (host-script mode,
+  pre-port-arrival deserialize). Map/Set/Date/BigInt go through
+  JSON.stringify there with the usual type-fidelity loss. The bridge
+  covers the worker→worker case fully; this only bites if v8.js
+  Serializer is invoked from a code path our port doesn't cover.
+  Marker site: `policies/child-process-via-executor.ts:1050`.
+
+- **`host-rpc-sync-reverse-drain`** (2026-05-27, P3.6) — while the wasm
+  worker is blocked in `Atomics.wait` for a sync RPC reply, it cannot
+  drain the reverse-RPC ring. Host's `reverseClient.call` retries with
+  exponential backoff (100 attempts, ~6s); if the wasm worker hasn't
+  freed slots by then, the call drops the event silently. Bumped ring
+  to 256 slots (from 32) to absorb realistic bursts; truly unbounded
+  bursts (e.g. tight cp.send of 1000+ in flight) still drop. Proper
+  fix: implement `drainReverseRequests` callback in `SyncRpcClient` so
+  the wasm side can drain the reverse ring during its forward-reply
+  wait. Marker site: `worker.ts:119` (config); referenced from
+  `tests/js/child-process-ipc-backpressure.js`.
+
+- **`async-spawn-chunk-size-from-ring`** (2026-05-27, P0.1) — RESOLVED in
+  the same commit it was opened: `ASYNC_CHUNK_SIZE` was hard-coded to
+  16 KB while ring slots are 4 KB, so any single stdout/stderr write
+  over ~4 KB silently dropped (RangeError from `payload.set` swallowed
+  by fire-and-forget `void reverseClient.call(...).catch`). Now derived
+  from `RING_CONFIG.slotSize` minus framing. Regression covered by
+  `child-process-spawn-streaming-large`. Marker site: `host-worker.ts`
+  (no longer marked; moved to derived constant).
+
+- **`async-spawn-pipe-keepalive-imbalance`** (2026-05-27, P0 audit) —
+  `EdgePipe` starts with `_refed: true` but never calls
+  `keepaliveAcquire()` on construction; the only acquire is one per
+  `EdgeProcess.spawn()`. A user who calls `pipe.unref()` then `pipe.ref()`
+  triggers an unmatched `keepaliveAcquire()` that pins the keepalive
+  timer forever. Conversely `pipe.close()` while `_refed === true`
+  calls `keepaliveRelease()` for a counter that wasn't paired-up. Fix:
+  remove pipe-level ref/unref (delegate solely to Process), or pair
+  acquire on `_childId` assignment with release on close. Tracked for
+  P1.5.
+
 - **`slot-deleters-stubbed-for-wasi-cli`** (2026-05-26) — One of the
   slot deleters in `Environment::slots_` triggers an out-of-bounds wasm
   memory access during WASI `proc_exit` teardown. Hits when

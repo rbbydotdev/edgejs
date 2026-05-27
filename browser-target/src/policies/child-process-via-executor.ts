@@ -225,8 +225,20 @@ const PRE_PATCH = `
     try {
       replyBuf = spawnSync(reqBuf);
     } catch (e) {
-      void e;
-      return null; // RPC failed; fall back to fake shell.
+      // Audit fix P1.4: previously this silently fell back to fake shell.
+      // That HID deployment misconfigurations -- a host executor that
+      // threw would surface as bogus fake-shell output with no signal
+      // anything went wrong. Now surface the RPC failure as a spawn
+      // error with the original message preserved.
+      try { console.error('[child-process-via-executor] host RPC for spawnSync(' + command + ') threw: ' + (e && e.message ? e.message : e)); } catch (_w) { void _w; }
+      // Return an error-shaped result; caller maps to ErrnoException.
+      return {
+        stdout: new Uint8Array(0),
+        stderr: new TextEncoder().encode(String(e && e.message ? e.message : e) + '\\n'),
+        code: 1,
+        signal: null,
+        error: { code: 'ESPAWN', message: 'host RPC failed: ' + String(e && e.message ? e.message : e) },
+      };
     }
     var parsed = unpackReply(replyBuf);
     if (parsed && parsed.__noExecutor) return null;
@@ -709,15 +721,37 @@ const PRE_PATCH = `
     this.bytesWritten = 0;
     this._childId = null;
     this._fdIndex = -1;
+    // _refed mirrors libuv handle.unref()/.ref() semantics: a refed
+    // handle pins the event loop; an unrefed one allows it to exit
+    // even if the handle is still alive. We DO NOT acquire keepalive
+    // on pipe construction -- that would double-count with the per-
+    // child acquire EdgeProcess.spawn() already does. Pipe-level
+    // ref/unref only takes effect AFTER the user explicitly toggles
+    // it, and we balance acquire/release strictly on those transitions.
+    // Audit fix P1.5: pre-fix, pipe started _refed=true but never
+    // called keepaliveAcquire(); a user calling .unref().ref() would
+    // do an unmatched acquire and pin the loop forever, and pipe.close()
+    // while _refed=true would do an unmatched release.
     this._refed = true;
+    this._heldKeepalive = false; // becomes true after a .ref() that acquired
     this._endedRead = false;
   }
   EdgePipe.prototype.getAsyncId = function() { return this._asyncId; };
   EdgePipe.prototype.ref = function() {
-    if (!this._refed) { this._refed = true; keepaliveAcquire(); }
+    if (this._refed) return;
+    this._refed = true;
+    if (!this._heldKeepalive) {
+      this._heldKeepalive = true;
+      keepaliveAcquire();
+    }
   };
   EdgePipe.prototype.unref = function() {
-    if (this._refed) { this._refed = false; keepaliveRelease(); }
+    if (!this._refed) return;
+    this._refed = false;
+    if (this._heldKeepalive) {
+      this._heldKeepalive = false;
+      keepaliveRelease();
+    }
   };
   EdgePipe.prototype.readStart = function() {
     this._reading = true;
@@ -832,7 +866,17 @@ const PRE_PATCH = `
   EdgePipe.prototype.close = function(cb) {
     if (this._closed) { if (cb) process.nextTick(cb); return; }
     this._closed = true;
-    if (this._refed) { this._refed = false; keepaliveRelease(); }
+    this._refed = false;
+    // Only release keepalive if we actually held one (i.e. user called
+    // .ref() after a prior .unref() that acquired it). Pipe-level
+    // keepalive is opt-in -- the per-child Process keepalive is the
+    // baseline. Pre-P1.5 fix this always called release on initial
+    // close, even though we'd never called acquire, double-counting
+    // against EdgeProcess's keepalive.
+    if (this._heldKeepalive) {
+      this._heldKeepalive = false;
+      keepaliveRelease();
+    }
     if (cb) process.nextTick(cb);
   };
   EdgePipe.prototype.setNoDelay = function() {};

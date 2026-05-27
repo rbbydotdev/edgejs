@@ -1,0 +1,4 @@
+child.ref is fn: true
+child.unref is fn: true
+exit: 0
+out: "hello-refs"

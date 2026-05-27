@@ -108,26 +108,13 @@ async function spawnHostThenRuntime(): Promise<void> {
     await runUserScriptOnHost(userScript, "test-runner");
     return;
   }
-  // P3.9: structured-clone IPC channel. A MessageChannel between the
-  // wasm-runtime worker and the host worker lets cp.send/process.send
-  // round-trip values via native postMessage (Map, Set, Date,
-  // ArrayBuffer, circular refs all preserved with full V8 fidelity --
-  // free, because postMessage IS structured-clone). Activates when
-  // spawn(..., { serialization: 'advanced' }). json mode keeps the
-  // existing byte-stream RPC path.
-  //
-  // Main orchestrates: creates the channel, transfers one port to each
-  // worker. After this, the two workers postMessage on their ports
-  // directly with no main-thread relay.
-  const ipcStructuredChannel = new MessageChannel();
+  // P3.9: structured-clone IPC channel. Stash the runtime side for
+  // spawnRuntimeWorker to ship; ship the host side now. setupIpcStructuredChannel
+  // is also called per-(host,runtime) pair from spawnUserWorker so
+  // worker_threads children get their own channel.
   if (hostHandle) {
-    hostHandle.worker.postMessage(
-      { kind: "edge-ipc-structured-port", port: ipcStructuredChannel.port1 },
-      [ipcStructuredChannel.port1],
-    );
+    pendingIpcStructuredPort = setupIpcStructuredChannel(hostHandle.worker);
   }
-  // Stash the runtime side for spawnRuntimeWorker to ship.
-  pendingIpcStructuredPort = ipcStructuredChannel.port2;
   spawnRuntimeWorker();
   // L4 reverse-echo probe: after runtime worker spawns and attaches its
   // reverse-channel server, the host worker can echo via that channel.
@@ -939,6 +926,22 @@ async function runEchoBench(iters: number, payloadBytes: number): Promise<void> 
 
 let pendingIpcStructuredPort: MessagePort | null = null;
 
+// P3.9: create a MessageChannel between a (host, runtime) worker pair
+// for structured-clone IPC. Ship port1 to the host worker now and
+// return port2 for the caller to ship to the runtime worker. Both
+// halves are transferred (ownership moves), so subsequent postMessages
+// on the port land on the OTHER side directly with no main relay.
+// Called once per (host, runtime) pair: primary boot + each user
+// worker_threads spawn (so each child runtime also gets advanced IPC).
+function setupIpcStructuredChannel(hostWorker: Worker): MessagePort {
+  const channel = new MessageChannel();
+  hostWorker.postMessage(
+    { kind: "edge-ipc-structured-port", port: channel.port1 },
+    [channel.port1],
+  );
+  return channel.port2;
+}
+
 function spawnRuntimeWorker() {
   worker = new Worker(new URL("./worker.ts", import.meta.url), { type: "module" });
   // Hand the FS snapshot SAB to runtime before any other message.
@@ -1113,6 +1116,15 @@ async function spawnUserWorker(
   // Forward FS snapshot SAB (shared across all runtimes per R21 / WC
   // pattern).
   childWasmWorker.postMessage({ kind: "edge-fs-snapshot-sab", sab: fsSnapshotSab });
+  // P3.9: structured-clone IPC channel for this child pair. Without
+  // this, a user_threads worker that calls cp.fork(..., {serialization:
+  // 'advanced'}) silently has no port and falls back to byte-stream
+  // semantics with no warning.
+  const childIpcPort = setupIpcStructuredChannel(childHostHandle.worker);
+  childWasmWorker.postMessage(
+    { kind: "edge-ipc-structured-port", port: childIpcPort },
+    [childIpcPort],
+  );
   // Forward RPC SABs paired with the child host worker.
   childWasmWorker.postMessage({
     kind: "edge-host-rpc-sab",
