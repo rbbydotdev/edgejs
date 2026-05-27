@@ -1,0 +1,128 @@
+browser-target/src/host-worker/killable-executor-runner.ts
+  s_92c1b47c0d6ee8::t_4dda6cfa3c671a 228-230,232-284,286-287,290-291,293
+  s_92c1b47c0d6ee8::t_e4a2a6f38b79cd 300-320,322-324
+  s_92c1b47c0d6ee8::t_7d889dc71a5e05 12-13,22
+  s_92c1b47c0d6ee8::t_a6f4fcd426b7a8 9,14-16,23-26,29-34
+  s_92c1b47c0d6ee8::t_7f3011da63ea1a 27
+  s_92c1b47c0d6ee8::t_f87ce5d9be06a5 63,69-81,88-91,93,95-99,101-104,107,110-111,114,118,125,132
+  s_92c1b47c0d6ee8::t_50d4fd4dc450a8 50
+  s_92c1b47c0d6ee8::t_aa6d4cb4cbe6ea 4-8,10-11,17-21,28,35-40,49,51-52,64-68,82-87,92,94,100,105-106,108-109,112-113,115-117,119-124,126-131,133-148,151-156,159-160,169,171-192,195-198,202-203,215-216,220-221,225-227,289,292,298-299,321,325,330-333,337,341-346,348-349,353-355
+  s_92c1b47c0d6ee8::t_745e6d3b7b1a3b 161-168,170
+  s_92c1b47c0d6ee8::t_9dc309f2abe724 149-150,157-158
+tests/js/child-process-sendhandle-transferable.js
+  ai_agent 1-36
+tests/js/child-process-hard-kill-streaming.harness-args
+  s_92c1b47c0d6ee8::t_bf59e734722570 1
+NOTES.md
+  s_92c1b47c0d6ee8::t_8e04711809fb54 135-146
+  s_92c1b47c0d6ee8::t_22e0edbdca46e2 122-133
+  s_92c1b47c0d6ee8::t_9aeaa7c2b94598 95-109
+tests/js/child-process-hard-kill-extra-fds.js
+  s_92c1b47c0d6ee8::t_b5d14ef4f800c0 1-28
+tests/js/child-process-hard-kill-streaming.executor.js
+  s_92c1b47c0d6ee8::t_3b050afa8b2d80 1-14
+tests/js/child-process-sendhandle-transferable.stdout
+  ai_agent 1-5
+tests/js/child-process-hard-kill-streaming.js
+  s_92c1b47c0d6ee8::t_ad776e941a9b06 1-20
+tests/js/child-process-ipc-burst-limit.stdout
+  s_92c1b47c0d6ee8::t_29143e3c3b1324 2
+tests/js/child-process-hard-kill-ipc-advanced.js
+  s_92c1b47c0d6ee8::t_7dd80ede4b796d 1-43
+browser-target/src/worker.ts
+  s_92c1b47c0d6ee8::t_8dd94313e57341 796-805
+  s_92c1b47c0d6ee8::t_8b32f4ed6930bd 810
+tests/js/child-process-hard-kill-ipc.js
+  s_92c1b47c0d6ee8::t_1bfe49e05474b8 1-28
+tests/js/child-process-hard-kill-stdin.executor.js
+  s_92c1b47c0d6ee8::t_227e2ce1f81957 1-15
+tests/js/v8-serdes-types.stdout
+  s_92c1b47c0d6ee8::t_f0f14fa97d211f 1-11
+browser-target/src/host-worker/rpc-server.ts
+  s_92c1b47c0d6ee8::t_f48ba2a726736b 22
+  s_92c1b47c0d6ee8::t_fc541a335638e8 121,137,152-167
+  s_92c1b47c0d6ee8::t_fbb165b95ba4f1 122-136,138-151
+tests/js/child-process-hard-kill-extra-fds.stdout
+  s_92c1b47c0d6ee8::t_8dd7743eb657f5 1-2
+browser-target/src/policies/child-process-via-executor.ts
+  s_92c1b47c0d6ee8::t_2a2a4ce0df06e1 133,135-137,139-140,158-161
+browser-target/src/policies/child-process-via-executor/internal-post-patch.runtime.js
+  s_92c1b47c0d6ee8::t_4d41518506a459 132
+  s_92c1b47c0d6ee8::t_36bbfeff9631bf 60-62,64-69
+  s_92c1b47c0d6ee8::t_4a47509ca352b4 89-101,113-120,122-124
+  s_92c1b47c0d6ee8::t_d6273d67b673cf 103-112,121
+tests/js/child-process-hard-kill-ipc.harness-args
+  s_92c1b47c0d6ee8::t_d5f5741b452ba6 1
+tests/js/child-process-hard-kill-ipc-advanced.harness-args
+  s_92c1b47c0d6ee8::t_50c6f42a746442 1
+tests/js/child-process-hard-kill-stdin.stdout
+  s_92c1b47c0d6ee8::t_cd7178582ce653 1-2
+browser-target/src/policies/child-process-via-executor/serdes-shim.runtime.js
+  s_92c1b47c0d6ee8::t_5910942638cf82 236-241
+  s_92c1b47c0d6ee8::t_c63cb04e48b2d2 1-235,242-426
+tests/js/child-process-ipc-burst-limit.js
+  s_92c1b47c0d6ee8::t_f5c9836268cf8e 1-6,17
+tests/js/child-process-hard-kill-stdin.harness-args
+  s_92c1b47c0d6ee8::t_cb5032b551e280 1
+browser-target/src/host-worker/host-worker.ts
+  s_92c1b47c0d6ee8::t_d53255492ff5f7 609,619
+  s_92c1b47c0d6ee8::t_3a0f00cd0affc2 2045-2055
+  s_92c1b47c0d6ee8::t_63e4dee2c4a8a8 1939-1940,1942-1943,1946-1948,1971-1972,1976-1978,2000-2012
+  s_92c1b47c0d6ee8::t_5ea03f3cea77c9 1934-1938,1941,1944-1945
+  s_92c1b47c0d6ee8::t_007ff4a85151d1 518,525,538,541,543,547-548,550-556,569-572,582-586,593-608,610-611,614,620,636,638-639
+  s_92c1b47c0d6ee8::t_fac4f6a0befb13 519-524,532-533,536-537
+  s_92c1b47c0d6ee8::t_90def96206c708 498-501
+  s_92c1b47c0d6ee8::t_948a8b94293a0c 573-581,587-592
+  s_92c1b47c0d6ee8::t_bf44ef74177e3e 1208
+  s_92c1b47c0d6ee8::t_c0a7812d36354a 526-531,534-535
+  s_92c1b47c0d6ee8::t_7d638334cca9f5 542,557-568
+  s_92c1b47c0d6ee8::t_8f71a67459119d 1020-1023
+  s_92c1b47c0d6ee8::t_0401af4df3c8df 1209
+  s_92c1b47c0d6ee8::t_18557ede4e36f3 1973-1975
+  s_92c1b47c0d6ee8::t_5c3dee3b5af168 495-497,502
+  s_92c1b47c0d6ee8::t_f8cdb4ee6528c9 637
+  s_92c1b47c0d6ee8::t_7e879107123868 628
+  s_92c1b47c0d6ee8::t_cb8e5ad533c365 699-707,709
+tests/js/child-process-hard-kill-ipc.executor.js
+  s_92c1b47c0d6ee8::t_ebac858089e2cf 1-16
+tests/js/child-process-hard-kill-ipc.stdout
+  s_92c1b47c0d6ee8::t_379bc5c280093a 1-5
+browser-target/src/policies/child-process-via-executor/bindings-shim.runtime.js
+  s_92c1b47c0d6ee8::t_3c137d7323e953 336-339
+tests/js/child-process-hard-kill-extra-fds.executor.js
+  s_92c1b47c0d6ee8::t_cf9761e3b61d13 1-16
+tests/js/child-process-hard-kill-stdin.js
+  s_92c1b47c0d6ee8::t_b06ed827d13d3b 1-23
+tests/js/child-process-hard-kill-extra-fds.harness-args
+  s_92c1b47c0d6ee8::t_fae3a66ee78de1 1
+tests/js/v8-serdes-types.js
+  s_92c1b47c0d6ee8::t_aad51683908993 1-39
+tests/js/v8-serdes-types.harness-args
+  s_92c1b47c0d6ee8::t_58ebc3a4065c95 1
+tests/js/child-process-sendhandle-transferable.executor.js
+  ai_agent 1-19
+tests/js/child-process-sendhandle-transferable.harness-args
+  ai_agent 1
+tests/js/child-process-hard-kill-ipc-advanced.executor.js
+  s_92c1b47c0d6ee8::t_1c955df2f07673 1-15
+tests/js/child-process-hard-kill-streaming.stdout
+  s_92c1b47c0d6ee8::t_aebb7165db86ac 1-9
+tests/js/child-process-hard-kill-ipc-advanced.stdout
+  s_92c1b47c0d6ee8::t_008e9ae29fe110 1-6
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "e64992853372702651aa23987a097cd97cb7e193",
+  "prompts": {},
+  "sessions": {
+    "s_92c1b47c0d6ee8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "dca99c1c-d946-4444-9a53-9ba89db5d748",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
