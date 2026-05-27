@@ -786,6 +786,47 @@ export const OP_SPAWN_IPC_DISCONNECT = OP_DOMAIN_HOST_API | 0x0012;
 //   - Combined region capped by napi memory size (4 pages = 256 KiB
 //     initial → 128 KiB available; max 16 pages = 1 MiB).
 
+// ── Ring config ─────────────────────────────────────────────────────
+//
+// The SHARED ring shape every host-side and wasm-side RpcClient/Server
+// pair attaches to. Producer (worker-pool createRing) and consumers
+// (RpcClient.attach / RpcServer.attach) MUST agree on these numbers
+// because the SAB byte layout is derived from them at allocation time;
+// a mismatch surfaces as `attached SAB X < expected Y` errors.
+//
+// numSlots = 256: bumped from 32 (e42 pre-P3.6). 32 was too small for
+//   IPC ack storms (cp.send burst loops) -- host's reverseClient hit
+//   backoff because wasm couldn't drain while in sync RPC. 256 absorbs
+//   realistic bursts. The deeper fix is in
+//   `#!~debt host-rpc-sync-reverse-drain` (NOTES.md).
+// slotSize = 4 KiB: matches sab-ring's per-slot capacity. Anything
+//   larger needs out-of-band data (e.g. shared napi-mem path for big
+//   crypto payloads, see OP_SUBTLE_*_VIA_NAPI_MEM).
+export const HOST_RPC_RING_CONFIG = { numSlots: 256, slotSize: 4 * 1024 };
+
+// ── async-spawn event kinds (OP_SPAWN_ASYNC_EVENT payload byte 4) ──
+//
+// Replace magic 0–7 ints scattered across host + wasm with one source
+// of truth. The runtime-string side (policy patches) gets these emitted
+// as a literal `const EK = {...}` prelude so its switch arms can use
+// `EK.STDOUT` etc. instead of `/*stdout*/` comments.
+export const ASYNC_EVENT_KIND = {
+  STDOUT: 0,         // raw bytes (fd 1)
+  STDERR: 1,         // raw bytes (fd 2)
+  EXIT: 2,           // [i32 code | -1 for null][u32 sigLen][utf-8 sig]
+  ERROR: 3,          // utf-8 JSON {code, message}
+  SPAWNED: 4,        // [u32 pid]
+  IPC_MESSAGE: 5,    // utf-8 JSON object
+  IPC_DISCONNECT: 6, // empty
+  STDIO_FDN: 7,      // [u32 fdIndex][bytes data] (stdio[3+])
+} as const;
+export type AsyncEventKind = typeof ASYNC_EVENT_KIND[keyof typeof ASYNC_EVENT_KIND];
+
+// Source string for embedding into runtime-string patches.
+// Usage in PRE_PATCH: `${ASYNC_EVENT_KIND_PRELUDE}\nif (kind === EK.STDOUT) ...`
+export const ASYNC_EVENT_KIND_PRELUDE =
+  "var EK = " + JSON.stringify(ASYNC_EVENT_KIND) + ";";
+
 // ── Status codes for replies ────────────────────────────────────────
 
 export const REPLY_STATUS_OK = 0;

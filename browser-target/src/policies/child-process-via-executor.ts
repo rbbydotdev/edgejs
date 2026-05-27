@@ -1,4 +1,5 @@
 import type { Policy } from "./index";
+import { ASYNC_EVENT_KIND_PRELUDE } from "../host-worker/rpc-protocol";
 
 // `child_process.spawnSync` etc. in browser-target.
 //
@@ -612,6 +613,7 @@ const PRE_PATCH = `
            (typeof global !== 'undefined' && global);
   }
   var g = getG();
+  ${ASYNC_EVENT_KIND_PRELUDE}
 
   // --- stream_wrap shim (provides streamBaseState typed array + indices) ---
   var streamWrapBinding;
@@ -960,18 +962,18 @@ const PRE_PATCH = `
   };
   EdgeProcess.prototype._handleEvent = function(kind, payload) {
     if (this._exited) return;
-    if (kind === 4 /*spawned*/) return; // pid already set in spawn()
-    if (kind === 0 /*stdout*/) {
+    if (kind === EK.SPAWNED) return; // pid already set in spawn()
+    if (kind === EK.STDOUT) {
       var so = this._stdioPipes[1];
       if (so) so._deliverRead(payload);
       return;
     }
-    if (kind === 1 /*stderr*/) {
+    if (kind === EK.STDERR) {
       var se = this._stdioPipes[2];
       if (se) se._deliverRead(payload);
       return;
     }
-    if (kind === 5 /*ipc-message*/) {
+    if (kind === EK.IPC_MESSAGE) {
       if (!this._ipcPipe) return;
       // Host emits JSON (no newline). Lib's json deframer splits on \\n,
       // so we append one. parseChannelMessages then JSON.parses cleanly.
@@ -981,11 +983,11 @@ const PRE_PATCH = `
       this._ipcPipe._deliverRead(withNl);
       return;
     }
-    if (kind === 6 /*ipc-disconnect*/) {
+    if (kind === EK.IPC_DISCONNECT) {
       if (this._ipcPipe) this._ipcPipe._endRead();
       return;
     }
-    if (kind === 7 /*stdio-fdN*/) {
+    if (kind === EK.STDIO_FDN) {
       if (payload.byteLength < 4) return;
       var dv = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
       var fdIdx = dv.getUint32(0, true);
@@ -997,7 +999,7 @@ const PRE_PATCH = `
       }
       return;
     }
-    if (kind === 3 /*error*/) {
+    if (kind === EK.ERROR) {
       // Spawn-time error: lib treats negative exitCode in onexit as the
       // spawn-failure error path (emits 'error' event with ErrnoException).
       // Also EOF all read-side pipes so the wrapping net.Sockets close
@@ -1012,7 +1014,7 @@ const PRE_PATCH = `
       deregisterProcess(this._childId);
       return;
     }
-    if (kind === 2 /*exit*/) {
+    if (kind === EK.EXIT) {
       var dv2 = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
       var codeRaw = dv2.getInt32(0, true);
       var sigLen = dv2.getUint32(4, true);

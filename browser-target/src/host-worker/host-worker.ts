@@ -21,9 +21,9 @@
 import {
   attachRing,
   RingView,
-  type RingConfig,
 } from "../wasi-shim/sab-ring";
 import { RpcServer } from "./rpc-server";
+import { attachIpcStructuredPort as attachStructuredPort } from "./ipc-structured-port";
 import { RpcClient } from "./rpc-client";
 import { SyncRpcClient } from "./rpc-client-sync";
 import {
@@ -59,6 +59,8 @@ import {
   REPLY_STATUS_OK,
   REPLY_STATUS_HOST_ERROR,
   REPLY_STATUS_INVALID_ARGS,
+  HOST_RPC_RING_CONFIG,
+  ASYNC_EVENT_KIND as EK,
 } from "./rpc-protocol";
 
 // E22: napi handle bump allocator must stay below DIGEST_STAGING_OFFSET
@@ -92,11 +94,9 @@ declare const self: DedicatedWorkerGlobalScope;
   });
 }
 
-// Must match the producer's config (in worker-pool.ts).
-const RING_CONFIG: RingConfig = {
-  numSlots: 256,
-  slotSize: 4 * 1024,
-};
+// Single source of truth in rpc-protocol.ts; re-aliased locally for
+// the file-local sites that already call it RING_CONFIG.
+const RING_CONFIG = HOST_RPC_RING_CONFIG;
 
 interface InitMessage {
   kind: "init";
@@ -484,39 +484,36 @@ interface SpawnAsyncChild {
 // host and wasm-runtime). Routes per-childId messages with full V8
 // postMessage fidelity. Activates only for serialization: 'advanced'
 // spawns; json-mode spawns keep using the byte-stream RPC path.
-let ipcStructuredPort: MessagePort | null = null;
+// Protocol implementation lives in ipc-structured-port.ts -- shared
+// with the wasm-runtime side which uses the symmetric setup.
 const ipcStructuredHandlers = new Map<number, (msg: unknown) => void>();
+let ipcStructuredOutbound: { send: (childId: number, msg: unknown, transfer?: Transferable[]) => boolean; disconnect: (childId: number) => boolean } | null = null;
 function attachIpcStructuredPort(port: MessagePort): void {
-  if (ipcStructuredPort) {
+  if (ipcStructuredOutbound) {
     log("ipc-structured-port received twice; replacing", "warn");
   }
-  ipcStructuredPort = port;
-  port.onmessage = (e: MessageEvent) => {
-    const data = e.data as { childId?: number; msg?: unknown; kind?: string };
-    if (!data || typeof data.childId !== "number") return;
-    if (data.kind === "disconnect") {
-      const child = asyncSpawnChildren.get(data.childId);
+  ipcStructuredOutbound = attachStructuredPort(port, {
+    onMessage(childId, msg) {
+      const handler = ipcStructuredHandlers.get(childId);
+      if (handler) handler(msg);
+    },
+    onDisconnect(childId) {
+      const child = asyncSpawnChildren.get(childId);
       if (child && child.ipc.connected) {
         child.ipc.connected = false;
+        ipcStructuredHandlers.delete(childId);
         for (const cb of child.ipc.disconnectHandlers.splice(0)) {
           try { cb(); } catch (_e) { void _e; }
         }
       }
-      return;
-    }
-    const handler = ipcStructuredHandlers.get(data.childId);
-    if (handler) handler(data.msg);
-  };
-  port.start?.();
+    },
+  });
 }
 function sendIpcStructuredMessage(childId: number, msg: unknown, transfer?: Transferable[]): boolean {
-  if (!ipcStructuredPort) return false;
-  ipcStructuredPort.postMessage({ childId, msg }, transfer || []);
-  return true;
+  return ipcStructuredOutbound ? ipcStructuredOutbound.send(childId, msg, transfer) : false;
 }
 function sendIpcStructuredDisconnect(childId: number): void {
-  if (!ipcStructuredPort) return;
-  ipcStructuredPort.postMessage({ childId, kind: "disconnect" });
+  if (ipcStructuredOutbound) ipcStructuredOutbound.disconnect(childId);
 }
 
 // Build the executor-facing IPC handle (`opts.ipc`). Mirrors Node's
@@ -554,7 +551,7 @@ function makeIpcHandle(
         return sendIpcStructuredMessage(childId, msg);
       }
       const json = JSON.stringify(msg);
-      emitAsyncEvent(childId, 5 /*ipc-message*/, new TextEncoder().encode(json));
+      emitAsyncEvent(childId, EK.IPC_MESSAGE, new TextEncoder().encode(json));
       return true;
     },
     on(event, cb): void {
@@ -566,9 +563,15 @@ function makeIpcHandle(
       channel.connected = false;
       if (advanced) {
         sendIpcStructuredDisconnect(childId);
+        // P2 #17 audit fix: explicit disconnect must drop the
+        // structured handler too; otherwise the (childId -> handler)
+        // entry stays in the Map until the executor naturally exits.
+        // Minor leak (one closure per disconnect) but unbounded over
+        // long-lived runtimes that spawn-disconnect repeatedly.
+        ipcStructuredHandlers.delete(childId);
       } else {
         // Notify wasm side so EdgeChildProcess emits 'disconnect' there.
-        emitAsyncEvent(childId, 6 /*ipc-disconnect*/, new Uint8Array(0));
+        emitAsyncEvent(childId, EK.IPC_DISCONNECT, new Uint8Array(0));
       }
       for (const cb of channel.disconnectHandlers.splice(0)) {
         try { cb(); } catch (_e) { void _e; }
@@ -693,7 +696,7 @@ function makeExecutorStdioAccessor(
         const payload = new Uint8Array(4 + bytes.byteLength);
         new DataView(payload.buffer).setUint32(0, fdIndex, true);
         payload.set(bytes, 4);
-        emitAsyncEvent(childId, 7 /*stdio-fdN*/, payload);
+        emitAsyncEvent(childId, EK.STDIO_FDN, payload);
         return true;
       },
       end(chunk?: Uint8Array | string | number[]): void {
@@ -701,7 +704,7 @@ function makeExecutorStdioAccessor(
         // Out-of-band end signal: zero-length frame.
         const payload = new Uint8Array(4);
         new DataView(payload.buffer).setUint32(0, fdIndex, true);
-        emitAsyncEvent(childId, 7 /*stdio-fdN*/, payload);
+        emitAsyncEvent(childId, EK.STDIO_FDN, payload);
       },
     };
   }
@@ -867,7 +870,7 @@ async function startAsyncSpawn(requestBytes: Uint8Array): Promise<Uint8Array> {
   queueMicrotask(() => {
     const pidBytes = new Uint8Array(4);
     new DataView(pidBytes.buffer).setUint32(0, childId, true);
-    emitAsyncEvent(childId, 4 /*spawned*/, pidBytes);
+    emitAsyncEvent(childId, EK.SPAWNED, pidBytes);
   });
 
   // Invoke executor; deliver events as the result resolves.
@@ -899,12 +902,12 @@ async function startAsyncSpawn(requestBytes: Uint8Array): Promise<Uint8Array> {
     onStdout: (chunk: Uint8Array | string | number[]) => {
       usedStdoutStream = true;
       const bytes = toBytesForChunk(chunk);
-      if (bytes.byteLength > 0) emitChunked(childId, 0 /*stdout*/, bytes);
+      if (bytes.byteLength > 0) emitChunked(childId, EK.STDOUT, bytes);
     },
     onStderr: (chunk: Uint8Array | string | number[]) => {
       usedStderrStream = true;
       const bytes = toBytesForChunk(chunk);
-      if (bytes.byteLength > 0) emitChunked(childId, 1 /*stderr*/, bytes);
+      if (bytes.byteLength > 0) emitChunked(childId, EK.STDERR, bytes);
     },
     // Streaming stdin (P3.2). Executors can `for await` on this iterable
     // to receive chunks as wasm-side `child.stdin.write()` calls push
@@ -923,11 +926,11 @@ async function startAsyncSpawn(requestBytes: Uint8Array): Promise<Uint8Array> {
     stdio: makeExecutorStdioAccessor(childId, stdinPipe, (chunk: Uint8Array | string | number[]) => {
       usedStdoutStream = true;
       const bytes = toBytesForChunk(chunk);
-      if (bytes.byteLength > 0) emitChunked(childId, 0 /*stdout*/, bytes);
+      if (bytes.byteLength > 0) emitChunked(childId, EK.STDOUT, bytes);
     }, (chunk: Uint8Array | string | number[]) => {
       usedStderrStream = true;
       const bytes = toBytesForChunk(chunk);
-      if (bytes.byteLength > 0) emitChunked(childId, 1 /*stderr*/, bytes);
+      if (bytes.byteLength > 0) emitChunked(childId, EK.STDERR, bytes);
     }, () => asyncSpawnChildren.get(childId)),
   };
   // P3.3 IPC: only exposed when the caller requested stdio with an
@@ -955,12 +958,12 @@ async function startAsyncSpawn(requestBytes: Uint8Array): Promise<Uint8Array> {
       // - Otherwise the executor genuinely failed -- emit error + exit
       //   so wasm fires both 'error' and 'close'.
       if (ac.signal.aborted) {
-        emitAsyncEvent(childId, 2 /*exit*/, packExitPayload(null, req.killSignal || "SIGTERM"));
+        emitAsyncEvent(childId, EK.EXIT, packExitPayload(null, req.killSignal || "SIGTERM"));
       } else {
         const err = e instanceof Error ? e : new Error(String(e));
         const payload = new TextEncoder().encode(err.message);
-        emitAsyncEvent(childId, 3 /*error*/, payload);
-        emitAsyncEvent(childId, 2 /*exit*/, packExitPayload(null, null));
+        emitAsyncEvent(childId, EK.ERROR, payload);
+        emitAsyncEvent(childId, EK.EXIT, packExitPayload(null, null));
       }
       const child = asyncSpawnChildren.get(childId);
       if (child) { child.done = true; asyncSpawnChildren.delete(childId); }
@@ -979,8 +982,8 @@ async function startAsyncSpawn(requestBytes: Uint8Array): Promise<Uint8Array> {
     // did NOT push incrementally. Streaming executors return {code} (or
     // {code, error}) with no stdout/stderr field; batch executors return
     // {stdout, stderr, code}. The flag distinguishes the two.
-    if (!usedStdoutStream) emitChunked(childId, 0 /*stdout*/, toBytes(result.stdout));
-    if (!usedStderrStream) emitChunked(childId, 1 /*stderr*/, toBytes(result.stderr));
+    if (!usedStdoutStream) emitChunked(childId, EK.STDOUT, toBytes(result.stdout));
+    if (!usedStderrStream) emitChunked(childId, EK.STDERR, toBytes(result.stderr));
     // Emit 'error' event when the executor reports a spawn-level failure
     // (e.g. fake shell ENOENT for unknown commands). Matches Node where
     // spawn() emits 'error' for spawn failures separately from non-zero
@@ -991,13 +994,13 @@ async function startAsyncSpawn(requestBytes: Uint8Array): Promise<Uint8Array> {
         code: result.error.code || "ESPAWN",
         message: result.error.message || ("spawn " + req.command + " " + (result.error.code || "ESPAWN")),
       });
-      emitAsyncEvent(childId, 3 /*error*/, new TextEncoder().encode(errJson));
+      emitAsyncEvent(childId, EK.ERROR, new TextEncoder().encode(errJson));
     }
     const sigName = ac.signal.aborted
       ? (req.killSignal || "SIGTERM")
       : (result.signal != null ? String(result.signal) : null);
     const code = typeof result.code === "number" ? result.code : (sigName ? null : 0);
-    emitAsyncEvent(childId, 2 /*exit*/, packExitPayload(code, sigName));
+    emitAsyncEvent(childId, EK.EXIT, packExitPayload(code, sigName));
     const child = asyncSpawnChildren.get(childId);
     if (child) { child.done = true; asyncSpawnChildren.delete(childId); }
   })();
@@ -1046,19 +1049,21 @@ async function runChildProcessInHostWorker(requestBytes: Uint8Array): Promise<Ui
   if (typeof executor !== "function") {
     return packChildProcReply({ __noExecutor: true });
   }
-  const opts: Record<string, unknown> = {};
+  // P2 #16 audit fix: wire AbortController so timeout triggers opts.signal,
+  // giving cooperating executors a chance to clean up. Non-cooperating
+  // executors still leak (they ignore the signal and run to completion),
+  // but cooperating ones now have the contract Node-async-spawn already
+  // provides. Without this, the sync-path timeout was synthetic-only:
+  // we returned ETIMEDOUT to the wasm side while the executor kept
+  // burning host CPU.
+  const ac = new AbortController();
+  const opts: Record<string, unknown> = { signal: ac.signal };
   if (req.env) opts.env = req.env;
   if (req.cwd != null) opts.cwd = req.cwd;
   if (req.input) opts.input = req.input;
   if (typeof req.timeout === "number") opts.timeout = req.timeout;
   if (req.killSignal) opts.killSignal = req.killSignal;
 
-  // Timeout enforcement: race executor against a timer if req.timeout > 0.
-  // When the timer wins, we return a synthetic kill result. Executor keeps
-  // running in the background -- can't synchronously abort an arbitrary
-  // user function; AbortSignal support (task P2 #44) gives the executor a
-  // way to cooperate. Until then this is a leak on timeout, but a bounded
-  // one (the call returns and the wasm thread is freed).
   const executorPromise = Promise.resolve(executor(req.command, req.args || [], opts));
   let result: ChildProcExecResult;
   if (typeof req.timeout === "number" && req.timeout > 0) {
@@ -1068,6 +1073,11 @@ async function runChildProcessInHostWorker(requestBytes: Uint8Array): Promise<Ui
     );
     const raced = await Promise.race([executorPromise, timer]);
     if (raced === timeoutSentinel) {
+      // Fire the abort signal so cooperating executors can stop their
+      // work (file handles, fetches, etc.). The promise they returned
+      // may still resolve later, but we ignore it -- the wasm side has
+      // already received our synthetic ETIMEDOUT result.
+      try { ac.abort(); } catch (_e) { void _e; }
       result = {
         stdout: new Uint8Array(0),
         stderr: new Uint8Array(0),
@@ -1810,6 +1820,9 @@ function registerHandlers(srv: RpcServer): void {
     if (!child) { dv.setUint32(0, 1, true); return { payload: reply, status: REPLY_STATUS_OK }; }
     if (child.ipc.connected) {
       child.ipc.connected = false;
+      // P2 #17: clean up structured-handler too (advanced-mode path).
+      // No-op for json mode children since they never registered one.
+      ipcStructuredHandlers.delete(childId);
       for (const cb of child.ipc.disconnectHandlers.splice(0)) {
         try { cb(); } catch (_e) { void _e; }
       }

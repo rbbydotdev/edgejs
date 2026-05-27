@@ -9,13 +9,8 @@
 // each gets its own pair of rings + a unique hostWorkerId.  The current
 // API shape supports that future shape; today it just hard-codes id=0.
 
-import { createRing, type RingConfig } from "../wasi-shim/sab-ring";
-
-// Must match host-worker.ts's RING_CONFIG.
-const RING_CONFIG: RingConfig = {
-  numSlots: 256,
-  slotSize: 4 * 1024,
-};
+import { createRing } from "../wasi-shim/sab-ring";
+import { HOST_RPC_RING_CONFIG as RING_CONFIG } from "./rpc-protocol";
 
 export interface HostWorkerHandle {
   /** Unique id for this host worker.  0 in single-host setup. */

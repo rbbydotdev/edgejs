@@ -101,23 +101,14 @@ let fsSnapshotSab: SharedArrayBuffer | null = null;
 // "edge-host-rpc-sab" message before boot.  We attach an RpcClient
 // once both SABs arrive — used today only for the L2 ping smoke test;
 // L3+ wires this into napi-host.
-import { attachRing as attachHostRing, type RingConfig as HostRingConfig } from "./wasi-shim/sab-ring";
+import { attachRing as attachHostRing } from "./wasi-shim/sab-ring";
 import { RpcClient } from "./host-worker/rpc-client";
 import { RpcServer } from "./host-worker/rpc-server";
 import { SyncRpcClient } from "./host-worker/rpc-client-sync";
-import { OP_PING, OP_WASM_ECHO, OP_SUBTLE_DIGEST, OP_SUBTLE_HMAC, OP_SUBTLE_DIGEST_VIA_NAPI_MEM, OP_SUBTLE_HMAC_VIA_NAPI_MEM, OP_NAPI_OPEN_HANDLE_SCOPE, OP_NAPI_CLOSE_HANDLE_SCOPE, OP_SPAWN_USER_WORKER, OP_DELIVER_USER_WORKER_EXIT, OP_WORKER_POST_MESSAGE_TO_CHILD, OP_WORKER_POST_MESSAGE_TO_PARENT, OP_DELIVER_MESSAGE_TO_CHILD, OP_DELIVER_MESSAGE_FROM_CHILD, OP_RUN_CHILD_PROCESS, OP_SPAWN_ASYNC_START, OP_SPAWN_ASYNC_KILL, OP_SPAWN_ASYNC_EVENT, OP_SPAWN_STDIO_WRITE, OP_SPAWN_STDIO_END, OP_SPAWN_IPC_SEND, OP_SPAWN_IPC_DISCONNECT, DIGEST_STAGING_OFFSET, REPLY_STATUS_OK, REPLY_STATUS_INVALID_ARGS, REPLY_STATUS_HOST_ERROR } from "./host-worker/rpc-protocol";
+import { OP_PING, OP_WASM_ECHO, OP_SUBTLE_DIGEST, OP_SUBTLE_HMAC, OP_SUBTLE_DIGEST_VIA_NAPI_MEM, OP_SUBTLE_HMAC_VIA_NAPI_MEM, OP_NAPI_OPEN_HANDLE_SCOPE, OP_NAPI_CLOSE_HANDLE_SCOPE, OP_SPAWN_USER_WORKER, OP_DELIVER_USER_WORKER_EXIT, OP_WORKER_POST_MESSAGE_TO_CHILD, OP_WORKER_POST_MESSAGE_TO_PARENT, OP_DELIVER_MESSAGE_TO_CHILD, OP_DELIVER_MESSAGE_FROM_CHILD, OP_RUN_CHILD_PROCESS, OP_SPAWN_ASYNC_START, OP_SPAWN_ASYNC_KILL, OP_SPAWN_ASYNC_EVENT, OP_SPAWN_STDIO_WRITE, OP_SPAWN_STDIO_END, OP_SPAWN_IPC_SEND, OP_SPAWN_IPC_DISCONNECT, DIGEST_STAGING_OFFSET, REPLY_STATUS_OK, REPLY_STATUS_INVALID_ARGS, REPLY_STATUS_HOST_ERROR, HOST_RPC_RING_CONFIG } from "./host-worker/rpc-protocol";
 import { packPostMessage, unpackPostMessage } from "./host-worker/marshal-postmessage";
 import { registerWasmCallbackInvoker, createCallbackDepthCounter } from "./host-worker/callback-dispatch";
-// 256 slots * 4 KiB = 1 MiB per ring. Bumped from 32 to handle bursty
-// reverse-RPC traffic (IPC ack storms during cp.send loops, streaming
-// stdio fan-out). With only 32 slots, the host's reverseClient.call
-// hits backoff after the 32nd event because the wasm worker is blocked
-// in a sync RPC and can't drain. After max-backoff (100 attempts) the
-// call drops the event silently. 256 absorbs realistic bursts; the true
-// fix is draining reverse RPC during sync-RPC waits (the SyncRpcClient
-// drainReverseRequests hook), which is a deeper change tracked as
-// `#!~debt host-rpc-sync-reverse-drain`.
-const HOST_RPC_RING_CONFIG: HostRingConfig = { numSlots: 256, slotSize: 4 * 1024 };
+import { attachIpcStructuredPort as attachStructuredPort } from "./host-worker/ipc-structured-port";
 let hostRpcClient: RpcClient | null = null;
 /** E18: sync variant on the forward channel (wasm → host).  Wraps the
  *  same request/reply SAB pair that `hostRpcClient` uses, but blocks
@@ -714,48 +705,35 @@ let userWorkerMode: { workerId: number; bootstrapScript: string; workerData: Uin
 // ChildProcess: cp.send / 'message' route through this port instead
 // of the byte-stream RPC, giving full V8 postMessage fidelity
 // (Map/Set/Date/ArrayBuffer/circular refs all preserved).
-let ipcStructuredPort: MessagePort | null = null;
+// Protocol implementation lives in ipc-structured-port.ts -- shared
+// with the host-worker side which uses the symmetric setup.
 const ipcStructuredChildHandlers = new Map<number, (msg: unknown) => void>();
 const ipcStructuredDisconnectHandlers = new Map<number, () => void>();
+let ipcStructuredOutbound: { send: (childId: number, msg: unknown, transfer?: Transferable[]) => boolean; disconnect: (childId: number) => boolean } | null = null;
 function attachIpcStructuredPort(port: MessagePort): void {
-  if (ipcStructuredPort) {
+  if (ipcStructuredOutbound) {
     post("log", { text: "[runtime] ipc-structured-port received twice; replacing", level: "warn" });
   }
-  ipcStructuredPort = port;
-  port.onmessage = (e: MessageEvent) => {
-    const data = e.data as { childId?: number; msg?: unknown; kind?: string };
-    if (!data || typeof data.childId !== "number") return;
-    if (data.kind === "disconnect") {
-      const cb = ipcStructuredDisconnectHandlers.get(data.childId);
+  ipcStructuredOutbound = attachStructuredPort(port, {
+    onMessage(childId, msg) {
+      const handler = ipcStructuredChildHandlers.get(childId);
+      if (handler) handler(msg);
+    },
+    onDisconnect(childId) {
+      const cb = ipcStructuredDisconnectHandlers.get(childId);
       if (cb) {
-        ipcStructuredDisconnectHandlers.delete(data.childId);
+        ipcStructuredDisconnectHandlers.delete(childId);
         try { cb(); } catch (_e) { void _e; }
       }
-      return;
-    }
-    const handler = ipcStructuredChildHandlers.get(data.childId);
-    if (handler) handler(data.msg);
-  };
-  port.start?.();
+    },
+  });
   // Expose to JS land for the child-process policy to use.
-  type IpcSendStructured = (childId: number, msg: unknown, transfer?: Transferable[]) => boolean;
-  type IpcDisconnectStructured = (childId: number) => boolean;
-  type IpcRegister = (
-    childId: number,
-    onMessage: (msg: unknown) => void,
-    onDisconnect: () => void,
-  ) => void;
+  type IpcRegister = (childId: number, onMessage: (msg: unknown) => void, onDisconnect: () => void) => void;
   type IpcUnregister = (childId: number) => void;
-  const sender: IpcSendStructured = (childId, msg, transfer) => {
-    if (!ipcStructuredPort) return false;
-    ipcStructuredPort.postMessage({ childId, msg }, transfer || []);
-    return true;
-  };
-  const disconnecter: IpcDisconnectStructured = (childId) => {
-    if (!ipcStructuredPort) return false;
-    ipcStructuredPort.postMessage({ childId, kind: "disconnect" });
-    return true;
-  };
+  const send = (childId: number, msg: unknown, transfer?: Transferable[]): boolean =>
+    ipcStructuredOutbound ? ipcStructuredOutbound.send(childId, msg, transfer) : false;
+  const disconnect = (childId: number): boolean =>
+    ipcStructuredOutbound ? ipcStructuredOutbound.disconnect(childId) : false;
   const register: IpcRegister = (childId, onMessage, onDisconnect) => {
     ipcStructuredChildHandlers.set(childId, onMessage);
     ipcStructuredDisconnectHandlers.set(childId, onDisconnect);
@@ -764,8 +742,8 @@ function attachIpcStructuredPort(port: MessagePort): void {
     ipcStructuredChildHandlers.delete(childId);
     ipcStructuredDisconnectHandlers.delete(childId);
   };
-  (globalThis as { __edgeChildProcessIpcStructuredSend?: IpcSendStructured }).__edgeChildProcessIpcStructuredSend = sender;
-  (globalThis as { __edgeChildProcessIpcStructuredDisconnect?: IpcDisconnectStructured }).__edgeChildProcessIpcStructuredDisconnect = disconnecter;
+  (globalThis as { __edgeChildProcessIpcStructuredSend?: typeof send }).__edgeChildProcessIpcStructuredSend = send;
+  (globalThis as { __edgeChildProcessIpcStructuredDisconnect?: typeof disconnect }).__edgeChildProcessIpcStructuredDisconnect = disconnect;
   (globalThis as { __edgeChildProcessIpcStructuredRegister?: IpcRegister }).__edgeChildProcessIpcStructuredRegister = register;
   (globalThis as { __edgeChildProcessIpcStructuredUnregister?: IpcUnregister }).__edgeChildProcessIpcStructuredUnregister = unregister;
 }

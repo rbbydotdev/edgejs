@@ -1,0 +1,5 @@
+kill returned: true
+killed flag: true
+exit code: null signal: SIGTERM
+killed flag at exit: true
+kill-return-precheck: null
