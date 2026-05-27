@@ -1,0 +1,53 @@
+tests/js/child-process-spawn-streaming-large.js
+  s_92c1b47c0d6ee8::t_13a1a6d1dfc5c1 28-29
+  s_92c1b47c0d6ee8::t_18389c932b3c2b 1-27,30-32
+tests/js/child-process-spawn-streaming-large.executor.js
+  s_92c1b47c0d6ee8::t_0d6d140b800507 1-14
+tests/js/child-process-ref-unref.harness-args
+  s_92c1b47c0d6ee8::t_30deaec4f4d033 1
+tests/js/child-process-ref-unref.js
+  s_92c1b47c0d6ee8::t_bea68b6f150a74 1-36
+NOTES.md
+  s_92c1b47c0d6ee8::t_04316b137a60dc 95-155
+tests/js/child-process-ipc-advanced-in-worker.js
+  s_92c1b47c0d6ee8::t_4e7b47517a161d 1-48
+tests/js/child-process-ipc-advanced-in-worker.harness-args
+  s_92c1b47c0d6ee8::t_0f7dec85e30704 1
+tests/js/child-process-spawn-streaming-large.harness-args
+  s_92c1b47c0d6ee8::t_7e623517798854 1
+tests/js/child-process-ipc-advanced-in-worker.stdout
+  s_92c1b47c0d6ee8::t_db028c8f288438 1-2
+tests/js/child-process-ipc-advanced-in-worker.executor.js
+  s_92c1b47c0d6ee8::t_11af60f46d6460 1-14
+browser-target/src/policies/child-process-via-executor.ts
+  s_92c1b47c0d6ee8::t_33ad95f9e050fd 228-241
+  s_92c1b47c0d6ee8::t_ce2f9fc0608d55 869-879
+  s_92c1b47c0d6ee8::t_89bc0030ad19a1 724-734,736,741-746,749-754
+tests/js/child-process-spawn-streaming-large.stdout
+  s_92c1b47c0d6ee8::t_59c89a8e7d0816 1-3
+browser-target/src/main.ts
+  s_92c1b47c0d6ee8::t_64ad824e034152 1119-1127
+  s_92c1b47c0d6ee8::t_edbbaa3acf95ce 929-944
+  s_92c1b47c0d6ee8::t_0db1ad369043b4 111-114,116
+browser-target/src/host-worker/host-worker.ts
+  s_92c1b47c0d6ee8::t_660e6f14135091 742-750
+  s_92c1b47c0d6ee8::t_bbc3781f22fcb1 1084-1091
+tests/js/child-process-ref-unref.stdout
+  s_92c1b47c0d6ee8::t_d55a32f6794b20 1-4
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "4cf98f4a02de208a8266e66d3a1c86e0d58484d4",
+  "prompts": {},
+  "sessions": {
+    "s_92c1b47c0d6ee8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "dca99c1c-d946-4444-9a53-9ba89db5d748",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
