@@ -325,16 +325,16 @@
     }
     var headerObj = {
       command: String(options.file || ''),
-      // options.args is the FULL argv (file is args[0]). Slice to get user args.
       args: Array.isArray(options.args) ? options.args.slice(1).map(String) : [],
       env: envMap,
       cwd: typeof options.cwd === 'string' ? options.cwd : undefined,
       ipc: hasIpc,
-      // P3.9: 'advanced' mode signals the host to use the
-      // MessageChannel-backed structured-clone path for opts.ipc
-      // (full V8 fidelity for Map/Set/Date/ArrayBuffer/cycles).
-      // Default 'json' mode keeps the byte-stream RPC path.
       ipcAdvanced: hasIpc && options.serialization === 'advanced',
+      // P4.3: opt-in hard kill via {killable:'hard'}. Runs the
+      // executor in a dedicated Worker; kill() terminate()s the
+      // worker -- halts runaway loops that ignore opts.signal.
+      // V1: no streaming/IPC/stdin on the killable path.
+      killable: options.killable === 'hard' ? 'hard' : undefined,
     };
     var headerBytes = new TextEncoder().encode(JSON.stringify(headerObj));
     var reqBuf = new Uint8Array(4 + headerBytes.byteLength + 4);

@@ -352,6 +352,7 @@ function unpackChildProcRequest(buf: Uint8Array): {
   input?: Uint8Array;
   ipc?: boolean;
   ipcAdvanced?: boolean;
+  killable?: "hard";
 } | null {
   if (buf.byteLength < 8) return null;
   const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
@@ -383,6 +384,7 @@ function unpackChildProcRequest(buf: Uint8Array): {
     input,
     ipc: header.ipc === true,
     ipcAdvanced: header.ipcAdvanced === true,
+    killable: header.killable === "hard" ? "hard" : undefined,
   };
 }
 
@@ -486,6 +488,84 @@ interface SpawnAsyncChild {
 // spawns; json-mode spawns keep using the byte-stream RPC path.
 // Protocol implementation lives in ipc-structured-port.ts -- shared
 // with the wasm-runtime side which uses the symmetric setup.
+let cachedBootScript: string | null = null;
+
+// P4.3 hard-kill: per-childId Worker registry. terminate() halts JS
+// even in tight loops, the only way browsers let us forcibly stop
+// running code.
+const hardKillRunners = new Map<number, Worker>();
+
+function startHardKillableSpawn(
+  childId: number,
+  req: NonNullable<ReturnType<typeof unpackChildProcRequest>>,
+): Uint8Array {
+  if (!cachedBootScript) {
+    log("hard-kill spawn requested but no cachedBootScript", "warn");
+    const buf = new Uint8Array(8);
+    const dv = new DataView(buf.buffer);
+    dv.setUint32(0, 0, true);
+    dv.setInt32(4, -38, true);
+    return buf;
+  }
+  // Match probe pattern: URL to a const, static name, sniff vite quirks
+  const runnerUrl = new URL("./killable-executor-runner.ts", import.meta.url);
+  const runner = new Worker(runnerUrl, { type: "module", name: "edge-killable-exec" });
+  hardKillRunners.set(childId, runner);
+  runner.addEventListener("message", (e: MessageEvent) => {
+    const reply = e.data as {
+      kind?: string;
+      stdout?: Uint8Array;
+      stderr?: Uint8Array;
+      code?: number | null;
+      signal?: string | null;
+      error?: { code: string; message: string };
+    };
+    if (!reply || reply.kind !== "run-reply") return;
+    if (reply.stdout && reply.stdout.byteLength > 0) emitChunked(childId, EK.STDOUT, reply.stdout);
+    if (reply.stderr && reply.stderr.byteLength > 0) emitChunked(childId, EK.STDERR, reply.stderr);
+    if (reply.error) {
+      const errJson = JSON.stringify({
+        code: reply.error.code || "ESPAWN",
+        message: reply.error.message || "executor error",
+      });
+      emitAsyncEvent(childId, EK.ERROR, new TextEncoder().encode(errJson));
+    }
+    emitAsyncEvent(childId, EK.EXIT, packExitPayload(
+      typeof reply.code === "number" ? reply.code : 0,
+      reply.signal || null,
+    ));
+    runner.terminate();
+    hardKillRunners.delete(childId);
+  });
+  runner.addEventListener("error", (e: ErrorEvent) => {
+    log("[hard-kill] runner error: msg=" + e.message + " file=" + e.filename, "err");
+    const errJson = JSON.stringify({ code: "EWORKER", message: e.message || "runner error" });
+    emitAsyncEvent(childId, EK.ERROR, new TextEncoder().encode(errJson));
+    emitAsyncEvent(childId, EK.EXIT, packExitPayload(1, null));
+    runner.terminate();
+    hardKillRunners.delete(childId);
+  });
+  queueMicrotask(() => {
+    const pidBytes = new Uint8Array(4);
+    new DataView(pidBytes.buffer).setUint32(0, childId, true);
+    emitAsyncEvent(childId, EK.SPAWNED, pidBytes);
+  });
+  runner.postMessage({
+    kind: "run",
+    executorSrc: cachedBootScript,
+    command: req.command,
+    args: req.args,
+    env: req.env,
+    cwd: req.cwd,
+    killSignal: req.killSignal,
+  });
+  const reply = new Uint8Array(8);
+  const dv = new DataView(reply.buffer);
+  dv.setUint32(0, childId, true);
+  dv.setInt32(4, 0, true);
+  return reply;
+}
+
 const ipcStructuredHandlers = new Map<number, (msg: unknown) => void>();
 let ipcStructuredOutbound: { send: (childId: number, msg: unknown, transfer?: Transferable[]) => boolean; disconnect: (childId: number) => boolean } | null = null;
 function attachIpcStructuredPort(port: MessagePort): void {
@@ -846,6 +926,15 @@ async function startAsyncSpawn(requestBytes: Uint8Array): Promise<Uint8Array> {
     : (cmd, a, o) => defaultAsyncFakeShellExecutor(cmd, a, o as { env?: Record<string, string>; cwd?: string; input?: Uint8Array | string });
 
   const childId = nextSpawnChildId++;
+  // P4.3 hard-kill path: opt-in via spawn option {killable: 'hard'}.
+  // Runs the executor in a dedicated Worker that we can terminate()
+  // to halt even uncooperative runaway loops. Trade-off: ~50ms spawn
+  // latency + v1 has no streaming/IPC/stdin (cooperative path keeps
+  // those). Real value: in-browser test runners, AI code sandboxes,
+  // notebook kernels -- anywhere we need "run code with a timeout".
+  if (req.killable === "hard") {
+    return startHardKillableSpawn(childId, req);
+  }
   const ac = new AbortController();
   const stdinPipe: StdinPipe = { buffered: [], ended: false, waiters: [] };
   // Pre-queue any one-shot input from spawn options; close immediately
@@ -1021,13 +1110,24 @@ function killAsyncSpawn(requestBytes: Uint8Array): Uint8Array {
   }
   const dv = new DataView(requestBytes.buffer, requestBytes.byteOffset, requestBytes.byteLength);
   const childId = dv.getUint32(0, true);
-  const child = asyncSpawnChildren.get(childId);
   const reply = new Uint8Array(4);
+  // P4.3 hard-kill path: terminate() halts the runner regardless of
+  // cooperation. Synthesize exit so wasm-side ChildProcess fires
+  // 'exit'/'close'.
+  const runner = hardKillRunners.get(childId);
+  if (runner) {
+    runner.terminate();
+    hardKillRunners.delete(childId);
+    emitAsyncEvent(childId, EK.EXIT, packExitPayload(null, "SIGTERM"));
+    new DataView(reply.buffer).setUint32(0, 0, true);
+    return reply;
+  }
+  const child = asyncSpawnChildren.get(childId);
   if (!child) {
     new DataView(reply.buffer).setUint32(0, 1, true); // no such child
     return reply;
   }
-  // Signal abort -- executor can cooperate via opts.signal.
+  // Cooperative path: signal abort, executor can cooperate via opts.signal.
   try { child.abortController.abort(); } catch (e) { void e; }
   new DataView(reply.buffer).setUint32(0, 0, true);
   return reply;
@@ -2242,6 +2342,7 @@ self.addEventListener("message", (e: MessageEvent) => {
   // are in place by the time the first RPC arrives.
   if (typeof (data as { bootScript?: string }).bootScript === "string") {
     const src = (data as { bootScript?: string }).bootScript!;
+    cachedBootScript = src;
     try {
       // eslint-disable-next-line no-new-func
       new Function(src)();
