@@ -57,9 +57,16 @@
     // byte parser entirely).
     register(childId, function(msg) {
       // Match Node: 'message' event fires async via nextTick so user
-      // listeners get a clean stack.
+      // listeners get a clean stack. If our send-side wrapped a
+      // transferable sendHandle (P4.5), unpack the envelope and emit
+      // 'message' with two args (msg, handle) the way Node does.
       process.nextTick(function() {
-        if (self.channel) self.emit('message', msg);
+        if (!self.channel) return;
+        if (msg && typeof msg === 'object' && msg.__edgeSendHandle === true) {
+          self.emit('message', msg.msg, msg.handle);
+        } else {
+          self.emit('message', msg);
+        }
       });
     }, function() {
       if (self.channel) {
@@ -79,29 +86,50 @@
     self.send = function(message, sendHandle, opts, callback) {
       if (typeof sendHandle === 'function') { callback = sendHandle; sendHandle = undefined; opts = undefined; }
       else if (typeof opts === 'function') { callback = opts; opts = undefined; }
-      // P4.4 audit: previously sendHandle was silently dropped (via
-      // `void sendHandle`). Now we warn ONCE per handle attempt -- the
-      // user gets a clear signal instead of a mysterious "child didn't
-      // receive my socket" failure. Implementation is non-trivial
-      // (needs connection registry + handle type protocol; see
-      // NOTES.md "child-process-ipc-sendhandle"); WebContainers also
-      // doesn't ship it (no issue traffic), so we're at parity here.
+      var transferList = (opts && Array.isArray(opts.transferList)) ? opts.transferList.slice() : null;
+      var outboundMessage = message;
+      // P4.5 sendHandle: real Node passes OS fds via SCM_RIGHTS (Unix) /
+      // DuplicateHandle (Windows); we have no kernel and can't fake that
+      // for net.Server / net.Socket -- those still get the warn-once and
+      // dropped. For Transferable handles (MessagePort, ReadableStream,
+      // WritableStream, ArrayBuffer) we have a real in-browser primitive:
+      // wrap the value in an {__edgeSendHandle, msg, handle} envelope and
+      // add the handle to the transferList so postMessage transfers
+      // ownership. The receive side unwraps and emits ('message', msg,
+      // handle). NOT a cluster.js substitute -- cluster shares listening
+      // sockets, which is structurally impossible without an OS -- but
+      // it does enable Transferable-based handle-sharing patterns.
       if (sendHandle != null) {
-        try {
-          if (!self._edgeSendHandleWarned) {
-            self._edgeSendHandleWarned = true;
-            console.warn('[child-process-via-executor] child.send(msg, handle) -- handle is not supported in browser-target and was dropped. cluster.js patterns that rely on handle-passing will not work. Tracked as #!~debt child-process-ipc-sendhandle.');
-          }
-        } catch (_w) { void _w; }
+        // Supported handles: ArrayBuffer-based transferables. MessagePort
+        // would be in this list except edge.js's MessageChannel ports
+        // aren't recognized by the host port's postMessage as native
+        // transferables (likely a polyfill divergence) -- attempting to
+        // transfer one throws "Value at index 0 does not have a
+        // transferable type". Same applies to Readable/WritableStream
+        // until we either replace edge's stream polyfills with the
+        // platform native or build a proxy protocol. Tracked as
+        // #!~debt child-process-ipc-sendhandle.
+        var isTransferable = (sendHandle instanceof ArrayBuffer);
+        if (isTransferable) {
+          outboundMessage = { __edgeSendHandle: true, msg: message, handle: sendHandle };
+          if (!transferList) transferList = [];
+          if (transferList.indexOf(sendHandle) === -1) transferList.push(sendHandle);
+        } else {
+          try {
+            if (!self._edgeSendHandleWarned) {
+              self._edgeSendHandleWarned = true;
+              console.warn('[child-process-via-executor] child.send(msg, handle): only ArrayBuffer is supported as a sendHandle in browser-target. net.Server / net.Socket need OS fd-passing (not possible without a kernel); MessagePort + Readable/Writable streams need an edge.js shim that produces natively-transferable instances (not yet wired). Tracked as #!~debt child-process-ipc-sendhandle.');
+            }
+          } catch (_w) { void _w; }
+        }
       }
-      var transferList = (opts && Array.isArray(opts.transferList)) ? opts.transferList : null;
       if (!self.channel || !self.connected) {
         var errc = new Error('Channel closed');
         errc.code = 'ERR_IPC_CHANNEL_CLOSED';
         if (typeof callback === 'function') process.nextTick(function() { callback(errc); });
         return false;
       }
-      try { sender(childId, message, transferList); }
+      try { sender(childId, outboundMessage, transferList); }
       catch (e) {
         if (typeof callback === 'function') process.nextTick(function() { callback(e); });
         return false;

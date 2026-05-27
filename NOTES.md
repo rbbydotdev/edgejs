@@ -92,18 +92,21 @@ the browser-target tree.
 
 ### Newly opened
 
-- **`child-process-ipc-sendhandle`** (2026-05-27, P3.3) — `cp.send(msg,
-  handle)` silently drops the `handle` argument. Real Node delivers fds/
-  sockets/servers via kernel fd-passing over the IPC pipe; we have no
-  equivalent in-browser. `cluster.js` depends on this for worker
-  socket-sharing; bare `fork()` does not. P4.4 added an explicit
-  warn-once console message so the silent drop is at least debuggable.
-  Full implementation deferred: requires a connections registry in
-  bridge worker + handle type protocol registration + EdgePipe
-  rewireability. Multi-day. WebContainers doesn't support it either
-  (no issue traffic). Not scheduled. Fix path: a separate transport
-  for "named handle" values that the executor can map to its own
-  resources, or hard-fail when handle != null so users see the gap.
+- **`child-process-ipc-sendhandle`** (2026-05-27, P3.3; PARTIALLY
+  RESOLVED 2026-05-27 P4.5) — `cp.send(msg, handle)` in advanced mode
+  now wraps the handle in an `{__edgeSendHandle, msg, handle}` envelope
+  and transfers it via the existing structured port; receiver unwraps
+  and emits `'message'` with (msg, handle). Works for `ArrayBuffer`
+  (verified by `child-process-sendhandle-transferable`). Does NOT yet
+  work for `MessagePort` / `ReadableStream` / `WritableStream` because
+  edge.js's `MessageChannel` shim produces ports that the host structured
+  port's `postMessage` doesn't recognize as native transferables
+  ("Value at index 0 does not have a transferable type"). Replacing
+  edge's shim with the platform native MessageChannel (or writing a
+  port-proxy protocol) would extend coverage. `net.Server` / `net.Socket`
+  remain structurally impossible (no OS → no SCM_RIGHTS / DuplicateHandle);
+  `cluster.js` socket-sharing still won't work. The warn-once message
+  now lists ArrayBuffer as the working type and explains the rest.
   Marker site: `policies/child-process-via-executor.ts:97`.
 
 - **`child-process-kill-cooperation`** (2026-05-27, P3.8) — `child.kill(sig)`
@@ -116,27 +119,31 @@ the browser-target tree.
   No test for non-cooperator (would need a deliberately-broken executor).
   Marker site: `policies/child-process-via-executor.ts:100`.
 
-- **`child-process-ipc-advanced-serialization-types`** (2026-05-27, P3.7)
-  — superseded by the P3.9 MessageChannel bridge for the common case,
-  but the JSON-backed fallback Serializer/Deserializer in `serdes`
-  stub still exists for non-MessageChannel paths (host-script mode,
-  pre-port-arrival deserialize). Map/Set/Date/BigInt go through
-  JSON.stringify there with the usual type-fidelity loss. The bridge
-  covers the worker→worker case fully; this only bites if v8.js
-  Serializer is invoked from a code path our port doesn't cover.
-  Marker site: `policies/child-process-via-executor.ts:1050`.
+- **`child-process-ipc-advanced-serialization-types`** (2026-05-27, P3.7;
+  RESOLVED 2026-05-27 P4.6) — the JSON-backed Serializer/Deserializer in
+  the `serdes` binding was replaced with a real structured-clone-style
+  implementation (`policies/child-process-via-executor/serdes-shim.runtime.js`).
+  Round-trips Map, Set, Date, BigInt, RegExp, ArrayBuffer, TypedArray,
+  primitives, plain object/array, and back-references for cyclic graphs.
+  Wire format is custom (NOT V8-compatible -- so the bytes won't
+  deserialize in real Node.js); if cross-runtime interop ever matters
+  we'd vendor a published js-structured-clone. Verified by
+  `v8-serdes-types`. Installed as a pre-patch on both `v8` and
+  `internal/child_process` so whichever module is required first sees
+  the binding populated.
 
-- **`host-rpc-sync-reverse-drain`** (2026-05-27, P3.6) — while the wasm
-  worker is blocked in `Atomics.wait` for a sync RPC reply, it cannot
-  drain the reverse-RPC ring. Host's `reverseClient.call` retries with
-  exponential backoff (100 attempts, ~6s); if the wasm worker hasn't
-  freed slots by then, the call drops the event silently. Bumped ring
-  to 256 slots (from 32) to absorb realistic bursts; truly unbounded
-  bursts (e.g. tight cp.send of 1000+ in flight) still drop. Proper
-  fix: implement `drainReverseRequests` callback in `SyncRpcClient` so
-  the wasm side can drain the reverse ring during its forward-reply
-  wait. Marker site: `worker.ts:119` (config); referenced from
-  `tests/js/child-process-ipc-backpressure.js`.
+- **`host-rpc-sync-reverse-drain`** (2026-05-27, P3.6; RESOLVED
+  2026-05-27 P4.4) — `SyncRpcClient` now takes a `drainReverseRequests`
+  callback that `RpcServer.drainOnce()` plugs into. While the wasm
+  worker is parked in `Atomics.wait` for a forward reply, the wait
+  loop checks ring pressure and -- if more than half the slots are
+  READY -- drains them inline and dispatches handlers. The
+  pressure-gate matters: draining unconditionally batches STDOUT and
+  EXIT into one libuv tick, causing lib's deferred `'data'` setImmediate
+  to lose its race against the user's `'exit'` handler (which often
+  calls `process.exit`); the half-full gate keeps normal traffic on the
+  async loop's natural cadence and only kicks in for bursts. Verified
+  by `child-process-ipc-burst-limit` (1000 cp.sends, all received).
 
 - **`async-spawn-chunk-size-from-ring`** (2026-05-27, P0.1) — RESOLVED in
   the same commit it was opened: `ASYNC_CHUNK_SIZE` was hard-coded to

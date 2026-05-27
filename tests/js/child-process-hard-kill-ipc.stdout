@@ -1,0 +1,5 @@
+replies count: 3
+  reply 0 {"echoed":{"n":1},"count":1}
+  reply 1 {"echoed":{"n":2},"count":2}
+  reply 2 {"echoed":{"bye":true},"count":3}
+exit code: 0

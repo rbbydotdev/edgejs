@@ -1,3 +1,2 @@
 N: 1000
-at-least-ring-capacity? true
-less-than-N? true (documents the deferred-drain limit)
+all-received? true

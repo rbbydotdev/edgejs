@@ -19,6 +19,7 @@ import {
   freeSlot,
   readWakeCounter,
   waitForReadyAsync,
+  STATUS_READY,
 } from "../wasi-shim/sab-ring";
 import {
   REPLY_HEADER_SIZE,
@@ -115,6 +116,53 @@ export class RpcServer {
 
   stop(): void {
     this.running = false;
+  }
+
+  /** Synchronously drain whatever request slots are ready RIGHT NOW and
+   *  dispatch their handlers, but ONLY when the ring is under real
+   *  pressure (more than half full). Wired into SyncRpcClient as
+   *  drainReverseRequests so that bursty reverse traffic (cp.send loops,
+   *  many concurrent callbacks) doesn't exhaust the host's reverseClient
+   *  backoff and silently drop events; see NOTES.md
+   *  "host-rpc-sync-reverse-drain".
+   *
+   *  Why gate on pressure: the async start() loop spreads dispatches
+   *  across libuv ticks, and lib's Readable.push() queues a setImmediate
+   *  per chunk to emit 'data'. If we drain STDOUT and EXIT into the same
+   *  tick, 'data' lands on the NEXT tick (after 'exit' fired and the
+   *  user's process.exit() ran), losing the buffered bytes. Under
+   *  normal load, leaving the async loop in charge preserves that
+   *  ordering. Under burst load, the ring would overflow anyway, so we
+   *  accept the timing risk in exchange for not dropping events. */
+  drainOnce(): void {
+    const numSlots = this.requestRing.config.numSlots;
+    const slotSize = this.requestRing.config.slotSize;
+    const pressureThreshold = numSlots >>> 1; // half-full
+    let ready = 0;
+    for (let slot = 0; slot < numSlots; slot++) {
+      // GLOBAL_HEADER_SIZE=16 + slot*slotSize + SLOT_HEADER_STATUS(=0), /4.
+      const statusIdx = (16 + slot * slotSize) >>> 2;
+      if (NativeAtomics.load(this.requestRing.i32, statusIdx) === STATUS_READY) {
+        ready++;
+        if (ready > pressureThreshold) break;
+      }
+    }
+    if (ready <= pressureThreshold) return;
+
+    const messages = drainRing(this.requestRing);
+    for (const m of messages) {
+      const hdr = readRequestHeader(m.payload);
+      const argsCopy = new Uint8Array(m.payload.byteLength - REQUEST_HEADER_SIZE);
+      argsCopy.set(m.payload.subarray(REQUEST_HEADER_SIZE));
+      const ctx: HandlerContext = {
+        opCode: hdr.opCode,
+        requestId: hdr.requestId,
+        hostWorkerId: m.hostWorkerId,
+        contextId: m.contextId,
+      };
+      freeSlot(this.requestRing, m.slot);
+      void this.dispatch(ctx, argsCopy);
+    }
   }
 
   private async dispatch(ctx: HandlerContext, args: Uint8Array): Promise<void> {

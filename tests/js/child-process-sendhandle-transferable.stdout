@@ -1,0 +1,5 @@
+send returned: true
+local buffer byteLength after transfer: 0
+executor msg={"greeting":"have-a-buffer"}
+handle bytes=8 u32[0]=0xCAFEBABE u32[1]=0xDEADBEEF
+exit: 0

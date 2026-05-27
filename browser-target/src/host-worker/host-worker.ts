@@ -492,8 +492,14 @@ let cachedBootScript: string | null = null;
 
 // P4.3 hard-kill: per-childId Worker registry. terminate() halts JS
 // even in tight loops, the only way browsers let us forcibly stop
-// running code.
-const hardKillRunners = new Map<number, Worker>();
+// running code. The ipcEnabled flag tracks whether the wasm-side
+// EdgePipe IPC routes through to the runner (set at spawn time, flipped
+// false on either-side disconnect so subsequent IPC RPCs become no-ops).
+// ipcAdvanced selects the encoding when routing executor->wasm messages:
+// structured-clone via the existing host<->wasm port (full V8 fidelity)
+// or JSON via EK.IPC_MESSAGE byte events (Node's json mode).
+type HardKillHandle = { worker: Worker; ipcEnabled: boolean; ipcAdvanced: boolean };
+const hardKillRunners = new Map<number, HardKillHandle>();
 
 function startHardKillableSpawn(
   childId: number,
@@ -509,40 +515,109 @@ function startHardKillableSpawn(
   }
   // Match probe pattern: URL to a const, static name, sniff vite quirks
   const runnerUrl = new URL("./killable-executor-runner.ts", import.meta.url);
-  const runner = new Worker(runnerUrl, { type: "module", name: "edge-killable-exec" });
-  hardKillRunners.set(childId, runner);
-  runner.addEventListener("message", (e: MessageEvent) => {
+  const worker = new Worker(runnerUrl, { type: "module", name: "edge-killable-exec" });
+  const wantsAdvancedIpc = req.ipc === true && req.ipcAdvanced === true;
+  const handle: HardKillHandle = {
+    worker,
+    ipcEnabled: req.ipc === true,
+    ipcAdvanced: wantsAdvancedIpc,
+  };
+  hardKillRunners.set(childId, handle);
+  // Advanced (structured-clone) IPC on the killable path: register a
+  // per-childId inbound handler that forwards wasm->runner messages
+  // through the runner's main channel (Worker.postMessage already runs
+  // the structured-clone algorithm, so Map/Set/Date/ArrayBuffer/cycles
+  // preserve without a separate MessageChannel). Outbound runner->wasm
+  // routes through sendIpcStructuredMessage in the runner-message handler.
+  if (wantsAdvancedIpc) {
+    ipcStructuredHandlers.set(childId, (msg) => {
+      if (!handle.ipcEnabled) return;
+      worker.postMessage({ kind: "ipc-msg", msg });
+    });
+  }
+  worker.addEventListener("message", (e: MessageEvent) => {
     const reply = e.data as {
       kind?: string;
-      stdout?: Uint8Array;
-      stderr?: Uint8Array;
+      bytes?: Uint8Array;
+      fd?: number;
+      msg?: unknown;
       code?: number | null;
       signal?: string | null;
       error?: { code: string; message: string };
+      finalStdout?: Uint8Array;
+      finalStderr?: Uint8Array;
     };
-    if (!reply || reply.kind !== "run-reply") return;
-    if (reply.stdout && reply.stdout.byteLength > 0) emitChunked(childId, EK.STDOUT, reply.stdout);
-    if (reply.stderr && reply.stderr.byteLength > 0) emitChunked(childId, EK.STDERR, reply.stderr);
-    if (reply.error) {
-      const errJson = JSON.stringify({
-        code: reply.error.code || "ESPAWN",
-        message: reply.error.message || "executor error",
-      });
-      emitAsyncEvent(childId, EK.ERROR, new TextEncoder().encode(errJson));
+    if (!reply || typeof reply.kind !== "string") return;
+    if (reply.kind === "stdout") {
+      if (reply.bytes && reply.bytes.byteLength > 0) emitChunked(childId, EK.STDOUT, reply.bytes);
+      return;
     }
-    emitAsyncEvent(childId, EK.EXIT, packExitPayload(
-      typeof reply.code === "number" ? reply.code : 0,
-      reply.signal || null,
-    ));
-    runner.terminate();
-    hardKillRunners.delete(childId);
+    if (reply.kind === "stderr") {
+      if (reply.bytes && reply.bytes.byteLength > 0) emitChunked(childId, EK.STDERR, reply.bytes);
+      return;
+    }
+    if (reply.kind === "stdio-out") {
+      // Frame as [u32 fdIndex][bytes] to match the EK.STDIO_FDN wire
+      // format the wasm side already parses (see EdgeProcess._handleEvent
+      // STDIO_FDN branch). Zero-byte payload = end-of-stream signal.
+      const fdIdx = typeof reply.fd === "number" ? reply.fd : 0;
+      const bytes = reply.bytes || new Uint8Array(0);
+      const payload = new Uint8Array(4 + bytes.byteLength);
+      new DataView(payload.buffer).setUint32(0, fdIdx, true);
+      if (bytes.byteLength > 0) payload.set(bytes, 4);
+      emitAsyncEvent(childId, EK.STDIO_FDN, payload);
+      return;
+    }
+    if (reply.kind === "ipc-msg") {
+      if (!handle.ipcEnabled) return;
+      if (handle.ipcAdvanced) {
+        // Full structured-clone over the existing host<->wasm port.
+        sendIpcStructuredMessage(childId, reply.msg);
+      } else {
+        let json: string;
+        try { json = JSON.stringify(reply.msg ?? null); }
+        catch (_e) { void _e; return; } // unserializable; drop like Node does
+        emitAsyncEvent(childId, EK.IPC_MESSAGE, new TextEncoder().encode(json));
+      }
+      return;
+    }
+    if (reply.kind === "ipc-disconnect") {
+      if (!handle.ipcEnabled) return;
+      handle.ipcEnabled = false;
+      if (handle.ipcAdvanced) {
+        sendIpcStructuredDisconnect(childId);
+        ipcStructuredHandlers.delete(childId);
+      } else {
+        emitAsyncEvent(childId, EK.IPC_DISCONNECT, new Uint8Array(0));
+      }
+      return;
+    }
+    if (reply.kind === "done") {
+      if (reply.finalStdout && reply.finalStdout.byteLength > 0) emitChunked(childId, EK.STDOUT, reply.finalStdout);
+      if (reply.finalStderr && reply.finalStderr.byteLength > 0) emitChunked(childId, EK.STDERR, reply.finalStderr);
+      if (reply.error) {
+        const errJson = JSON.stringify({
+          code: reply.error.code || "ESPAWN",
+          message: reply.error.message || "executor error",
+        });
+        emitAsyncEvent(childId, EK.ERROR, new TextEncoder().encode(errJson));
+      }
+      emitAsyncEvent(childId, EK.EXIT, packExitPayload(
+        typeof reply.code === "number" ? reply.code : 0,
+        reply.signal || null,
+      ));
+      ipcStructuredHandlers.delete(childId);
+      worker.terminate();
+      hardKillRunners.delete(childId);
+    }
   });
-  runner.addEventListener("error", (e: ErrorEvent) => {
+  worker.addEventListener("error", (e: ErrorEvent) => {
     log("[hard-kill] runner error: msg=" + e.message + " file=" + e.filename, "err");
     const errJson = JSON.stringify({ code: "EWORKER", message: e.message || "runner error" });
     emitAsyncEvent(childId, EK.ERROR, new TextEncoder().encode(errJson));
     emitAsyncEvent(childId, EK.EXIT, packExitPayload(1, null));
-    runner.terminate();
+    ipcStructuredHandlers.delete(childId);
+    worker.terminate();
     hardKillRunners.delete(childId);
   });
   queueMicrotask(() => {
@@ -550,7 +625,7 @@ function startHardKillableSpawn(
     new DataView(pidBytes.buffer).setUint32(0, childId, true);
     emitAsyncEvent(childId, EK.SPAWNED, pidBytes);
   });
-  runner.postMessage({
+  worker.postMessage({
     kind: "run",
     executorSrc: cachedBootScript,
     command: req.command,
@@ -558,6 +633,10 @@ function startHardKillableSpawn(
     env: req.env,
     cwd: req.cwd,
     killSignal: req.killSignal,
+    ipc: req.ipc === true,
+    ipcAdvanced: wantsAdvancedIpc,
+    initialStdin: req.input,
+    initialStdinEnded: req.input != null && req.input.byteLength > 0,
   });
   const reply = new Uint8Array(8);
   const dv = new DataView(reply.buffer);
@@ -617,8 +696,17 @@ function makeIpcHandle(
   if (advanced) {
     ipcStructuredHandlers.set(childId, (msg) => {
       if (!channel.connected) return;
+      // P4.5: unwrap {__edgeSendHandle:true, msg, handle} envelope so
+      // executors that opt into the two-arg signature see (msg, handle)
+      // like Node does. Single-arg listeners still work (extra arg ignored).
+      let userMsg: unknown = msg;
+      let handle: unknown = undefined;
+      if (msg && typeof msg === "object" && (msg as { __edgeSendHandle?: boolean }).__edgeSendHandle === true) {
+        userMsg = (msg as { msg: unknown }).msg;
+        handle = (msg as { handle: unknown }).handle;
+      }
       for (const cb of channel.messageHandlers) {
-        try { cb(msg); } catch (_e) { void _e; }
+        try { (cb as (m: unknown, h?: unknown) => void)(userMsg, handle); } catch (_e) { void _e; }
       }
     });
   }
@@ -929,9 +1017,10 @@ async function startAsyncSpawn(requestBytes: Uint8Array): Promise<Uint8Array> {
   // P4.3 hard-kill path: opt-in via spawn option {killable: 'hard'}.
   // Runs the executor in a dedicated Worker that we can terminate()
   // to halt even uncooperative runaway loops. Trade-off: ~50ms spawn
-  // latency + v1 has no streaming/IPC/stdin (cooperative path keeps
-  // those). Real value: in-browser test runners, AI code sandboxes,
-  // notebook kernels -- anywhere we need "run code with a timeout".
+  // latency. Streaming stdout/stderr, json-mode IPC, and streaming
+  // stdin are routed through the runner worker (see startHardKillableSpawn).
+  // Real value: in-browser test runners, AI code sandboxes, notebook
+  // kernels -- anywhere we need "run code with a timeout".
   if (req.killable === "hard") {
     return startHardKillableSpawn(childId, req);
   }
@@ -1116,7 +1205,8 @@ function killAsyncSpawn(requestBytes: Uint8Array): Uint8Array {
   // 'exit'/'close'.
   const runner = hardKillRunners.get(childId);
   if (runner) {
-    runner.terminate();
+    ipcStructuredHandlers.delete(childId);
+    runner.worker.terminate();
     hardKillRunners.delete(childId);
     emitAsyncEvent(childId, EK.EXIT, packExitPayload(null, "SIGTERM"));
     new DataView(reply.buffer).setUint32(0, 0, true);
@@ -1841,6 +1931,21 @@ function registerHandlers(srv: RpcServer): void {
     const inDv = new DataView(args.buffer, args.byteOffset, args.byteLength);
     const childId = inDv.getUint32(0, true);
     const fdIndex = inDv.getUint32(4, true);
+    // Hard-kill fast-path: forward fd 0 writes as stdin-chunk and
+    // fd >= 3 writes as stdio-chunk (the runner exposes opts.stdio[N]
+    // duplex handles for fd >= 3, matching the cooperative path).
+    // fd 1 / 2 are output directions; writing TO them from wasm is a
+    // protocol error (status 1) -- same as the cooperative path.
+    const hk = hardKillRunners.get(childId);
+    if (hk) {
+      if (fdIndex === 1 || fdIndex === 2) { dv.setUint32(0, 1, true); return { payload: reply, status: REPLY_STATUS_OK }; }
+      const chunk = new Uint8Array(args.byteLength - 8);
+      chunk.set(args.subarray(8));
+      if (fdIndex === 0) hk.worker.postMessage({ kind: "stdin-chunk", bytes: chunk });
+      else hk.worker.postMessage({ kind: "stdio-chunk", fd: fdIndex, bytes: chunk });
+      dv.setUint32(0, 0, true);
+      return { payload: reply, status: REPLY_STATUS_OK };
+    }
     const child = asyncSpawnChildren.get(childId);
     if (!child) { dv.setUint32(0, 1, true); return { payload: reply, status: REPLY_STATUS_OK }; }
     const pipe = pipeForFd(child, fdIndex);
@@ -1863,6 +1968,14 @@ function registerHandlers(srv: RpcServer): void {
     const inDv = new DataView(args.buffer, args.byteOffset, args.byteLength);
     const childId = inDv.getUint32(0, true);
     const fdIndex = inDv.getUint32(4, true);
+    const hk = hardKillRunners.get(childId);
+    if (hk) {
+      if (fdIndex === 1 || fdIndex === 2) { dv.setUint32(0, 1, true); return { payload: reply, status: REPLY_STATUS_OK }; }
+      if (fdIndex === 0) hk.worker.postMessage({ kind: "stdin-end" });
+      else hk.worker.postMessage({ kind: "stdio-end", fd: fdIndex });
+      dv.setUint32(0, 0, true);
+      return { payload: reply, status: REPLY_STATUS_OK };
+    }
     const child = asyncSpawnChildren.get(childId);
     if (!child) { dv.setUint32(0, 1, true); return { payload: reply, status: REPLY_STATUS_OK }; }
     const pipe = pipeForFd(child, fdIndex);
@@ -1884,6 +1997,19 @@ function registerHandlers(srv: RpcServer): void {
     const childId = inDv.getUint32(0, true);
     const jsonLen = inDv.getUint32(4, true);
     if (8 + jsonLen > args.byteLength) { dv.setUint32(0, 1, true); return { payload: reply, status: REPLY_STATUS_OK }; }
+    // Hard-kill fast-path: forward parsed IPC msg to the runner worker.
+    // Same JSON-only semantics as the cooperative json-mode IPC path
+    // (advanced/structured-clone IPC isn't wired to the runner in V1).
+    const hk = hardKillRunners.get(childId);
+    if (hk) {
+      if (!hk.ipcEnabled) { dv.setUint32(0, 2, true); return { payload: reply, status: REPLY_STATUS_OK }; }
+      let msg: unknown;
+      try { msg = JSON.parse(new TextDecoder().decode(args.subarray(8, 8 + jsonLen))); }
+      catch { dv.setUint32(0, 3, true); return { payload: reply, status: REPLY_STATUS_OK }; }
+      hk.worker.postMessage({ kind: "ipc-msg", msg });
+      dv.setUint32(0, 0, true);
+      return { payload: reply, status: REPLY_STATUS_OK };
+    }
     const child = asyncSpawnChildren.get(childId);
     if (!child) { dv.setUint32(0, 1, true); return { payload: reply, status: REPLY_STATUS_OK }; }
     if (!child.ipc.connected) { dv.setUint32(0, 2, true); return { payload: reply, status: REPLY_STATUS_OK }; }
@@ -1916,6 +2042,17 @@ function registerHandlers(srv: RpcServer): void {
     if (args.byteLength < 4) { dv.setUint32(0, 1, true); return { payload: reply, status: REPLY_STATUS_OK }; }
     const inDv = new DataView(args.buffer, args.byteOffset, args.byteLength);
     const childId = inDv.getUint32(0, true);
+    // Hard-kill fast-path: notify runner; flip ipcEnabled so subsequent
+    // executor opts.ipc.send() and OP_SPAWN_IPC_SEND become no-ops.
+    const hk = hardKillRunners.get(childId);
+    if (hk) {
+      if (hk.ipcEnabled) {
+        hk.ipcEnabled = false;
+        hk.worker.postMessage({ kind: "ipc-disconnect" });
+      }
+      dv.setUint32(0, 0, true);
+      return { payload: reply, status: REPLY_STATUS_OK };
+    }
     const child = asyncSpawnChildren.get(childId);
     if (!child) { dv.setUint32(0, 1, true); return { payload: reply, status: REPLY_STATUS_OK }; }
     if (child.ipc.connected) {

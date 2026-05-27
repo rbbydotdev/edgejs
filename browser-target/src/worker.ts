@@ -793,14 +793,21 @@ self.addEventListener("message", (e: MessageEvent) => {
     // E18: forward sync client on the host RPC rings.  Uses the same
     // shared-wake address as the existing async client; the sync
     // variant blocks via Atomics.wait while host replies arrive.
+    //
+    // drainReverseRequests bridges the reverseRpcServer (registered
+    // below) into the sync wait loop. Without it, while wasm is parked
+    // on Atomics.wait for a forward reply, the reverse-request ring
+    // accumulates messages (cp.send bursts, finalizers, async events).
+    // Once the ring is full (256 slots), host's reverseClient.call
+    // backs off and after ~6s of retries silently DROPS the event.
+    // The drainer ensures inbound reverse requests are processed
+    // synchronously during the wait, freeing ring slots for the host
+    // to keep publishing. See NOTES.md "host-rpc-sync-reverse-drain".
     hostRpcSyncClient = new SyncRpcClient(
       requestRing,
       replyRing,
       sharedWake,
-      // No reverse-channel drainer needed here: this client is for
-      // outbound wasm→host calls only.  The reverse channel is owned
-      // by reverseRpcServer (host→wasm requests) wired below.
-      null,
+      () => { reverseRpcServer?.drainOnce(); },
     );
     // Install the `__edgeHostDigestSync(algoName, bytes) → Uint8Array`
     // global the `crypto-hash-via-host-worker` policy reads.  Keeps the

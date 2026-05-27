@@ -130,8 +130,14 @@ import { ASYNC_EVENT_KIND_PRELUDE } from "../host-worker/rpc-protocol";
 import spawnSyncInterceptSrc from "./child-process-via-executor/spawn-sync-intercept.runtime.js?raw";
 import bindingsShimSrc from "./child-process-via-executor/bindings-shim.runtime.js?raw";
 import internalPostPatchSrc from "./child-process-via-executor/internal-post-patch.runtime.js?raw";
+import serdesShimSrc from "./child-process-via-executor/serdes-shim.runtime.js?raw";
 
+// serdes shim runs first so v8.js's `class DefaultSerializer extends
+// Serializer` destructure succeeds regardless of which module triggers
+// the pre-patch path. Idempotent (no-ops if Serializer already exists).
 const PRE_PATCH =
+  serdesShimSrc +
+  "\n" +
   spawnSyncInterceptSrc +
   "\n" +
   // bindings-shim has a sentinel that we replace with the runtime EK
@@ -149,5 +155,9 @@ export const childProcessViaExecutor: Policy = {
     "Intercepts the spawn_sync, process_wrap, pipe_wrap, and stream_wrap bindings so lib's native ChildProcess / setupChannel / getValidStdio drive the surface (ref/unref, spawnfile, child.stdio[], IPC, shell:true, argv0, ...) while a user-pluggable executor handles the actual work. Avoids the JSPI SuspendError from native spawn_sync's uv_run loop.",
   builtinOverrides: {
     "internal/child_process": { pre: PRE_PATCH, post: INTERNAL_POST_PATCH },
+    // Also pre-patch v8 so direct `require('v8')` callers get the
+    // structured-clone serializer without needing child_process to load
+    // first. Same idempotent shim, applied just-in-time.
+    "v8": { pre: serdesShimSrc, post: "" },
   },
 };

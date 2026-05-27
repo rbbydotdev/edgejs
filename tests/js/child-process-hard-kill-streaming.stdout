@@ -1,0 +1,9 @@
+chunk count: 3
+  chunk 0 "one\n"
+  chunk 1 "two\n"
+  chunk 2 "three\n"
+joined: one
+two
+three
+
+exit code: 0
