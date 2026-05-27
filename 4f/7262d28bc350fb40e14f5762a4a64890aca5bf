@@ -1,0 +1,40 @@
+browser-target/src/host-worker/killable-executor-runner.ts
+  s_92c1b47c0d6ee8::t_f787f53b3a727e 123
+  s_92c1b47c0d6ee8::t_7cbd7ee51cfb76 1-122,124-132
+tests/js/child-process-hard-kill.stdout
+  s_92c1b47c0d6ee8::t_842d35c190ba45 1
+  s_92c1b47c0d6ee8::t_187517306364ae 2-4
+browser-target/src/policies/child-process-via-executor/bindings-shim.runtime.js
+  s_92c1b47c0d6ee8::t_acbaf1dccd5421 333-337
+tests/js/child-process-hard-kill.js
+  s_92c1b47c0d6ee8::t_34d9eee2636897 1-15,17-28
+  s_92c1b47c0d6ee8::t_9a66ef2b54b91a 16
+tests/js/child-process-hard-kill.executor.js
+  s_92c1b47c0d6ee8::t_29b9b1ce7375c7 1-16
+tests/js/child-process-hard-kill.harness-args
+  s_92c1b47c0d6ee8::t_a2666406351819 1
+browser-target/src/host-worker/host-worker.ts
+  s_92c1b47c0d6ee8::t_0e5509de3903b9 387
+  s_92c1b47c0d6ee8::t_cbbabb548b4259 355
+  s_92c1b47c0d6ee8::t_ca1425d6082fa0 491-509,513-568
+  s_92c1b47c0d6ee8::t_0336fbbd0cff27 929-937
+  s_92c1b47c0d6ee8::t_846472b0d3ac34 2345
+  s_92c1b47c0d6ee8::t_67e80be609517a 1114-1125,1130
+  s_92c1b47c0d6ee8::t_42f9b47a018a94 510-512
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "4f7262d28bc350fb40e14f5762a4a64890aca5bf",
+  "prompts": {},
+  "sessions": {
+    "s_92c1b47c0d6ee8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "dca99c1c-d946-4444-9a53-9ba89db5d748",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
