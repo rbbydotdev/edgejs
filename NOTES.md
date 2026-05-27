@@ -92,11 +92,31 @@ the browser-target tree.
 
 ### Newly opened
 
+- **`child-process-hard-kill-deferred`** (2026-05-27, P4.3 attempted) —
+  `child.kill('SIGKILL')` is cooperative (relies on executor polling
+  `opts.signal`); a `while(true){}` executor cannot be forcibly halted.
+  v1 attempt: per-spawn dedicated Worker that the host could `terminate()`.
+  Implementation landed (~150 lines killable-executor-runner.ts + host
+  integration) but vite/topology friction prevents the nested-worker
+  spawn from host-worker context (vite resolves the URL at build time
+  but the worker fails to boot the entire host worker -- "host worker
+  0 error: undefined"). Reverted. WebContainers also doesn't support
+  hard kill (`stackblitz/webcontainer-core#1121`, open since 2023);
+  we're at parity. Real path forward: spawn the runner from MAIN
+  (which already spawns workers reliably) and proxy via postMessage
+  between main↔host -- more plumbing but proven topology. Not
+  scheduled.
+
 - **`child-process-ipc-sendhandle`** (2026-05-27, P3.3) — `cp.send(msg,
   handle)` silently drops the `handle` argument. Real Node delivers fds/
   sockets/servers via kernel fd-passing over the IPC pipe; we have no
   equivalent in-browser. `cluster.js` depends on this for worker
-  socket-sharing; bare `fork()` does not. Fix path: a separate transport
+  socket-sharing; bare `fork()` does not. P4.4 added an explicit
+  warn-once console message so the silent drop is at least debuggable.
+  Full implementation deferred: requires a connections registry in
+  bridge worker + handle type protocol registration + EdgePipe
+  rewireability. Multi-day. WebContainers doesn't support it either
+  (no issue traffic). Not scheduled. Fix path: a separate transport
   for "named handle" values that the executor can map to its own
   resources, or hard-fail when handle != null so users see the gap.
   Marker site: `policies/child-process-via-executor.ts:97`.

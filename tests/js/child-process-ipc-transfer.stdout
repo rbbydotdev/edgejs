@@ -1,0 +1,5 @@
+pre-send size: 8192
+post-send size: 0
+echoed-size: 8192
+echoed-first-byte: 0
+echoed-last-byte: 255

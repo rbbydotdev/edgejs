@@ -69,17 +69,39 @@
       }
     });
     // Replace outbound: target.send uses structured-clone via port.
+    // P4.1: respect opts.transferList -- thread it through to
+    // postMessage so ArrayBuffer / MessagePort / TypedArray ownership
+    // transfers (zero-copy) instead of cloning. Sender's references
+    // detach after the call, matching native postMessage semantics.
+    // (Not a Node-native option name; this is an edge.js extension
+    // since lib's target.send signature accepts an opts object but
+    // Node uses it for {keepOpen, swallowErrors} only.)
     self.send = function(message, sendHandle, opts, callback) {
       if (typeof sendHandle === 'function') { callback = sendHandle; sendHandle = undefined; opts = undefined; }
       else if (typeof opts === 'function') { callback = opts; opts = undefined; }
-      void sendHandle; void opts;
+      // P4.4 audit: previously sendHandle was silently dropped (via
+      // `void sendHandle`). Now we warn ONCE per handle attempt -- the
+      // user gets a clear signal instead of a mysterious "child didn't
+      // receive my socket" failure. Implementation is non-trivial
+      // (needs connection registry + handle type protocol; see
+      // NOTES.md "child-process-ipc-sendhandle"); WebContainers also
+      // doesn't ship it (no issue traffic), so we're at parity here.
+      if (sendHandle != null) {
+        try {
+          if (!self._edgeSendHandleWarned) {
+            self._edgeSendHandleWarned = true;
+            console.warn('[child-process-via-executor] child.send(msg, handle) -- handle is not supported in browser-target and was dropped. cluster.js patterns that rely on handle-passing will not work. Tracked as #!~debt child-process-ipc-sendhandle.');
+          }
+        } catch (_w) { void _w; }
+      }
+      var transferList = (opts && Array.isArray(opts.transferList)) ? opts.transferList : null;
       if (!self.channel || !self.connected) {
         var errc = new Error('Channel closed');
         errc.code = 'ERR_IPC_CHANNEL_CLOSED';
         if (typeof callback === 'function') process.nextTick(function() { callback(errc); });
         return false;
       }
-      try { sender(childId, message); }
+      try { sender(childId, message, transferList); }
       catch (e) {
         if (typeof callback === 'function') process.nextTick(function() { callback(e); });
         return false;

@@ -1,0 +1,4 @@
+exit: 0
+out: "opts-test"
+spawnfile: echo
+spawnargs: ["echo","opts-test"]
