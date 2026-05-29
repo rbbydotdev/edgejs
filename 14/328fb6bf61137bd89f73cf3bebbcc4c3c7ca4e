@@ -1,0 +1,19 @@
+browser-target/src/policies/esm-require-preeval.ts
+  s_92c1b47c0d6ee8::t_4711fac672e45c 113-155,158-161,163,166,169,172-175,183-184,186,193
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "14328fb6bf61137bd89f73cf3bebbcc4c3c7ca4e",
+  "prompts": {},
+  "sessions": {
+    "s_92c1b47c0d6ee8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "dca99c1c-d946-4444-9a53-9ba89db5d748",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
