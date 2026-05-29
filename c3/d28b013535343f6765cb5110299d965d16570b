@@ -1,0 +1,74 @@
+tests/js/esm-import-meta-url.stdout
+  s_92c1b47c0d6ee8::t_9c14be7411ed85 1-2
+tests/js/esm-source-text-basic.stdout
+  s_92c1b47c0d6ee8::t_df2205c1f8c60e 1
+tests/js/esm-source-text-basic.js
+  s_92c1b47c0d6ee8::t_f08d29cc4baa25 1,3-4,6-7,9-15
+  s_92c1b47c0d6ee8::t_8cbd8303434e10 2,5,8
+browser-target/src/policies/esm-via-blob-import.ts
+  s_92c1b47c0d6ee8::t_e35d00108a2551 1-36,38-46,48-76
+  s_92c1b47c0d6ee8::t_d7185dfd0cfdb6 37,47
+tests/js/esm-re-export-chain.stdout
+  s_92c1b47c0d6ee8::t_ed8712697bca18 1
+tests/js/esm-named-and-default.stdout
+  s_92c1b47c0d6ee8::t_21f41a0efe3a35 1
+browser-target/src/worker.ts
+  s_92c1b47c0d6ee8::t_d53c592da82661 39-51
+  s_92c1b47c0d6ee8::t_58c5be330667cd 1272-1280
+NOTES.md
+  s_92c1b47c0d6ee8::t_3ecfb54b888223 95-111
+  s_92c1b47c0d6ee8::t_c88274df493a50 222-240
+  s_92c1b47c0d6ee8::t_d3d7b05fd4879a 928-998
+browser-target/scripts/probe-esm-blob.mjs
+  s_92c1b47c0d6ee8::t_268897a08dcfdd 1-144
+tests/js/esm-top-level-await.js
+  s_92c1b47c0d6ee8::t_76988cf398b6f1 1-19
+tests/js/esm-named-and-default.js
+  s_92c1b47c0d6ee8::t_28180839126d54 1-28
+browser-target/src/napi-host/esm-registry.ts
+  s_92c1b47c0d6ee8::t_28a87122fa80de 1-287,294-296,304-310,313-318,321-339,358-359,363,405-455
+  s_92c1b47c0d6ee8::t_10d8aa8f9da6f6 340-357,360,364-368,377-404
+  s_92c1b47c0d6ee8::t_3a9942ae763dc1 288-293,297-303,311-312,319-320,361-362
+  s_92c1b47c0d6ee8::t_b909280aaef0b2 369-376
+tests/js/esm-re-export-chain.js
+  s_92c1b47c0d6ee8::t_4a3c3e2c378c8c 1-32
+browser-target/src/napi-host/unofficial.ts
+  s_92c1b47c0d6ee8::t_bb238842d2ec5f 300-349
+  s_92c1b47c0d6ee8::t_87856fa9c04144 1397,1412,1430,1456,1471,1493,1516,1527,1537,1563,1571,1594
+  s_92c1b47c0d6ee8::t_fc5eae41ab2ee0 271-279,350-386
+  s_92c1b47c0d6ee8::t_d343ead56bf6d6 1445-1449,1453-1454,1457
+  s_92c1b47c0d6ee8::t_fe1ce7476856e8 1431
+  s_92c1b47c0d6ee8::t_113c4069203b07 1318-1321,1327-1328,1333-1340,1349-1350,1354-1361,1373-1379,1384-1385,1396,1398-1400,1402-1403,1405-1406,1408,1411,1413-1419,1425-1426,1428-1429,1432-1436,1438-1444,1450-1451,1455,1458-1459,1462-1465,1467,1470,1472-1475,1482-1487,1489-1490,1492,1494-1508,1518,1525,1533,1536,1538-1539,1561,1564,1569,1572,1577-1580,1588-1590,1592-1593,1595-1601,1603-1605,1611-1613,1615-1624,1626-1633
+  s_92c1b47c0d6ee8::t_212f9dced1dca8 1437
+  s_92c1b47c0d6ee8::t_5f447da7b3058e 1342,1363,1380
+  s_92c1b47c0d6ee8::t_29bb45ff3a44b9 1528
+  s_92c1b47c0d6ee8::t_500ea315367872 1639-1658
+  s_92c1b47c0d6ee8::t_4a14d05ca9a646 1401
+  s_92c1b47c0d6ee8::t_10fa7d85209e20 280-299
+  s_92c1b47c0d6ee8::t_b16ef0fbc2d9a4 22-28
+tests/js/esm-top-level-await.stdout
+  s_92c1b47c0d6ee8::t_92a728b6acec23 1
+browser-target/src/policies/index.ts
+  s_92c1b47c0d6ee8::t_cbe15be5882515 134
+  s_92c1b47c0d6ee8::t_456109202ea0a9 154
+  s_92c1b47c0d6ee8::t_db7d1536d4fd43 248
+  s_92c1b47c0d6ee8::t_a3341d74df09a3 219
+tests/js/esm-import-meta-url.js
+  s_92c1b47c0d6ee8::t_927bc79c82966a 1-21
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "c3d28b013535343f6765cb5110299d965d16570b",
+  "prompts": {},
+  "sessions": {
+    "s_92c1b47c0d6ee8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "dca99c1c-d946-4444-9a53-9ba89db5d748",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
