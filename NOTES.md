@@ -92,19 +92,6 @@ the browser-target tree.
 
 ### Newly opened
 
-- **`esm-tla-heuristic`** (2026-05-30) — `detectTopLevelAwait` in
-  `napi-host/esm-registry.ts` is a small state-machine scanner that
-  tracks `{` `}` depth and async-function context (`async function`
-  / `async (...) =>`).  Correct for the common patterns; the old
-  regex's false-positive on `async function f() { await x; }` is
-  gone.  Remaining gaps: generators (`function*`), expression-bodied
-  arrow async functions (`async () => await x`, valid but
-  contrived), class method bodies marked async via method shorthand.
-  When the b₄ Sucrase backstop policy is active, the compile-time
-  detection in `esm-require-sucrase-backstop` is authoritative — but
-  it runs only at the b₄ runSync path, not at create_source_text
-  time.  Marker site: `napi-host/esm-registry.ts:detectTopLevelAwait`.
-
 - **`esm-via-blob-import-symbol-fallback`** (2026-05-30) —
   `esm-via-blob-import` policy synthesizes
   `host_defined_option_symbol` on each wrap as a defensive backstop.
