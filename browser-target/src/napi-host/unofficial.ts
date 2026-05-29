@@ -19,6 +19,13 @@
 
 import type { Context, Env } from "./emnapi";
 import type { ModuleOverride } from "../policies";
+import {
+  detectTopLevelAwait,
+  extractModuleRequests,
+  releaseBlobUrls,
+  synthesizeBlobUrl,
+  type ModuleRecord,
+} from "./esm-registry";
 
 // Capture native text-codec instances at module load.  Edge mutates
 // globalThis.TextEncoder/Decoder mid-boot with a polyfill that goes
@@ -260,6 +267,122 @@ export function createUnofficialNapi(ctx: UnofficialHostContext): Record<string,
   // Tracks "scope handle ID" → "env ID" so we can release scopes by their
   // own handle, which is what wasm passes back.
   const scopeToEnv = new Map<number, number>();
+
+  // ESM host state — callbacks registered by lib's loader bootstrap
+  // (set_import_module_dynamically_callback, set_initialize_import_meta_object_callback).
+  // Stored here so the blob-trampoline can call them during dynamic
+  // import resolution (Phase 3) and import.meta initialization (Phase 4).
+  const esmHostState: {
+    dynamicImportCallback: ((...a: unknown[]) => unknown) | null;
+    initializeImportMetaCallback: ((...a: unknown[]) => unknown) | null;
+  } = { dynamicImportCallback: null, initializeImportMetaCallback: null };
+
+  // Per-record store for ESM modules.  napi handles don't survive past
+  // the scope of the originating call (emnapi releases them), but our
+  // records need to outlive create→link→instantiate→evaluate→destroy.
+  // We allocate a stable u32 ID and write that as the wasm-visible
+  // handle; C++ stores it as `void*` (uint32 in wasm32) and round-
+  // trips it via every subsequent call.  Lookups by ID are O(1).
+  const esmRecords = new Map<number, ModuleRecord>();
+  let esmNextRecordId = 1;
+  function registerEsmRecord(record: ModuleRecord): number {
+    const id = esmNextRecordId++;
+    esmRecords.set(id, record);
+    return id;
+  }
+  function getEsmRecord(handleOrId: number): ModuleRecord | undefined {
+    return esmRecords.get(handleOrId);
+  }
+  function dropEsmRecord(handleOrId: number): void {
+    esmRecords.delete(handleOrId);
+  }
+
+  // Install the browser-side hooks the blob preamble calls into.
+  // `__edgeDynImportImpl(specifier, parentUrl)` routes to lib's stored
+  // dynamic-import callback (Phase 3).  `__edgeImportMetaFactory(url)`
+  // builds an import.meta whose properties any registered
+  // `initializeImportMetaCallback` (Phase 4) populates.  Both globals
+  // are namespaced under `__edge*` so they don't conflict with user
+  // code or other deployments.
+  (() => {
+    const g = globalThis as unknown as Record<string, unknown>;
+    if (!g.__edgeDynImportImpl) {
+      g.__edgeDynImportImpl = (specifier: string, parentUrl: string): Promise<unknown> => {
+        const cb = esmHostState.dynamicImportCallback;
+        if (typeof cb === "function") {
+          try {
+            const result = cb(specifier, parentUrl, undefined);
+            return Promise.resolve(result).then((mod) => {
+              // Lib's callback returns a vm.Module (SourceTextModule)
+              // — extract its namespace.  If user returned a raw
+              // namespace object instead, return that directly.
+              if (mod && typeof mod === "object" && "namespace" in (mod as object)) {
+                return (mod as { namespace: unknown }).namespace;
+              }
+              return mod;
+            });
+          } catch (e) {
+            return Promise.reject(e);
+          }
+        }
+        // No callback registered — fall through to native browser
+        // import (works for absolute URLs like blob: / data: / https:).
+        return import(/* @vite-ignore */ specifier);
+      };
+    }
+    if (!g.__edgeImportMetaFactory) {
+      g.__edgeImportMetaFactory = (url: string): Record<string, unknown> => {
+        const meta: Record<string, unknown> = { url };
+        const cb = esmHostState.initializeImportMetaCallback;
+        if (typeof cb === "function") {
+          // Lib's callback receives (meta, wrap) and populates meta
+          // in-place.  We don't have the wrap on this side (it lives
+          // in wasm-V8); the callback usually only touches `url` and
+          // adds `resolve`, both of which we can pre-populate with
+          // sensible defaults.  Future: marshal the wrap handle.
+          try { cb(meta, undefined); } catch { /* keep whatever was set */ }
+        }
+        return meta;
+      };
+    }
+  })();
+
+  /** Drive the browser's real ESM machinery for `record`.  Mints
+   *  blob URLs for the whole linked subgraph, calls `import(rootUrl)`,
+   *  captures the namespace.  Caches the eval Promise so concurrent
+   *  evaluate calls for the same record share one browser import. */
+  function evaluateRecord(record: ModuleRecord): Promise<unknown> {
+    if (record.status === 4) return Promise.resolve(record.namespace);
+    if (record.status === 5 && record.error !== undefined) return Promise.reject(record.error);
+    // Re-use an in-flight eval promise if one is already running.
+    const inflight = (record as ModuleRecord & { _evalPromise?: Promise<unknown> })._evalPromise;
+    if (inflight) return inflight;
+    record.status = 3; // kEvaluating
+    const p = (async () => {
+      try {
+        const url = synthesizeBlobUrl(record);
+        const ns = await import(/* @vite-ignore */ url);
+        // Capture an own-prop snapshot of the namespace.  Module namespace
+        // objects expose getters; reading each key once at completion is
+        // sufficient for the no-cycle no-late-binding case.  Cycles +
+        // late-mutated exports get a Proxy in Phase 5.
+        const out: Record<string, unknown> = {};
+        for (const k of Object.keys(ns)) out[k] = (ns as Record<string, unknown>)[k];
+        if (Object.prototype.hasOwnProperty.call(ns, "default") && !("default" in out)) {
+          out.default = (ns as { default?: unknown }).default;
+        }
+        record.namespace = out;
+        record.status = 4; // kEvaluated
+        return out;
+      } catch (e) {
+        record.error = e;
+        record.status = 5; // kErrored
+        throw e;
+      }
+    })();
+    (record as ModuleRecord & { _evalPromise?: Promise<unknown> })._evalPromise = p;
+    return p;
+  }
 
   // Build the impls object first so methods can reference each other via
   // `impls.X` (closure) rather than `this.X` — wasm calls reach us through
@@ -1192,42 +1315,52 @@ export function createUnofficialNapi(ctx: UnofficialHostContext): Record<string,
     },
 
     // ESM module wrap — the 18-function surface that backs SourceTextModule
-    // and SyntheticModule.  Implementing these properly means a real
-    // module-graph linker; we stub with handles that round-trip but don't
-    // execute.  Edge boots fine on CJS; ESM workloads fail at link/evaluate.
-    // #!~debt module_wrap_* whole family: every call here is a no-op or
-    // returns a handle that points at a marker object.  Promote piece by
-    // piece when ESM workloads need to work.
+    // and SyntheticModule.  Each call now lands on a real record managed
+    // by `esm-registry.ts`.  Phase 1: blob-URL trampoline drives static
+    // ESM with full V8 semantics.  Phases 2-4 layer TLA, dynamic
+    // import(), and import.meta atop the same registry.
 
     // Wasm sig (9 args, napi.rs:1534):
     // (napi_env, wrapper, url, context_or_undefined, source, line_offset,
     //  column_offset, cached_data_or_id, handle_ptr).
     unofficial_napi_module_wrap_create_source_text(
-      envHandle: number, wrapper: number, url: number, _contextOrUndefined: number,
-      source: number, _lineOffset: number, _columnOffset: number,
+      envHandle: number, wrapper: number, urlHandle: number, _contextOrUndefined: number,
+      sourceHandle: number, _lineOffset: number, _columnOffset: number,
       _cachedDataOrId: number, handlePtr: number,
     ): number {
       const env = envs.get(envHandle);
       if (!env) return 1;
-      const mod = { kind: "source-text", wrapper, url, source, status: 0, namespace: {} };
+      const url = String(context.jsValueFromNapiValue(urlHandle) ?? "");
+      const source = String(context.jsValueFromNapiValue(sourceHandle) ?? "");
+      const record: ModuleRecord = {
+        kind: "source-text", wrapper, url, source,
+        deps: [], status: 0, namespace: {},
+        hasTla: detectTopLevelAwait(source),
+        hasAsyncGraph: false,
+      };
       if (handlePtr > 0) {
-        const h = context.napiValueFromJsValue(mod);
-        dv(memory).setUint32(handlePtr, Number(h), true);
+        dv(memory).setUint32(handlePtr, registerEsmRecord(record), true);
       }
       return 0;
     },
     // Wasm sig (7 args, napi.rs:1576):
     // (napi_env, wrapper, url, context_or_undefined, export_names, synthetic_eval_steps, handle_ptr).
     unofficial_napi_module_wrap_create_synthetic(
-      envHandle: number, wrapper: number, url: number, _contextOrUndefined: number,
-      exportNames: number, _syntheticEvalSteps: number, handlePtr: number,
+      envHandle: number, wrapper: number, urlHandle: number, _contextOrUndefined: number,
+      exportNamesHandle: number, _syntheticEvalSteps: number, handlePtr: number,
     ): number {
       const env = envs.get(envHandle);
       if (!env) return 1;
-      const mod = { kind: "synthetic", wrapper, url, exportNames, status: 0, namespace: {} };
+      const url = String(context.jsValueFromNapiValue(urlHandle) ?? "");
+      const exportNamesRaw = context.jsValueFromNapiValue(exportNamesHandle);
+      const exportNames = Array.isArray(exportNamesRaw) ? exportNamesRaw.map(String) : [];
+      const record: ModuleRecord = {
+        kind: "synthetic", wrapper, url, exportNames,
+        deps: [], status: 0, namespace: {},
+        hasTla: false, hasAsyncGraph: false,
+      };
       if (handlePtr > 0) {
-        const h = context.napiValueFromJsValue(mod);
-        dv(memory).setUint32(handlePtr, Number(h), true);
+        dv(memory).setUint32(handlePtr, registerEsmRecord(record), true);
       }
       return 0;
     },
@@ -1237,12 +1370,19 @@ export function createUnofficialNapi(ctx: UnofficialHostContext): Record<string,
     ): number {
       const env = envs.get(envHandle);
       if (env && resultOut > 0) {
-        const h = context.napiValueFromJsValue({ kind: "required-facade", exports: {} });
-        dv(memory).setUint32(resultOut, Number(h), true);
+        // CJS facade is unused until Phase 5 (require(esm) interop) —
+        // return a sentinel record so the handle round-trips.
+        const record: ModuleRecord = {
+          kind: "required-facade", wrapper: 0, url: "",
+          deps: [], status: 4, namespace: {},
+          hasTla: false, hasAsyncGraph: false,
+        };
+        dv(memory).setUint32(resultOut, registerEsmRecord(record), true);
       }
       return 0;
     },
-    // Wasm sig (3 args): (napi_env, handle, result_ptr).
+    // Wasm sig (3 args): (napi_env, handle, result_ptr).  Code cache —
+    // we return an empty AB so lib's cache-write path no-ops cleanly.
     unofficial_napi_module_wrap_create_cached_data(
       _envHandle: number, _handle: number, resultOut: number,
     ): number {
@@ -1253,48 +1393,119 @@ export function createUnofficialNapi(ctx: UnofficialHostContext): Record<string,
       return 0;
     },
     // Wasm sig (2 args): (napi_env, handle).
-    unofficial_napi_module_wrap_destroy(_envHandle: number, _handle: number): number { return 0; },
+    unofficial_napi_module_wrap_destroy(_envHandle: number, handle: number): number {
+      const record = getEsmRecord(handle);
+      if (record && record.deps !== undefined) {
+        try { releaseBlobUrls(record); } catch { /* best effort */ }
+      }
+      dropEsmRecord(handle);
+      return 0;
+    },
     // Wasm sig (3 args): (napi_env, handle, result_ptr).
+    // Returns the static import requests in source order.  lib's loader
+    // uses this list to drive resolve/load for each dep.
     unofficial_napi_module_wrap_get_module_requests(
-      envHandle: number, _handle: number, resultOut: number,
+      envHandle: number, handle: number, resultOut: number,
     ): number {
       const env = envs.get(envHandle);
-      if (env && resultOut > 0) {
-        const h = context.napiValueFromJsValue([]);
+      if (!env) return 1;
+      const record = getEsmRecord(handle);
+      let result: unknown[] = [];
+      if (record?.kind === "source-text" && record.source) {
+        if (!record.requests) record.requests = extractModuleRequests(record.source);
+        result = record.requests;
+      }
+      if (resultOut > 0) {
+        const h = context.napiValueFromJsValue(result);
         dv(memory).setUint32(resultOut, Number(h), true);
       }
       return 0;
     },
     // Wasm sig (4 args, napi.rs:1639):
-    // (napi_env, handle, count, linked_handles_ptr).
+    // (napi_env, handle, count, linked_handles_ptr).  linked_handles_ptr
+    // points at an array of napi_value (u32 each) of length `count`.
     unofficial_napi_module_wrap_link(
-      _envHandle: number, _handle: number, _count: number, _linkedHandlesPtr: number,
-    ): number { return 0; },
+      _envHandle: number, handle: number, count: number, linkedHandlesPtr: number,
+    ): number {
+      const record = getEsmRecord(handle);
+      if (!record) return 1;
+      const deps: ModuleRecord[] = [];
+      if (count > 0 && linkedHandlesPtr > 0) {
+        const view = dv(memory);
+        for (let i = 0; i < count; i++) {
+          const depHandle = view.getUint32(linkedHandlesPtr + i * 4, true);
+          const dep = getEsmRecord(depHandle);
+          if (dep) deps.push(dep);
+        }
+      }
+      record.deps = deps;
+      // Aggregate async-graph status: any dep with TLA / async graph
+      // propagates up to us.
+      record.hasAsyncGraph = record.hasTla || deps.some((d) => d.hasTla || d.hasAsyncGraph);
+      // V8 transitions status from kUninstantiated → kInstantiated as
+      // part of link.  We mirror so lib's `evaluate()` pre-check
+      // (vm/module.js:226 — must be kInstantiated/kEvaluated/kErrored)
+      // is satisfied without the user manually calling instantiate.
+      if (record.status < 2) record.status = 2; // kInstantiated
+      return 0;
+    },
     // Wasm sig (2 args, napi.rs:1666): (napi_env, handle).
-    unofficial_napi_module_wrap_instantiate(_envHandle: number, _handle: number): number { return 0; },
+    // Optional explicit instantiate step — link already transitions to
+    // kInstantiated.  No-op here unless coming in cold (status < 2).
+    unofficial_napi_module_wrap_instantiate(_envHandle: number, handle: number): number {
+      const record = getEsmRecord(handle);
+      if (record && record.status < 2) record.status = 2; // kInstantiated
+      return 0;
+    },
     // Wasm sig (5 args, napi.rs:1675):
     // (napi_env, handle, timeout: i64, break_on_sigint, result_ptr).
+    // Returns a Promise as a napi value — lib's
+    // `await this.module.evaluate(...)` in module_job.js then awaits it.
+    // The browser's `import(blobUrl)` does the real V8 ESM dance
+    // (link / instantiate / evaluate, including TLA).
     unofficial_napi_module_wrap_evaluate(
-      envHandle: number, _handle: number, _timeout: bigint, _breakOnSigint: number, resultOut: number,
+      envHandle: number, handle: number, _timeout: bigint, _breakOnSigint: number, resultOut: number,
     ): number {
       const env = envs.get(envHandle);
-      if (env && resultOut > 0) {
-        const h = context.napiValueFromJsValue(Promise.resolve(undefined));
+      if (!env) return 1;
+      const record = getEsmRecord(handle);
+      if (!record) return 1;
+      const evalPromise = evaluateRecord(record);
+      if (resultOut > 0) {
+        const h = context.napiValueFromJsValue(evalPromise);
         dv(memory).setUint32(resultOut, Number(h), true);
       }
       return 0;
     },
     // Wasm sig (5 args, napi.rs:1700):
     // (napi_env, handle, filename, parent_filename, result_ptr).
+    // Sync variant: called from `require(esm)`.  Wrapped with
+    // `WebAssembly.Suspending` (see bottom of file) so the async blob
+    // import appears synchronous to the wasm caller.  lib's caller in
+    // module_job.js:392 throws ERR_REQUIRE_ASYNC_MODULE before reaching
+    // here if hasAsyncGraph, so we only see non-TLA modules.  Returns
+    // a Promise that resolves to the namespace.
     unofficial_napi_module_wrap_evaluate_sync(
-      envHandle: number, _handle: number, _filename: number, _parentFilename: number, resultOut: number,
-    ): number {
+      envHandle: number, handle: number, _filename: number, _parentFilename: number, resultOut: number,
+    ): number | Promise<number> {
       const env = envs.get(envHandle);
-      if (env && resultOut > 0) {
-        const h = context.napiValueFromJsValue(undefined);
-        dv(memory).setUint32(resultOut, Number(h), true);
-      }
-      return 0;
+      if (!env) return 1;
+      const record = getEsmRecord(handle);
+      if (!record) return 1;
+      return (async () => {
+        try {
+          await evaluateRecord(record);
+          if (resultOut > 0) {
+            const h = context.napiValueFromJsValue(record.namespace);
+            dv(memory).setUint32(resultOut, Number(h), true);
+          }
+          return 0;
+        } catch (e) {
+          record.error = e;
+          record.status = 5; // kErrored
+          return 1;
+        }
+      })();
     },
     // Wasm sig (3 args): (napi_env, handle, result_ptr).
     unofficial_napi_module_wrap_get_namespace(
@@ -1302,27 +1513,30 @@ export function createUnofficialNapi(ctx: UnofficialHostContext): Record<string,
     ): number {
       const env = envs.get(envHandle);
       if (!env) return 1;
-      const mod = context.jsValueFromNapiValue(handle) as { namespace?: object } | undefined;
+      const record = getEsmRecord(handle);
       if (resultOut > 0) {
-        const h = context.napiValueFromJsValue(mod?.namespace ?? {});
+        const h = context.napiValueFromJsValue(record?.namespace ?? {});
         dv(memory).setUint32(resultOut, Number(h), true);
       }
       return 0;
     },
     // Wasm sig (3 args): (napi_env, handle, status_ptr).  status_ptr is i32.
     unofficial_napi_module_wrap_get_status(
-      _envHandle: number, _handle: number, statusOut: number,
+      _envHandle: number, handle: number, statusOut: number,
     ): number {
-      if (statusOut > 0) dv(memory).setInt32(statusOut, 4, true); // 4 = Evaluated
+      const record = getEsmRecord(handle);
+      if (statusOut > 0) dv(memory).setInt32(statusOut, record?.status ?? 0, true);
       return 0;
     },
     // Wasm sig (3 args): (napi_env, handle, result_ptr).
     unofficial_napi_module_wrap_get_error(
-      envHandle: number, _handle: number, resultOut: number,
+      envHandle: number, handle: number, resultOut: number,
     ): number {
       const env = envs.get(envHandle);
-      if (env && resultOut > 0) {
-        const h = context.napiValueFromJsValue(undefined);
+      if (!env) return 1;
+      const record = getEsmRecord(handle);
+      if (resultOut > 0) {
+        const h = context.napiValueFromJsValue(record?.error);
         dv(memory).setUint32(resultOut, Number(h), true);
       }
       return 0;
@@ -1344,24 +1558,26 @@ export function createUnofficialNapi(ctx: UnofficialHostContext): Record<string,
     ): number { return 0; },
     // Wasm sig (3 args): (napi_env, handle, result_ptr).  result_ptr is u8.
     unofficial_napi_module_wrap_has_top_level_await(
-      _envHandle: number, _handle: number, resultOut: number,
+      _envHandle: number, handle: number, resultOut: number,
     ): number {
-      if (resultOut > 0) dv(memory).setUint8(resultOut, 0);
+      const record = getEsmRecord(handle);
+      if (resultOut > 0) dv(memory).setUint8(resultOut, record?.hasTla ? 1 : 0);
       return 0;
     },
     // Wasm sig (3 args): (napi_env, handle, result_ptr).  result_ptr is u8.
     unofficial_napi_module_wrap_has_async_graph(
-      _envHandle: number, _handle: number, resultOut: number,
+      _envHandle: number, handle: number, resultOut: number,
     ): number {
-      if (resultOut > 0) dv(memory).setUint8(resultOut, 0);
+      const record = getEsmRecord(handle);
+      if (resultOut > 0) dv(memory).setUint8(resultOut, record?.hasAsyncGraph ? 1 : 0);
       return 0;
     },
     // Wasm sig (4 args, napi.rs:1818):
     // (napi_env, module_wrap, warnings, settled_ptr).  settled_ptr is u8.
-    // Wasm reads `*settled_ptr` as "settled? 1 : 0".  Default to settled (1)
-    // since our module_wrap_* impls don't host top-level await semantics —
-    // returning 0 (unsettled) triggers edge's kUnsettledTopLevelAwait exit
-    // path (code 13) at the end of every run.  See NOTES.md 2026-05-20.
+    // 1 = settled (no unresolved TLA), 0 = unsettled.  Lib's evaluate
+    // path now drives V8's real Promise machinery via the blob import,
+    // so by the time check is called, evaluate's Promise has resolved
+    // (or rejected) and we report settled.
     unofficial_napi_module_wrap_check_unsettled_top_level_await(
       _envHandle: number, _moduleWrap: number, _warnings: number, settledOut: number,
     ): number {
@@ -1369,29 +1585,76 @@ export function createUnofficialNapi(ctx: UnofficialHostContext): Record<string,
       return 0;
     },
     // Wasm sig (4 args, napi.rs:1846):
-    // (napi_env, handle, export_name, export_value).
+    // (napi_env, handle, export_name, export_value).  For synthetic
+    // modules — populate the captured namespace; the blob preamble
+    // emitted by `synthesizeBlobUrl` exports each name as `let`.
     unofficial_napi_module_wrap_set_export(
-      _envHandle: number, _handle: number, _exportName: number, _exportValue: number,
-    ): number { return 0; },
+      _envHandle: number, handle: number, exportName: number, exportValue: number,
+    ): number {
+      const record = getEsmRecord(handle);
+      if (!record || record.kind !== "synthetic") return 0;
+      const name = String(context.jsValueFromNapiValue(exportName) ?? "");
+      if (!name) return 0;
+      const value = context.jsValueFromNapiValue(exportValue);
+      record.namespace[name] = value;
+      return 0;
+    },
     // Stub in Rust (napi.rs:5249) takes 4 raw i32 args (a, b, c, d) and
-    // returns 1.  We mirror: return 1 = napi_invalid_arg.
+    // returns 1.  We mirror: return 1 = napi_invalid_arg.  The real
+    // dynamic-import path runs via `set_import_module_dynamically_callback`
+    // (Phase 3), not this entry point.
     unofficial_napi_module_wrap_import_module_dynamically(
       _a: number, _b: number, _c: number, _d: number,
     ): number {
       return 1;
     },
-    // Wasm sig (2 args): (napi_env, callback).
+    // Wasm sig (2 args): (napi_env, callback).  Lib's dynamic-import
+    // callback — stored here so the blob trampoline (Phase 3) can route
+    // browser `import()` calls back into lib's resolver.
     unofficial_napi_module_wrap_set_import_module_dynamically_callback(
-      _envHandle: number, _callback: number,
-    ): number { return 0; },
-    // Wasm sig (2 args): (napi_env, callback).
+      _envHandle: number, callback: number,
+    ): number {
+      const fn = context.jsValueFromNapiValue(callback);
+      esmHostState.dynamicImportCallback = typeof fn === "function"
+        ? fn as (...a: unknown[]) => unknown
+        : null;
+      return 0;
+    },
+    // Wasm sig (2 args): (napi_env, callback).  Lib's import.meta
+    // initializer — stored for Phase 4.
     unofficial_napi_module_wrap_set_initialize_import_meta_object_callback(
-      _envHandle: number, _callback: number,
-    ): number { return 0; },
+      _envHandle: number, callback: number,
+    ): number {
+      const fn = context.jsValueFromNapiValue(callback);
+      esmHostState.initializeImportMetaCallback = typeof fn === "function"
+        ? fn as (...a: unknown[]) => unknown
+        : null;
+      return 0;
+    },
 
     // --- end of #!~debt batch ---
     // Anything not listed here falls through to the generic per-namespace
     // stub from imports-generated.ts (returns 0 for the `napi` namespace).
   };
+
+  // ESM Phase 1: wrap `module_wrap_evaluate_sync` as a Suspending
+  // import.  Lib's binding calls this from `require(esm)` and expects
+  // a sync return; the underlying browser `import(blobUrl)` is async,
+  // so JSPI suspends the wasm frame until the browser ESM machinery
+  // settles.  Safe because lib's evaluate-sync path runs from a
+  // wasm-only stack (lib JS is INSIDE wasm-V8; host V8 sees only the
+  // _start promising frame between here and our handler).
+  //
+  // Older browsers without JSPI fall through to the plain Promise-
+  // returning impl, which wasm can't await — evaluate_sync will see a
+  // non-zero napi_status and lib will surface a clear "evaluate failed"
+  // error.  Soft degrade rather than crash.
+  const EsmSuspendingCtor = (
+    globalThis as { WebAssembly?: { Suspending?: new (fn: Function) => Function } }
+  ).WebAssembly?.Suspending;
+  if (typeof EsmSuspendingCtor === "function") {
+    const origSync = impls["unofficial_napi_module_wrap_evaluate_sync"] as (...a: unknown[]) => unknown;
+    impls["unofficial_napi_module_wrap_evaluate_sync"] = new EsmSuspendingCtor(origSync) as Function;
+  }
   return impls;
 }

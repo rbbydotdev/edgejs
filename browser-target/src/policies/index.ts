@@ -131,6 +131,7 @@ export { outboundFetchTunnel } from "./outbound-fetch-tunnel";
 export { fastReadFile } from "./fast-readfile";
 export { workerThreadsPerThread } from "./worker-threads-per-thread";
 export { childProcessViaExecutor } from "./child-process-via-executor";
+export { esmViaBlobImport } from "./esm-via-blob-import";
 
 import { bufferPoolDisable } from "./buffer-pool-disable";
 import { bufferWriteSync } from "./buffer-write-sync";
@@ -150,6 +151,7 @@ import { outboundFetchTunnel } from "./outbound-fetch-tunnel";
 import { fastReadFile } from "./fast-readfile";
 import { workerThreadsPerThread } from "./worker-threads-per-thread";
 import { childProcessViaExecutor } from "./child-process-via-executor";
+import { esmViaBlobImport } from "./esm-via-blob-import";
 
 // =============================================================================
 // SANE DEFAULTS
@@ -214,6 +216,7 @@ export const defaultBrowserPolicies: Policy[] = [
   // pin the policy explicitly are harmless (extraPolicies appends to
   // defaults).
   workerThreadsPerThread,
+  esmViaBlobImport,
 ];
 
 /**
@@ -242,4 +245,5 @@ export const policyRegistry: Record<string, Policy> = {
   [fastReadFile.name]: fastReadFile,
   [workerThreadsPerThread.name]: workerThreadsPerThread,
   [childProcessViaExecutor.name]: childProcessViaExecutor,
+  [esmViaBlobImport.name]: esmViaBlobImport,
 };

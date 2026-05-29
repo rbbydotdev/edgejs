@@ -92,6 +92,23 @@ the browser-target tree.
 
 ### Newly opened
 
+- **`esm-per-module-dynamic-import`** (2026-05-29) — `import(...)` in
+  source compiled by `new vm.SourceTextModule(src, {
+  importModuleDynamically: cb })` doesn't dispatch to the per-module
+  `cb`. Lib's `importModuleDynamicallyCallback`
+  (`internal/modules/esm/utils.js:252`) looks up the per-module
+  callback in `moduleRegistries` keyed by the referrer's
+  `host_defined_option_symbol`. The blob runs in **browser-V8**;
+  we'd need to translate "this parent URL" → "the symbol set on the
+  lib-V8 wrap" via a side channel. Doable without C++ rebuild via a
+  globalThis-tagged Map in lib + a napi extension exposed back to
+  host that takes a URL and calls the stored callback, but it's
+  ~100 LOC of bridging for a niche-but-real Node feature
+  (`vm.SourceTextModule({importModuleDynamically})`). Tracked test:
+  `tests/js/esm-dynamic-import.skip`. Marker site:
+  `napi-host/esm-registry.ts:synthesizePreamble`. The global-callback
+  case (lib's main loader) WORKS through `esmHostState`.
+
 - **`child-process-ipc-sendhandle`** (2026-05-27, P3.3; PARTIALLY
   RESOLVED 2026-05-28 — MessagePort now works via NativePortBridge) —
   `cp.send(msg, handle)` in advanced mode wraps the handle in an
@@ -202,17 +219,25 @@ the browser-target tree.
   See `bindings-shim.runtime.js:142-156` (ref/unref) and 268-283
   (close). Verified by `child-process-ref-unref`.
 
-- **`slot-deleters-stubbed-for-wasi-cli`** (2026-05-26) — One of the
-  slot deleters in `Environment::slots_` triggers an out-of-bounds wasm
-  memory access during WASI `proc_exit` teardown. Hits when
-  `napi_wasmer edgejs.wasm` runs anything (even an empty script) and
-  prevents the entire wasmer-CLI Node-test-corpus path. Stubbed in
-  `src/edge_environment.cc:RunSlotDeleters` so tests can run. Need to
-  bisect which slot ID's deleter is at fault — likely a deleter that
-  touches data already freed by an earlier cleanup phase, or a wasmer
-  codegen issue on a specific deleter's instruction sequence.
-  See `patches/wasmer-compiler-llvm-7.1.0-call-indirect-phi-fix.patch`
-  for the related wasmer fix that unblocked reaching this code path.
+- **`slot-deleters-stubbed-for-wasi-cli`** (2026-05-26; not planned to
+  fix — see scope below) — Running the real per-slot deleters in
+  `Environment::slots_` during wasmer-WASI `proc_exit` teardown trips
+  a wasmer-side problem. Originally (2026-05-26) observed as an OOB
+  crash; 2026-05-29 bisect attempt via `fprintf` instrumentation in
+  `RunSlotDeleters` made wasmer hang at startup before any output —
+  same family as the LLVM-backend bug we already patched (see
+  `patches/wasmer-compiler-llvm-7.1.0-call-indirect-phi-fix.patch`),
+  just a different trigger pattern. Stubbed in
+  `src/edge_environment.cc:RunSlotDeleters` (just `slots->clear()`).
+  **Scope:** this code path only runs under `napi_wasmer`, which exists
+  solely as a CI lane for the upstream Node test corpus. The shipping
+  target (browser-target) tears down via Worker termination, never
+  `proc_exit`, never reaches this function. The leak is bounded to
+  the wasmer process lifetime; OS reclaims at exit. **Not planned to
+  fix on the wasmer side.** If the CI lane ever needs the deleters
+  to actually run, the right move is to retire `napi_wasmer` and run
+  the Node corpus through browser-target itself (the same wasm blob,
+  the JSPI host; no `proc_exit`, no wasmer LLVM codegen surface).
 
 ### Recently resolved
 
@@ -900,11 +925,77 @@ and remain a fine direction.
   Web Streams for interop.
 - `wasm-compile-via-host` — route edge's `WebAssembly.compile` to host's.
 
-### 3. ESM support (`module_wrap_*`)
+### 3. ESM support (`module_wrap_*`) — RESOLVED 2026-05-29
 
-18 `module_wrap_*` impls are stubs. Real Node `import` syntax fails at
-link/evaluate. Probably needs Asyncify to bridge browser's async
-`import()` to sync wasm. 600-1500 LOC.
+Phases 1, 2, 4 are shipped end-to-end; Phase 3 partial.
+
+**Architecture** (no Asyncify): the napi `module_wrap_*` family —
+`create_source_text`, `create_synthetic`, `link`, `instantiate`,
+`evaluate`, `evaluate_sync`, `get_namespace`, `get_status`,
+`get_module_requests`, `has_top_level_await`, `has_async_graph`,
+`get_error`, `destroy`, `set_export`, callback setters — all live in
+`browser-target/src/napi-host/unofficial.ts` backed by
+`napi-host/esm-registry.ts`. The registry mints **blob: URLs** for
+each module (one per ModuleWrap), rewrites dependency specifiers in
+the source to point at the dependency's blob URL, then calls the
+browser's native `import(blobUrl)`. The browser's V8 IS the same V8
+Node uses — TLA, cyclic refs, live bindings, namespace objects all
+work natively. `evaluate_sync` is wrapped with
+`WebAssembly.Suspending` so its async blob import appears sync to the
+wasm caller (precedent: `unofficial_napi_yield_for_microtasks`).
+
+**Phase 1 — static ESM**:
+`tests/js/esm-source-text-basic.js`,
+`tests/js/esm-named-and-default.js`,
+`tests/js/esm-re-export-chain.js`. All green.
+
+**Phase 2 — top-level await**: free with the JSPI wrap;
+`tests/js/esm-top-level-await.js`. Green.
+
+**Phase 3 — dynamic `import()` (partial)**:
+`napi-host/esm-registry.ts:rewriteDynamicImport` substitutes
+`import(...)` with `__edgeDynImport(...)`; host installs
+`globalThis.__edgeDynImportImpl` that falls through to native
+`import()` for absolute URLs (blob:/data:/https:) and to lib's
+global `importModuleDynamicallyCallback` (registered via
+`setImportModuleDynamicallyCallback`) otherwise. Per-module
+`importModuleDynamically` option on `new vm.SourceTextModule(...)`
+needs a symbol bridge (browser-V8 parent URL → lib-V8 referrer
+symbol) that we couldn't wire without a C++ rebuild. Test stub at
+`tests/js/esm-dynamic-import.skip` documents the gap. Tracked as
+`#!~debt esm-per-module-dynamic-import` (referenced from the helper
+preamble).
+
+**Phase 4 — import.meta**:
+`rewriteImportMeta` substitutes `import.meta` with `__edgeImportMeta`,
+a closure local that host's `__edgeImportMetaFactory(url)` initializes
+with the **lib-provided URL** (not the leaky blob: URL). If lib
+registered an `initializeImportMetaObjectCallback` it runs to layer
+additional properties. Test: `tests/js/esm-import-meta-url.js`.
+
+**Policy**: `esm-via-blob-import` is now in `defaultBrowserPolicies`.
+It post-patches `internal/modules/esm/utils` to make `registerModule`
+tolerant of `host_defined_option_symbol` being undefined on the wrap
+(edge's `binding_module_wrap.cc:ModuleWrapCtor` doesn't set this
+symbol — Node uses v8::Script host-defined-options on the C++ side
+which we don't have a bridge for). The patch synthesizes a fresh
+Symbol per wrap so the WeakMap key requirement is satisfied. Once a
+C++ bridge ships, the policy patch can be removed.
+
+**Cached native intrinsics**: `worker.ts` caches `NativeURL` and
+`NativeBlob` at module load and exposes them on
+`globalThis.__edgeNative{URL,Blob}` — edge.js mutates the global
+`URL` during bootstrap (lib/internal/url.js) which would otherwise
+yield `blob:nodedata:` URLs the browser can't import. Same pattern
+as `__edgeNativeMessageChannel` and the TextEncoder fix (#14).
+
+**Handle lifetime**: napi values don't survive past their originating
+scope (emnapi recycles them). `unofficial.ts` allocates its own
+stable u32 IDs for ESM records and stores the handle ↔ record map
+internally; the C++ side passes the u32 around as `void*`.
+
+`--experimental-vm-modules` is now passed unconditionally in
+`worker.ts:1259` so `vm.SourceTextModule` is usable from user code.
 
 ### 4. Adopt emnapi v-table mode
 

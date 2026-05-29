@@ -36,6 +36,19 @@ const nowMs = performance.now.bind(performance);
 const NativeMessageChannel = MessageChannel;
 (globalThis as { __edgeNativeMessageChannel?: typeof MessageChannel })
   .__edgeNativeMessageChannel = NativeMessageChannel;
+// Native URL + Blob ctors used by the ESM blob trampoline
+// (napi-host/esm-registry.ts).  Edge swaps `URL` for its own
+// implementation during bootstrap (lib/internal/url.js), which produces
+// `blob:nodedata:` URLs that the browser can't fetch in `import()`.
+// Cache the host's native ctors at module load so our blob-URL
+// synthesis goes through the browser's real URL.createObjectURL.
+const NativeURL = URL;
+const NativeBlob = Blob;
+(globalThis as {
+  __edgeNativeURL?: typeof URL;
+  __edgeNativeBlob?: typeof Blob;
+}).__edgeNativeURL = NativeURL;
+(globalThis as { __edgeNativeBlob?: typeof Blob }).__edgeNativeBlob = NativeBlob;
 
 // Reverse-RPC dispatcher.  Wraps the user-facing dispatch callback in
 // `setImmediate` so it runs OUTSIDE the reverse-RPC handler's try/catch
@@ -1256,7 +1269,15 @@ async function runEdgeWithEmnapi() {
     // minimum it contains the Buffer.poolSize=0 hack (see
     // policies/buffer-pool-disable.ts) plus any other monkey-patches the
     // active policies install.
-    args: ["edgejs", "-e", userScriptPrelude + (userScript ?? `
+    //
+    // `--experimental-vm-modules` unlocks vm.SourceTextModule /
+    // vm.SyntheticModule at runtime so the ESM stubs in
+    // `napi-host/unofficial.ts` (driven by the blob-URL trampoline)
+    // can be exercised from tests without filesystem fixtures.  The
+    // flag has zero effect on programs that don't touch vm modules;
+    // its only side effect is patching `vm.Module` etc. in
+    // `lib/internal/process/pre_execution.js:setupVmModules()`.
+    args: ["edgejs", "--experimental-vm-modules", "-e", userScriptPrelude + (userScript ?? `
       const http = require('http');
       const fs = require('fs');
       const server = http.createServer((req, res) => {
