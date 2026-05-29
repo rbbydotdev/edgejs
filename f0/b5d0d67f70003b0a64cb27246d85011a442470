@@ -1,0 +1,41 @@
+src/internal_binding/binding_module_wrap.cc
+  s_92c1b47c0d6ee8::t_a29ba7d667d170 389-411
+tests/js/esm-cycle-live-binding.skip
+  s_92c1b47c0d6ee8::t_ee4a95f8bf4e02 1-16
+tests/js/esm-dynamic-import.stdout
+  s_92c1b47c0d6ee8::t_9df6b53c19969f 1
+browser-target/src/napi-host/unofficial.ts
+  s_92c1b47c0d6ee8::t_3ad2f572a89eba 314-325,327-332
+browser-target/src/policies/esm-via-blob-import.ts
+  s_92c1b47c0d6ee8::t_84742a0ba42aa3 1-3,5-15,17,19-23,25-34
+  s_92c1b47c0d6ee8::t_dece972b5a5dfe 57-64,79-81,83-85,89-90,92,96-98,101-129
+  s_92c1b47c0d6ee8::t_f2b3beba40fedd 91,93-95,99-100
+  s_92c1b47c0d6ee8::t_cd3a75a650c272 82
+browser-target/src/napi-host/esm-registry.ts
+  s_92c1b47c0d6ee8::t_e760eabd7d04be 295-298,300-317
+  s_92c1b47c0d6ee8::t_e40d07d0cfb639 357
+  s_92c1b47c0d6ee8::t_f82c0440b30a52 391-396
+tests/js/esm-dynamic-import.js
+  s_92c1b47c0d6ee8::t_a68aa1b5e0a5b3 1-40
+NOTES.md
+  s_92c1b47c0d6ee8::t_2175186c5d2d9d 938-939
+  s_92c1b47c0d6ee8::t_d2a8b73724f652 988-995
+  s_92c1b47c0d6ee8::t_a2349ec7794340 964,967-979
+  s_92c1b47c0d6ee8::t_14ca920b6b5216 95-118
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "f0b5d0d67f70003b0a64cb27246d85011a442470",
+  "prompts": {},
+  "sessions": {
+    "s_92c1b47c0d6ee8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "dca99c1c-d946-4444-9a53-9ba89db5d748",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
