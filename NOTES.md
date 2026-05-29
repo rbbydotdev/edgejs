@@ -92,6 +92,22 @@ the browser-target tree.
 
 ### Newly opened
 
+- **`esm-rewrite-source-maps`** (2026-05-30) — the blob trampoline's
+  four rewriter passes (`rewriteImportSpecifiers`,
+  `rewriteImportMeta`, `rewriteDynamicImport`, plus the prefix lines
+  `synthesizePreamble` prepends) all shift original line/column
+  positions of the user's ESM source — sometimes tens of characters
+  per import (blob: URLs are ~40-60 chars vs the original
+  `'./foo.mjs'` specifier).  The `// # sourceURL=` pragma we emit
+  makes DevTools display the original module URL, but stack-trace
+  line numbers from runtime errors still reference offsets in the
+  rewritten source.  Fix shape: accumulate a position-mapping table
+  across the four rewrites, serialize as a Source Map v3, append as
+  a `//# sourceMappingURL=data:application/json;base64,...` comment
+  (same technique the Sucrase backstop policy uses for its CJS-eval
+  path).  Deferred until someone hits a real debugger-UX pain.
+  Marker site: `napi-host/esm-registry.ts:synthesizeBlobUrlInner`.
+
 - **`esm-via-blob-import-symbol-fallback`** (2026-05-30) —
   `esm-via-blob-import` policy synthesizes
   `host_defined_option_symbol` on each wrap as a defensive backstop.

@@ -57,7 +57,13 @@ const POST_PATCH = `
       var src;
       try { src = fs.readFileSync(fileURLToPath(this.url), 'utf8'); }
       catch (_e4) { void _e4; throw e; }
-      var cjs = globalThis.__edgeEsmSucraseTransform(src);
+      // Pass filePath so Sucrase emits a source map and appends a
+      // sourceMappingURL data-URL comment; V8 honors that inside
+      // new Function compilation, so runtime stack traces from the
+      // eval'd code map back to the original .mjs lines.
+      var filePath;
+      try { filePath = fileURLToPath(this.url); } catch (_e5) { void _e5; filePath = undefined; }
+      var cjs = globalThis.__edgeEsmSucraseTransform(src, filePath ? { filePath: filePath } : undefined);
       var fn;
       try { fn = new Function('require', 'module', 'exports', cjs); }
       catch (compileErr) {

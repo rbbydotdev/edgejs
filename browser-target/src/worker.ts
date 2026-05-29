@@ -49,17 +49,45 @@ const NativeBlob = Blob;
   __edgeNativeBlob?: typeof Blob;
 }).__edgeNativeURL = NativeURL;
 (globalThis as { __edgeNativeBlob?: typeof Blob }).__edgeNativeBlob = NativeBlob;
-// Sucrase ESM-to-CJS transform exposed for the opt-in
-// `esm-require-sucrase-backstop` policy.  When lib's
-// `ModuleJobSync.runSync` throws `ERR_REQUIRE_ASYNC_MODULE`, the
-// policy's patched runSync calls this hook to transform the .mjs
-// source to CJS-shaped code, then evals as CJS in a constructed
-// context.  Eager import (sync wasm-init cost is ~0; Sucrase is
-// pure JS) so the transform is ready whenever the policy fires.
+// Sucrase ESM-to-CJS transform exposed for two consumers:
+//
+//   1. `napi-host/esm-registry.ts:detectTopLevelAwait` — calls the
+//      transform on every `create_source_text`, ignoring the output;
+//      it relies on `new Function(transformedCode)` throwing
+//      SyntaxError when the source had top-level await (which
+//      Sucrase preserves as-is; CJS Function bodies can't contain
+//      await outside async context).
+//
+//   2. `policies/esm-require-sucrase-backstop` (opt-in) — calls
+//      the transform when lib's `ModuleJobSync.runSync` throws
+//      `ERR_REQUIRE_ASYNC_MODULE`, evals the CJS-shaped result in
+//      a constructed context to back-fill the namespace.
+//
+// Eager import (Sucrase is pure JS, sub-ms init).  When `filePath`
+// is provided, the transform emits a source map and appends a
+// `//# sourceMappingURL=data:...` comment so V8 maps runtime stack
+// traces from the eval'd code back to the original .mjs source.
+// Consumer #1 ignores the appended comment; consumer #2 benefits
+// from accurate debugger line numbers on errors thrown by user
+// ESM code that hit the backstop.
 import { transform as sucraseTransform } from "sucrase";
-(globalThis as { __edgeEsmSucraseTransform?: (src: string) => string })
-  .__edgeEsmSucraseTransform = (src: string) =>
-    sucraseTransform(src, { transforms: ["imports"] }).code;
+(globalThis as {
+  __edgeEsmSucraseTransform?: (src: string, opts?: { filePath?: string }) => string;
+}).__edgeEsmSucraseTransform = (src: string, opts?: { filePath?: string }) => {
+  const filePath = opts?.filePath;
+  const result = sucraseTransform(src, {
+    transforms: ["imports"],
+    filePath,
+    sourceMapOptions: filePath ? { compiledFilename: filePath } : undefined,
+  });
+  let code = result.code;
+  if (result.sourceMap) {
+    const json = JSON.stringify(result.sourceMap);
+    code += "\n//# sourceMappingURL=data:application/json;charset=utf-8," +
+            encodeURIComponent(json) + "\n";
+  }
+  return code;
+};
 
 // Reverse-RPC dispatcher.  Wraps the user-facing dispatch callback in
 // `setImmediate` so it runs OUTSIDE the reverse-RPC handler's try/catch

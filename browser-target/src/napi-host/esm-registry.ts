@@ -310,6 +310,20 @@ function synthesizeBlobUrlInner(record: ModuleRecord, inFlight: Set<ModuleRecord
   const withDynImport = rewriteDynamicImport(withMetaRewrite);
   // # sourceURL pragma so DevTools shows the real edge URL instead
   // of the opaque blob: URL.
+  //
+  // #!~debt esm-rewrite-source-maps: the four rewriter passes
+  // (rewriteImportSpecifiers, rewriteImportMeta, rewriteDynamicImport,
+  // synthesizePreamble's prefix lines) all shift original line/column
+  // positions of the user source — sometimes by tens of characters per
+  // import (blob: URLs are ~40-60 chars vs the original './foo.mjs'
+  // specifier).  The sourceURL pragma below lets DevTools display the
+  // original module URL, but stack-trace line numbers from runtime
+  // errors point at offsets in the REWRITTEN source.  Fix shape:
+  // accumulate a position-mapping table across the four rewrites,
+  // serialize as a Source Map v3, append as
+  // `//# sourceMappingURL=data:application/json;base64,...`.  Same
+  // technique we now use in the Sucrase backstop.  Deferred until
+  // someone hits a real debugging pain.
   const withPragma = preamble + "\n" + withDynImport + `\n//# sourceURL=${record.url}\n`;
   const blob = new NativeBlob([withPragma], { type: "text/javascript" });
   record.blobUrl = NativeURL.createObjectURL(blob);
