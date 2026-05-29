@@ -40,31 +40,52 @@ markers (known gaps).
 **Column notes**:
 - **edgejs** (base) — most cells reflect "inherits Node's lib + C++ binding"; pure-JS modules are ✓ by default. Network, FS, and process behavior depend on the WASI(X) host. Cells marked `?(host)` mean "depends on host capability; not exhaustively tested in our CI."
 - **edgejs-web** — the browser-target distribution; cells reflect current `main` per `tests/js/`, policies, and `#!~debt` markers.
-- **StackBlitz** — no per-module matrix is published; cells reflect (a) categorical limits from their troubleshooting page, (b) known bugs from public GitHub issues, (c) ✓ for modules where real Node works and no carve-out / bug is documented.
+- **StackBlitz** — no per-module matrix is published; cells reflect (a) categorical limits from their troubleshooting page, (b) known bugs from public GitHub issues, (c) ✓ for modules where real Node works and no carve-out / bug is documented. **Important**: StackBlitz user JS runs on the browser's V8, but they do NOT have V8's C++ API in their wasm (CEO Eric Simons, JS Party #178: "we don't have access to the V8 API in the browser, for security reasons... port them over in WebAssembly"). That puts a ceiling on `vm`, `v8`, and any other module that needs V8 internals — they share our limit, not Node's full surface.
+
+### Core
 
 | Module | edgejs | edgejs-web | Cloudflare | Bun | Deno | Vercel Edge | StackBlitz | Notes |
 |---|---|---|---|---|---|---|---|---|
-| **Core** | | | | | | | | |
 | `assert` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Pure JS; Bun: 100% Node-suite |
 | `buffer` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | edgejs-web: `buffer-wasm-aliased` policy carries it |
 | `console` | ✓ | ✓ | ◐ | ✓ | ✓ | ✓ | ✓ | edgejs-web: routed to host-worker logs |
 | `events` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Pure JS; Bun: 100% Node-suite |
 | `process` | ◐ | ◐ | ◐ | ◐ | ◐ | ◐ | ✓ | edgejs-web: `process-methods-wasm-state` policy; some fields stub. base: depends on host providing argv/env |
 | `util` | ◐ | ◐ | ✓ | ◐ | ✓ | ◐ | ✓ | `util.types.isProxy` partial (#!~debt) |
-| **Strings & paths** | | | | | | | | |
+
+### Strings & paths
+
+| Module | edgejs | edgejs-web | Cloudflare | Bun | Deno | Vercel Edge | StackBlitz | Notes |
+|---|---|---|---|---|---|---|---|---|
 | `path` | ✓ | ✓ | ✓ | ✓ | ✓ | — | ✓ | Pure JS; Bun: 100% Node-suite |
 | `querystring` | ✓ | ✓ | ✓ | ✓ | ✓ | — | ✓ | Pure JS; Bun: 100% Node-suite |
 | `string_decoder` | ✓ | ✓ | ✓ | ✓ | ✓ | — | ✓ | Pure JS; Bun: 100% Node-suite |
 | `url` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | edgejs-web: native URL cache for blob: trampoline |
 | `punycode` | ✓ | ✓ | ✓ | ✓ | ✓ | — | ✓ | Pure JS; Bun: 100% Node-suite |
-| **Streams** | | | | | | | | |
+
+### Streams
+
+| Module | edgejs | edgejs-web | Cloudflare | Bun | Deno | Vercel Edge | StackBlitz | Notes |
+|---|---|---|---|---|---|---|---|---|
 | `stream` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Lib code |
-| **Crypto** | | | | | | | | |
+
+### Crypto
+
+| Module | edgejs | edgejs-web | Cloudflare | Bun | Deno | Vercel Edge | StackBlitz | Notes |
+|---|---|---|---|---|---|---|---|---|
 | `crypto` | ✓ | ✓ | ✓ | ◐ | ✓ | ✓ | ◐ | edgejs-web: lib + `crypto-host-random`, `crypto-via-subtle`, host-worker hash/HMAC. StackBlitz: `createHmac` broken (#31, 2021), AES-256-CBC broken (#1571, Oct 2024) |
-| **Filesystem** | | | | | | | | |
+
+### Filesystem
+
+| Module | edgejs | edgejs-web | Cloudflare | Bun | Deno | Vercel Edge | StackBlitz | Notes |
+|---|---|---|---|---|---|---|---|---|
 | `fs` | ✓ | ◐ | ✓ | ✓ | ✓ | ✗ | ✓ | base: full fs via WASI host. edgejs-web: read via SAB ring; OPFS write deferred. Bun: 92% Node-suite |
 | `fs/promises` | ✓ | ◐ | ✓ | ✓ | ✓ | ✗ | ✓ | Same backing as `fs` |
-| **Network** | | | | | | | | |
+
+### Network
+
+| Module | edgejs | edgejs-web | Cloudflare | Bun | Deno | Vercel Edge | StackBlitz | Notes |
+|---|---|---|---|---|---|---|---|---|
 | `http` | ?(host) | ◐ | ✓ | ◐ | ◐ | — | ✓ | base: depends on WASI host network. edgejs-web: inbound via SW; outbound throws by default. Bun: outgoing client body buffered |
 | `https` | ?(host) | ◐ | ✓ | ◐ | ◐ | — | ✓ | Delegated to http; TLS context inspection works in edgejs-web |
 | `http2` | ?(host) | ? | ◐ | ◐ | ◐ | — | ✓ | Untested; Bun: 95% gRPC-suite (not Node-suite) |
@@ -72,43 +93,77 @@ markers (known gaps).
 | `dgram` | ?(host) | ✗ | ✓ | ✓ | ◐ | — | ✗ | UDP — edgejs-web not implemented; StackBlitz no UDP. Bun: >90% Node-suite |
 | `tls` | ◐ | ◐ | ◐ | ◐ | ◐ | — | ◐ | Universally partial |
 | `dns` | ?(host) | ? | ✓ | ✓ | ◐ | ✗ | ✓ | base: depends on WASI host; edgejs-web untested. Bun: >90% Node-suite |
-| **Concurrency** | | | | | | | | |
+
+### Concurrency
+
+| Module | edgejs | edgejs-web | Cloudflare | Bun | Deno | Vercel Edge | StackBlitz | Notes |
+|---|---|---|---|---|---|---|---|---|
 | `worker_threads` | ?(host) | ◐ | — | ◐ | ◐ | — | ◐ | base: depends on WASI threads. edgejs-web: phase 1 via `worker-threads-per-thread`. StackBlitz: `unref` bug (#365), no synchronous message passing |
 | `child_process` | ?(host) | ◐ | — | ◐ | ✓ | — | ✓ | base: depends on host proc spawning. edgejs-web: `child-process-via-executor` policy |
 | `cluster` | ?(host) | — | — | ◐ | ✗ | — | — | base: depends on host fd-passing. edgejs-web: architecturally impossible |
-| **Time** | | | | | | | | |
+
+### Time
+
+| Module | edgejs | edgejs-web | Cloudflare | Bun | Deno | Vercel Edge | StackBlitz | Notes |
+|---|---|---|---|---|---|---|---|---|
 | `timers` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Lib + libuv shim |
 | `timers/promises` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Lib code |
 | `perf_hooks` | ◐ | ◐ | ◐ | ◐ | ◐ | — | ✓ | Partial like everyone — needs audit |
-| **OS / terminal** | | | | | | | | |
+
+### OS / terminal
+
+| Module | edgejs | edgejs-web | Cloudflare | Bun | Deno | Vercel Edge | StackBlitz | Notes |
+|---|---|---|---|---|---|---|---|---|
 | `os` | ✓ | ◐ | ◐ | ✓ | ◐ | — | ✓ | base: full os from WASI. edgejs-web: some values stubbed. Bun: 100% Node-suite |
 | `tty` | ?(host) | ⊘ | ⊘ | ✓ | ◐ | — | ⊘ | base: depends on host stdin; edgejs-web stubbed |
 | `readline` | ?(host) | ? | ⊘ | ✓ | ✓ | — | ✓ | base/edgejs-web: depends on stdin handling |
 | `readline/promises` | ?(host) | ? | ⊘ | ✓ | ✓ | — | ✓ | Same |
-| **Debug / instrumentation** | | | | | | | | |
+
+### Debug / instrumentation
+
+| Module | edgejs | edgejs-web | Cloudflare | Bun | Deno | Vercel Edge | StackBlitz | Notes |
+|---|---|---|---|---|---|---|---|---|
 | `async_hooks` (ALS) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | AsyncLocalStorage works |
 | `async_hooks` (promise hooks) | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | Universally weak (`#!~debt` no-op) |
 | `diagnostics_channel` | ✓ | ? | ✓ | ✓ | ✓ | ✗ | ✓ | base: pure JS, inherits Node. edgejs-web: needs verification |
 | `inspector` | ✗ | ✗ | ✗ | ⊘ | ✗ | ✗ | ✗ | Rare in production |
 | `trace_events` | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | Universally skipped |
-| `v8` | ◐ | ◐ | ⊘ | ◐ | ◐ | ✓ | ✓ | `v8.serialize`/`deserialize` shipped (real wire format); other APIs stub |
-| **Compression** | | | | | | | | |
+| `v8` | ◐ | ◐ | ⊘ | ◐ | ◐ | ✓ | ◐ | `v8.serialize`/`deserialize` shipped (real wire format); other APIs stub. StackBlitz: no V8 C++ API access (per CEO), so v8.getHeapStatistics etc. would be stubbed/approximated |
+
+### Compression
+
+| Module | edgejs | edgejs-web | Cloudflare | Bun | Deno | Vercel Edge | StackBlitz | Notes |
+|---|---|---|---|---|---|---|---|---|
 | `zlib` | ✓ | ✓ | ✓ | ✓ | ✓ | — | ✓ | edgejs-web: `zlib-writestate-wasm` policy. Bun: 98% Node-suite |
-| **Module system** | | | | | | | | |
+
+### Module system
+
+| Module | edgejs | edgejs-web | Cloudflare | Bun | Deno | Vercel Edge | StackBlitz | Notes |
+|---|---|---|---|---|---|---|---|---|
 | `module` (CJS) | ✓ | ✓ | ◐ | ✓ | ✓ | ✗ | ✓ | Standard CJS works |
 | `module` (ESM) | ◐ | ◐ | ◐ | ✓ | ✓ | ✗ | ✓ | base: depends on host import. edgejs-web: full `import` + dynamic + TLA + cycles via blob trampoline; `require(esm)` partial via b₁/b₄ (NOT real wasm-V8 ModuleWrap) |
-| `vm` | ◐ | ◐ | ⊘ | ◐ | ◐ | ✗ | ✓ | edgejs-web: `vm.Script` via `new Function`; `vm.SourceTextModule` works via ESM bridge |
-| **Niche** | | | | | | | | |
+| `vm` | ◐ | ◐ | ⊘ | ◐ | ◐ | ✗ | ◐ | edgejs-web: `vm.Script` via `new Function`; `vm.SourceTextModule` works via ESM bridge. StackBlitz: bounded by same V8-from-JS surface as us — no break-on-sigint, no timeout, no real Context isolation (CEO Eric Simons confirmed "no access to V8 API" on JS Party #178) |
+
+### Niche
+
+| Module | edgejs | edgejs-web | Cloudflare | Bun | Deno | Vercel Edge | StackBlitz | Notes |
+|---|---|---|---|---|---|---|---|---|
 | `repl` | ?(host) | — | ⊘ | ✗ | ✗ | ✗ | ✓ | base: depends on host terminal. edgejs-web: no terminal in browser. StackBlitz: xterm-backed |
 | `sea` | — | — | ✗ | ✗ | ✗ | ✗ | ✗ | Not applicable |
 | `sqlite` | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✓ | Would need Wasm SQLite binding. StackBlitz: Node 22.5+ ships it |
 | `wasi` | — | — | ✗ | ◐ | ✗ | — | ✓ | We ARE wasi |
 | `domain` | ✓ | ? | ⊘ | ◐ | ✗ | ✗ | ✓ | Deprecated in Node; works in real Node |
-| **Native addons (.node)** | ?(host) | — | — | — | — | — | ✗ | base: depends on host addon support. edgejs-web: would need wasm-compiled addons. StackBlitz: `--no-addons` |
+| `Native addons (.node)` | ?(host) | — | — | — | — | — | ✗ | base: depends on host addon support. edgejs-web: would need wasm-compiled addons. StackBlitz: `--no-addons` |
 
 ## How we compare
 
-**Closest in architectural shape**: Bun, Deno, StackBlitz — all run a real Node-compat runtime. Cloudflare Workers and Vercel Edge are intentionally minimal serverless shapes.
+**Closest in architectural shape**: Bun, Deno run real V8 from their own native binary — they have full V8 C++ API access. StackBlitz runs Node's C/C++ in wasm but **without V8 in the wasm** — they bridge V8 calls back to the browser's JS, same surface ceiling we have. Cloudflare Workers and Vercel Edge are intentionally minimal serverless shapes.
+
+This matters for modules that need V8 internals:
+- **edgejs / edgejs-web / StackBlitz**: all bounded by what V8 exposes to JS. `vm` break-on-sigint, `vm` timeout, real `vm.Context` isolation, `v8` heap APIs — none of us can do these without going to extreme lengths (iframes for context isolation, etc.).
+- **Bun / Deno**: real C++ V8 access via their native binaries — they CAN do these.
+
+We're not behind StackBlitz on V8-bounded features; we're roughly the same. Where we trail StackBlitz is FS/network because they shipped those modules first and we deferred them.
 
 **Where we lead**:
 - ESM in browser (real blob-URL trampoline, cycles, TLA, dynamic, source-phase) — most runtimes either inherit Node's impl or don't support it
