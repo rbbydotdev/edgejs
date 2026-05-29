@@ -596,7 +596,24 @@ export function rewriteImportMeta(source: string): string {
  *  dynamic imports, `imp.ss` is the start of the keyword and `imp.d`
  *  is the start of `(`; we replace the `ss..d` span (`import`,
  *  `import.source`, or `import.defer` plus any trailing whitespace)
- *  with `__edgeDynImport`.  The `(` and arguments are left untouched. */
+ *  with `__edgeDynImport`.  The `(` and arguments are left untouched.
+ *
+ *  #!~debt esm-dynamic-import-phase: ES2024 source-phase
+ *  (`import.source('m')`) and defer-phase (`import.defer('m')`) imports
+ *  are correctly stripped of their keyword span here, but
+ *  `__edgeDynImport(specifier)` takes only ONE argument — the phase
+ *  semantics are silently dropped.  At runtime,
+ *  `import.source('m')` and `import('m')` both call lib's
+ *  dynamic-import callback with the default evaluation phase, so
+ *  source-phase code that depended on receiving the compiled
+ *  WebAssembly.Module silently gets the evaluated namespace
+ *  instead.  Same for defer-phase.  Fix shape: extend
+ *  `__edgeDynImport` to `(specifier, phase)`; detect phase via
+ *  `imp.t` (es-module-lexer's ImportType enum: 2=Dynamic,
+ *  5=DynamicSourcePhase, 7=DynamicDeferPhase); plumb through
+ *  `__edgeDynImportImpl` to lib's callback with the right
+ *  `phase` constant.  No test exercises source/defer dynamic
+ *  phase today, which is why this is documented-but-not-fixed. */
 export function rewriteDynamicImport(source: string): string {
   const [imports] = parse(source);
   let out = source;

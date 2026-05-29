@@ -92,6 +92,23 @@ the browser-target tree.
 
 ### Newly opened
 
+- **`esm-dynamic-import-phase`** (2026-05-30) — ES2024 source-phase
+  (`import.source('m')`) and defer-phase (`import.defer('m')`)
+  dynamic imports have their keyword span correctly stripped by
+  `rewriteDynamicImport` in `napi-host/esm-registry.ts`, but
+  `__edgeDynImport(specifier)` only takes one argument — phase
+  semantics are dropped on the floor.  At runtime, both phase
+  variants behave identically to the default evaluation-phase
+  `import('m')`.  Source-phase code that depended on receiving the
+  compiled `WebAssembly.Module` silently gets the evaluated
+  namespace instead.  Fix shape: extend `__edgeDynImport` to take
+  `(specifier, phase)`, detect phase via `imp.t` (ImportType enum
+  from es-module-lexer: `Dynamic=2`, `DynamicSourcePhase=5`,
+  `DynamicDeferPhase=7`), plumb through `__edgeDynImportImpl` to
+  lib's dynamic-import callback with the right phase constant.
+  No test exercises source/defer dynamic phase today — latent.
+  Marker site: `napi-host/esm-registry.ts:rewriteDynamicImport`.
+
 - **`esm-evaluate-sync-jspi-blocked`** (2026-05-29, PARTIALLY
   RESOLVED 2026-05-30 via `esm-require-preeval` policy) —
   `require(esm)` synchronously can't suspend JSPI because lib's
