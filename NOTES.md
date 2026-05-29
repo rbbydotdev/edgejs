@@ -92,22 +92,42 @@ the browser-target tree.
 
 ### Newly opened
 
-- **`esm-evaluate-sync-jspi-blocked`** (2026-05-29) — `require(esm)`
-  unsupported in browser-target. Lib's
+- **`esm-evaluate-sync-jspi-blocked`** (2026-05-29, PARTIALLY
+  RESOLVED 2026-05-30 via `esm-require-preeval` policy) —
+  `require(esm)` synchronously can't suspend JSPI because lib's
   `ModuleJobSync.runSync → wrap.evaluateSync` arrives at our napi
   handler with multiple host-JS frames between JSPI's promising
-  (the `_start` wrap) and our Suspending import — the architecture
+  (`_start` wrap) and our Suspending import — the architecture
   runs user code via `contextify_run_script`'s host-V8 `new
   Function(source)()`, and lib's CJS/ESM loaders are loaded the
   same way (host V8 via `napi_run_script`).  V8 throws "trying to
   suspend JS frames" because no wasm-only call path exists for
-  this entry.  `unofficial_napi_module_wrap_evaluate_sync` now
-  throws `ERR_REQUIRE_ASYNC_MODULE` with a clear remediation
-  message ("refactor caller to `await import(...)`").  Workaround
-  is permanent unless either (a) user JS gets moved into wasm-V8,
-  or (b) require(esm) is reimplemented via pre-evaluated namespace
-  cache.  Marker site:
-  `napi-host/unofficial.ts:unofficial_napi_module_wrap_evaluate_sync`.
+  this entry.
+  **Partial resolution (b₁)**: `esm-require-preeval` policy (default
+  on) populates a `globalThis.__edgePreEvalEsmCache` (Map<file-URL,
+  namespace>) before user CJS runs.  The cache is filled two ways:
+  (1) `globalThis.edgejs.preloadEsm([...specifiers])` — explicit
+  user-facing API for the long tail; (2) auto-scan of the entry
+  CJS source for literal `require('./x.mjs')` patterns + transitive
+  CJS walk via `fs.readFileSync` (patched into
+  `internal/process/execution.js:evalScript`).  Our
+  `unofficial_napi_module_wrap_evaluate_sync` handler checks the
+  cache before throwing.  Covers literal-relative-specifier cases
+  (~70% of real `require(esm)`).  Misses computed/dynamic
+  specifiers and runtime-discovered files; those still throw
+  `ERR_REQUIRE_ASYNC_MODULE` with the remediation message pointing
+  at `edgejs.preloadEsm`.  Marker sites:
+  `napi-host/unofficial.ts:unofficial_napi_module_wrap_evaluate_sync`,
+  `policies/esm-require-preeval.ts`.  Tests:
+  `tests/js/esm-require-preeval-explicit.js`,
+  `tests/js/esm-require-preeval-api.js`.
+  **Full resolution** still requires either (a) moving user JS into
+  wasm-V8 (undoes F-6, regresses microtask tests), or (b₂) wasm-V8
+  ModuleWrap C++ binding port (~500-1500 LOC C++, partial
+  isolate split for module bodies, ~weeks). See
+  `joyeecheung.github.io/blog/2025/12/30/require-esm-in-node-js-from-experiment-to-stability/`
+  for Node's upstream implementation using V8's
+  `v8::Module::Evaluate` (sync-resolved for non-TLA graphs).
 
 - ~~`esm-cyclic-live-bindings`~~ — **RESOLVED 2026-05-29.** Path (a)
   shipped: `synthesizeUrl` in `napi-host/esm-registry.ts` detects

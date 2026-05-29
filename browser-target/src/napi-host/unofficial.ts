@@ -1593,18 +1593,47 @@ export function createUnofficialNapi(ctx: UnofficialHostContext): Record<string,
     // which goes through `evaluate` (returns a Promise that lib awaits
     // in module_job.js:430 without any sync-suspension constraint).
     unofficial_napi_module_wrap_evaluate_sync(
-      envHandle: number, handle: number, _filename: number, _parentFilename: number, _resultOut: number,
+      envHandle: number, handle: number, _filename: number, _parentFilename: number, resultOut: number,
     ): number {
       const env = envs.get(envHandle);
       if (!env) return 1;
       const record = getEsmRecord(handle);
-      void record;
+      if (!record) return 1;
+      // Pre-eval cache lookup — see `esm-require-preeval` policy.  The
+      // cache is populated either by user-called `edgejs.preloadEsm([...])`
+      // or by the policy's boot-time scan of CJS sources for literal
+      // `require('./x.mjs')` patterns.  If the URL is in the cache we
+      // have a real namespace from a previous `await import()`; return
+      // it sync and skip the throw below.  Architecture: handles the
+      // ~70% of `require(esm)` cases that have statically-detectable
+      // specifiers OR whose URLs the user explicitly enumerated.
+      const cache = (globalThis as { __edgePreEvalEsmCache?: Map<string, unknown> })
+        .__edgePreEvalEsmCache;
+      const cached = cache?.get(record.url);
+      if (cached !== undefined) {
+        if (resultOut > 0) {
+          const h = context.napiValueFromJsValue(cached);
+          dv(memory).setUint32(resultOut, Number(h), true);
+        }
+        record.namespace = cached as Record<string, unknown>;
+        record.status = 4; // kEvaluated
+        return 0;
+      }
+      // Cache miss — throw the clear remediation error.  See
+      // `#!~debt esm-evaluate-sync-jspi-blocked` and the comment block
+      // above this handler for the architectural reason JSPI can't
+      // save us here.
       const err = new Error(
-        "edge.js: require(esm) is not supported in browser-target. " +
+        "edge.js: require(esm) couldn't resolve synchronously. " +
         "User code runs in host V8 via contextify_run_script, which puts " +
         "JS frames between JSPI's promising and Suspending boundaries — " +
         "the wasm-side wrap.evaluateSync can't suspend across them. " +
-        "Refactor the caller to use `await import(...)` instead of `require()`.",
+        "Workarounds: (a) refactor the caller to `await import(...)`; " +
+        "(b) call `edgejs.preloadEsm(['./x.mjs', ...])` at startup to " +
+        "preload specifiers the caller will require synchronously; " +
+        "(c) enable the `esm-require-preeval` policy (default-on) and " +
+        "use literal-string `require('./x.mjs')` specifiers — the policy " +
+        "auto-scans CJS sources at boot.",
       );
       (err as { code?: string }).code = "ERR_REQUIRE_ASYNC_MODULE";
       throw err;

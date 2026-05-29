@@ -132,6 +132,7 @@ export { fastReadFile } from "./fast-readfile";
 export { workerThreadsPerThread } from "./worker-threads-per-thread";
 export { childProcessViaExecutor } from "./child-process-via-executor";
 export { esmViaBlobImport } from "./esm-via-blob-import";
+export { esmRequirePreeval } from "./esm-require-preeval";
 
 import { bufferPoolDisable } from "./buffer-pool-disable";
 import { bufferWriteSync } from "./buffer-write-sync";
@@ -152,6 +153,7 @@ import { fastReadFile } from "./fast-readfile";
 import { workerThreadsPerThread } from "./worker-threads-per-thread";
 import { childProcessViaExecutor } from "./child-process-via-executor";
 import { esmViaBlobImport } from "./esm-via-blob-import";
+import { esmRequirePreeval } from "./esm-require-preeval";
 
 // =============================================================================
 // SANE DEFAULTS
@@ -217,6 +219,7 @@ export const defaultBrowserPolicies: Policy[] = [
   // defaults).
   workerThreadsPerThread,
   esmViaBlobImport,
+  esmRequirePreeval,
 ];
 
 /**
@@ -246,4 +249,5 @@ export const policyRegistry: Record<string, Policy> = {
   [workerThreadsPerThread.name]: workerThreadsPerThread,
   [childProcessViaExecutor.name]: childProcessViaExecutor,
   [esmViaBlobImport.name]: esmViaBlobImport,
+  [esmRequirePreeval.name]: esmRequirePreeval,
 };
