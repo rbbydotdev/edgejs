@@ -442,18 +442,20 @@ async function synthesizeSwUrlsForCycle(root: ModuleRecord): Promise<string> {
  */
 function synthesizePreamble(record: ModuleRecord, specifierToUrl?: Map<string, string>): string {
   const url = JSON.stringify(record.url);
-  // #!~debt esm-import-meta-resolve-exports: import.meta.resolve(spec)
-  // here handles three cases: (1) statically-known specifier in the
-  // resolve map (synthesizePreamble's bound dep URLs), (2) absolute
-  // URL parseable by new URL(spec), (3) relative against the
-  // module's own URL.  It does NOT consult package.json conditional
-  // exports, package imports, or node_modules resolution — Node's
-  // ModuleLoader.resolve does all of that.  Real-impl path: call
-  // back to host's __edgeImportMetaFactory which can delegate to
-  // lib's loader via initializeImportMetaObjectCallback; we
-  // partially do that already (the factory branch).  Doesn't
-  // currently bite because most synthesized blobs only reference
-  // statically-resolved deps.
+  // import.meta.resolve handling: when lib's initializeImportMeta
+  // callback is wired (the common case), `__edgeImportMetaFactory`
+  // calls it with a synthetic wrap `{url, isMain: false}`; lib's
+  // default callback delegates to its real loader's
+  // `importMetaInitialize`, which sets `meta.resolve` to a closure
+  // backed by lib's full resolver — package.json conditional
+  // exports, node_modules walk, package imports field, the works.
+  // Lib's resolve then wins over our static fallback below.
+  //
+  // The fallback (used when lib's callback isn't registered or
+  // throws) handles three cases: statically-known specifier in
+  // resolve map, absolute URL via `new URL(spec)`, and relative
+  // against the module's URL via `new URL(spec, base)`.  No
+  // exports / node_modules support there — relies on lib.
   // Serialize the resolve map as a JSON object so the preamble stays
   // a single line per declaration (predictable line offsets for source
   // maps).  Empty map keeps the literal compact for cycle-free
@@ -464,7 +466,15 @@ function synthesizePreamble(record: ModuleRecord, specifierToUrl?: Map<string, s
   return [
     "const __edgeImportMetaResolveMap = " + mapLiteral + ";",
     "const __edgeImportMeta = (globalThis.__edgeImportMetaFactory ? globalThis.__edgeImportMetaFactory(" + url + ", __edgeImportMetaResolveMap) : { url: " + url + ", resolve: (s) => __edgeImportMetaResolveMap[s] ?? new URL(s, " + url + ").href });",
-    "const __edgeDynImport = (specifier) => (globalThis.__edgeDynImportImpl ? globalThis.__edgeDynImportImpl(specifier, " + url + ") : import(specifier));",
+    // Phase-aware dynamic-import helpers.  Each routes to the same host
+    // dispatcher with a different phase argument.  The fallback (no
+    // host dispatcher) uses native `import()` for evaluation phase and
+    // throws for source/defer phase — we can't emit `import.source(...)`
+    // / `import.defer(...)` syntax here because most browsers haven't
+    // shipped it yet (Stage 2/3, not parsed by current V8).
+    "const __edgeDynImport = (specifier) => (globalThis.__edgeDynImportImpl ? globalThis.__edgeDynImportImpl(specifier, " + url + ", 'evaluation') : import(specifier));",
+    "const __edgeDynImportSource = (specifier) => (globalThis.__edgeDynImportImpl ? globalThis.__edgeDynImportImpl(specifier, " + url + ", 'source') : Promise.reject(new Error('edge.js: import.source(' + specifier + ') called but no host dispatcher is wired')));",
+    "const __edgeDynImportDefer = (specifier) => (globalThis.__edgeDynImportImpl ? globalThis.__edgeDynImportImpl(specifier, " + url + ", 'defer') : Promise.reject(new Error('edge.js: import.defer(' + specifier + ') called but no host dispatcher is wired')));",
   ].join("\n");
 }
 
@@ -483,35 +493,31 @@ export function rewriteImportMeta(source: string): string {
   return out;
 }
 
-/** Rewrite `import(...)` expressions to `__edgeDynImport(...)`.  For
- *  dynamic imports, `imp.ss` is the start of the keyword and `imp.d`
- *  is the start of `(`; we replace the `ss..d` span (`import`,
- *  `import.source`, or `import.defer` plus any trailing whitespace)
- *  with `__edgeDynImport`.  The `(` and arguments are left untouched.
+/** Rewrite `import(...)` / `import.source(...)` / `import.defer(...)`
+ *  to phase-aware helpers.  For dynamic imports, `imp.ss` is the
+ *  start of the keyword and `imp.d` is the start of `(`.  We replace
+ *  the `ss..d` span (the entire keyword form plus any trailing
+ *  whitespace) with the matching host helper:
  *
- *  #!~debt esm-dynamic-import-phase: ES2024 source-phase
- *  (`import.source('m')`) and defer-phase (`import.defer('m')`) imports
- *  are correctly stripped of their keyword span here, but
- *  `__edgeDynImport(specifier)` takes only ONE argument — the phase
- *  semantics are silently dropped.  At runtime,
- *  `import.source('m')` and `import('m')` both call lib's
- *  dynamic-import callback with the default evaluation phase, so
- *  source-phase code that depended on receiving the compiled
- *  WebAssembly.Module silently gets the evaluated namespace
- *  instead.  Same for defer-phase.  Fix shape: extend
- *  `__edgeDynImport` to `(specifier, phase)`; detect phase via
- *  `imp.t` (es-module-lexer's ImportType enum: 2=Dynamic,
- *  5=DynamicSourcePhase, 7=DynamicDeferPhase); plumb through
- *  `__edgeDynImportImpl` to lib's callback with the right
- *  `phase` constant.  No test exercises source/defer dynamic
- *  phase today, which is why this is documented-but-not-fixed. */
+ *    import(spec)         → __edgeDynImport(spec)
+ *    import.source(spec)  → __edgeDynImportSource(spec)
+ *    import.defer(spec)   → __edgeDynImportDefer(spec)
+ *
+ *  Phase is encoded in the helper name; `synthesizePreamble` defines
+ *  all three to route to `globalThis.__edgeDynImportImpl(specifier,
+ *  parentUrl, phase)`.  Detection uses `imp.t` (es-module-lexer's
+ *  ImportType enum: Dynamic=2, DynamicSourcePhase=5,
+ *  DynamicDeferPhase=7). */
 export function rewriteDynamicImport(source: string): string {
   const [imports] = parse(source);
   let out = source;
   for (let i = imports.length - 1; i >= 0; i--) {
     const imp = imports[i];
     if (imp.d < 0) continue;
-    out = out.slice(0, imp.ss) + "__edgeDynImport" + out.slice(imp.d);
+    let helper = "__edgeDynImport";
+    if (imp.t === 5) helper = "__edgeDynImportSource";
+    else if (imp.t === 7) helper = "__edgeDynImportDefer";
+    out = out.slice(0, imp.ss) + helper + out.slice(imp.d);
   }
   return out;
 }

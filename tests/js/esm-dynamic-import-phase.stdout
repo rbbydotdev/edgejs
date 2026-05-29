@@ -1,0 +1,3 @@
+eval value: from-child-eval
+source caught: true
+phases observed: evaluation,source

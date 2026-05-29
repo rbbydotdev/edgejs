@@ -149,16 +149,18 @@ the browser-target tree.
   (try cloning + JSON.stringify-roundtrip on the clone).  Defer.
   Marker: `napi-host/esm-registry.ts:isPlainJsonValue`.
 
-- **`esm-import-meta-resolve-exports`** (2026-05-30) — the
-  `import.meta.resolve(spec)` synthesizer in `synthesizePreamble`
-  handles statically-known specifiers, absolute URLs, and
-  relative URLs against the module's own URL.  Doesn't honor
-  package.json conditional exports, package imports, or
-  node_modules resolution.  Node's ModuleLoader.resolve handles
-  all of that; we should route there via the import-meta
-  callback when fidelity is needed.  Doesn't bite today because
-  synthesized blobs reference statically-bound deps.  Marker:
-  `napi-host/esm-registry.ts:synthesizePreamble`.
+- ~~`esm-import-meta-resolve-exports`~~ — **RESOLVED 2026-05-30
+  (same day).**  `__edgeImportMetaFactory` in
+  `napi-host/unofficial.ts` now passes a synthetic wrap
+  `{url, isMain: false}` to lib's `initializeImportMetaCallback`.
+  Lib's default callback delegates to
+  `cascadedLoader.importMetaInitialize`, which sets `meta.resolve`
+  to a closure backed by lib's real resolver — handles
+  package.json conditional exports, node_modules walk, and the
+  `imports` field.  Lib's resolver overrides our static-map
+  fallback when wired.  The fallback (no lib callback registered,
+  or it throws) still handles statically-known specifiers,
+  absolute URLs, and relative URLs against the module's URL.
 
 - **`esm-sw-url-unbounded-registry`** (2026-05-30) — the
   service-worker source registry for cyclic-graph ESM URLs
@@ -170,22 +172,19 @@ the browser-target tree.
   nukes on realm teardown.  Marker:
   `napi-host/esm-registry.ts` near `nextEsmSwId`.
 
-- **`esm-dynamic-import-phase`** (2026-05-30) — ES2024 source-phase
-  (`import.source('m')`) and defer-phase (`import.defer('m')`)
-  dynamic imports have their keyword span correctly stripped by
-  `rewriteDynamicImport` in `napi-host/esm-registry.ts`, but
-  `__edgeDynImport(specifier)` only takes one argument — phase
-  semantics are dropped on the floor.  At runtime, both phase
-  variants behave identically to the default evaluation-phase
-  `import('m')`.  Source-phase code that depended on receiving the
-  compiled `WebAssembly.Module` silently gets the evaluated
-  namespace instead.  Fix shape: extend `__edgeDynImport` to take
-  `(specifier, phase)`, detect phase via `imp.t` (ImportType enum
-  from es-module-lexer: `Dynamic=2`, `DynamicSourcePhase=5`,
-  `DynamicDeferPhase=7`), plumb through `__edgeDynImportImpl` to
-  lib's dynamic-import callback with the right phase constant.
-  No test exercises source/defer dynamic phase today — latent.
-  Marker site: `napi-host/esm-registry.ts:rewriteDynamicImport`.
+- ~~`esm-dynamic-import-phase`~~ — **RESOLVED 2026-05-30 (same
+  day).**  `rewriteDynamicImport` now emits phase-aware helpers
+  (`__edgeDynImport` / `__edgeDynImportSource` /
+  `__edgeDynImportDefer`) selected from `imp.t` (ImportType enum
+  from es-module-lexer).  `synthesizePreamble` defines all three;
+  `__edgeDynImportImpl` accepts a `phase` parameter and dispatches
+  to lib's `importModuleDynamicallyCallback` with the right phase
+  constant (`kSourcePhase=1` or `kEvaluationPhase=2`).  Source-phase
+  imports now route through lib's actual source-phase resolver
+  (yielding the compiled WebAssembly.Module instead of the
+  evaluated namespace).  Defer-phase intentionally throws with a
+  clear message — lib doesn't ship a defer constant yet (ES2025
+  defer is Stage 2); will wire once lib does.
 
 - **`esm-evaluate-sync-jspi-blocked`** (2026-05-29, PARTIALLY
   RESOLVED 2026-05-30 via `esm-require-preeval` policy) —

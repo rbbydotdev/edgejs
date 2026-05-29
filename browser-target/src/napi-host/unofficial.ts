@@ -308,7 +308,25 @@ export function createUnofficialNapi(ctx: UnofficialHostContext): Record<string,
   (() => {
     const g = globalThis as unknown as Record<string, unknown>;
     if (!g.__edgeDynImportImpl) {
-      g.__edgeDynImportImpl = (specifier: string, parentUrl: string): Promise<unknown> => {
+      // Phase constants from src/internal_binding/binding_module_wrap.cc:
+      //   kSourcePhase = 1
+      //   kEvaluationPhase = 2
+      // Lib doesn't currently ship a defer-phase constant (ES2025
+      // import.defer is Stage 2); we surface a clear error if a
+      // module uses defer-phase dynamic and the host callback is
+      // active.
+      g.__edgeDynImportImpl = (
+        specifier: string,
+        parentUrl: string,
+        phase: "evaluation" | "source" | "defer" = "evaluation",
+      ): Promise<unknown> => {
+        if (phase === "defer") {
+          return Promise.reject(new Error(
+            "edge.js: import.defer(...) is not yet wired through to lib's loader. " +
+            "ES2025 defer-phase dynamic import is Stage 2; edge will add support " +
+            "once lib ships a defer-phase constant."));
+        }
+        const phaseConst = phase === "source" ? 1 : 2;
         const cb = esmHostState.dynamicImportCallback;
         if (typeof cb === "function") {
           try {
@@ -320,17 +338,16 @@ export function createUnofficialNapi(ctx: UnofficialHostContext): Record<string,
             // know the referrerSymbol from the browser-V8 side; pass
             // null and rely on referrerName=parentUrl to route to the
             // per-module vm.SourceTextModule.importModuleDynamically.
-            // Phase 2 = kEvaluationPhase (matches binding_module_wrap.cc).
             const result = (cb as (
               s: unknown, spec: string, phase: number, attrs: object, name: string,
-            ) => unknown)(null, specifier, 2, {}, parentUrl);
+            ) => unknown)(null, specifier, phaseConst, {}, parentUrl);
             return Promise.resolve(result).then((mod) => {
-              // Lib's callback returns either a vm.Module (its
-              // namespace getter resolves the actual Module Namespace
-              // Object) or a raw Module Namespace Object directly.
-              // The per-module wrapper (importModuleDynamicallyWrap in
-              // vm/module.js:522-544) returns m.namespace directly,
-              // so the top branch covers both cases.
+              // For source-phase, lib returns the source object
+              // (typically a compiled WebAssembly.Module) directly.
+              // For evaluation-phase, lib returns either a vm.Module
+              // (whose namespace getter resolves the Module Namespace
+              // Object) or the namespace object directly.
+              if (phaseConst === 1) return mod;
               if (mod && typeof mod === "object" && "namespace" in (mod as object)) {
                 return (mod as { namespace: unknown }).namespace;
               }
@@ -341,7 +358,16 @@ export function createUnofficialNapi(ctx: UnofficialHostContext): Record<string,
           }
         }
         // No callback registered — fall through to native browser
-        // import (works for absolute URLs like blob: / data: / https:).
+        // import for evaluation phase only.  Source/defer phases
+        // can't fall through to native because most engines haven't
+        // shipped the import.source / import.defer syntax (Stage
+        // 2/3).  Clean error keeps the failure observable.
+        if (phase !== "evaluation") {
+          return Promise.reject(new Error(
+            "edge.js: import." + phase + "(" + specifier + ") called but no " +
+            "host dispatcher is wired; register lib's dynamic-import callback " +
+            "via setImportModuleDynamicallyCallback first."));
+        }
         return import(/* @vite-ignore */ specifier);
       };
     }
@@ -389,9 +415,18 @@ export function createUnofficialNapi(ctx: UnofficialHostContext): Record<string,
         const cb = esmHostState.initializeImportMetaCallback;
         if (typeof cb === "function") {
           // Lib's callback receives (meta, wrap) and populates meta
-          // in-place.  Runs after we've installed `resolve` so lib can
-          // override it with the official loader-resolver if it wants.
-          try { cb(meta, undefined); } catch { /* keep whatever was set */ }
+          // in-place.  Lib's default callback delegates to
+          // `cascadedLoader.importMetaInitialize(meta, { url, isMain })`
+          // which sets `meta.resolve` to a closure backed by lib's
+          // real resolver — handles package.json conditional exports,
+          // node_modules walk, package imports field.  We pass a
+          // synthetic wrap with the url so lib's callback finds what
+          // it needs without an actual ModuleWrap (the wrap lives in
+          // lib's realm and isn't accessible from the host-V8 factory).
+          // Lib's resolve closure then overrides our static-map fallback
+          // above, picking up full Node-spec resolution.
+          try { cb(meta, { url, isMain: false }); }
+          catch { /* lib didn't override; keep our fallback resolve */ }
         }
         return meta;
       };
