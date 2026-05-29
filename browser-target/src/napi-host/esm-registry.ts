@@ -62,6 +62,11 @@ export interface ModuleRecord {
   /** Synthesized blob: URL — cached so the dep-import rewrite step
    *  for parents that pull us in can reuse it. */
   blobUrl?: string;
+  /** Synthesized SW URL (`/_edge_esm/<id>`) — assigned only when the
+   *  dep subgraph contains a cycle, since blob URLs can't be pre-
+   *  reserved before their source is generated.  See
+   *  `synthesizeUrl` + `synthesizeSwUrlsForCycle`. */
+  swUrl?: string;
 }
 
 export interface ModuleRequest {
@@ -283,6 +288,48 @@ export function detectTopLevelAwait(source: string): boolean {
   return /(^|[\s;{}(])await\s/.test(source);
 }
 
+// Counter for SW URL paths.  Global so cyclic graphs across
+// independent modules don't reuse paths.  SW caches indefinitely
+// (cleared on `destroy` for bounded memory).
+let nextEsmSwId = 1;
+
+/** Detect a cycle in the dep subgraph reachable from `root`.  Uses
+ *  the textbook DFS color algorithm: white=unvisited, gray=in-stack,
+ *  black=fully-visited.  Returns true iff a back-edge into a gray
+ *  ancestor exists. */
+function hasCycle(root: ModuleRecord): boolean {
+  const gray = new Set<ModuleRecord>();
+  const black = new Set<ModuleRecord>();
+  function visit(r: ModuleRecord): boolean {
+    if (black.has(r)) return false;
+    if (gray.has(r)) return true;
+    gray.add(r);
+    for (const dep of r.deps) {
+      if (visit(dep)) return true;
+    }
+    gray.delete(r);
+    black.add(r);
+    return false;
+  }
+  return visit(root);
+}
+
+/** Top-level URL synthesizer.  Cycle-free graphs go through the fast
+ *  blob: URL path (sync, in-memory).  Cyclic graphs route through
+ *  the SW: each record gets a stable `/_edge_esm/<id>` path, sources
+ *  are generated using the pre-assigned URLs (no chicken-and-egg),
+ *  then all sources are published to the SW via the worker → page →
+ *  SW relay before `import()` is called.  Returns the URL of the
+ *  root record. */
+export async function synthesizeUrl(record: ModuleRecord): Promise<string> {
+  if (record.blobUrl) return record.blobUrl;
+  if (record.swUrl) return record.swUrl;
+  if (hasCycle(record)) {
+    return synthesizeSwUrlsForCycle(record);
+  }
+  return synthesizeBlobUrl(record);
+}
+
 /** Synthesize a blob URL for a record, recursively minting blobs for
  *  its dependency subgraph first. Rewrites each `import ... from "X"`
  *  specifier in source to the dep's blob: URL. Caches per-record.
@@ -297,21 +344,16 @@ export function synthesizeBlobUrl(record: ModuleRecord): string {
 
 function synthesizeBlobUrlInner(record: ModuleRecord, inFlight: Set<ModuleRecord>): string {
   if (record.blobUrl) return record.blobUrl;
-  // Cycle guard: blob URLs are created with their source baked in — we
-  // can't pre-mint a URL for a record whose source we haven't generated
-  // yet, because the source needs the dep blob URLs which (for a cycle)
-  // include the URL we're currently generating.  This is the structural
-  // reason `#!~debt esm-cyclic-live-bindings` exists.  Until we either
-  // (a) install a service-worker that resolves a stable per-record URL,
-  // or (b) rewrite all imports through a runtime registry (lossy for
-  // live-binding semantics), cycles get a hard "module not found" instead
-  // of an infinite recursion crash.
+  if (record.swUrl) return record.swUrl;
+  // Defensive cycle guard.  `synthesizeUrl` routes cycles to the SW
+  // path; if a caller invokes the blob path directly on a cyclic
+  // graph (e.g. tests), throw with a clear message rather than
+  // stack-overflow.
   if (inFlight.has(record)) {
     throw new Error(
       "edge.js ESM cycle detected at " + record.url +
-      " — cyclic ES module graphs require a stable per-record URL " +
-      "(blob: URLs are not retro-rewritable). " +
-      "Tracked as #!~debt esm-cyclic-live-bindings.",
+      " — call synthesizeUrl() (async) instead of synthesizeBlobUrl() " +
+      "for graphs that may contain cycles.",
     );
   }
   inFlight.add(record);
@@ -383,6 +425,87 @@ function synthesizeBlobUrlInner(record: ModuleRecord, inFlight: Set<ModuleRecord
   const blob = new NativeBlob([withPragma], { type: "text/javascript" });
   record.blobUrl = NativeURL.createObjectURL(blob);
   return record.blobUrl;
+}
+
+/** Generate source text for a record using a pre-built specifier →
+ *  URL map.  Shared between the blob path (URLs are blob:) and the
+ *  SW path (URLs are /_edge_esm/<id>); the only difference is how
+ *  the URLs were minted. */
+function generateRecordSource(record: ModuleRecord, specifierToUrl: Map<string, string>): string {
+  if (record.kind === "synthetic") {
+    const names = record.exportNames ?? [];
+    return names.map((nm) => `export let ${jsId(nm)};`).join("\n");
+  }
+  if (record.kind === "required-facade") {
+    return "export default {};";
+  }
+  const source = record.source ?? "";
+  const rewritten = rewriteImportSpecifiers(source, specifierToUrl);
+  const preamble = synthesizePreamble(record);
+  const withMetaRewrite = rewriteImportMeta(rewritten);
+  const withDynImport = rewriteDynamicImport(withMetaRewrite);
+  return preamble + "\n" + withDynImport + `\n//# sourceURL=${record.url}\n`;
+}
+
+/** Assign stable SW URLs to every record in the subgraph rooted at
+ *  `root`, generate sources using the pre-assigned URLs, publish the
+ *  sources to the SW, then return the root's URL.  This is the only
+ *  path that supports cyclic ES module graphs, because each record's
+ *  URL exists in the assigned-map BEFORE any source is generated.
+ *
+ *  Synthetic and required-facade records still work — their sources
+ *  don't reference other modules, so they're trivially included. */
+async function synthesizeSwUrlsForCycle(root: ModuleRecord): Promise<string> {
+  // Walk graph; assign URLs in deterministic DFS order.  `assigned`
+  // doubles as the visited set so each record is sourced once even
+  // when reached through multiple paths.
+  const assigned = new Map<ModuleRecord, string>();
+  const order: ModuleRecord[] = [];
+  function assign(r: ModuleRecord): string {
+    const existing = r.swUrl ?? assigned.get(r);
+    if (existing !== undefined) {
+      assigned.set(r, existing);
+      return existing;
+    }
+    const url = "/_edge_esm/" + (nextEsmSwId++);
+    assigned.set(r, url);
+    order.push(r);
+    for (const dep of r.deps) assign(dep);
+    return url;
+  }
+  const rootUrl = assign(root);
+
+  // Generate sources using the assigned URLs.  This is the step that
+  // would fail under the blob path — here it's straightforward because
+  // every record's URL is already known.
+  const sources: Array<[string, string]> = [];
+  for (const r of order) {
+    if (r.kind === "source-text") {
+      const reqs = r.requests ?? extractModuleRequests(r.source ?? "");
+      r.requests = reqs;
+      const specifierToUrl = new Map<string, string>();
+      for (let i = 0; i < reqs.length && i < r.deps.length; i++) {
+        specifierToUrl.set(reqs[i].specifier, assigned.get(r.deps[i])!);
+      }
+      sources.push([assigned.get(r)!, generateRecordSource(r, specifierToUrl)]);
+    } else {
+      sources.push([assigned.get(r)!, generateRecordSource(r, new Map())]);
+    }
+    r.swUrl = assigned.get(r);
+  }
+
+  const publish = (globalThis as {
+    __edgeEsmPublishSources?: (s: Array<[string, string]>) => Promise<void>;
+  }).__edgeEsmPublishSources;
+  if (typeof publish !== "function") {
+    throw new Error(
+      "edge.js ESM cycle detected at " + root.url +
+      " — service worker bridge unavailable (__edgeEsmPublishSources not " +
+      "installed). Confirm setupBridge() ran on the page and the SW activated.",
+    );
+  }
+  await publish(sources);
+  return rootUrl;
 }
 
 /** Build the per-module preamble that exposes `__edgeImportMeta` and

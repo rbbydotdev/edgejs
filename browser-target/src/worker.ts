@@ -769,8 +769,49 @@ function attachIpcStructuredPort(port: MessagePort): void {
   (globalThis as { __edgeChildProcessIpcStructuredUnregister?: IpcUnregister }).__edgeChildProcessIpcStructuredUnregister = unregister;
 }
 
+// ESM source-publish ack registry — token-keyed pending Promises
+// awaited by `napi-host/esm-registry.ts` when it falls back from the
+// blob-URL path to the SW path for cyclic graphs.  Publish ack arrives
+// via the page (worker → page → SW → page → worker) because direct
+// DedicatedWorker → SW postMessage is unreliable across browsers.
+const esmPublishPending = new Map<string, {
+  resolve: () => void;
+  reject: (e: unknown) => void;
+}>();
+
+(globalThis as {
+  __edgeEsmPublishSources?: (sources: Array<[string, string]>) => Promise<void>;
+}).__edgeEsmPublishSources = (sources: Array<[string, string]>): Promise<void> => {
+  if (sources.length === 0) return Promise.resolve();
+  const token = "esm-" + Math.random().toString(36).slice(2) + "-" + nowMs();
+  return new Promise<void>((resolve, reject) => {
+    esmPublishPending.set(token, { resolve, reject });
+    self.postMessage({ kind: "edge-esm-publish", sources, token });
+    // 5s timeout — SW shouldn't take this long; the only way it
+    // does is if main.ts hasn't activated the SW yet.  Reject with
+    // a clear error so the napi handler surfaces it.
+    setTimeout(() => {
+      const slot = esmPublishPending.get(token);
+      if (!slot) return;
+      esmPublishPending.delete(token);
+      slot.reject(new Error("edge ESM SW publish timed out (5s)"));
+    }, 5000);
+  });
+};
+
 self.addEventListener("message", (e: MessageEvent) => {
   const data = e.data as { kind?: string; sab?: SharedArrayBuffer; requestSab?: SharedArrayBuffer; replySab?: SharedArrayBuffer; hostWorkerId?: number } | null;
+  if (data?.kind === "edge-esm-published") {
+    const token = (data as { token?: string }).token;
+    if (!token) return;
+    const slot = esmPublishPending.get(token);
+    if (!slot) return;
+    esmPublishPending.delete(token);
+    const err = (data as { error?: string }).error;
+    if (err) slot.reject(new Error(err));
+    else slot.resolve();
+    return;
+  }
   if (data?.kind === "edge-fs-snapshot-sab" && data.sab) {
     fsSnapshotSab = data.sab;
   } else if ((data as { kind?: string })?.kind === "edge-ipc-structured-port") {

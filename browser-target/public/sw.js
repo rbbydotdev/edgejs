@@ -22,8 +22,18 @@
 // its own slot, so the whole pipeline is multi-request-capable.
 
 const BRIDGE_PREFIX = "/_edge/";
+const ESM_PREFIX = "/_edge_esm/";
 const pending = new Map(); // reqId → { resolve, reject }
 let nextReqId = 1;
+
+// ESM source registry — keyed by ESM_PREFIX-prefixed pathname (the URL
+// the browser fetches when it processes `import("/_edge_esm/<id>")`).
+// Populated via `edge-esm-publish` messages from runtime workers ahead
+// of the `import()` call.  Stable per-record URLs let us mint sources
+// for cyclic ES module graphs without the blob-URL chicken-and-egg
+// problem (blob URLs are immutable; we can't reserve a URL before
+// the source that uses it is generated).
+const esmSources = new Map(); // path → source string
 
 async function swLog(msg) {
   console.log(msg);
@@ -42,6 +52,35 @@ self.addEventListener("message", (e) => {
     if (!slot) return;
     pending.delete(e.data.reqId);
     slot.resolve(e.data);
+    return;
+  }
+  if (e.data?.kind === "edge-esm-publish") {
+    // Sources is an Array<[path, source]>.  Tuple form is portable
+    // across postMessage's structured-clone without the Object key
+    // ordering / non-string-key issues plain object would have.
+    const sources = e.data.sources || [];
+    for (let i = 0; i < sources.length; i++) {
+      const entry = sources[i];
+      if (entry && entry.length === 2) esmSources.set(entry[0], entry[1]);
+    }
+    // Reply on the MessagePort if provided (so the publisher can await
+    // an ack before kicking off `import()` and guarantees the SW has
+    // the source ready to serve).
+    if (e.ports && e.ports[0]) {
+      try { e.ports[0].postMessage({ kind: "edge-esm-published", token: e.data.token }); }
+      catch (err) { void err; }
+    } else if (e.source) {
+      try { e.source.postMessage({ kind: "edge-esm-published", token: e.data.token }); }
+      catch (err) { void err; }
+    }
+    return;
+  }
+  if (e.data?.kind === "edge-esm-clear") {
+    // Optional teardown — runtime worker can drop stale registrations
+    // (e.g. on `ModuleWrap.destroy`) to bound the registry size.
+    const paths = e.data.paths || [];
+    for (let i = 0; i < paths.length; i++) esmSources.delete(paths[i]);
+    return;
   }
 });
 
@@ -52,6 +91,29 @@ async function getClient() {
 
 self.addEventListener("fetch", (event) => {
   const url = new URL(event.request.url);
+
+  // ESM source delivery: stable per-record URLs serve previously-
+  // published source via `esmSources`.  Used by the cyclic-graph path
+  // in `napi-host/esm-registry.ts` where blob URLs can't be pre-
+  // allocated.  Missing entry → 404 (loud failure so the napi handler
+  // surfaces it instead of silently hanging on a pending request).
+  if (url.pathname.startsWith(ESM_PREFIX)) {
+    const source = esmSources.get(url.pathname);
+    if (typeof source === "string") {
+      event.respondWith(new Response(source, {
+        status: 200,
+        headers: { "content-type": "text/javascript; charset=utf-8" },
+      }));
+    } else {
+      event.respondWith(new Response(
+        "edge ESM source not published: " + url.pathname, {
+          status: 404,
+          headers: { "content-type": "text/plain; charset=utf-8" },
+        }));
+    }
+    return;
+  }
+
   if (!url.pathname.startsWith(BRIDGE_PREFIX)) return; // pass-through
 
   event.respondWith((async () => {

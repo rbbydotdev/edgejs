@@ -23,7 +23,7 @@ import {
   detectTopLevelAwait,
   extractModuleRequests,
   releaseBlobUrls,
-  synthesizeBlobUrl,
+  synthesizeUrl,
   type ModuleRecord,
 } from "./esm-registry";
 
@@ -374,7 +374,10 @@ export function createUnofficialNapi(ctx: UnofficialHostContext): Record<string,
     record.status = 3; // kEvaluating
     const p = (async () => {
       try {
-        const url = synthesizeBlobUrl(record);
+        // synthesizeUrl picks the right path (blob: for cycle-free
+        // graphs, /_edge_esm/<id> via the SW for cyclic ones).  Both
+        // produce URLs the browser's `import()` can resolve.
+        const url = await synthesizeUrl(record);
         const ns = await import(/* @vite-ignore */ url);
         // Capture an own-prop snapshot of the namespace.  Module namespace
         // objects expose getters; reading each key once at completion is

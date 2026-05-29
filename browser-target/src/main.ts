@@ -1024,6 +1024,48 @@ function onWorkerMessage(e: MessageEvent) {
         body: e.data.body,
       });
     }
+  } else if (kind === "edge-esm-publish") {
+    // Runtime worker → SW relay for ESM source delivery (cyclic
+    // graph path in napi-host/esm-registry.ts).  We forward sources
+    // through the page because DedicatedWorker → SW direct postMessage
+    // is unreliable across browsers; the page is already SW-connected
+    // for the /_edge/ HTTP bridge.  Reply is correlated by `token`
+    // and forwarded back to the runtime worker via a fresh page-side
+    // 'edge-esm-published' message.
+    if (activeSW) {
+      const ch = new MessageChannel();
+      ch.port1.onmessage = (reply) => {
+        ch.port1.close();
+        worker?.postMessage({
+          kind: "edge-esm-published",
+          token: (reply.data as { token?: string }).token,
+        });
+      };
+      activeSW.postMessage({
+        kind: "edge-esm-publish",
+        sources: e.data.sources,
+        token: e.data.token,
+      }, [ch.port2]);
+    } else {
+      // SW absent — surface a failure so the napi handler doesn't
+      // hang.  The runtime worker is awaiting the ack; null token
+      // signals failure on its side.
+      worker?.postMessage({
+        kind: "edge-esm-published",
+        token: e.data.token,
+        error: "service worker unavailable",
+      });
+    }
+  } else if (kind === "edge-esm-clear") {
+    // Optional: forward clear notifications to the SW so the registry
+    // is bounded.  Non-essential — SW just keeps stale entries until
+    // the user reloads.
+    if (activeSW) {
+      activeSW.postMessage({
+        kind: "edge-esm-clear",
+        paths: e.data.paths,
+      });
+    }
   }
 };
 

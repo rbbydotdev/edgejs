@@ -92,19 +92,20 @@ the browser-target tree.
 
 ### Newly opened
 
-- **`esm-cyclic-live-bindings`** (2026-05-29) — Cyclic ES module
-  graphs (A imports B, B imports A) fail in the blob-URL trampoline.
-  Each module's source has its dep URLs baked in at blob-mint time,
-  but blob URLs are immutable and can't be reserved before their
-  source is generated. The registry detects the cycle at
-  `napi-host/esm-registry.ts:synthesizeBlobUrlInner` and throws a
-  clear "edge.js ESM cycle detected" error instead of stack-overflow.
-  Real fix paths: (a) install a service worker that serves source
-  from the registry at a stable per-record URL (preserves V8's
-  bytecode-level live-binding), or (b) rewrite all imports through a
-  JS-runtime namespace registry (simpler but lossy for re-export-
-  from-cycle patterns). Tracked test: `esm-cycle-live-binding.skip`.
-  Static (non-cyclic), TLA, dynamic, re-export chains all green.
+- ~~`esm-cyclic-live-bindings`~~ — **RESOLVED 2026-05-29.** Path (a)
+  shipped: `synthesizeUrl` in `napi-host/esm-registry.ts` detects
+  cycles via a DFS-color graph walk and routes through the service
+  worker instead of blob URLs.  Each record in the cyclic subgraph
+  gets a stable `/_edge_esm/<id>` path; sources are generated using
+  the pre-assigned URLs (no chicken-and-egg) and posted to the SW via
+  the worker → page → SW bridge in `worker.ts` + `main.ts`.  SW caches
+  source by path and serves on fetch — V8 sees real cross-referencing
+  module URLs and its bytecode-level cycle handling kicks in.  Test:
+  `tests/js/esm-cycle-live-binding.js` (valid ESM cycle: defers
+  cyclic access through a function to avoid TDZ on eager evaluation
+  of the entry module — same constraint real Node enforces).  The
+  blob path is still default for cycle-free graphs (faster: no SW
+  round-trip).
 
 - ~~`esm-per-module-dynamic-import`~~ — **RESOLVED 2026-05-29.** The
   `esm-via-blob-import` policy now mirrors each module's per-module
@@ -935,8 +936,12 @@ and remain a fine direction.
 
 ### 3. ESM support (`module_wrap_*`) — RESOLVED 2026-05-29
 
-Phases 1, 2, 3, 4 all shipped end-to-end.  Only known limitation:
-`esm-cyclic-live-bindings` (see debt entry above).
+Phases 1, 2, 3, 4 shipped end-to-end + cyclic graphs handled via the
+SW-served-URL fallback (see `esm-cyclic-live-bindings` archived entry
+above).  No known structural ESM gaps remain.  Tests: 7 ESM scenarios
+covering single-module, named+default, re-export chain, TLA, dynamic
+import (per-module callback), `import.meta.url`, and cyclic
+live-binding.  All green.
 
 **Architecture** (no Asyncify): the napi `module_wrap_*` family —
 `create_source_text`, `create_synthetic`, `link`, `instantiate`,
