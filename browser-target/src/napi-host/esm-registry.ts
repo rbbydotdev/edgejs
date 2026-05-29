@@ -22,6 +22,14 @@
 //
 // See NOTES.md `module_wrap_*` debt entry + plans/esm-via-jspi.md.
 
+import { initSync, parse } from "es-module-lexer";
+
+// Sync wasm compile (~10ms, ~10KB wasm) so every parse/rewrite entry
+// below can run synchronously from the napi wasm callbacks without
+// awaiting the async `init`. Hoisted to module load so the cost is paid
+// once per worker boot, off the user's request-handler hot path.
+initSync();
+
 export type ModuleStatus = 0 | 1 | 2 | 3 | 4 | 5;
 // 0=kUninstantiated, 1=kInstantiating, 2=kInstantiated,
 // 3=kEvaluating, 4=kEvaluated, 5=kErrored.
@@ -96,201 +104,22 @@ export interface ModuleRequest {
   phase: 1 | 2;
 }
 
-/** Lightweight import-statement scanner. NOT a full parser — handles
- *  the static-import patterns ESM uses + skips line/block comments
- *  and quoted strings. Dynamic `import(...)` expressions are ignored
- *  here (they're handled at runtime via the dynamically-callback
- *  registered in Phase 3, not pre-resolved).
- *
- *  Trade-off: vs. vendoring acorn (~80KB), this is ~150 lines and
- *  covers every static import pattern in the ESM spec. If a test
- *  fails because of a parser miss we'll swap to acorn — keep the
- *  signature stable so the caller doesn't care.
- */
+/** Static module-request list — every `import ... from 'X'` /
+ *  `export ... from 'X'` / bare `import 'X'` the source declares, in
+ *  source order. Dynamic `import(...)` and `import.meta` are filtered
+ *  out (lib's loader handles dynamic via the registered callback). */
 export function extractModuleRequests(source: string): ModuleRequest[] {
+  const [imports] = parse(source);
   const out: ModuleRequest[] = [];
-  let i = 0;
-  const n = source.length;
-
-  // Skip a quoted string starting at position p (source[p] is the
-  // opening quote). Returns the index AFTER the closing quote.
-  function skipString(p: number, quote: string): number {
-    let j = p + 1;
-    while (j < n) {
-      const ch = source[j];
-      if (ch === "\\") { j += 2; continue; }
-      if (ch === quote) return j + 1;
-      // Template literals can contain ${...} — skip the embedded expr
-      // by tracking brace depth.
-      if (quote === "`" && ch === "$" && source[j + 1] === "{") {
-        j += 2;
-        let depth = 1;
-        while (j < n && depth > 0) {
-          const cc = source[j];
-          if (cc === "{") depth++;
-          else if (cc === "}") depth--;
-          else if (cc === "'" || cc === '"' || cc === "`") { j = skipString(j, cc); continue; }
-          else if (cc === "/" && source[j + 1] === "/") { j = skipLineComment(j); continue; }
-          else if (cc === "/" && source[j + 1] === "*") { j = skipBlockComment(j); continue; }
-          j++;
-        }
-        continue;
-      }
-      j++;
-    }
-    return j;
+  for (const imp of imports) {
+    // d === -1 → static; -2 → import.meta; >= 0 → dynamic import().
+    if (imp.d !== -1) continue;
+    if (imp.n === undefined) continue;
+    const attributes: Record<string, string> = {};
+    if (imp.at) for (const [k, v] of imp.at) attributes[k] = v;
+    out.push({ specifier: imp.n, attributes, phase: 2 });
   }
-
-  function skipLineComment(p: number): number {
-    let j = p + 2;
-    while (j < n && source[j] !== "\n") j++;
-    return j;
-  }
-
-  function skipBlockComment(p: number): number {
-    let j = p + 2;
-    while (j < n - 1) {
-      if (source[j] === "*" && source[j + 1] === "/") return j + 2;
-      j++;
-    }
-    return n;
-  }
-
-  // Match a quoted specifier starting at position p (skips whitespace
-  // first). Returns {specifier, end} or null.
-  function readSpecifier(p: number): { specifier: string; end: number } | null {
-    let j = p;
-    while (j < n && /\s/.test(source[j])) j++;
-    if (j >= n) return null;
-    const q = source[j];
-    if (q !== "'" && q !== '"' && q !== "`") return null;
-    const end = skipString(j, q);
-    return { specifier: source.slice(j + 1, end - 1), end };
-  }
-
-  // Match `with { type: 'json' }` import attributes after a specifier.
-  function readAttributes(p: number): { attributes: Record<string, string>; end: number } {
-    let j = p;
-    while (j < n && /\s/.test(source[j])) j++;
-    if (j + 4 > n || source.slice(j, j + 4) !== "with") return { attributes: {}, end: p };
-    j += 4;
-    while (j < n && /\s/.test(source[j])) j++;
-    if (source[j] !== "{") return { attributes: {}, end: p };
-    j++;
-    const attrs: Record<string, string> = {};
-    while (j < n) {
-      while (j < n && /[\s,]/.test(source[j])) j++;
-      if (source[j] === "}") { j++; break; }
-      // key
-      let keyStart = j;
-      if (source[j] === "'" || source[j] === '"') {
-        const r = readSpecifier(j);
-        if (!r) return { attributes: attrs, end: j };
-        const key = r.specifier;
-        j = r.end;
-        while (j < n && /\s/.test(source[j])) j++;
-        if (source[j] !== ":") return { attributes: attrs, end: j };
-        j++;
-        const v = readSpecifier(j);
-        if (!v) return { attributes: attrs, end: j };
-        attrs[key] = v.specifier;
-        j = v.end;
-      } else {
-        while (j < n && /[A-Za-z0-9_$]/.test(source[j])) j++;
-        const key = source.slice(keyStart, j);
-        while (j < n && /\s/.test(source[j])) j++;
-        if (source[j] !== ":") return { attributes: attrs, end: j };
-        j++;
-        const v = readSpecifier(j);
-        if (!v) return { attributes: attrs, end: j };
-        attrs[key] = v.specifier;
-        j = v.end;
-      }
-    }
-    return { attributes: attrs, end: j };
-  }
-
-  // Main scan: walk forward; on each keyword boundary check whether
-  // we're at an import/export statement; otherwise skip strings/comments.
-  while (i < n) {
-    const ch = source[i];
-    if (ch === "/" && source[i + 1] === "/") { i = skipLineComment(i); continue; }
-    if (ch === "/" && source[i + 1] === "*") { i = skipBlockComment(i); continue; }
-    if (ch === "'" || ch === '"' || ch === "`") { i = skipString(i, ch); continue; }
-    // Only match at start-of-line or after whitespace (avoid matching
-    // `reimport` etc.).
-    const prev = i === 0 ? "\n" : source[i - 1];
-    if (!/[\s;{}]/.test(prev)) { i++; continue; }
-    // Try import.
-    if (source.startsWith("import", i) && !/[A-Za-z0-9_$]/.test(source[i + 6] ?? "")) {
-      const stmtStart = i;
-      let j = i + 6;
-      // Skip whitespace; if the next non-space is `(` or `.`, it's a
-      // dynamic-import or import.meta — not a static statement.
-      while (j < n && /\s/.test(source[j])) j++;
-      if (source[j] === "(" || source[j] === ".") { i = j; continue; }
-      // Bare side-effect import: `import 'mod';`
-      const sp = readSpecifier(j);
-      if (sp) {
-        const attrs = readAttributes(sp.end);
-        out.push({ specifier: sp.specifier, attributes: attrs.attributes, phase: 2 });
-        i = attrs.end;
-        continue;
-      }
-      // Named/default: scan forward for `from <spec>`.
-      const fromIdx = findFromKeyword(j);
-      if (fromIdx < 0) { i = stmtStart + 6; continue; }
-      const after = readSpecifier(fromIdx);
-      if (after) {
-        const attrs = readAttributes(after.end);
-        out.push({ specifier: after.specifier, attributes: attrs.attributes, phase: 2 });
-        i = attrs.end;
-        continue;
-      }
-      i = stmtStart + 6;
-      continue;
-    }
-    // Try export ... from.
-    if (source.startsWith("export", i) && !/[A-Za-z0-9_$]/.test(source[i + 6] ?? "")) {
-      const stmtStart = i;
-      const fromIdx = findFromKeyword(i + 6);
-      if (fromIdx < 0) { i = stmtStart + 6; continue; }
-      const after = readSpecifier(fromIdx);
-      if (after) {
-        const attrs = readAttributes(after.end);
-        out.push({ specifier: after.specifier, attributes: attrs.attributes, phase: 2 });
-        i = attrs.end;
-        continue;
-      }
-      i = stmtStart + 6;
-      continue;
-    }
-    i++;
-  }
-
   return out;
-
-  // Helper: scan forward for the `from` keyword, skipping
-  // strings/comments. Returns the index just AFTER `from` (so the
-  // caller can read the specifier from there), or -1 if not found
-  // before the next `;` or newline+`}`.
-  function findFromKeyword(p: number): number {
-    let j = p;
-    while (j < n) {
-      const c = source[j];
-      if (c === "/" && source[j + 1] === "/") { j = skipLineComment(j); continue; }
-      if (c === "/" && source[j + 1] === "*") { j = skipBlockComment(j); continue; }
-      if (c === "'" || c === '"' || c === "`") { j = skipString(j, c); continue; }
-      if (c === ";") return -1;
-      if (source.startsWith("from", j) &&
-          /\s/.test(source[j - 1] ?? "") &&
-          !/[A-Za-z0-9_$]/.test(source[j + 4] ?? "")) {
-        return j + 4;
-      }
-      j++;
-    }
-    return -1;
-  }
 }
 
 /** Detect top-level await heuristically. False positives are fine
@@ -591,22 +420,31 @@ function synthesizePreamble(record: ModuleRecord, specifierToUrl?: Map<string, s
  *  bind the meta object once per module so subsequent property reads
  *  see whatever the host's `initializeImportMetaCallback` populated. */
 export function rewriteImportMeta(source: string): string {
-  // Skip strings/comments by reusing the scanner.  Simpler: target the
-  // exact token `import.meta` at word boundaries; false positives are
-  // rare since `import.meta` is meaningless anywhere else.
-  return source.replace(/\bimport\.meta\b/g, "__edgeImportMeta");
+  const [imports] = parse(source);
+  let out = source;
+  // Reverse iteration so each splice keeps earlier offsets valid.
+  for (let i = imports.length - 1; i >= 0; i--) {
+    const imp = imports[i];
+    if (imp.d !== -2) continue;
+    out = out.slice(0, imp.ss) + "__edgeImportMeta" + out.slice(imp.se);
+  }
+  return out;
 }
 
-/** Rewrite `import(...)` expressions to `__edgeDynImport(...)`.  We
- *  detect `import` followed by optional whitespace then `(` and rewrite
- *  the keyword (the `(` and inner expression are left untouched).
- *  Avoids matching `import.meta` (already rewritten above) or the
- *  static-import statement (which always has identifier/spec list after
- *  the keyword, never `(`). */
+/** Rewrite `import(...)` expressions to `__edgeDynImport(...)`.  For
+ *  dynamic imports, `imp.ss` is the position of the `import` keyword;
+ *  `imp.d` is the position of the `(` (not the keyword).  We splice
+ *  out the 6-char keyword at `ss`; the `(` and arguments are
+ *  left untouched. */
 export function rewriteDynamicImport(source: string): string {
-  // Tokenize-aware replace: a literal `import(` with no leading word
-  // char is dynamic import.  We replace `import` with `__edgeDynImport`.
-  return source.replace(/(^|[^A-Za-z0-9_$.])import(\s*\()/g, "$1__edgeDynImport$2");
+  const [imports] = parse(source);
+  let out = source;
+  for (let i = imports.length - 1; i >= 0; i--) {
+    const imp = imports[i];
+    if (imp.d < 0) continue;
+    out = out.slice(0, imp.ss) + "__edgeDynImport" + out.slice(imp.ss + 6);
+  }
+  return out;
 }
 
 /** Rewrite static-import specifiers in source using the given map.
@@ -625,48 +463,33 @@ export function rewriteImportSpecifiers(
   map: Map<string, string>,
 ): string {
   if (map.size === 0) return source;
-  const requests = extractModuleRequests(source);
-  if (requests.length === 0) return source;
+  const [imports] = parse(source);
   let out = source;
-  for (const req of requests) {
-    const replacement = map.get(req.specifier);
-    if (!replacement) continue;
-    const sq = `'${req.specifier}'`;
-    const dq = `"${req.specifier}"`;
-    // Replace the specifier first, then strip any trailing `with { ... }`
-    // attached to this rewritten import.  We scan for the (replaced)
-    // quote position and look ahead for `with { ... }`, taking care to
-    // bracket-match through nested braces in case a future spec
-    // version allows complex attribute values.
-    if (out.includes(sq)) {
-      out = out.replace(sq, `"${replacement}"`);
-    } else if (out.includes(dq)) {
-      out = out.replace(dq, `"${replacement}"`);
-    } else {
-      continue;
-    }
-    // If the user wrote `import X from "spec" with { ... };` we just
-    // replaced "spec" → "blob:...".  Strip the `with { ... }` clause
-    // by scanning right after the replacement closing quote.
-    const probeQuote = `"${replacement}"`;
-    const start = out.indexOf(probeQuote);
-    if (start < 0) continue;
-    let j = start + probeQuote.length;
-    while (j < out.length && /\s/.test(out[j])) j++;
-    if (out.slice(j, j + 4) === "with" && /[\s{]/.test(out[j + 4] ?? "")) {
-      let k = j + 4;
-      while (k < out.length && /\s/.test(out[k])) k++;
-      if (out[k] === "{") {
-        let depth = 1;
-        k++;
-        while (k < out.length && depth > 0) {
-          if (out[k] === "{") depth++;
-          else if (out[k] === "}") depth--;
-          k++;
-        }
-        out = out.slice(0, j) + out.slice(k);
+  // Reverse iteration so each splice keeps earlier offsets valid;
+  // within one import, strip attributes (rightmost) before replacing
+  // the specifier (leftmost) for the same reason.
+  for (let i = imports.length - 1; i >= 0; i--) {
+    const imp = imports[i];
+    if (imp.d !== -1 || imp.n === undefined) continue;
+    const replacement = map.get(imp.n);
+    if (replacement === undefined) continue;
+    if (imp.a >= 0) {
+      // imp.a is the position of `{`; scan back past whitespace to
+      // before `with`, then forward via brace-matching for the close.
+      let withStart = imp.a;
+      while (withStart > imp.e && /\s/.test(out[withStart - 1])) withStart--;
+      withStart -= 4; // length of "with"
+      let close = imp.a + 1;
+      let depth = 1;
+      while (close < out.length && depth > 0) {
+        const ch = out[close];
+        if (ch === "{") depth++;
+        else if (ch === "}") depth--;
+        close++;
       }
+      out = out.slice(0, withStart) + out.slice(close);
     }
+    out = out.slice(0, imp.s) + replacement + out.slice(imp.e);
   }
   return out;
 }

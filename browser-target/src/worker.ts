@@ -49,6 +49,17 @@ const NativeBlob = Blob;
   __edgeNativeBlob?: typeof Blob;
 }).__edgeNativeURL = NativeURL;
 (globalThis as { __edgeNativeBlob?: typeof Blob }).__edgeNativeBlob = NativeBlob;
+// Sucrase ESM-to-CJS transform exposed for the opt-in
+// `esm-require-sucrase-backstop` policy.  When lib's
+// `ModuleJobSync.runSync` throws `ERR_REQUIRE_ASYNC_MODULE`, the
+// policy's patched runSync calls this hook to transform the .mjs
+// source to CJS-shaped code, then evals as CJS in a constructed
+// context.  Eager import (sync wasm-init cost is ~0; Sucrase is
+// pure JS) so the transform is ready whenever the policy fires.
+import { transform as sucraseTransform } from "sucrase";
+(globalThis as { __edgeEsmSucraseTransform?: (src: string) => string })
+  .__edgeEsmSucraseTransform = (src: string) =>
+    sucraseTransform(src, { transforms: ["imports"] }).code;
 
 // Reverse-RPC dispatcher.  Wraps the user-facing dispatch callback in
 // `setImmediate` so it runs OUTSIDE the reverse-RPC handler's try/catch

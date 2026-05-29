@@ -133,6 +133,7 @@ export { workerThreadsPerThread } from "./worker-threads-per-thread";
 export { childProcessViaExecutor } from "./child-process-via-executor";
 export { esmViaBlobImport } from "./esm-via-blob-import";
 export { esmRequirePreeval } from "./esm-require-preeval";
+export { esmRequireSucraseBackstop } from "./esm-require-sucrase-backstop";
 
 import { bufferPoolDisable } from "./buffer-pool-disable";
 import { bufferWriteSync } from "./buffer-write-sync";
@@ -154,6 +155,7 @@ import { workerThreadsPerThread } from "./worker-threads-per-thread";
 import { childProcessViaExecutor } from "./child-process-via-executor";
 import { esmViaBlobImport } from "./esm-via-blob-import";
 import { esmRequirePreeval } from "./esm-require-preeval";
+import { esmRequireSucraseBackstop } from "./esm-require-sucrase-backstop";
 
 // =============================================================================
 // SANE DEFAULTS
@@ -250,4 +252,5 @@ export const policyRegistry: Record<string, Policy> = {
   [childProcessViaExecutor.name]: childProcessViaExecutor,
   [esmViaBlobImport.name]: esmViaBlobImport,
   [esmRequirePreeval.name]: esmRequirePreeval,
+  [esmRequireSucraseBackstop.name]: esmRequireSucraseBackstop,
 };
