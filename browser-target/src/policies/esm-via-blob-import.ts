@@ -71,6 +71,13 @@ const POST_PATCH = `
     // is opaque — it's only used as a WeakMap key for dynamic-import
     // callback dispatch.  Skip if the referrer already has one OR is
     // one of lib's well-known fallback symbols.
+    // #!~debt esm-via-blob-import-symbol-fallback: edge's C++
+    // ModuleWrapCtor now sets host_defined_option_symbol natively
+    // via unofficial_napi_create_private_symbol, so this Symbol
+    // synthesis is redundant on current wasm builds.  Retained as
+    // defensive backstop for wasm builds predating that C++ fix,
+    // and for ModuleWraps created via paths that don't go through
+    // ModuleWrapCtor.  Delete once the C++ fix is universal.
     if (referrer && referrer[hostDefinedOptionSymbol] === undefined) {
       try {
         referrer[hostDefinedOptionSymbol] = Symbol('edge-esm-hdo');
@@ -136,6 +143,13 @@ const POST_PATCH = `
   try {
     var moduleWrapBinding = internalBinding('module_wrap');
     if (moduleWrapBinding && typeof moduleWrapBinding.ModuleWrap === 'function') {
+      // #!~debt esm-test-modulewrap-escape-hatch: __edgeModuleWrap
+      // exposes the module_wrap binding to user code for tests that
+      // need to construct ModuleWrap instances directly (e.g. the
+      // esm-require-preeval-* tests).  Non-Node-portable hook;
+      // production user code should not rely on it.  Retire once
+      // tests have a cleaner construction path via vm or a
+      // test-only fixture API.
       Object.defineProperty(globalThis, '__edgeModuleWrap', {
         value: moduleWrapBinding,
         writable: false,

@@ -92,6 +92,81 @@ the browser-target tree.
 
 ### Newly opened
 
+- **`esm-tla-heuristic`** (2026-05-30) — `detectTopLevelAwait` in
+  `napi-host/esm-registry.ts` is a small state-machine scanner that
+  tracks `{` `}` depth and async-function context (`async function`
+  / `async (...) =>`).  Correct for the common patterns; the old
+  regex's false-positive on `async function f() { await x; }` is
+  gone.  Remaining gaps: generators (`function*`), expression-bodied
+  arrow async functions (`async () => await x`, valid but
+  contrived), class method bodies marked async via method shorthand.
+  When the b₄ Sucrase backstop policy is active, the compile-time
+  detection in `esm-require-sucrase-backstop` is authoritative — but
+  it runs only at the b₄ runSync path, not at create_source_text
+  time.  Marker site: `napi-host/esm-registry.ts:detectTopLevelAwait`.
+
+- **`esm-via-blob-import-symbol-fallback`** (2026-05-30) —
+  `esm-via-blob-import` policy synthesizes
+  `host_defined_option_symbol` on each wrap as a defensive backstop.
+  edge's C++ `ModuleWrapCtor` now sets this symbol natively via
+  `unofficial_napi_create_private_symbol`, so the JS fallback is
+  redundant on current wasm builds.  Retain for wasm builds
+  predating the C++ fix, and for ModuleWraps created via paths that
+  bypass ModuleWrapCtor.  Delete the JS path once the C++ fix is
+  universal across all shipping wasm artifacts.  Marker site:
+  `policies/esm-via-blob-import.ts` (registerModule patch).
+
+- **`esm-test-modulewrap-escape-hatch`** (2026-05-30) —
+  `globalThis.__edgeModuleWrap` exposes the `module_wrap` binding
+  to user code for tests that need to construct ModuleWrap
+  instances directly (the `esm-require-preeval-*` tests rely on
+  it).  Non-Node-portable hook; production user code should not
+  use it.  Retire once tests have a cleaner construction path
+  via vm.SourceTextModule or a test-only fixture API.  Marker:
+  `policies/esm-via-blob-import.ts` (defineProperty on
+  globalThis.__edgeModuleWrap).
+
+- **`esm-preload-cwd-default`** (2026-05-30) —
+  `globalThis.edgejs.preloadEsm` resolves relative specifiers
+  against `process.cwd()` by default.  Node-native `import()`
+  resolves against the caller's file URL.  Right answer for
+  entry-script preloads (where no caller URL exists yet) but
+  wrong for inline calls from user code with a known parent
+  URL.  Callers can pass `options.from` to override.  Document
+  loudly; non-Node-portable default.  Marker:
+  `policies/esm-require-preeval.ts` USER_PRELUDE block.
+
+- **`esm-synthetic-plain-value-check`** (2026-05-30) —
+  `isPlainJsonValue` in `napi-host/esm-registry.ts` is a
+  hand-rolled allow-list for "safe to inline as JSON-stringified
+  literal in the synthetic-blob preamble".  Doesn't recognize
+  Date, RegExp, Map, Set, typed arrays, class instances — those
+  degrade silently to the global-lookup path (correct but less
+  efficient).  Replacement shape: structuredClone-based check
+  (try cloning + JSON.stringify-roundtrip on the clone).  Defer.
+  Marker: `napi-host/esm-registry.ts:isPlainJsonValue`.
+
+- **`esm-import-meta-resolve-exports`** (2026-05-30) — the
+  `import.meta.resolve(spec)` synthesizer in `synthesizePreamble`
+  handles statically-known specifiers, absolute URLs, and
+  relative URLs against the module's own URL.  Doesn't honor
+  package.json conditional exports, package imports, or
+  node_modules resolution.  Node's ModuleLoader.resolve handles
+  all of that; we should route there via the import-meta
+  callback when fidelity is needed.  Doesn't bite today because
+  synthesized blobs reference statically-bound deps.  Marker:
+  `napi-host/esm-registry.ts:synthesizePreamble`.
+
+- **`esm-sw-url-unbounded-registry`** (2026-05-30) — the
+  service-worker source registry for cyclic-graph ESM URLs
+  (`/_edge_esm/<id>`) is cleared per-record on `destroy`.
+  Long-running pages that build and discard many cyclic ESM
+  graphs (test runners, dev hot-reload, plugin sandboxes) grow
+  the registry without bound between destroy calls.  Need a
+  bounded LRU eviction policy, or a per-realm registry that
+  nukes on realm teardown.  Marker:
+  `napi-host/esm-registry.ts` near `nextEsmSwId`.
+
 - **`esm-dynamic-import-phase`** (2026-05-30) — ES2024 source-phase
   (`import.source('m')`) and defer-phase (`import.defer('m')`)
   dynamic imports have their keyword span correctly stripped by

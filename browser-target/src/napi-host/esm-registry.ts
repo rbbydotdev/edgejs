@@ -300,6 +300,14 @@ function precedingAsyncFunctionContext(source: string, openBrace: number): boole
 // Counter for SW URL paths.  Global so cyclic graphs across
 // independent modules don't reuse paths.  SW caches indefinitely
 // (cleared on `destroy` for bounded memory).
+//
+// #!~debt esm-sw-url-unbounded-registry: the SW source registry
+// is cleared only on per-record destroy.  Long-running pages that
+// repeatedly build and discard cyclic ESM graphs (test runners,
+// dev hot-reload, plugin sandboxes) grow the registry without
+// bound between destroy calls.  Need a bounded LRU eviction
+// policy, or a per-realm registry that gets nuked on realm
+// teardown.  Not exercised by current workloads.
 let nextEsmSwId = 1;
 
 /** Detect a cycle in the dep subgraph reachable from `root`.  Uses
@@ -563,6 +571,18 @@ async function synthesizeSwUrlsForCycle(root: ModuleRecord): Promise<string> {
  */
 function synthesizePreamble(record: ModuleRecord, specifierToUrl?: Map<string, string>): string {
   const url = JSON.stringify(record.url);
+  // #!~debt esm-import-meta-resolve-exports: import.meta.resolve(spec)
+  // here handles three cases: (1) statically-known specifier in the
+  // resolve map (synthesizePreamble's bound dep URLs), (2) absolute
+  // URL parseable by new URL(spec), (3) relative against the
+  // module's own URL.  It does NOT consult package.json conditional
+  // exports, package imports, or node_modules resolution — Node's
+  // ModuleLoader.resolve does all of that.  Real-impl path: call
+  // back to host's __edgeImportMetaFactory which can delegate to
+  // lib's loader via initializeImportMetaObjectCallback; we
+  // partially do that already (the factory branch).  Doesn't
+  // currently bite because most synthesized blobs only reference
+  // statically-resolved deps.
   // Serialize the resolve map as a JSON object so the preamble stays
   // a single line per declaration (predictable line offsets for source
   // maps).  Empty map keeps the literal compact for cycle-free
@@ -734,6 +754,13 @@ function getSyntheticExportsMap(): Map<number, unknown> {
  *  (null / boolean / number / string / plain Array / plain Object
  *  composed of the same).  Everything else routes through the
  *  global-lookup path. */
+// #!~debt esm-synthetic-plain-value-check: hand-rolled "is this
+// safe to JSON.stringify-inline into the blob preamble?" allow-list.
+// Doesn't recognize Date / RegExp / Map / Set / typed arrays / class
+// instances — those degrade silently to the global-lookup path,
+// which is correct but less efficient.  structuredClone()-based
+// detection (try cloning; if it succeeds AND JSON.stringify on the
+// clone round-trips, it's plain JSON) would be more robust.  Defer.
 function isPlainJsonValue(value: unknown): boolean {
   if (value === null) return true;
   const t = typeof value;
