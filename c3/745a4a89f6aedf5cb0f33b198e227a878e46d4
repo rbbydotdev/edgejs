@@ -1,0 +1,19 @@
+NOTES.md
+  s_92c1b47c0d6ee8::t_7d83d930e6f26a 203-210,212-236,238-239,241-244,247,251-253
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "c3745a4a89f6aedf5cb0f33b198e227a878e46d4",
+  "prompts": {},
+  "sessions": {
+    "s_92c1b47c0d6ee8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "dca99c1c-d946-4444-9a53-9ba89db5d748",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
