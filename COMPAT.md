@@ -40,7 +40,7 @@ markers (known gaps).
 **Column notes**:
 - **edgejs** (base) — most cells reflect "inherits Node's lib + C++ binding"; pure-JS modules are ✓ by default. Network, FS, and process behavior depend on the WASI(X) host. Cells marked `?(host)` mean "depends on host capability; not exhaustively tested in our CI."
 - **edgejs-web** — the browser-target distribution; cells reflect current `main` per `tests/js/`, policies, and `#!~debt` markers.
-- **StackBlitz** — no per-module matrix is published; cells reflect (a) categorical limits from their troubleshooting page, (b) known bugs from public GitHub issues, (c) ✓ for modules where real Node works and no carve-out / bug is documented. **Important**: StackBlitz user JS runs on the browser's V8, but they do NOT have V8's C++ API in their wasm (CEO Eric Simons, JS Party #178: "we don't have access to the V8 API in the browser, for security reasons... port them over in WebAssembly"). That puts a ceiling on `vm`, `v8`, and any other module that needs V8 internals — they share our limit, not Node's full surface.
+- **StackBlitz** — no per-module matrix is published. Cells reflect (a) categorical limits from their troubleshooting page, (b) known bugs from public GitHub issues, (c) statements from StackBlitz engineering in 2024-2026 (PostHog interview Sep 2025, Verschueren GitHub comments Feb 2026, Astro / Next.js framework integration commits). They run **Node 20.19.x** as of early 2026 (per Astro's Jan 2026 commit hardcoding `process.versions.webcontainer >=20.19.1`); anything requiring Node 22+ features (`node:sqlite`, `require(esm)`) is therefore not available. They explicitly use **emnapi + Emscripten** for NAPI (Sharp post 2023-08-03), don't publicly use JSPI, and have a custom Rust-based fs + Web-Workers-as-processes architecture (PostHog 2025-09-16) — this means several "Node module" cells route through their custom Rust kernel rather than Node's libuv, with the spec gaps that implies. Cells marked `?` are unknown; ✓ marks pure-JS Node modules they presumably inherit, ◐ where they've publicly admitted gaps, ✗ where they've publicly disabled (`--no-addons`) or where the Node version locks them out.
 
 ### Core
 
@@ -79,8 +79,8 @@ markers (known gaps).
 
 | Module | edgejs | edgejs-web | Cloudflare | Bun | Deno | Vercel Edge | StackBlitz | Notes |
 |---|---|---|---|---|---|---|---|---|
-| `fs` | ✓ | ◐ | ✓ | ✓ | ✓ | ✗ | ✓ | base: full fs via WASI host. edgejs-web: read via SAB ring; OPFS write deferred. Bun: 92% Node-suite |
-| `fs/promises` | ✓ | ◐ | ✓ | ✓ | ✓ | ✗ | ✓ | Same backing as `fs` |
+| `fs` | ✓ | ◐ | ✓ | ✓ | ✓ | ✗ | ◐ | base: full fs via WASI host. edgejs-web: read via SAB ring; OPFS write deferred. Bun: 92% Node-suite. StackBlitz: custom Rust fs over SAB+Atomics (PostHog 2025) — NOT Node's libuv fs; presents Node-fs surface but with spec gaps that come from re-implementing |
+| `fs/promises` | ✓ | ◐ | ✓ | ✓ | ✓ | ✗ | ◐ | Same backing as `fs` |
 
 ### Network
 
@@ -123,12 +123,12 @@ markers (known gaps).
 
 | Module | edgejs | edgejs-web | Cloudflare | Bun | Deno | Vercel Edge | StackBlitz | Notes |
 |---|---|---|---|---|---|---|---|---|
-| `async_hooks` (ALS) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | AsyncLocalStorage works |
-| `async_hooks` (promise hooks) | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | Universally weak (`#!~debt` no-op) |
-| `diagnostics_channel` | ✓ | ? | ✓ | ✓ | ✓ | ✗ | ✓ | base: pure JS, inherits Node. edgejs-web: needs verification |
+| `async_hooks` (ALS) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ◐ | AsyncLocalStorage works. StackBlitz: works for `.then()` chains, NOT for native `async/await` (Sam Verschueren on issue #1169, 2026-02-12: "we can't know when a promise is scheduled or resolved" without transpilation) — same constraint applies to us |
+| `async_hooks` (promise hooks) | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | Universally weak (`#!~debt` no-op). StackBlitz publicly admits this same gap |
+| `diagnostics_channel` | ✓ | ? | ✓ | ✓ | ✓ | ✗ | ? | base: pure JS, inherits Node. StackBlitz: untested but inherits Node 20 |
 | `inspector` | ✗ | ✗ | ✗ | ⊘ | ✗ | ✗ | ✗ | Rare in production |
 | `trace_events` | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | Universally skipped |
-| `v8` | ◐ | ◐ | ⊘ | ◐ | ◐ | ✓ | ◐ | `v8.serialize`/`deserialize` shipped (real wire format); other APIs stub. StackBlitz: no V8 C++ API access (per CEO), so v8.getHeapStatistics etc. would be stubbed/approximated |
+| `v8` | ◐ | ◐ | ⊘ | ◐ | ◐ | ✓ | ? | `v8.serialize`/`deserialize` shipped (real wire format); other APIs stub. StackBlitz: no public statement; unknown |
 
 ### Compression
 
@@ -140,9 +140,9 @@ markers (known gaps).
 
 | Module | edgejs | edgejs-web | Cloudflare | Bun | Deno | Vercel Edge | StackBlitz | Notes |
 |---|---|---|---|---|---|---|---|---|
-| `module` (CJS) | ✓ | ✓ | ◐ | ✓ | ✓ | ✗ | ✓ | Standard CJS works |
-| `module` (ESM) | ◐ | ◐ | ◐ | ✓ | ✓ | ✗ | ✓ | base: depends on host import. edgejs-web: full `import` + dynamic + TLA + cycles via blob trampoline; `require(esm)` partial via b₁/b₄ (NOT real wasm-V8 ModuleWrap) |
-| `vm` | ◐ | ◐ | ⊘ | ◐ | ◐ | ✗ | ◐ | edgejs-web: `vm.Script` via `new Function`; `vm.SourceTextModule` works via ESM bridge. StackBlitz: bounded by same V8-from-JS surface as us — no break-on-sigint, no timeout, no real Context isolation (CEO Eric Simons confirmed "no access to V8 API" on JS Party #178) |
+| `module` (CJS) | ✓ | ✓ | ◐ | ✓ | ✓ | ✗ | ✓ | Standard CJS works. StackBlitz uses custom TS resolver (PostHog 2025-09-16) |
+| `module` (ESM) | ◐ | ◐ | ◐ | ✓ | ✓ | ✗ | ◐ | base: depends on host import. edgejs-web: full `import` + dynamic + TLA + cycles via blob trampoline; `require(esm)` partial via b₁/b₄. StackBlitz: ESM works but `require(esm)` (Node 22.12+) NOT available — still on Node 20.19 in 2026 |
+| `vm` | ◐ | ◐ | ⊘ | ◐ | ◐ | ✗ | ? | edgejs-web: `vm.Script` via `new Function`; `vm.SourceTextModule` works via ESM bridge. StackBlitz: no public statement in 2024-2026; unknown but presumably same V8-bounded ceiling we have (their 2021 V8 quote not refuted) |
 
 ### Niche
 
@@ -150,14 +150,58 @@ markers (known gaps).
 |---|---|---|---|---|---|---|---|---|
 | `repl` | ?(host) | — | ⊘ | ✗ | ✗ | ✗ | ✓ | base: depends on host terminal. edgejs-web: no terminal in browser. StackBlitz: xterm-backed |
 | `sea` | — | — | ✗ | ✗ | ✗ | ✗ | ✗ | Not applicable |
-| `sqlite` | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✓ | Would need Wasm SQLite binding. StackBlitz: Node 22.5+ ships it |
+| `sqlite` | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | `node:sqlite` requires Node 22.5+. StackBlitz: still on Node 20.19 as of 2026, so NOT available |
 | `wasi` | — | — | ✗ | ◐ | ✗ | — | ✓ | We ARE wasi |
 | `domain` | ✓ | ? | ⊘ | ◐ | ✗ | ✗ | ✓ | Deprecated in Node; works in real Node |
-| `Native addons (.node)` | ?(host) | — | — | — | — | — | ✗ | base: depends on host addon support. edgejs-web: would need wasm-compiled addons. StackBlitz: `--no-addons` |
+| `Native addons (.node)` | ?(host) | — | — | — | — | — | ✗ | base: depends on host addon support. edgejs-web: would need wasm-compiled addons. StackBlitz: `--no-addons` confirmed still in 2026 — they ship wasm ports (Sharp, etc.) via emnapi + Emscripten instead |
 
 ## How we compare
 
-**Closest in architectural shape**: Bun, Deno run real V8 from their own native binary — they have full V8 C++ API access. StackBlitz runs Node's C/C++ in wasm but **without V8 in the wasm** — they bridge V8 calls back to the browser's JS, same surface ceiling we have. Cloudflare Workers and Vercel Edge are intentionally minimal serverless shapes.
+**Closest in architectural shape**: Bun, Deno run real V8 from their own native binary — they have full V8 C++ API access. StackBlitz runs Node's C/C++ in wasm but **without V8 in the wasm** (Eric Simons JS Party #178, 2021; never refuted in 2024-2026 sources). They bridge V8 calls back to the browser's JS — same surface ceiling we have. Cloudflare Workers and Vercel Edge are intentionally minimal serverless shapes.
+
+## What we learn from StackBlitz's 2025-2026 architecture
+
+This section is based on the deep-dive research dispatched 2026-05-30 — primary sources cited inline. Headline: their architecture has NOT meaningfully changed since 2021. What changed is polish + a pivot onto Bolt.new on top of the same runtime.
+
+**What they do** (PostHog "How bolt.new works" 2025-09-16, with CTO Albert Pai + founding engineer Dominic Elm):
+- File system: custom Rust over SharedArrayBuffer + Atomics (not Node's libuv fs)
+- Process model: Web Workers as processes with a custom Rust kernel
+- Networking: Service Worker virtual localhost; WebSocket tunneling for raw TCP
+- Module system: custom Node-style ESM/CJS resolver in TypeScript (not Node's loader)
+- Shell: custom JSH (TypeScript shell), not bundled Bash
+- NAPI: emnapi + Emscripten with `WASM_ASYNC_COMPILATION=0` (Sharp post 2023)
+- Threading: pthreads via Web Workers + SharedArrayBuffer + wasm-bindgen
+- Node version: **20.19.x** as of early 2026 (no `require(esm)`, no `node:sqlite`)
+- async_hooks: AsyncLocalStorage works for `.then()` chains; **explicitly broken for native `async/await`** per Sam Verschueren on issue #1169 (2026-02-12): "we can't know when a promise is scheduled or resolved" without transpilation
+- Native addons: `--no-addons` still in 2026; pure-JS or wasm-port-via-emnapi the only paths
+
+**Decisions we should EMULATE**:
+1. **Custom TS resolver over Node's loader** — we already do this in `browser-target/src/policies/`; confirmed correct direction.
+2. **Service-Worker-served stable module URLs** for cyclic-graph cases — we already did this in commit `c0b22aa5`; PostHog confirms their preview/module bridging is still this pattern.
+3. **Sync wasm compile (`WASM_ASYNC_COMPILATION=0` equivalent)** — avoids worker-pool deadlocks during native module init. Worth checking our emnapi config.
+4. **Be publicly honest about gaps**. Verschueren's Feb 2026 admission that AsyncLocalStorage doesn't work for native `async/await` is the most candid framing we've seen from any Node-in-browser project. Our `NOTES.md` debt catalog is in this spirit; keep it.
+5. **emnapi + Emscripten for native modules** — pragmatic path of least surprise for porting addons. If we add native-module support, this is the path.
+
+**Decisions we should AVOID**:
+1. **Lagging the Node version by 2-3 years.** They're on Node 20 in mid-2026 when 24 is LTS. Framework authors are forced to write detect-and-relax shims (Astro's Jan 2026 `process.versions.webcontainer >=20.19.1` is the smoking gun). **Our full-Node-compat-first principle is correct.**
+2. **Promising native addons while shipping `--no-addons`** — three years on, still their position. Be honest.
+3. **Not publishing a per-module compat matrix.** Their lack of one creates documented user frustration (issues #1978, #2065, #1169). This COMPAT.md is intentionally different.
+
+**Where we genuinely lead**:
+- ESM `require(esm)` partial support via b₁/b₄ — StackBlitz doesn't have it (Node version locked).
+- Real V8 wire format `v8.serialize`/`deserialize` — neither StackBlitz nor most others ship this.
+- JSPI — StackBlitz hasn't publicly used it. We have a real architectural advantage here for sync-suspending APIs.
+
+**Where they genuinely lead**:
+- FS / network breadth — they shipped these as custom Rust impls year 1; we deferred.
+- Practical npm install / framework integration story — Bolt.new gives them real-world feedback loops we don't have.
+- Process model — Web Workers as processes is shipping; our `worker-threads-per-thread` is phase 1.
+
+**Genuinely unknown** (research couldn't find):
+- Their `vm` module specifics — no 2024+ source addresses it.
+- Whether they use JSPI under the hood for anything.
+- Their child_process internals when called from inside a wasm Node binary.
+- Whether `worker_threads.Worker` is real shared-memory or sequential simulation in 2026.
 
 This matters for modules that need V8 internals:
 - **edgejs / edgejs-web / StackBlitz**: all bounded by what V8 exposes to JS. `vm` break-on-sigint, `vm` timeout, real `vm.Context` isolation, `v8` heap APIs — none of us can do these without going to extreme lengths (iframes for context isolation, etc.).
@@ -208,16 +252,32 @@ For other runtimes, status comes from their published compat tables (sources bel
 - [Deno Node Test Viewer (live)](https://node-test-viewer.deno.dev/) — live aggregate pass rate dashboard
 - [Vercel Edge Runtime APIs](https://edge-runtime.vercel.app/features/available-apis) — short allowlist (Edge Functions deprecated; Edge Middleware only)
 
-**StackBlitz / WebContainers — no per-module compat matrix is published**:
+**StackBlitz / WebContainers — no per-module compat matrix is published**.
+
+Primary 2024-2026 sources:
+- [PostHog "How bolt.new works"](https://newsletter.posthog.com/p/from-0-to-40m-arr-inside-the-tech) 2025-09-16 — direct quotes from CTO Albert Pai + founding engineer Dominic Elm. Most architecturally explicit recent source.
 - [WebContainers Troubleshooting](https://webcontainers.io/guides/troubleshooting) — categorical limits (no native addons, no raw TCP/UDP, no custom SW)
 - [WebContainers AI-Agents test suite](https://webcontainers.io/guides/ai-agents) — framework-first behavioral tests; Node built-ins are one bucket
 - [StackBlitz Developer FAQ](https://developer.stackblitz.com/guides/user-guide/general-faqs)
-- GitHub issues are the de facto tracker:
-  - [#31](https://github.com/stackblitz/webcontainer-core/issues/31) `crypto.createHmac` broken since 2021
-  - [#1571](https://github.com/stackblitz/webcontainer-core/issues/1571) AES-256-CBC broken (Oct 2024)
-  - [#365](https://github.com/stackblitz/webcontainer-core/issues/365) `worker_threads.unref` bug
-  - [#1558](https://github.com/stackblitz/webcontainer-core/issues/1558) Node version pinning unsupported
-- [Astro WebContainer post](https://blog.stackblitz.com/posts/astro-support/) — confirms "synchronous message passing is not supported"
+- [Joan Varvenne interview "Beyond Docker"](https://blog.stackblitz.com/posts/beyond-docker-webcontainers-and-the-future-of-web-dev-interview-with-joan-varvenne/) 2024-05-31
+
+GitHub issues:
+- [#31](https://github.com/stackblitz/webcontainer-core/issues/31) `crypto.createHmac` broken since 2021
+- [#1571](https://github.com/stackblitz/webcontainer-core/issues/1571) AES-256-CBC broken (Oct 2024)
+- [#365](https://github.com/stackblitz/webcontainer-core/issues/365) `worker_threads.unref` bug (fixed)
+- [#1558](https://github.com/stackblitz/webcontainer-core/issues/1558) Node version pinning unsupported (Oct 2024, Node 18.20.3 era)
+- [#1169](https://github.com/stackblitz/webcontainer-core/issues/1169) AsyncLocalStorage — Verschueren comment 2026-02-12 admits `async/await` gap
+- [#1767](https://github.com/stackblitz/webcontainer-core/issues/1767) Node 20 bump signal (March 2025)
+- [#1978](https://github.com/stackblitz/webcontainer-core/issues/1978) Next.js ≥15.5/16 broken (Sep 2025–Feb 2026)
+- [#2065](https://github.com/stackblitz/webcontainer-core/issues/2065) Turbopack wasm bindings broken (March 2026)
+
+Architecture posts (2023, still authoritative per 2025-2026 research):
+- [Bringing Sharp to WebAssembly](https://blog.stackblitz.com/posts/bringing-sharp-to-wasm-and-webcontainers/) 2023-08-03 — confirms emnapi + Emscripten, `WASM_ASYNC_COMPILATION=0`
+- [The Atomic Waltz](https://blog.stackblitz.com/posts/the-atomic-waltz/) 2023-05-11 — SharedArrayBuffer threading details
+- [Destroyer of Threads](https://blog.stackblitz.com/posts/thread-destroyer/) 2023-03-07 — pthreads via Web Workers + wasm-bindgen
+
+External calibration (Node version detect-and-relax in framework code):
+- Astro Jan 2026 commit hardcoding `process.versions.webcontainer >=20.19.1`
 
 **edge.js (this repo)**:
 - `tests/js/*` — green tests indicate working API surface
