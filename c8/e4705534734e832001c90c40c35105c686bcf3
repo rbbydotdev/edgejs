@@ -1,0 +1,23 @@
+COMPAT.md
+  s_92c1b47c0d6ee8::t_8c89ec91d9c18c 45,55-59,65-69,71-75,77-81,84-88,96-100,104-108,112-116,121-125,132-136,138-142,146-150,156
+  s_92c1b47c0d6ee8::t_76aeccf67c7523 131
+  s_92c1b47c0d6ee8::t_60cd7f82ac63d5 43
+  s_92c1b47c0d6ee8::t_9d29c95c0c65ef 160-166
+  s_92c1b47c0d6ee8::t_41718bbec2c064 145
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "c8e4705534734e832001c90c40c35105c686bcf3",
+  "prompts": {},
+  "sessions": {
+    "s_92c1b47c0d6ee8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "dca99c1c-d946-4444-9a53-9ba89db5d748",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
