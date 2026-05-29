@@ -200,26 +200,57 @@ the browser-target tree.
   namespace>) before user CJS runs.  The cache is filled two ways:
   (1) `globalThis.edgejs.preloadEsm([...specifiers])` — explicit
   user-facing API for the long tail; (2) auto-scan of the entry
-  CJS source for literal `require('./x.mjs')` patterns + transitive
-  CJS walk via `fs.readFileSync` (patched into
-  `internal/process/execution.js:evalScript`).  Our
+  CJS source for literal `require(...)` patterns + transitive CJS
+  walk via `fs.readFileSync` (patched into
+  `internal/process/execution.js:evalScript`).  As of 2026-05-30
+  the scanner uses Node-spec resolution
+  (`createRequire(parent).resolve(spec)`, free node_modules walk +
+  exports field) and Node-spec classification (extension +
+  `LOOKUP_PACKAGE_SCOPE` walk to honor `"type":"module"` on `.js`
+  files, stopping at the `node_modules` boundary).  Our
   `unofficial_napi_module_wrap_evaluate_sync` handler checks the
-  cache before throwing.  Covers literal-relative-specifier cases
-  (~70% of real `require(esm)`).  Misses computed/dynamic
-  specifiers and runtime-discovered files; those still throw
-  `ERR_REQUIRE_ASYNC_MODULE` with the remediation message pointing
-  at `edgejs.preloadEsm`.  Marker sites:
+  cache before throwing.
+  **Coverage in practice**: any `require(literal-string)` whose
+  resolution would have worked at runtime is now reachable by the
+  scanner — including bare specifiers (`require('chalk')`),
+  scoped (`require('@org/pkg')`), subpath (`require('lodash/get')`),
+  and `.js` files in `"type":"module"` packages.  Cases that still
+  miss: computed/dynamic specifiers (`require(name)`,
+  `` require(`./${x}`) ``), runtime-discovered files (`fs.readdir +
+  require`), eval/new-Function-constructed requires, monkey-patched
+  require chains, and conditional branches the scanner explores
+  fully but whose targets weren't predictable at scan time.  The
+  miss rate depends entirely on how dynamic the codebase is — pure
+  static-require code is essentially 100% covered; plugin-heavy
+  frameworks with runtime composition hit the long tail more often.
+  Misses still throw `ERR_REQUIRE_ASYNC_MODULE` with a remediation
+  message pointing at `edgejs.preloadEsm`.
+  **Plus b₄ Sucrase backstop** (opt-in): bumps coverage further by
+  catching cache-miss cases at runtime — transforms the `.mjs`
+  source via Sucrase's `imports` transform and evals as CJS in a
+  constructed context.  Fake-ESM semantics (plain object instead of
+  Module Namespace Object); TLA modules still throw (detected via
+  compile-time SyntaxError, no false positives).  Suitable when
+  approximate ESM semantics are acceptable for the dynamic-require
+  long tail.
+  Marker sites:
   `napi-host/unofficial.ts:unofficial_napi_module_wrap_evaluate_sync`,
-  `policies/esm-require-preeval.ts`.  Tests:
+  `policies/esm-require-preeval.ts`,
+  `policies/esm-require-sucrase-backstop.ts`.  Tests:
   `tests/js/esm-require-preeval-explicit.js`,
-  `tests/js/esm-require-preeval-api.js`.
-  **Full resolution** still requires either (a) moving user JS into
+  `tests/js/esm-require-preeval-api.js`,
+  `tests/js/esm-require-sucrase-backstop.js`,
+  `tests/js/esm-require-sucrase-tla-still-throws.js`.
+  **Full resolution** would require either (a) moving user JS into
   wasm-V8 (undoes F-6, regresses microtask tests), or (b₂) wasm-V8
   ModuleWrap C++ binding port (~500-1500 LOC C++, partial
-  isolate split for module bodies, ~weeks). See
+  isolate split for module bodies). See
   `joyeecheung.github.io/blog/2025/12/30/require-esm-in-node-js-from-experiment-to-stability/`
   for Node's upstream implementation using V8's
   `v8::Module::Evaluate` (sync-resolved for non-TLA graphs).
+  StackBlitz inherits this for free because they run a single
+  browser-V8 isolate (no wasm-embedded V8) — see session research
+  on their architecture.  Not currently planned for edge.
 
 - ~~`esm-cyclic-live-bindings`~~ — **RESOLVED 2026-05-29.** Path (a)
   shipped: `synthesizeUrl` in `napi-host/esm-registry.ts` detects
