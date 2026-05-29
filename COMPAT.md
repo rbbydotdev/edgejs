@@ -1,11 +1,23 @@
 # Node.js Built-in Module Compatibility
 
-Living document tracking which Node.js built-in modules work in edge.js's
-browser-target, with a side-by-side reference against other Node-compat
-runtimes. Goal: be honest about what works, what's partial, what's stubbed,
-and what we don't intend to ship.
+Living document tracking which Node.js built-in modules work across
+edge.js's deployment surfaces, with a side-by-side reference against
+other Node-compat runtimes. Goal: be honest about what works, what's
+partial, what's stubbed, and what we don't intend to ship.
 
 **Last updated**: 2026-05-30.
+
+## edge.js's two surfaces
+
+| Surface | What it is | How JS executes |
+|---|---|---|
+| **edgejs** (base) | The upstream Node-fork: `lib/`, `src/`, `deps/`, `napi/`. Builds to `edgejs.wasm` runnable in any WASI(X)-compliant host (wasmer-CLI lane today). Reuses Node's stdlib; the host is real-OS-shaped. | Real V8 inside wasm |
+| **edgejs-web** (browser-target) | The browser distribution: `browser-target/`. Adds a JS-side host (napi-host, wasi-shim, policies) that runs the same wasm under a browser DedicatedWorker via JSPI. | User JS routes through host V8 via `napi_run_script` (F-6 lever) |
+
+Both share the same lib/. Differences come from (a) what the host can
+provide (real OS vs browser sandbox) and (b) which policies are active.
+The columns below distinguish them because the same Node module can
+work differently depending on which surface answers the syscalls.
 
 ## How to read this
 
@@ -25,77 +37,74 @@ markers (known gaps).
 
 ## Side-by-side compat
 
-**StackBlitz column note**: WebContainers runs a real Node binary
-under WASI in a Service Worker, so most modules work by default
-unless an architectural carve-out or known bug applies. They
-publish no per-module matrix; cells reflect (a) categorical limits
-from their troubleshooting page, (b) known bugs from their public
-GitHub issue tracker, (c) `(assumed ✓)` for modules where Node
-itself would work and no carve-out / bug is documented.
+**Column notes**:
+- **edgejs** (base) — most cells reflect "inherits Node's lib + C++ binding"; pure-JS modules are ✓ by default. Network, FS, and process behavior depend on the WASI(X) host. Cells marked `?(host)` mean "depends on host capability; not exhaustively tested in our CI."
+- **edgejs-web** — the browser-target distribution; cells reflect current `main` per `tests/js/`, policies, and `#!~debt` markers.
+- **StackBlitz** — no per-module matrix is published; cells reflect (a) categorical limits from their troubleshooting page, (b) known bugs from public GitHub issues, (c) ✓ for modules where real Node works and no carve-out / bug is documented.
 
-| Module | edge.js | Cloudflare | Bun | Deno | Vercel Edge | StackBlitz | Notes |
-|---|---|---|---|---|---|---|---|
-| **Core** | | | | | | | |
-| `assert` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Pure JS; Bun: 100% Node-suite |
-| `buffer` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Heavy work + `buffer-wasm-aliased` policy |
-| `console` | ✓ | ◐ | ✓ | ✓ | ✓ | ✓ | Routed to host-worker logs |
-| `events` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Pure JS; Bun: 100% Node-suite |
-| `process` | ◐ | ◐ | ◐ | ◐ | ◐ | ✓ | `process-methods-wasm-state` policy carries it; some fields stub |
-| `util` | ◐ | ✓ | ◐ | ✓ | ◐ | ✓ | `util.types.isProxy` partial (#!~debt) |
-| **Strings & paths** | | | | | | | |
-| `path` | ✓ | ✓ | ✓ | ✓ | — | ✓ | Pure JS; Bun: 100% Node-suite |
-| `querystring` | ✓ | ✓ | ✓ | ✓ | — | ✓ | Pure JS; Bun: 100% Node-suite |
-| `string_decoder` | ✓ | ✓ | ✓ | ✓ | — | ✓ | Pure JS; Bun: 100% Node-suite |
-| `url` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Lib + native URL cache for blob: trampoline |
-| `punycode` | ✓ | ✓ | ✓ | ✓ | — | ✓ | Pure JS; Bun: 100% Node-suite |
-| **Streams** | | | | | | | |
-| `stream` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Lib code |
-| **Crypto** | | | | | | | |
-| `crypto` | ✓ | ✓ | ◐ | ✓ | ✓ | ◐ | Edge: lib + multiple host-routed policies. StackBlitz has known broken algos: `createHmac` (issue #31, since 2021), AES-256-CBC (issue #1571, Oct 2024) |
-| **Filesystem** | | | | | | | |
-| `fs` | ◐ | ✓ | ✓ | ✓ | ✗ | ✓ | Edge: read via SAB ring; OPFS write deferred. Bun: 92% Node-suite. StackBlitz: full fs from real Node |
-| `fs/promises` | ◐ | ✓ | ✓ | ✓ | ✗ | ✓ | Same backing as `fs` |
-| **Network** | | | | | | | |
-| `http` | ◐ | ✓ | ◐ | ◐ | — | ✓ | Edge: inbound via SW bridge; outbound throws. Bun: outgoing client body buffered (no streaming). StackBlitz: real Node http |
-| `https` | ◐ | ✓ | ◐ | ◐ | — | ✓ | Edge: delegated to http; TLS context inspection works (`tls-info`, `tls-secure-context` tests pass) |
-| `http2` | ? | ◐ | ◐ | ◐ | — | ✓ | Edge: untested. Bun: 95% gRPC-suite (not Node-suite) |
-| `net` | ⊘ | ✓ | ✓ | ◐ | — | ◐ | Edge: `sock_connect` returns ENOSYS. StackBlitz: TCP listen works for localhost, raw TCP to outside world blocked per troubleshooting |
-| `dgram` | ✗ | ✓ | ✓ | ◐ | — | ✗ | Edge: UDP not implemented. Bun: >90% Node-suite. StackBlitz: no UDP per troubleshooting |
-| `tls` | ◐ | ◐ | ◐ | ◐ | — | ◐ | Universally partial — full TLS in browser is hard |
-| `dns` | ? | ✓ | ✓ | ◐ | ✗ | ✓ | Edge: lib code exists, untested. Bun: >90% Node-suite |
-| **Concurrency** | | | | | | | |
-| `worker_threads` | ◐ | — | ◐ | ◐ | — | ◐ | Edge: phase 1 via `worker-threads-per-thread` policy. StackBlitz: `unref` bug (#365), synchronous message passing not supported (Astro blog confirms esbuild forced to use child_process) |
-| `child_process` | ◐ | — | ◐ | ✓ | — | ✓ | Edge: `child-process-via-executor` policy. StackBlitz: real Node child_process |
-| `cluster` | — | — | ◐ | ✗ | — | — | Architecturally impossible: no socket-sharing across processes in browser |
-| **Time** | | | | | | | |
-| `timers` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Lib + libuv shim |
-| `timers/promises` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Lib code |
-| `perf_hooks` | ◐ | ◐ | ◐ | ◐ | — | ✓ | Edge: partial like everyone — needs audit |
-| **OS / terminal** | | | | | | | |
-| `os` | ◐ | ◐ | ✓ | ◐ | — | ✓ | Edge: lib code; some OS-specific values stubbed. Bun: 100% Node-suite |
-| `tty` | ⊘ | ⊘ | ✓ | ◐ | — | ⊘ | Likely stub — no real terminal in browser |
-| `readline` | ? | ⊘ | ✓ | ✓ | — | ✓ | Edge: depends on stdin handling, untested |
-| `readline/promises` | ? | ⊘ | ✓ | ✓ | — | ✓ | Same |
-| **Debug / instrumentation** | | | | | | | |
-| `async_hooks` (ALS) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | AsyncLocalStorage works |
-| `async_hooks` (promise hooks) | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | Universally weak (`#!~debt` no-op) |
-| `diagnostics_channel` | ? | ✓ | ✓ | ✓ | ✗ | ✓ | Edge: lib code exists; needs verification |
-| `inspector` | ✗ | ✗ | ⊘ | ✗ | ✗ | ✗ | Rare in production |
-| `trace_events` | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | Universally skipped |
-| `v8` | ◐ | ⊘ | ◐ | ◐ | ✓ | ✓ | Edge: `v8.serialize` / `deserialize` shipped (real wire format); other APIs stub. StackBlitz: real Node V8 module |
-| **Compression** | | | | | | | |
-| `zlib` | ✓ | ✓ | ✓ | ✓ | — | ✓ | `zlib-writestate-wasm` policy; `zlib-bundled-gzip` test green. Bun: 98% Node-suite |
-| **Module system** | | | | | | | |
-| `module` (CJS) | ✓ | ◐ | ✓ | ✓ | ✗ | ✓ | Standard CJS works |
-| `module` (ESM) | ◐ | ◐ | ✓ | ✓ | ✗ | ✓ | Edge: full `import` + dynamic + TLA + cycles via blob trampoline; `require(esm)` partial via b₁ cache + b₄ Sucrase backstop (NOT real wasm-V8 ModuleWrap) |
-| `vm` | ◐ | ⊘ | ◐ | ◐ | ✗ | ✓ | Edge: `vm.Script` via `new Function`; `vm.SourceTextModule` works via ESM bridge. StackBlitz: real V8 vm module |
-| **Niche** | | | | | | | |
-| `repl` | — | ⊘ | ✗ | ✗ | ✗ | ✓ | Edge: no terminal in browser. StackBlitz: works in their xterm-backed terminal |
-| `sea` | — | ✗ | ✗ | ✗ | ✗ | ✗ | Single-executable apps — not applicable |
-| `sqlite` | ✗ | ✗ | ✗ | ✗ | ✗ | ✓ | Would need Wasm SQLite binding. StackBlitz: included since Node 22.5 ships it |
-| `wasi` | — | ✗ | ◐ | ✗ | — | ✓ | Edge: we ARE wasi. StackBlitz: real Node WASI |
-| `domain` | ? | ⊘ | ◐ | ✗ | ✗ | ✓ | Deprecated in Node, but still works in real Node |
-| **Native addons (.node)** | — | — | — | — | — | ✗ | StackBlitz: `--no-addons` per troubleshooting. Edge: would need wasm-compiled addons, not supported today |
+| Module | edgejs | edgejs-web | Cloudflare | Bun | Deno | Vercel Edge | StackBlitz | Notes |
+|---|---|---|---|---|---|---|---|---|
+| **Core** | | | | | | | | |
+| `assert` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Pure JS; Bun: 100% Node-suite |
+| `buffer` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | edgejs-web: `buffer-wasm-aliased` policy carries it |
+| `console` | ✓ | ✓ | ◐ | ✓ | ✓ | ✓ | ✓ | edgejs-web: routed to host-worker logs |
+| `events` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Pure JS; Bun: 100% Node-suite |
+| `process` | ◐ | ◐ | ◐ | ◐ | ◐ | ◐ | ✓ | edgejs-web: `process-methods-wasm-state` policy; some fields stub. base: depends on host providing argv/env |
+| `util` | ◐ | ◐ | ✓ | ◐ | ✓ | ◐ | ✓ | `util.types.isProxy` partial (#!~debt) |
+| **Strings & paths** | | | | | | | | |
+| `path` | ✓ | ✓ | ✓ | ✓ | ✓ | — | ✓ | Pure JS; Bun: 100% Node-suite |
+| `querystring` | ✓ | ✓ | ✓ | ✓ | ✓ | — | ✓ | Pure JS; Bun: 100% Node-suite |
+| `string_decoder` | ✓ | ✓ | ✓ | ✓ | ✓ | — | ✓ | Pure JS; Bun: 100% Node-suite |
+| `url` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | edgejs-web: native URL cache for blob: trampoline |
+| `punycode` | ✓ | ✓ | ✓ | ✓ | ✓ | — | ✓ | Pure JS; Bun: 100% Node-suite |
+| **Streams** | | | | | | | | |
+| `stream` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Lib code |
+| **Crypto** | | | | | | | | |
+| `crypto` | ✓ | ✓ | ✓ | ◐ | ✓ | ✓ | ◐ | edgejs-web: lib + `crypto-host-random`, `crypto-via-subtle`, host-worker hash/HMAC. StackBlitz: `createHmac` broken (#31, 2021), AES-256-CBC broken (#1571, Oct 2024) |
+| **Filesystem** | | | | | | | | |
+| `fs` | ✓ | ◐ | ✓ | ✓ | ✓ | ✗ | ✓ | base: full fs via WASI host. edgejs-web: read via SAB ring; OPFS write deferred. Bun: 92% Node-suite |
+| `fs/promises` | ✓ | ◐ | ✓ | ✓ | ✓ | ✗ | ✓ | Same backing as `fs` |
+| **Network** | | | | | | | | |
+| `http` | ?(host) | ◐ | ✓ | ◐ | ◐ | — | ✓ | base: depends on WASI host network. edgejs-web: inbound via SW; outbound throws by default. Bun: outgoing client body buffered |
+| `https` | ?(host) | ◐ | ✓ | ◐ | ◐ | — | ✓ | Delegated to http; TLS context inspection works in edgejs-web |
+| `http2` | ?(host) | ? | ◐ | ◐ | ◐ | — | ✓ | Untested; Bun: 95% gRPC-suite (not Node-suite) |
+| `net` | ?(host) | ⊘ | ✓ | ✓ | ◐ | — | ◐ | base: WASIX has TCP. edgejs-web: `sock_connect` returns ENOSYS. StackBlitz: localhost only |
+| `dgram` | ?(host) | ✗ | ✓ | ✓ | ◐ | — | ✗ | UDP — edgejs-web not implemented; StackBlitz no UDP. Bun: >90% Node-suite |
+| `tls` | ◐ | ◐ | ◐ | ◐ | ◐ | — | ◐ | Universally partial |
+| `dns` | ?(host) | ? | ✓ | ✓ | ◐ | ✗ | ✓ | base: depends on WASI host; edgejs-web untested. Bun: >90% Node-suite |
+| **Concurrency** | | | | | | | | |
+| `worker_threads` | ?(host) | ◐ | — | ◐ | ◐ | — | ◐ | base: depends on WASI threads. edgejs-web: phase 1 via `worker-threads-per-thread`. StackBlitz: `unref` bug (#365), no synchronous message passing |
+| `child_process` | ?(host) | ◐ | — | ◐ | ✓ | — | ✓ | base: depends on host proc spawning. edgejs-web: `child-process-via-executor` policy |
+| `cluster` | ?(host) | — | — | ◐ | ✗ | — | — | base: depends on host fd-passing. edgejs-web: architecturally impossible |
+| **Time** | | | | | | | | |
+| `timers` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Lib + libuv shim |
+| `timers/promises` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Lib code |
+| `perf_hooks` | ◐ | ◐ | ◐ | ◐ | ◐ | — | ✓ | Partial like everyone — needs audit |
+| **OS / terminal** | | | | | | | | |
+| `os` | ✓ | ◐ | ◐ | ✓ | ◐ | — | ✓ | base: full os from WASI. edgejs-web: some values stubbed. Bun: 100% Node-suite |
+| `tty` | ?(host) | ⊘ | ⊘ | ✓ | ◐ | — | ⊘ | base: depends on host stdin; edgejs-web stubbed |
+| `readline` | ?(host) | ? | ⊘ | ✓ | ✓ | — | ✓ | base/edgejs-web: depends on stdin handling |
+| `readline/promises` | ?(host) | ? | ⊘ | ✓ | ✓ | — | ✓ | Same |
+| **Debug / instrumentation** | | | | | | | | |
+| `async_hooks` (ALS) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | AsyncLocalStorage works |
+| `async_hooks` (promise hooks) | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | Universally weak (`#!~debt` no-op) |
+| `diagnostics_channel` | ✓ | ? | ✓ | ✓ | ✓ | ✗ | ✓ | base: pure JS, inherits Node. edgejs-web: needs verification |
+| `inspector` | ✗ | ✗ | ✗ | ⊘ | ✗ | ✗ | ✗ | Rare in production |
+| `trace_events` | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | Universally skipped |
+| `v8` | ◐ | ◐ | ⊘ | ◐ | ◐ | ✓ | ✓ | `v8.serialize`/`deserialize` shipped (real wire format); other APIs stub |
+| **Compression** | | | | | | | | |
+| `zlib` | ✓ | ✓ | ✓ | ✓ | ✓ | — | ✓ | edgejs-web: `zlib-writestate-wasm` policy. Bun: 98% Node-suite |
+| **Module system** | | | | | | | | |
+| `module` (CJS) | ✓ | ✓ | ◐ | ✓ | ✓ | ✗ | ✓ | Standard CJS works |
+| `module` (ESM) | ◐ | ◐ | ◐ | ✓ | ✓ | ✗ | ✓ | base: depends on host import. edgejs-web: full `import` + dynamic + TLA + cycles via blob trampoline; `require(esm)` partial via b₁/b₄ (NOT real wasm-V8 ModuleWrap) |
+| `vm` | ◐ | ◐ | ⊘ | ◐ | ◐ | ✗ | ✓ | edgejs-web: `vm.Script` via `new Function`; `vm.SourceTextModule` works via ESM bridge |
+| **Niche** | | | | | | | | |
+| `repl` | ?(host) | — | ⊘ | ✗ | ✗ | ✗ | ✓ | base: depends on host terminal. edgejs-web: no terminal in browser. StackBlitz: xterm-backed |
+| `sea` | — | — | ✗ | ✗ | ✗ | ✗ | ✗ | Not applicable |
+| `sqlite` | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✓ | Would need Wasm SQLite binding. StackBlitz: Node 22.5+ ships it |
+| `wasi` | — | — | ✗ | ◐ | ✗ | — | ✓ | We ARE wasi |
+| `domain` | ✓ | ? | ⊘ | ◐ | ✗ | ✗ | ✓ | Deprecated in Node; works in real Node |
+| **Native addons (.node)** | ?(host) | — | — | — | — | — | ✗ | base: depends on host addon support. edgejs-web: would need wasm-compiled addons. StackBlitz: `--no-addons` |
 
 ## How we compare
 
