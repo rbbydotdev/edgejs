@@ -122,18 +122,179 @@ export function extractModuleRequests(source: string): ModuleRequest[] {
   return out;
 }
 
-/** Detect top-level await heuristically. False positives are fine
- *  (we revise after evaluate); false negatives just mean we don't
- *  set the eager flag — the v8 evaluate promise still resolves
- *  correctly. */
+/** Detect top-level await — used to set `hasTla`, which feeds
+ *  `hasAsyncGraph`, which lib's `ModuleJobSync.runSync` checks at
+ *  `lib/internal/modules/esm/module_job.js:392` to throw
+ *  `ERR_REQUIRE_ASYNC_MODULE` BEFORE calling `evaluateSync`.  False
+ *  positives here therefore short-circuit modules that don't
+ *  actually have TLA — a real correctness bug, not a benign hint.
+ *
+ *  This implementation walks the source tracking `{` `}` depth and
+ *  detecting `async` markers on functions / arrow functions, so we
+ *  can identify `await` tokens at module scope (depth 0, no enclosing
+ *  async function).  Skips strings + comments.  Doesn't do full JS
+ *  parsing — handles the common patterns the regex form mis-flagged.
+ *
+ *  #!~debt esm-tla-heuristic: Still a heuristic.  Misses edge cases
+ *  like generators (`function*`), class method bodies, and
+ *  expression-bodied arrow async functions (`async () => await x`,
+ *  which is valid but contrived).  When Sucrase is loaded (b₄
+ *  policy), the runtime compile-time check is authoritative; this
+ *  heuristic only matters at `create_source_text` time. */
 export function detectTopLevelAwait(source: string): boolean {
-  // Simple pass: look for `await` at a position that's not inside
-  // any function (`function`, `=>`) block. Without a real parser this
-  // is approximate. Cheap heuristic: any `await` in the source AT ALL
-  // that's not preceded by `async function`/`async (` on the same
-  // logical line. Real Node uses V8's IsGraphAsync; we'll get that
-  // from evaluate's Promise behavior anyway.
-  return /(^|[\s;{}(])await\s/.test(source);
+  const n = source.length;
+  let i = 0;
+  let depth = 0;
+  // Stack of booleans: each `{` push records whether the block is an
+  // async function body.  `await` inside an async block doesn't count.
+  const asyncStack: boolean[] = [];
+  while (i < n) {
+    const ch = source.charCodeAt(i);
+    // Skip strings (single, double, template).
+    if (ch === 39 /* ' */ || ch === 34 /* " */ || ch === 96 /* ` */) {
+      i = skipStringChar(source, i, ch);
+      continue;
+    }
+    // Skip comments.
+    if (ch === 47 /* / */ && i + 1 < n) {
+      const next = source.charCodeAt(i + 1);
+      if (next === 47) { i = source.indexOf("\n", i); if (i < 0) return false; i++; continue; }
+      if (next === 42) { const end = source.indexOf("*/", i + 2); i = end < 0 ? n : end + 2; continue; }
+    }
+    if (ch === 123 /* { */) {
+      // Decide whether this block opens an async function body.
+      asyncStack.push(precedingAsyncFunctionContext(source, i));
+      depth++;
+      i++;
+      continue;
+    }
+    if (ch === 125 /* } */) {
+      depth--;
+      asyncStack.pop();
+      i++;
+      continue;
+    }
+    // Word boundary check for `await`.
+    if (ch === 97 /* a */ &&
+        source.charCodeAt(i + 1) === 119 /* w */ &&
+        source.charCodeAt(i + 2) === 97 /* a */ &&
+        source.charCodeAt(i + 3) === 105 /* i */ &&
+        source.charCodeAt(i + 4) === 116 /* t */ &&
+        !isIdentifierChar(source.charCodeAt(i + 5)) &&
+        (i === 0 || !isIdentifierChar(source.charCodeAt(i - 1)))) {
+      // At module scope?  Module scope means depth 0 OR all enclosing
+      // blocks are not async function bodies (i.e. they're if/for/etc.
+      // — `await` in those at module scope IS still top-level).
+      const insideAsyncFn = asyncStack.some((b) => b);
+      if (!insideAsyncFn) return true;
+    }
+    i++;
+  }
+  return false;
+}
+
+function isIdentifierChar(c: number): boolean {
+  // ASCII subset is enough — full Unicode identifiers are rare here
+  // and a wider class only causes false positives we're already
+  // tolerating.
+  return (c >= 48 && c <= 57) || // 0-9
+         (c >= 65 && c <= 90) || // A-Z
+         (c >= 97 && c <= 122) || // a-z
+         c === 95 || c === 36; // _ $
+}
+
+function skipStringChar(source: string, p: number, quote: number): number {
+  const n = source.length;
+  let j = p + 1;
+  while (j < n) {
+    const c = source.charCodeAt(j);
+    if (c === 92 /* \\ */) { j += 2; continue; }
+    if (c === quote) return j + 1;
+    // Template substitution — skip nested braces.
+    if (quote === 96 && c === 36 /* $ */ && source.charCodeAt(j + 1) === 123 /* { */) {
+      j += 2;
+      let depth = 1;
+      while (j < n && depth > 0) {
+        const cc = source.charCodeAt(j);
+        if (cc === 123) depth++;
+        else if (cc === 125) depth--;
+        else if (cc === 39 || cc === 34 || cc === 96) { j = skipStringChar(source, j, cc); continue; }
+        j++;
+      }
+      continue;
+    }
+    j++;
+  }
+  return j;
+}
+
+/** Look BACKWARD from a `{` to see if it's the body of an async
+ *  function declaration or async arrow function.  Pattern matches:
+ *    async function X (...) {
+ *    async (...) => {
+ *    async X => {        (rare)
+ *  Returns true iff the `{` opens an async function body. */
+function precedingAsyncFunctionContext(source: string, openBrace: number): boolean {
+  // Walk back skipping whitespace.
+  let j = openBrace - 1;
+  while (j >= 0 && /\s/.test(source[j])) j--;
+  if (j < 0) return false;
+  // Arrow form: `=>` immediately before (with whitespace stripped).
+  if (j >= 1 && source[j] === ">" && source[j - 1] === "=") {
+    // Walk back past the arrow + parameter list, looking for `async`.
+    let k = j - 2;
+    while (k >= 0 && /\s/.test(source[k])) k--;
+    // Skip a parenthesized param list or a single identifier.
+    if (k >= 0 && source[k] === ")") {
+      let parens = 1;
+      k--;
+      while (k >= 0 && parens > 0) {
+        if (source[k] === ")") parens++;
+        else if (source[k] === "(") parens--;
+        k--;
+      }
+    } else {
+      while (k >= 0 && /[A-Za-z0-9_$]/.test(source[k])) k--;
+    }
+    while (k >= 0 && /\s/.test(source[k])) k--;
+    // Look for "async" preceding.
+    if (k >= 4 &&
+        source.slice(k - 4, k + 1) === "async" &&
+        (k - 5 < 0 || !/[A-Za-z0-9_$]/.test(source[k - 5]))) {
+      return true;
+    }
+    return false;
+  }
+  // Function form: walk back past `)`...`(` (param list), then past
+  // optional identifier, then look for `function`, then `async`.
+  if (source[j] === ")") {
+    let k = j;
+    let parens = 1;
+    k--;
+    while (k >= 0 && parens > 0) {
+      if (source[k] === ")") parens++;
+      else if (source[k] === "(") parens--;
+      k--;
+    }
+    while (k >= 0 && /\s/.test(source[k])) k--;
+    // Optional function name.
+    while (k >= 0 && /[A-Za-z0-9_$]/.test(source[k])) k--;
+    while (k >= 0 && /\s/.test(source[k])) k--;
+    // Expect "function" keyword.
+    if (k >= 7 &&
+        source.slice(k - 7, k + 1) === "function" &&
+        (k - 8 < 0 || !/[A-Za-z0-9_$]/.test(source[k - 8]))) {
+      // Walk back past "function" + whitespace, look for "async".
+      let m = k - 8;
+      while (m >= 0 && /\s/.test(source[m])) m--;
+      if (m >= 4 &&
+          source.slice(m - 4, m + 1) === "async" &&
+          (m - 5 < 0 || !/[A-Za-z0-9_$]/.test(source[m - 5]))) {
+        return true;
+      }
+    }
+  }
+  return false;
 }
 
 // Counter for SW URL paths.  Global so cyclic graphs across
