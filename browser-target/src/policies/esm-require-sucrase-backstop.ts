@@ -32,12 +32,15 @@ const POST_PATCH = `
   var ModuleJobSync = module.exports.ModuleJobSync;
   var origRunSync = ModuleJobSync.prototype.runSync;
 
-  // Same heuristic as napi-host/esm-registry.ts:detectTopLevelAwait.
-  // False positives are fine (we surface the original error); false
-  // negatives mean we attempt the transform and fail at eval time.
-  function hasTopLevelAwait(src) {
-    return /(?:^|[\\s;{}(])await\\s/.test(src);
-  }
+  // TLA detection via compile attempt — no regex heuristic, no
+  // parser dependency.  Sucrase's imports transform converts
+  // import statements to require() calls but leaves any top-level
+  // await token unchanged.  Feeding the result to
+  // new Function(...) then triggers a SyntaxError at compile time
+  // (Function bodies are synchronous and disallow await outside an
+  // async context).  SyntaxError mentioning 'await' → had TLA →
+  // re-throw original error.  Other compile errors propagate
+  // through to the user.
 
   ModuleJobSync.prototype.runSync = function patchedRunSync(parent) {
     try {
@@ -54,11 +57,23 @@ const POST_PATCH = `
       var src;
       try { src = fs.readFileSync(fileURLToPath(this.url), 'utf8'); }
       catch (_e4) { void _e4; throw e; }
-      if (hasTopLevelAwait(src)) throw e;
       var cjs = globalThis.__edgeEsmSucraseTransform(src);
+      var fn;
+      try { fn = new Function('require', 'module', 'exports', cjs); }
+      catch (compileErr) {
+        // SyntaxError most likely means top-level await (or some
+        // other CJS-incompatible construct).  Distinguish by message
+        // when possible; otherwise conservatively re-throw the
+        // original ERR_REQUIRE_ASYNC_MODULE.
+        var msg = (compileErr && compileErr.message) || '';
+        if (/await/i.test(msg)) throw e;
+        // Non-await syntax error indicates a bug in the source or
+        // the transform — re-throw the compile error directly so
+        // the user sees what's actually wrong.
+        throw compileErr;
+      }
       var mod = { exports: {} };
       var req = createRequire(this.url);
-      var fn = new Function('require', 'module', 'exports', cjs);
       fn(req, mod, mod.exports);
       return { __proto__: null, module: this.module, namespace: mod.exports };
     }

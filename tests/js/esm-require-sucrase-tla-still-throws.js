@@ -1,27 +1,41 @@
 // b₄ Sucrase backstop, TLA case: when the ESM source has top-level
-// await, the backstop CAN'T sync-ify it.  The policy's hasTopLevelAwait
-// heuristic detects this and re-throws the original
-// ERR_REQUIRE_ASYNC_MODULE without attempting the transform.
+// await, the backstop CAN'T sync-ify it.  The policy now uses
+// compile-time detection — Sucrase transforms ESM to CJS-shaped
+// syntax but leaves top-level await as-is; the subsequent
+// `new Function(...)` then throws SyntaxError at compile time,
+// because Function bodies are synchronous.  The catch block
+// inspects the SyntaxError message; if it mentions 'await', the
+// policy re-throws the original ERR_REQUIRE_ASYNC_MODULE.
 //
-// We can't easily drive a real require(esm) -> runSync miss here
-// (needs an .mjs fixture).  Instead, mirror the heuristic the policy
-// uses and verify it positively identifies a TLA source.  This is
-// the same regex the policy embeds via POST_PATCH.
+// We exercise the contract end-to-end without an .mjs fixture by
+// driving both ends of the compile chain directly: the Sucrase
+// transform output for a TLA source, then `new Function(...)` on
+// it, asserting the expected SyntaxError mentions await.
+
+const t = globalThis.__edgeEsmSucraseTransform;
+if (typeof t !== 'function') throw new Error('sucrase transform not wired');
 
 const tlaSrc = 'const x = await Promise.resolve(1);\nexport { x };\n';
 const plainSrc = 'export const x = 1;\n';
 
-// Same regex as the policy's hasTopLevelAwait (also esm-registry.ts's
-// detectTopLevelAwait).
-const hasTopLevelAwait = (src) => /(?:^|[\s;{}(])await\s/.test(src);
+// 1. Plain source: transform + new Function compiles cleanly.
+let plainCompiled = false;
+try {
+  const cjs = t(plainSrc);
+  new Function('require', 'module', 'exports', cjs);
+  plainCompiled = true;
+} catch (e) { void e; }
+console.log('plain compiles:', plainCompiled);
 
-console.log('tla source flagged:', hasTopLevelAwait(tlaSrc));
-console.log('plain source flagged:', hasTopLevelAwait(plainSrc));
-
-// Sanity-check that the Sucrase transform IS available (host wiring
-// is in place), so a "TLA flagged" result is a real intentional
-// re-throw, not an absence-of-Sucrase fallback.
-console.log(
-  'sucrase wired:',
-  typeof globalThis.__edgeEsmSucraseTransform === 'function',
-);
+// 2. TLA source: transform + new Function throws SyntaxError
+//    mentioning await.  This is the signal the policy uses to
+//    re-throw ERR_REQUIRE_ASYNC_MODULE.
+let tlaError = null;
+try {
+  const cjs = t(tlaSrc);
+  new Function('require', 'module', 'exports', cjs);
+} catch (e) {
+  tlaError = e;
+}
+console.log('tla throws:', tlaError !== null);
+console.log('mentions await:', tlaError && /await/i.test(tlaError.message || ''));
