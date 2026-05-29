@@ -1,0 +1,39 @@
+browser-target/src/policies/esm-require-preeval.ts
+  s_92c1b47c0d6ee8::t_e5d90fd4410b33 56-62
+tests/js/esm-require-preeval-explicit.js
+  s_92c1b47c0d6ee8::t_0fb5a571887b56 4-5,13,15
+  s_92c1b47c0d6ee8::t_208efce00e059b 6-10,19
+browser-target/src/napi-host/esm-registry.ts
+  s_92c1b47c0d6ee8::t_a15f041458289f 305-319,322-323
+  s_92c1b47c0d6ee8::t_79803dc18ab33e 158-161
+  s_92c1b47c0d6ee8::t_162d7545effb88 356-422
+  s_92c1b47c0d6ee8::t_780eb412242c82 689-715
+tests/js/esm-require-preeval-api.js
+  s_92c1b47c0d6ee8::t_29c6279e28dab7 17
+  s_92c1b47c0d6ee8::t_a13dd57fc26a42 24-26
+NOTES.md
+  s_92c1b47c0d6ee8::t_640c587ac714f7 95-107
+browser-target/src/policies/esm-via-blob-import.ts
+  s_92c1b47c0d6ee8::t_98973b3af22779 74-80
+  s_92c1b47c0d6ee8::t_1530941cd55c5b 138-147
+browser-target/public/sw.js
+  s_92c1b47c0d6ee8::t_276611f649ee1c 36-44,46-65
+  s_92c1b47c0d6ee8::t_a1008803c452d7 130
+  s_92c1b47c0d6ee8::t_e0059ee92b4a0b 93
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "638e421d794bc9eacb1e822b66c7da1ba9446f97",
+  "prompts": {},
+  "sessions": {
+    "s_92c1b47c0d6ee8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "dca99c1c-d946-4444-9a53-9ba89db5d748",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
