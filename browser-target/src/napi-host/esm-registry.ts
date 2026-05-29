@@ -155,16 +155,10 @@ export function detectTopLevelAwait(source: string): boolean {
 }
 
 // Counter for SW URL paths.  Global so cyclic graphs across
-// independent modules don't reuse paths.  SW caches indefinitely
-// (cleared on `destroy` for bounded memory).
-//
-// #!~debt esm-sw-url-unbounded-registry: the SW source registry
-// is cleared only on per-record destroy.  Long-running pages that
-// repeatedly build and discard cyclic ESM graphs (test runners,
-// dev hot-reload, plugin sandboxes) grow the registry without
-// bound between destroy calls.  Need a bounded LRU eviction
-// policy, or a per-realm registry that gets nuked on realm
-// teardown.  Not exercised by current workloads.
+// independent modules don't reuse paths.  SW-side registry is
+// bounded LRU (see `public/sw.js:esmSet` + `esmTouch`); per-record
+// `edge-esm-clear` teardown still fires on `destroy` for prompt
+// cleanup, with the LRU bound as backstop against runaway growth.
 let nextEsmSwId = 1;
 
 /** Detect a cycle in the dep subgraph reachable from `root`.  Uses
@@ -308,23 +302,25 @@ function synthesizeBlobUrlInner(record: ModuleRecord, inFlight: Set<ModuleRecord
   const preamble = synthesizePreamble(record, specifierToBlobUrl);
   const withMetaRewrite = rewriteImportMeta(rewritten);
   const withDynImport = rewriteDynamicImport(withMetaRewrite);
+  // Source map: the four rewriter passes only do WITHIN-LINE
+  // character substitutions; line numbers between original `source`
+  // and `withDynImport` match.  The preamble PREPENDS lines, shifting
+  // user source down by a constant offset.  We emit a Source Map v3
+  // mapping each output line back to its original line in the user
+  // source — gives DevTools accurate stack-trace line numbers and
+  // a clickable original-source view.  Column offsets within a line
+  // are still approximate (specifier rewrites can shift columns by
+  // tens of characters); fix shape: track per-rewrite column deltas
+  // and emit fine-grained segments instead of one-segment-per-line.
+  const sourceMapComment = buildSourceMapComment(
+    record.url,
+    record.source ?? "",
+    preamble,
+  );
   // # sourceURL pragma so DevTools shows the real edge URL instead
   // of the opaque blob: URL.
-  //
-  // #!~debt esm-rewrite-source-maps: the four rewriter passes
-  // (rewriteImportSpecifiers, rewriteImportMeta, rewriteDynamicImport,
-  // synthesizePreamble's prefix lines) all shift original line/column
-  // positions of the user source — sometimes by tens of characters per
-  // import (blob: URLs are ~40-60 chars vs the original './foo.mjs'
-  // specifier).  The sourceURL pragma below lets DevTools display the
-  // original module URL, but stack-trace line numbers from runtime
-  // errors point at offsets in the REWRITTEN source.  Fix shape:
-  // accumulate a position-mapping table across the four rewrites,
-  // serialize as a Source Map v3, append as
-  // `//# sourceMappingURL=data:application/json;base64,...`.  Same
-  // technique we now use in the Sucrase backstop.  Deferred until
-  // someone hits a real debugging pain.
-  const withPragma = preamble + "\n" + withDynImport + `\n//# sourceURL=${record.url}\n`;
+  const withPragma = preamble + "\n" + withDynImport +
+    `\n//# sourceURL=${record.url}\n` + sourceMapComment;
   const blob = new NativeBlob([withPragma], { type: "text/javascript" });
   record.blobUrl = NativeURL.createObjectURL(blob);
   return record.blobUrl;
@@ -357,7 +353,73 @@ function generateRecordSource(record: ModuleRecord, specifierToUrl: Map<string, 
   const preamble = synthesizePreamble(record, specifierToUrl);
   const withMetaRewrite = rewriteImportMeta(rewritten);
   const withDynImport = rewriteDynamicImport(withMetaRewrite);
-  return preamble + "\n" + withDynImport + `\n//# sourceURL=${record.url}\n`;
+  const sourceMapComment = buildSourceMapComment(record.url, source, preamble);
+  return preamble + "\n" + withDynImport +
+    `\n//# sourceURL=${record.url}\n` + sourceMapComment;
+}
+
+/** Build a `//# sourceMappingURL=data:application/json;base64,...`
+ *  comment for the blob trampoline output.  Emits a Source Map v3 in
+ *  which each output line maps to its corresponding original line in
+ *  the user source.  The preamble lines are unmapped.  Column-level
+ *  fidelity is not preserved (rewriters shift columns within a line)
+ *  but line-level fidelity is exact, which is what DevTools needs for
+ *  stack-trace line numbers and the original-source-on-click view. */
+function buildSourceMapComment(originalUrl: string, originalSource: string, preamble: string): string {
+  // Preamble line count: synthesizePreamble joins with "\n" and the
+  // caller adds one more "\n" before the user source.  So lines
+  // before user source = number of "\n" in preamble + 1.
+  const preambleLines = preamble.split("\n").length;
+  const origLineCount = originalSource.split("\n").length;
+  // Build mappings string.  Each line in the output is separated by
+  // ";".  Within a line, segments are separated by ",".  Each segment
+  // is VLQ-encoded (col, sourceIdx, srcLine, srcCol) where srcLine and
+  // srcCol are deltas from the previous segment on the previous line.
+  // Empty lines (";" alone) mean "no mapping for this output line".
+  let mappings = ";".repeat(preambleLines); // preambleLines empty lines
+  if (origLineCount > 0) {
+    // First user line maps to original line 0, column 0.
+    mappings += vlqEncode(0) + vlqEncode(0) + vlqEncode(0) + vlqEncode(0);
+    // Subsequent user lines map to the next original line each.
+    for (let i = 1; i < origLineCount; i++) {
+      mappings += ";" + vlqEncode(0) + vlqEncode(0) + vlqEncode(1) + vlqEncode(0);
+    }
+  }
+  const map = {
+    version: 3,
+    sources: [originalUrl],
+    sourcesContent: [originalSource],
+    mappings,
+  };
+  // Encode as base64 data URL.  btoa requires ASCII input; JSON of
+  // typical source is ASCII-safe but we encodeURIComponent + atob
+  // round-trip for unicode safety.
+  const json = JSON.stringify(map);
+  const b64 = base64EncodeUtf8(json);
+  return `//# sourceMappingURL=data:application/json;base64,${b64}\n`;
+}
+
+const VLQ_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+function vlqEncode(value: number): string {
+  let result = "";
+  let v = value < 0 ? ((-value) << 1) | 1 : value << 1;
+  do {
+    let digit = v & 0b11111;
+    v >>>= 5;
+    if (v > 0) digit |= 0b100000;
+    result += VLQ_CHARS[digit];
+  } while (v > 0);
+  return result;
+}
+
+function base64EncodeUtf8(s: string): string {
+  // Workers expose btoa; for unicode safety we encode UTF-8 bytes first.
+  // The source map JSON is almost always ASCII (URLs + JS source) so
+  // this is robust even for unusual identifiers.
+  const bytes = new TextEncoder().encode(s);
+  let binary = "";
+  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+  return btoa(binary);
 }
 
 /** Assign stable SW URLs to every record in the subgraph rooted at
@@ -624,20 +686,33 @@ function getSyntheticExportsMap(): Map<number, unknown> {
   return g.__edgeSyntheticExports;
 }
 
-/** Decide if a value is safely JSON-inlineable.  Stricter than just
- *  trying `JSON.stringify`: `JSON.stringify(new Date())` returns a
- *  valid string, but `JSON.parse(...)` gives back a string rather than
- *  a Date — silently lossy.  We restrict to genuine plain JSON values
- *  (null / boolean / number / string / plain Array / plain Object
- *  composed of the same).  Everything else routes through the
- *  global-lookup path. */
-// #!~debt esm-synthetic-plain-value-check: hand-rolled "is this
-// safe to JSON.stringify-inline into the blob preamble?" allow-list.
-// Doesn't recognize Date / RegExp / Map / Set / typed arrays / class
-// instances — those degrade silently to the global-lookup path,
-// which is correct but less efficient.  structuredClone()-based
-// detection (try cloning; if it succeeds AND JSON.stringify on the
-// clone round-trips, it's plain JSON) would be more robust.  Defer.
+/** Decide if a value is safely JSON-inlineable.  Stricter than a
+ *  naive JSON.stringify check: many types serialize to a valid JSON
+ *  string but DON'T round-trip without loss.
+ *
+ *  * `JSON.stringify(new Date())` returns a date-string; parse gives
+ *    back the string, not a Date — silent type loss.
+ *  * `JSON.stringify(new Map([...]))` returns `"{}"`; the Map's
+ *    contents vanish.  Same for Set, typed arrays, class instances
+ *    with no enumerable own properties.
+ *  * `JSON.stringify(new Uint8Array([1,2]))` returns `"{\"0\":1,\"1\":2}"`;
+ *    parses back as a plain object, not a typed array — data
+ *    preserved but type wrong.
+ *
+ *  The cheap filter that catches all of these is: only accept
+ *  primitives + plain Array + plain Object (prototype is exactly
+ *  Object.prototype or null), recursively.  Anything with a custom
+ *  prototype is rejected; it routes through the global-lookup path
+ *  (`globalThis.__edgeSyntheticExports`) which preserves identity
+ *  via a side-table reference.
+ *
+ *  A structuredClone-based check sounds appealing but isn't better
+ *  here: structuredClone HANDLES Date/Map/Set/typed arrays (returns
+ *  faithful clones), but we don't WANT to accept them — we want to
+ *  reject JSON-lossy types.  Roundtrip-equality of JSON.stringify
+ *  also fails: `JSON.stringify(map)` → `"{}"` round-trips
+ *  byte-identically but loses the Map's data.  The prototype filter
+ *  is the right tool. */
 function isPlainJsonValue(value: unknown): boolean {
   if (value === null) return true;
   const t = typeof value;

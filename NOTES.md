@@ -92,62 +92,19 @@ the browser-target tree.
 
 ### Newly opened
 
-- **`esm-rewrite-source-maps`** (2026-05-30) — the blob trampoline's
-  four rewriter passes (`rewriteImportSpecifiers`,
-  `rewriteImportMeta`, `rewriteDynamicImport`, plus the prefix lines
-  `synthesizePreamble` prepends) all shift original line/column
-  positions of the user's ESM source — sometimes tens of characters
-  per import (blob: URLs are ~40-60 chars vs the original
-  `'./foo.mjs'` specifier).  The `// # sourceURL=` pragma we emit
-  makes DevTools display the original module URL, but stack-trace
-  line numbers from runtime errors still reference offsets in the
-  rewritten source.  Fix shape: accumulate a position-mapping table
-  across the four rewrites, serialize as a Source Map v3, append as
-  a `//# sourceMappingURL=data:application/json;base64,...` comment
-  (same technique the Sucrase backstop policy uses for its CJS-eval
-  path).  Deferred until someone hits a real debugger-UX pain.
-  Marker site: `napi-host/esm-registry.ts:synthesizeBlobUrlInner`.
-
-- **`esm-via-blob-import-symbol-fallback`** (2026-05-30) —
-  `esm-via-blob-import` policy synthesizes
-  `host_defined_option_symbol` on each wrap as a defensive backstop.
-  edge's C++ `ModuleWrapCtor` now sets this symbol natively via
-  `unofficial_napi_create_private_symbol`, so the JS fallback is
-  redundant on current wasm builds.  Retain for wasm builds
-  predating the C++ fix, and for ModuleWraps created via paths that
-  bypass ModuleWrapCtor.  Delete the JS path once the C++ fix is
-  universal across all shipping wasm artifacts.  Marker site:
-  `policies/esm-via-blob-import.ts` (registerModule patch).
-
-- **`esm-test-modulewrap-escape-hatch`** (2026-05-30) —
-  `globalThis.__edgeModuleWrap` exposes the `module_wrap` binding
-  to user code for tests that need to construct ModuleWrap
-  instances directly (the `esm-require-preeval-*` tests rely on
-  it).  Non-Node-portable hook; production user code should not
-  use it.  Retire once tests have a cleaner construction path
-  via vm.SourceTextModule or a test-only fixture API.  Marker:
-  `policies/esm-via-blob-import.ts` (defineProperty on
-  globalThis.__edgeModuleWrap).
-
-- **`esm-preload-cwd-default`** (2026-05-30) —
-  `globalThis.edgejs.preloadEsm` resolves relative specifiers
-  against `process.cwd()` by default.  Node-native `import()`
-  resolves against the caller's file URL.  Right answer for
-  entry-script preloads (where no caller URL exists yet) but
-  wrong for inline calls from user code with a known parent
-  URL.  Callers can pass `options.from` to override.  Document
-  loudly; non-Node-portable default.  Marker:
-  `policies/esm-require-preeval.ts` USER_PRELUDE block.
-
-- **`esm-synthetic-plain-value-check`** (2026-05-30) —
-  `isPlainJsonValue` in `napi-host/esm-registry.ts` is a
-  hand-rolled allow-list for "safe to inline as JSON-stringified
-  literal in the synthetic-blob preamble".  Doesn't recognize
-  Date, RegExp, Map, Set, typed arrays, class instances — those
-  degrade silently to the global-lookup path (correct but less
-  efficient).  Replacement shape: structuredClone-based check
-  (try cloning + JSON.stringify-roundtrip on the clone).  Defer.
-  Marker: `napi-host/esm-registry.ts:isPlainJsonValue`.
+- ~~`esm-rewrite-source-maps`~~ — **RESOLVED 2026-05-30 (same
+  day).**  The blob trampoline now emits a Source Map v3 alongside
+  the `// # sourceURL=` pragma — accumulated by
+  `buildSourceMapComment` in `napi-host/esm-registry.ts`.  Each
+  output line maps to its corresponding original line in the
+  user's ESM source; the preamble lines are unmapped.  Encoded as
+  a `data:application/json;base64,...` sourceMappingURL comment
+  appended to both the blob and SW paths.  DevTools now shows
+  accurate stack-trace line numbers and a clickable original-
+  source view.  Column-level fidelity within a line is still
+  approximate (specifier rewrites shift columns by tens of chars);
+  promote to per-rewrite column tracking if/when column-accurate
+  source maps become necessary.
 
 - ~~`esm-import-meta-resolve-exports`~~ — **RESOLVED 2026-05-30
   (same day).**  `__edgeImportMetaFactory` in
@@ -161,16 +118,6 @@ the browser-target tree.
   fallback when wired.  The fallback (no lib callback registered,
   or it throws) still handles statically-known specifiers,
   absolute URLs, and relative URLs against the module's URL.
-
-- **`esm-sw-url-unbounded-registry`** (2026-05-30) — the
-  service-worker source registry for cyclic-graph ESM URLs
-  (`/_edge_esm/<id>`) is cleared per-record on `destroy`.
-  Long-running pages that build and discard many cyclic ESM
-  graphs (test runners, dev hot-reload, plugin sandboxes) grow
-  the registry without bound between destroy calls.  Need a
-  bounded LRU eviction policy, or a per-realm registry that
-  nukes on realm teardown.  Marker:
-  `napi-host/esm-registry.ts` near `nextEsmSwId`.
 
 - ~~`esm-dynamic-import-phase`~~ — **RESOLVED 2026-05-30 (same
   day).**  `rewriteDynamicImport` now emits phase-aware helpers

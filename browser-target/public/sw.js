@@ -33,7 +33,36 @@ let nextReqId = 1;
 // for cyclic ES module graphs without the blob-URL chicken-and-egg
 // problem (blob URLs are immutable; we can't reserve a URL before
 // the source that uses it is generated).
+//
+// Bounded LRU: Map iteration order is insertion order; we use that to
+// evict the oldest entries when the registry grows past the cap.  Each
+// `set` re-inserts (delete-then-set) so updates move entries to the end;
+// each fetch hit also re-inserts to mark recently-used.  Long-running
+// pages that churn many cyclic graphs (test runners, dev hot-reload,
+// plugin sandboxes) get bounded memory.  Per-record `edge-esm-clear`
+// teardown still works alongside the LRU bound.
+const ESM_MAX = 4096;
 const esmSources = new Map(); // path → source string
+function esmTouch(path) {
+  // Re-insert to move entry to most-recently-used position.
+  const src = esmSources.get(path);
+  if (typeof src === "string") {
+    esmSources.delete(path);
+    esmSources.set(path, src);
+    return src;
+  }
+  return undefined;
+}
+function esmSet(path, source) {
+  if (esmSources.has(path)) esmSources.delete(path);
+  esmSources.set(path, source);
+  while (esmSources.size > ESM_MAX) {
+    // Map keys() is insertion order; first key is oldest.
+    const oldest = esmSources.keys().next().value;
+    if (oldest === undefined) break;
+    esmSources.delete(oldest);
+  }
+}
 
 async function swLog(msg) {
   console.log(msg);
@@ -61,7 +90,7 @@ self.addEventListener("message", (e) => {
     const sources = e.data.sources || [];
     for (let i = 0; i < sources.length; i++) {
       const entry = sources[i];
-      if (entry && entry.length === 2) esmSources.set(entry[0], entry[1]);
+      if (entry && entry.length === 2) esmSet(entry[0], entry[1]);
     }
     // Reply on the MessagePort if provided (so the publisher can await
     // an ack before kicking off `import()` and guarantees the SW has
@@ -98,7 +127,7 @@ self.addEventListener("fetch", (event) => {
   // allocated.  Missing entry → 404 (loud failure so the napi handler
   // surfaces it instead of silently hanging on a pending request).
   if (url.pathname.startsWith(ESM_PREFIX)) {
-    const source = esmSources.get(url.pathname);
+    const source = esmTouch(url.pathname);
     if (typeof source === "string") {
       event.respondWith(new Response(source, {
         status: 200,

@@ -14,15 +14,16 @@
   const url = 'data:text/javascript,export%20const%20value%20=%20%22preloaded-via-api%22%3B';
   await globalThis.edgejs.preloadEsm([url]);
 
-  // Verify cache hit
+  // Verify cache hit.
   if (!globalThis.__edgePreEvalEsmCache.has(url)) {
     throw new Error('cache did not get populated');
   }
   const cached = globalThis.__edgePreEvalEsmCache.get(url);
   console.log('cached value:', cached.value);
 
-  // Now exercise the evaluate_sync path via __edgeModuleWrap to confirm
-  // the handler reads the cache.
+  // Now exercise the evaluate_sync path via __edgeModuleWrap to
+  // confirm the handler reads the cache (see explicit-test comment
+  // for why this isn't a Node-portable construction).
   const moduleWrap = globalThis.__edgeModuleWrap;
   const w = new moduleWrap.ModuleWrap(url, undefined, '// (preloaded; source irrelevant)\n');
   w.link([]);

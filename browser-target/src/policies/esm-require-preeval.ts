@@ -53,13 +53,13 @@ const USER_PRELUDE = `
   // they can be require()'d synchronously later.  Specifiers are
   // resolved relative to options.from (default: process.cwd()).
   //
-  // #!~debt esm-preload-cwd-default: Node-native import() resolves
-  // relative specifiers against the caller's file URL.  Our default
-  // is process.cwd() instead, which is the right answer for entry-
-  // script preloads (where no caller URL exists yet) but wrong for
-  // user-code calls from inside a file with a known parent URL.
-  // Callers can pass options.from to override.  Non-Node-portable
-  // default; document loudly.
+  // Design note: the cwd default matches the entry-script context
+  // (no caller URL exists at boot).  Users calling from inside a
+  // file with a known parent URL should pass options.from for
+  // Node-native-style resolution.  This API is edge.js-specific
+  // (Node has no equivalent, because Node 22.12+ handles
+  // require(esm) natively without a preload step) — callers writing
+  // portable code should branch on globalThis.edgejs being defined.
   globalThis.edgejs.preloadEsm = async function preloadEsm(specifiers, options) {
     if (!Array.isArray(specifiers)) throw new TypeError('preloadEsm: specifiers must be an array');
     var from = (options && options.from) || (process.cwd() + '/');

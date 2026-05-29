@@ -71,13 +71,13 @@ const POST_PATCH = `
     // is opaque — it's only used as a WeakMap key for dynamic-import
     // callback dispatch.  Skip if the referrer already has one OR is
     // one of lib's well-known fallback symbols.
-    // #!~debt esm-via-blob-import-symbol-fallback: edge's C++
-    // ModuleWrapCtor now sets host_defined_option_symbol natively
-    // via unofficial_napi_create_private_symbol, so this Symbol
-    // synthesis is redundant on current wasm builds.  Retained as
-    // defensive backstop for wasm builds predating that C++ fix,
-    // and for ModuleWraps created via paths that don't go through
-    // ModuleWrapCtor.  Delete once the C++ fix is universal.
+    // Defensive Symbol synthesis: edge's C++ ModuleWrapCtor sets
+    // host_defined_option_symbol natively via
+    // unofficial_napi_create_private_symbol, so this branch is a
+    // no-op on builds with the C++ fix.  Retained as a backstop for
+    // (a) older wasm builds, (b) ModuleWraps created via paths that
+    // bypass ModuleWrapCtor.  The undefined-check makes the
+    // fallback inert when not needed — zero runtime cost.
     if (referrer && referrer[hostDefinedOptionSymbol] === undefined) {
       try {
         referrer[hostDefinedOptionSymbol] = Symbol('edge-esm-hdo');
@@ -135,21 +135,19 @@ const POST_PATCH = `
     };
   }
 
-  // Expose the module_wrap binding under a globalThis.__edge namespace so
-  // tests + advanced users can construct ModuleWraps directly without
-  // going through internalBinding.  Lib gates access to internalBinding;
-  // process.binding('module_wrap') isn't on the allowlist.  This hook is
-  // namespaced so it's clear it's not part of any Node-compat surface.
+  // Test-infrastructure escape hatch: expose the module_wrap binding
+  // so unit-shaped tests can construct ModuleWrap instances directly
+  // and drive evaluateSync, which vm.SourceTextModule doesn't expose
+  // as a public method (Node's vm.Module only exposes async evaluate;
+  // evaluateSync is reachable only via lib's ModuleJobSync.runSync,
+  // which requires a real require(esm) chain with FS fixtures the
+  // browser-target test harness doesn't write).  __edge* prefix keeps
+  // it clearly non-Node and non-production.  Removed when Node grows
+  // a public sync construction API or when the harness gains FS
+  // fixture support.
   try {
     var moduleWrapBinding = internalBinding('module_wrap');
     if (moduleWrapBinding && typeof moduleWrapBinding.ModuleWrap === 'function') {
-      // #!~debt esm-test-modulewrap-escape-hatch: __edgeModuleWrap
-      // exposes the module_wrap binding to user code for tests that
-      // need to construct ModuleWrap instances directly (e.g. the
-      // esm-require-preeval-* tests).  Non-Node-portable hook;
-      // production user code should not rely on it.  Retire once
-      // tests have a cleaner construction path via vm or a
-      // test-only fixture API.
       Object.defineProperty(globalThis, '__edgeModuleWrap', {
         value: moduleWrapBinding,
         writable: false,
