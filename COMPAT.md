@@ -25,67 +25,77 @@ markers (known gaps).
 
 ## Side-by-side compat
 
+**StackBlitz column note**: WebContainers runs a real Node binary
+under WASI in a Service Worker, so most modules work by default
+unless an architectural carve-out or known bug applies. They
+publish no per-module matrix; cells reflect (a) categorical limits
+from their troubleshooting page, (b) known bugs from their public
+GitHub issue tracker, (c) `(assumed ✓)` for modules where Node
+itself would work and no carve-out / bug is documented.
+
 | Module | edge.js | Cloudflare | Bun | Deno | Vercel Edge | StackBlitz | Notes |
 |---|---|---|---|---|---|---|---|
 | **Core** | | | | | | | |
-| `assert` | ✓ | ✓ | ✓ | ✓ | ✓ | ? | Pure JS |
-| `buffer` | ✓ | ✓ | ✓ | ✓ | ✓ | ? | Heavy work + `buffer-wasm-aliased` policy |
-| `console` | ✓ | ◐ | ✓ | ✓ | ✓ | ? | Routed to host-worker logs |
-| `events` | ✓ | ✓ | ✓ | ✓ | ✓ | ? | Lib code |
-| `process` | ◐ | ◐ | ◐ | ◐ | ◐ | ? | `process-methods-wasm-state` policy carries it; some fields stub |
-| `util` | ◐ | ✓ | ◐ | ✓ | ◐ | ? | `util.types.isProxy` partial (#!~debt) |
+| `assert` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Pure JS; Bun: 100% Node-suite |
+| `buffer` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Heavy work + `buffer-wasm-aliased` policy |
+| `console` | ✓ | ◐ | ✓ | ✓ | ✓ | ✓ | Routed to host-worker logs |
+| `events` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Pure JS; Bun: 100% Node-suite |
+| `process` | ◐ | ◐ | ◐ | ◐ | ◐ | ✓ | `process-methods-wasm-state` policy carries it; some fields stub |
+| `util` | ◐ | ✓ | ◐ | ✓ | ◐ | ✓ | `util.types.isProxy` partial (#!~debt) |
 | **Strings & paths** | | | | | | | |
-| `path` | ✓ | ✓ | ✓ | ✓ | — | ? | Pure JS, no syscalls |
-| `querystring` | ✓ | ✓ | ✓ | ✓ | — | ? | Pure JS |
-| `string_decoder` | ✓ | ✓ | ✓ | ✓ | — | ? | Pure JS |
-| `url` | ✓ | ✓ | ✓ | ✓ | ✓ | ? | Lib + native URL cache for blob: trampoline |
+| `path` | ✓ | ✓ | ✓ | ✓ | — | ✓ | Pure JS; Bun: 100% Node-suite |
+| `querystring` | ✓ | ✓ | ✓ | ✓ | — | ✓ | Pure JS; Bun: 100% Node-suite |
+| `string_decoder` | ✓ | ✓ | ✓ | ✓ | — | ✓ | Pure JS; Bun: 100% Node-suite |
+| `url` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Lib + native URL cache for blob: trampoline |
+| `punycode` | ✓ | ✓ | ✓ | ✓ | — | ✓ | Pure JS; Bun: 100% Node-suite |
 | **Streams** | | | | | | | |
-| `stream` | ✓ | ✓ | ✓ | ✓ | ✓ | ? | Lib code |
+| `stream` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Lib code |
 | **Crypto** | | | | | | | |
-| `crypto` | ✓ | ✓ | ◐ | ✓ | ✓ | ? | Lib + `crypto-host-random`, `crypto-via-subtle`, hash/HMAC via host worker |
+| `crypto` | ✓ | ✓ | ◐ | ✓ | ✓ | ◐ | Edge: lib + multiple host-routed policies. StackBlitz has known broken algos: `createHmac` (issue #31, since 2021), AES-256-CBC (issue #1571, Oct 2024) |
 | **Filesystem** | | | | | | | |
-| `fs` | ◐ | ✓ | ✓ | ✓ | ✗ | ? | Read via SAB ring works; OPFS write deferred (`#!~debt opfs-not-yet-persistent`) |
-| `fs/promises` | ◐ | ✓ | ✓ | ✓ | ✗ | ? | Same backing as `fs` |
+| `fs` | ◐ | ✓ | ✓ | ✓ | ✗ | ✓ | Edge: read via SAB ring; OPFS write deferred. Bun: 92% Node-suite. StackBlitz: full fs from real Node |
+| `fs/promises` | ◐ | ✓ | ✓ | ✓ | ✗ | ✓ | Same backing as `fs` |
 | **Network** | | | | | | | |
-| `http` | ◐ | ✓ | ✓ | ◐ | — | ? | Inbound via SW bridge; outbound throws (`outbound-throw` default) or fetch-tunnels (`outbound-fetch-tunnel` opt-in). Single-listener, no chunked, no keep-alive |
-| `https` | ◐ | ✓ | ◐ | ◐ | — | ? | Delegated to http; TLS context inspection works (`tls-info`, `tls-secure-context` tests pass) |
-| `http2` | ? | ◐ | ◐ | ◐ | — | ? | Untested |
-| `net` | ⊘ | ✓ | ✓ | ◐ | — | ? | `sock_connect` returns ENOSYS; listen path partial |
-| `dgram` | ✗ | ✓ | ✓ | ◐ | — | ? | UDP — not implemented |
-| `tls` | ◐ | ◐ | ◐ | ◐ | — | ? | Context inspection only; full TLS server not implemented |
-| `dns` | ? | ✓ | ✓ | ◐ | ✗ | ? | Lib code exists, untested |
+| `http` | ◐ | ✓ | ◐ | ◐ | — | ✓ | Edge: inbound via SW bridge; outbound throws. Bun: outgoing client body buffered (no streaming). StackBlitz: real Node http |
+| `https` | ◐ | ✓ | ◐ | ◐ | — | ✓ | Edge: delegated to http; TLS context inspection works (`tls-info`, `tls-secure-context` tests pass) |
+| `http2` | ? | ◐ | ◐ | ◐ | — | ✓ | Edge: untested. Bun: 95% gRPC-suite (not Node-suite) |
+| `net` | ⊘ | ✓ | ✓ | ◐ | — | ◐ | Edge: `sock_connect` returns ENOSYS. StackBlitz: TCP listen works for localhost, raw TCP to outside world blocked per troubleshooting |
+| `dgram` | ✗ | ✓ | ✓ | ◐ | — | ✗ | Edge: UDP not implemented. Bun: >90% Node-suite. StackBlitz: no UDP per troubleshooting |
+| `tls` | ◐ | ◐ | ◐ | ◐ | — | ◐ | Universally partial — full TLS in browser is hard |
+| `dns` | ? | ✓ | ✓ | ◐ | ✗ | ✓ | Edge: lib code exists, untested. Bun: >90% Node-suite |
 | **Concurrency** | | | | | | | |
-| `worker_threads` | ◐ | — | ◐ | ◐ | — | ? | Phase 1 shipped via `worker-threads-per-thread` policy; some gaps remain |
-| `child_process` | ◐ | — | ◐ | ✓ | — | ? | `child-process-via-executor` policy; sendHandle limited (`#!~debt child-process-ipc-sendhandle`), kill cooperative-only |
+| `worker_threads` | ◐ | — | ◐ | ◐ | — | ◐ | Edge: phase 1 via `worker-threads-per-thread` policy. StackBlitz: `unref` bug (#365), synchronous message passing not supported (Astro blog confirms esbuild forced to use child_process) |
+| `child_process` | ◐ | — | ◐ | ✓ | — | ✓ | Edge: `child-process-via-executor` policy. StackBlitz: real Node child_process |
 | `cluster` | — | — | ◐ | ✗ | — | — | Architecturally impossible: no socket-sharing across processes in browser |
 | **Time** | | | | | | | |
-| `timers` | ✓ | ✓ | ✓ | ✓ | ✓ | ? | Lib + libuv shim |
-| `timers/promises` | ✓ | ✓ | ✓ | ✓ | ✓ | ? | Lib code |
-| `perf_hooks` | ◐ | ◐ | ◐ | ◐ | — | ? | Partial like everyone — needs audit |
+| `timers` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Lib + libuv shim |
+| `timers/promises` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Lib code |
+| `perf_hooks` | ◐ | ◐ | ◐ | ◐ | — | ✓ | Edge: partial like everyone — needs audit |
 | **OS / terminal** | | | | | | | |
-| `os` | ◐ | ◐ | ✓ | ◐ | — | ? | Lib code; some OS-specific values stubbed |
-| `tty` | ⊘ | ⊘ | ✓ | ◐ | — | ? | Likely stub — no terminal in browser |
-| `readline` | ? | ⊘ | ✓ | ✓ | — | ? | Depends on stdin handling |
-| `readline/promises` | ? | ⊘ | ✓ | ✓ | — | ? | Same |
+| `os` | ◐ | ◐ | ✓ | ◐ | — | ✓ | Edge: lib code; some OS-specific values stubbed. Bun: 100% Node-suite |
+| `tty` | ⊘ | ⊘ | ✓ | ◐ | — | ⊘ | Likely stub — no real terminal in browser |
+| `readline` | ? | ⊘ | ✓ | ✓ | — | ✓ | Edge: depends on stdin handling, untested |
+| `readline/promises` | ? | ⊘ | ✓ | ✓ | — | ✓ | Same |
 | **Debug / instrumentation** | | | | | | | |
-| `async_hooks` (ALS) | ✓ | ✓ | ✓ | ✓ | ✓ | ? | AsyncLocalStorage works |
-| `async_hooks` (promise hooks) | ✗ | ✗ | ✗ | ✗ | ✗ | ? | Universally weak (`#!~debt` no-op) |
-| `diagnostics_channel` | ? | ✓ | ✓ | ✓ | ✗ | ? | Lib code exists; needs verification |
-| `inspector` | ✗ | ✗ | ⊘ | ✗ | ✗ | ? | Rare in production |
-| `trace_events` | ✗ | ✗ | ✗ | ✗ | ✗ | ? | Universally skipped |
-| `v8` | ◐ | ⊘ | ◐ | ◐ | ✓ | ? | `v8.serialize` / `deserialize` shipped (real wire format); other APIs stub |
+| `async_hooks` (ALS) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | AsyncLocalStorage works |
+| `async_hooks` (promise hooks) | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | Universally weak (`#!~debt` no-op) |
+| `diagnostics_channel` | ? | ✓ | ✓ | ✓ | ✗ | ✓ | Edge: lib code exists; needs verification |
+| `inspector` | ✗ | ✗ | ⊘ | ✗ | ✗ | ✗ | Rare in production |
+| `trace_events` | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | Universally skipped |
+| `v8` | ◐ | ⊘ | ◐ | ◐ | ✓ | ✓ | Edge: `v8.serialize` / `deserialize` shipped (real wire format); other APIs stub. StackBlitz: real Node V8 module |
 | **Compression** | | | | | | | |
-| `zlib` | ✓ | ✓ | ✓ | ✓ | — | ? | `zlib-writestate-wasm` policy; `zlib-bundled-gzip` test green |
+| `zlib` | ✓ | ✓ | ✓ | ✓ | — | ✓ | `zlib-writestate-wasm` policy; `zlib-bundled-gzip` test green. Bun: 98% Node-suite |
 | **Module system** | | | | | | | |
-| `module` (CJS) | ✓ | ◐ | ✓ | ✓ | ✗ | ? | Standard CJS works |
-| `module` (ESM) | ◐ | ◐ | ✓ | ✓ | ✗ | ? | Full `import` + dynamic + TLA + cycles via blob trampoline; `require(esm)` partial via b₁ cache + b₄ Sucrase backstop (NOT real wasm-V8 ModuleWrap) |
-| `vm` | ◐ | ⊘ | ◐ | ◐ | ✗ | ? | `vm.Script` via `new Function`, no break-on-sigint; `vm.compileFunction` approximation; `vm.SourceTextModule` works via ESM bridge |
+| `module` (CJS) | ✓ | ◐ | ✓ | ✓ | ✗ | ✓ | Standard CJS works |
+| `module` (ESM) | ◐ | ◐ | ✓ | ✓ | ✗ | ✓ | Edge: full `import` + dynamic + TLA + cycles via blob trampoline; `require(esm)` partial via b₁ cache + b₄ Sucrase backstop (NOT real wasm-V8 ModuleWrap) |
+| `vm` | ◐ | ⊘ | ◐ | ◐ | ✗ | ✓ | Edge: `vm.Script` via `new Function`; `vm.SourceTextModule` works via ESM bridge. StackBlitz: real V8 vm module |
 | **Niche** | | | | | | | |
-| `repl` | — | ⊘ | ✗ | ✗ | ✗ | — | No terminal in browser |
-| `sea` | — | ✗ | ✗ | ✗ | ✗ | — | Single-executable apps — not applicable |
-| `sqlite` | ✗ | ✗ | ✗ | ✗ | ✗ | ? | Would need Wasm SQLite binding |
-| `wasi` | — | ✗ | ◐ | ✗ | — | — | We ARE wasi |
-| `domain` | ? | ⊘ | ◐ | ✗ | ✗ | ? | Deprecated in Node |
+| `repl` | — | ⊘ | ✗ | ✗ | ✗ | ✓ | Edge: no terminal in browser. StackBlitz: works in their xterm-backed terminal |
+| `sea` | — | ✗ | ✗ | ✗ | ✗ | ✗ | Single-executable apps — not applicable |
+| `sqlite` | ✗ | ✗ | ✗ | ✗ | ✗ | ✓ | Would need Wasm SQLite binding. StackBlitz: included since Node 22.5 ships it |
+| `wasi` | — | ✗ | ◐ | ✗ | — | ✓ | Edge: we ARE wasi. StackBlitz: real Node WASI |
+| `domain` | ? | ⊘ | ◐ | ✗ | ✗ | ✓ | Deprecated in Node, but still works in real Node |
+| **Native addons (.node)** | — | — | — | — | — | ✗ | StackBlitz: `--no-addons` per troubleshooting. Edge: would need wasm-compiled addons, not supported today |
 
 ## How we compare
 
@@ -127,17 +137,37 @@ For other runtimes, status comes from their published compat tables (sources bel
 
 ## Sources
 
-- [Cloudflare Workers Node.js APIs](https://developers.cloudflare.com/workers/runtime-apis/nodejs/)
-- [Bun Node.js Compatibility](https://bun.sh/docs/runtime/nodejs-apis)
-- [Deno Node APIs Reference](https://docs.deno.com/runtime/reference/node_apis/)
-- [Deno Node Test Viewer (live)](https://node-test-viewer.deno.dev/)
-- [Vercel Edge Runtime APIs](https://edge-runtime.vercel.app/features/available-apis)
-- [WebContainers Introduction](https://webcontainers.io/guides/introduction)
-- edge.js: this repo's `tests/js/*`, `browser-target/src/policies/*.ts`, `#!~debt` markers across `browser-target/src/`.
+**Per-runtime compat docs**:
+- [Cloudflare Workers Node.js APIs](https://developers.cloudflare.com/workers/runtime-apis/nodejs/) — clean color-coded table
+- [Bun Node.js Compatibility](https://bun.sh/docs/runtime/nodejs-apis) — most detailed, per-module Node-suite pass rates
+- [Deno Node APIs Reference](https://docs.deno.com/runtime/reference/node_apis/) — three-bucket categorization
+- [Deno Node Test Viewer (live)](https://node-test-viewer.deno.dev/) — live aggregate pass rate dashboard
+- [Vercel Edge Runtime APIs](https://edge-runtime.vercel.app/features/available-apis) — short allowlist (Edge Functions deprecated; Edge Middleware only)
+
+**StackBlitz / WebContainers — no per-module compat matrix is published**:
+- [WebContainers Troubleshooting](https://webcontainers.io/guides/troubleshooting) — categorical limits (no native addons, no raw TCP/UDP, no custom SW)
+- [WebContainers AI-Agents test suite](https://webcontainers.io/guides/ai-agents) — framework-first behavioral tests; Node built-ins are one bucket
+- [StackBlitz Developer FAQ](https://developer.stackblitz.com/guides/user-guide/general-faqs)
+- GitHub issues are the de facto tracker:
+  - [#31](https://github.com/stackblitz/webcontainer-core/issues/31) `crypto.createHmac` broken since 2021
+  - [#1571](https://github.com/stackblitz/webcontainer-core/issues/1571) AES-256-CBC broken (Oct 2024)
+  - [#365](https://github.com/stackblitz/webcontainer-core/issues/365) `worker_threads.unref` bug
+  - [#1558](https://github.com/stackblitz/webcontainer-core/issues/1558) Node version pinning unsupported
+- [Astro WebContainer post](https://blog.stackblitz.com/posts/astro-support/) — confirms "synchronous message passing is not supported"
+
+**edge.js (this repo)**:
+- `tests/js/*` — green tests indicate working API surface
+- `browser-target/src/policies/*.ts` — compensating implementations
+- `#!~debt` markers across `browser-target/src/` — documented gaps
+- `NOTES.md` — Active tech-debt catalog
 
 ## Updating this doc
 
 - Status changes when a `#!~debt` marker is added/removed or a test lands
-- StackBlitz column starts as `?` — no per-module compat table is published; populate from behavioral observations or community reports
-- Bun's per-module test-pass rates evolve; consider re-fetching quarterly
-- Add new modules when Node adds them (e.g. `--experimental-sqlite` is now `node:sqlite`)
+- StackBlitz column entries come from troubleshooting carve-outs + filed GitHub issues; default-assume ✓ for modules where real Node works and no carve-out / bug is documented
+- Bun's per-module test-pass rates evolve; re-fetch quarterly
+- Add new modules when Node adds them (e.g. `node:sqlite` shipped in 22.5)
+- Surprises worth flagging:
+  - Bun's `http` has NO percentage — only a caveat about outgoing client body buffering
+  - Bun's `http2` 95% is from gRPC's suite, not Node's (apples-to-oranges)
+  - StackBlitz hides known broken algos behind GitHub issues — no advisory in the troubleshooting doc
