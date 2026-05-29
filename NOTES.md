@@ -92,6 +92,23 @@ the browser-target tree.
 
 ### Newly opened
 
+- **`esm-evaluate-sync-jspi-blocked`** (2026-05-29) — `require(esm)`
+  unsupported in browser-target. Lib's
+  `ModuleJobSync.runSync → wrap.evaluateSync` arrives at our napi
+  handler with multiple host-JS frames between JSPI's promising
+  (the `_start` wrap) and our Suspending import — the architecture
+  runs user code via `contextify_run_script`'s host-V8 `new
+  Function(source)()`, and lib's CJS/ESM loaders are loaded the
+  same way (host V8 via `napi_run_script`).  V8 throws "trying to
+  suspend JS frames" because no wasm-only call path exists for
+  this entry.  `unofficial_napi_module_wrap_evaluate_sync` now
+  throws `ERR_REQUIRE_ASYNC_MODULE` with a clear remediation
+  message ("refactor caller to `await import(...)`").  Workaround
+  is permanent unless either (a) user JS gets moved into wasm-V8,
+  or (b) require(esm) is reimplemented via pre-evaluated namespace
+  cache.  Marker site:
+  `napi-host/unofficial.ts:unofficial_napi_module_wrap_evaluate_sync`.
+
 - ~~`esm-cyclic-live-bindings`~~ — **RESOLVED 2026-05-29.** Path (a)
   shipped: `synthesizeUrl` in `napi-host/esm-registry.ts` detects
   cycles via a DFS-color graph walk and routes through the service
@@ -938,10 +955,21 @@ and remain a fine direction.
 
 Phases 1, 2, 3, 4 shipped end-to-end + cyclic graphs handled via the
 SW-served-URL fallback (see `esm-cyclic-live-bindings` archived entry
-above).  No known structural ESM gaps remain.  Tests: 7 ESM scenarios
-covering single-module, named+default, re-export chain, TLA, dynamic
-import (per-module callback), `import.meta.url`, and cyclic
-live-binding.  All green.
+above).  Plus the close-the-gap batch: per-module
+`importModuleDynamically` callback, C++ `host_defined_option_symbol`,
+`import.meta.resolve`, JSON attribute imports, vm.SyntheticModule with
+JSON inline / global lookup, live-binding namespace, Wasm-ESM imports,
+source-phase imports (`get/set_module_source_object` storage), SW URL
+cleanup on destroy.
+
+The only known limitation is `require(esm)` (`#!~debt esm-evaluate-
+sync-jspi-blocked`) — architectural, documented as not-supported with
+clear remediation.
+
+Tests: 12 ESM scenarios — single-module, named+default, re-export
+chain, TLA, dynamic import (per-module callback), `import.meta.url`,
+`import.meta.resolve`, JSON + vm.SyntheticModule, Wasm imports, source-
+phase round-trip, live bindings, cyclic live-binding.  All green.
 
 **Architecture** (no Asyncify): the napi `module_wrap_*` family —
 `create_source_text`, `create_synthetic`, `link`, `instantiate`,

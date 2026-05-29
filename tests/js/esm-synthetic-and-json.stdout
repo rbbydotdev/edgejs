@@ -1,0 +1,7 @@
+json.greeting: hello
+json.count: 42
+json.nested.ok: true
+multi.a: 1
+multi.b: two
+multi.c-sum: 9
+summary: edge.js@1

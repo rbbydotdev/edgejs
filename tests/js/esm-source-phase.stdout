@@ -1,0 +1,6 @@
+initial-defined: no
+roundtrip-identity: yes
+roundtrip-kind: wasm-module-placeholder
+roundtrip-exports: add,sub
+kSourcePhase: 1
+kEvaluationPhase: 2

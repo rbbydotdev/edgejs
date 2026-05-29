@@ -1,0 +1,5 @@
+baseUrl: parent.mjs
+childResolved-blob?: yes
+absResolved: https://example.com/lib.mjs
+xVal: 1
+unknown-resolved?: err=ERR_MODULE_NOT_FOUND

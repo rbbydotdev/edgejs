@@ -67,6 +67,25 @@ export interface ModuleRecord {
    *  reserved before their source is generated.  See
    *  `synthesizeUrl` + `synthesizeSwUrlsForCycle`. */
   swUrl?: string;
+  /** Synthetic-module evaluation callback — captured during
+   *  `create_synthetic`.  Invoked when we synthesize the synthetic's
+   *  blob; the callback sets exports via `this.setExport(name, value)`
+   *  which we intercept and write into `namespace`.  JSON-import
+   *  modules go through this path: lib's translator builds a
+   *  ModuleWrap with `exportNames=['default']` + a callback that
+   *  invokes `this.setExport('default', JSON.parse(source))`. */
+  syntheticEvalSteps?: (this: { setExport(name: string, value: unknown): void }) => void;
+  /** Set after `runSyntheticEvalSteps` has executed once.  We can't
+   *  rely on `status` for idempotency because `evaluateRecord` sets
+   *  it to kEvaluating before synthesis runs. */
+  _syntheticEvalRan?: boolean;
+  /** Source-phase import return value — for Wasm-ESM that's the
+   *  compiled `WebAssembly.Module`.  Set via
+   *  `set_module_source_object` from lib's wasm translator (line 625
+   *  of `lib/internal/modules/esm/translators.js`); read via
+   *  `get_module_source_object` when lib resolves an `import source X`
+   *  declaration or a dynamic `import` with `phase: kSourcePhase`. */
+  sourceObject?: unknown;
 }
 
 export interface ModuleRequest {
@@ -366,13 +385,28 @@ function synthesizeBlobUrlInner(record: ModuleRecord, inFlight: Set<ModuleRecord
   const NativeBlob = (globalThis as { __edgeNativeBlob?: typeof Blob }).__edgeNativeBlob ?? Blob;
 
   if (record.kind === "synthetic") {
-    // Synthetic module: emit a module that exports the captured values.
-    // exportNames is set by create_synthetic; values are populated via
-    // set_export (Phase 1 only handles the bare-named case — no
-    // evaluation steps).
+    // Run the synthetic eval steps first if registered (JSON imports
+    // and any other lib translator that uses synthetic modules).  The
+    // callback sets exports via `this.setExport(name, value)`; we
+    // intercept and write to `record.namespace`, then inline the
+    // values as a JSON-stringified literal in the blob source so the
+    // browser-V8 import sees real ESM exports.
+    runSyntheticEvalSteps(record);
     const names = record.exportNames ?? [];
-    const exports = names.map((nm) => `export let ${jsId(nm)};`).join("\n");
-    const blob = new NativeBlob([exports], { type: "text/javascript" });
+    const lines: string[] = [];
+    for (const nm of names) {
+      const literal = inlineOrLookup(record.namespace[nm]);
+      if (nm === "default") {
+        // `export default { … };` is parsed as `export default
+        // <ObjectLiteral>` and works — but `export default <literal>`
+        // for arbitrary AssignmentExpression is safer parenthesized
+        // when the literal starts with `{` (V8 quirk on some shapes).
+        lines.push(`export default (${literal});`);
+      } else {
+        lines.push(`export const ${jsId(nm)} = ${literal};`);
+      }
+    }
+    const blob = new NativeBlob([lines.join("\n")], { type: "text/javascript" });
     record.blobUrl = NativeURL.createObjectURL(blob);
     return record.blobUrl;
   }
@@ -416,7 +450,7 @@ function synthesizeBlobUrlInner(record: ModuleRecord, inFlight: Set<ModuleRecord
   // pre-resolve to blob: URLs when we know them (covers cyclic and
   // re-import-of-static-dep cases); otherwise fall through to the
   // host callback.
-  const preamble = synthesizePreamble(record);
+  const preamble = synthesizePreamble(record, specifierToBlobUrl);
   const withMetaRewrite = rewriteImportMeta(rewritten);
   const withDynImport = rewriteDynamicImport(withMetaRewrite);
   // # sourceURL pragma so DevTools shows the real edge URL instead
@@ -433,15 +467,25 @@ function synthesizeBlobUrlInner(record: ModuleRecord, inFlight: Set<ModuleRecord
  *  the URLs were minted. */
 function generateRecordSource(record: ModuleRecord, specifierToUrl: Map<string, string>): string {
   if (record.kind === "synthetic") {
+    runSyntheticEvalSteps(record);
     const names = record.exportNames ?? [];
-    return names.map((nm) => `export let ${jsId(nm)};`).join("\n");
+    const lines: string[] = [];
+    for (const nm of names) {
+      const literal = inlineOrLookup(record.namespace[nm]);
+      if (nm === "default") {
+        lines.push(`export default ${literal};`);
+      } else {
+        lines.push(`export const ${jsId(nm)} = ${literal};`);
+      }
+    }
+    return lines.join("\n");
   }
   if (record.kind === "required-facade") {
     return "export default {};";
   }
   const source = record.source ?? "";
   const rewritten = rewriteImportSpecifiers(source, specifierToUrl);
-  const preamble = synthesizePreamble(record);
+  const preamble = synthesizePreamble(record, specifierToUrl);
   const withMetaRewrite = rewriteImportMeta(rewritten);
   const withDynImport = rewriteDynamicImport(withMetaRewrite);
   return preamble + "\n" + withDynImport + `\n//# sourceURL=${record.url}\n`;
@@ -516,11 +560,29 @@ async function synthesizeSwUrlsForCycle(root: ModuleRecord): Promise<string> {
  *  `esm-via-blob-import` policy wraps to dispatch on parent URL — so
  *  per-module `new vm.SourceTextModule(src, {importModuleDynamically})`
  *  fires correctly.  Falls through to native browser `import()` for
- *  absolute URLs (blob:/data:/https:). */
-function synthesizePreamble(record: ModuleRecord): string {
+ *  absolute URLs (blob:/data:/https:).
+ *
+ *  `import.meta.resolve(specifier)` — Node returns the resolved URL
+ *  string synchronously.  We bake the record's per-specifier
+ *  resolution map (built from get_module_requests + link's deps) into
+ *  the closure; static-import specifiers resolve to their bound URL,
+ *  everything else falls through to lib's
+ *  `initializeImportMetaObjectCallback`-installed resolver (or, when
+ *  absent, a best-effort `new URL(specifier, importMeta.url)` which
+ *  matches Node's default loader for already-absolute URLs).
+ */
+function synthesizePreamble(record: ModuleRecord, specifierToUrl?: Map<string, string>): string {
   const url = JSON.stringify(record.url);
+  // Serialize the resolve map as a JSON object so the preamble stays
+  // a single line per declaration (predictable line offsets for source
+  // maps).  Empty map keeps the literal compact for cycle-free
+  // synthetic / facade records that have no static deps.
+  const mapLiteral = specifierToUrl && specifierToUrl.size > 0
+    ? JSON.stringify(Object.fromEntries(specifierToUrl))
+    : "{}";
   return [
-    "const __edgeImportMeta = (globalThis.__edgeImportMetaFactory ? globalThis.__edgeImportMetaFactory(" + url + ") : { url: " + url + " });",
+    "const __edgeImportMetaResolveMap = " + mapLiteral + ";",
+    "const __edgeImportMeta = (globalThis.__edgeImportMetaFactory ? globalThis.__edgeImportMetaFactory(" + url + ", __edgeImportMetaResolveMap) : { url: " + url + ", resolve: (s) => __edgeImportMetaResolveMap[s] ?? new URL(s, " + url + ").href });",
     "const __edgeDynImport = (specifier) => (globalThis.__edgeDynImportImpl ? globalThis.__edgeDynImportImpl(specifier, " + url + ") : import(specifier));",
   ].join("\n");
 }
@@ -549,7 +611,15 @@ export function rewriteDynamicImport(source: string): string {
 
 /** Rewrite static-import specifiers in source using the given map.
  *  Imports for unknown specifiers are left untouched (the browser
- *  will fail to resolve them — that's a loader bug, surfaced loud). */
+ *  will fail to resolve them — that's a loader bug, surfaced loud).
+ *
+ *  ALSO strips `with { ... }` import attribute clauses on rewritten
+ *  imports.  The browser enforces the attribute (e.g. `type: "json"`
+ *  requires application/json MIME from the import target) — but our
+ *  rewritten blob URL serves text/javascript regardless of the
+ *  original module type, because the synthetic module we generated
+ *  re-exports the parsed values via JS `export` syntax.  Dropping
+ *  the clause keeps the browser happy. */
 export function rewriteImportSpecifiers(
   source: string,
   map: Map<string, string>,
@@ -557,23 +627,46 @@ export function rewriteImportSpecifiers(
   if (map.size === 0) return source;
   const requests = extractModuleRequests(source);
   if (requests.length === 0) return source;
-  // Walk the source again, replacing each specifier in-place. We need
-  // the original position of each string literal; the scanner found
-  // them but didn't record positions. Easier: scan again and do a
-  // substring replace anchored to the quoted form.
   let out = source;
   for (const req of requests) {
     const replacement = map.get(req.specifier);
     if (!replacement) continue;
     const sq = `'${req.specifier}'`;
     const dq = `"${req.specifier}"`;
+    // Replace the specifier first, then strip any trailing `with { ... }`
+    // attached to this rewritten import.  We scan for the (replaced)
+    // quote position and look ahead for `with { ... }`, taking care to
+    // bracket-match through nested braces in case a future spec
+    // version allows complex attribute values.
     if (out.includes(sq)) {
       out = out.replace(sq, `"${replacement}"`);
     } else if (out.includes(dq)) {
       out = out.replace(dq, `"${replacement}"`);
+    } else {
+      continue;
     }
-    // If the literal isn't found (e.g. template literal in a sourceMap
-    // comment) we leave it — the browser will error and we'll see it.
+    // If the user wrote `import X from "spec" with { ... };` we just
+    // replaced "spec" → "blob:...".  Strip the `with { ... }` clause
+    // by scanning right after the replacement closing quote.
+    const probeQuote = `"${replacement}"`;
+    const start = out.indexOf(probeQuote);
+    if (start < 0) continue;
+    let j = start + probeQuote.length;
+    while (j < out.length && /\s/.test(out[j])) j++;
+    if (out.slice(j, j + 4) === "with" && /[\s{]/.test(out[j + 4] ?? "")) {
+      let k = j + 4;
+      while (k < out.length && /\s/.test(out[k])) k++;
+      if (out[k] === "{") {
+        let depth = 1;
+        k++;
+        while (k < out.length && depth > 0) {
+          if (out[k] === "{") depth++;
+          else if (out[k] === "}") depth--;
+          k++;
+        }
+        out = out.slice(0, j) + out.slice(k);
+      }
+    }
   }
   return out;
 }
@@ -585,14 +678,128 @@ function jsId(name: string): string {
   return /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(name) ? name : `__edgeExp_${name.replace(/[^A-Za-z0-9_$]/g, "_")}`;
 }
 
+/** Invoke a synthetic module's `evaluateCallback` if one was captured
+ *  during `create_synthetic`.  The callback uses `this.setExport(name,
+ *  value)` to populate exports (per Node's vm.SyntheticModule API).
+ *  We intercept by providing a proxy `this` whose `setExport` writes
+ *  directly into `record.namespace`.  Idempotent — only runs once. */
+function runSyntheticEvalSteps(record: ModuleRecord): void {
+  if (record.kind !== "synthetic") return;
+  // Idempotent: check our own flag instead of `record.status`, which
+  // evaluateRecord sets to kEvaluating (3) before calling
+  // synthesizeUrl → synthesizeBlobUrl → us, so the status alone can't
+  // tell us whether the eval steps already ran.
+  if (record._syntheticEvalRan) return;
+  const fn = record.syntheticEvalSteps;
+  if (typeof fn !== "function") {
+    record._syntheticEvalRan = true;
+    return;
+  }
+  try {
+    const proxy = {
+      setExport(name: string, value: unknown): void {
+        record.namespace[name] = value;
+      },
+    };
+    fn.call(proxy);
+    record._syntheticEvalRan = true;
+  } catch (e) {
+    record.error = e;
+    record.status = 5; // kErrored
+    record._syntheticEvalRan = true;
+    throw e;
+  }
+}
+
+/** Cross-realm registry for synthetic-module export values that
+ *  aren't JSON-inlineable (functions, classes, WebAssembly memory /
+ *  tables, etc.).  Keyed by a stable id assigned per (record, name)
+ *  pair so the blob source can pull the live reference from
+ *  `globalThis.__edgeSyntheticExports.get(id)` at evaluation time.
+ *  Lives on globalThis so the SW-served blob (which runs in the same
+ *  browser-V8 realm as our handler) can read it. */
+let nextSyntheticExportId = 1;
+function getSyntheticExportsMap(): Map<number, unknown> {
+  type G = { __edgeSyntheticExports?: Map<number, unknown> };
+  const g = globalThis as G;
+  if (!g.__edgeSyntheticExports) g.__edgeSyntheticExports = new Map();
+  return g.__edgeSyntheticExports;
+}
+
+/** Decide if a value is safely JSON-inlineable.  Stricter than just
+ *  trying `JSON.stringify`: `JSON.stringify(new Date())` returns a
+ *  valid string, but `JSON.parse(...)` gives back a string rather than
+ *  a Date — silently lossy.  We restrict to genuine plain JSON values
+ *  (null / boolean / number / string / plain Array / plain Object
+ *  composed of the same).  Everything else routes through the
+ *  global-lookup path. */
+function isPlainJsonValue(value: unknown): boolean {
+  if (value === null) return true;
+  const t = typeof value;
+  if (t === "boolean" || t === "number" || t === "string") return true;
+  if (t !== "object") return false;
+  if (Array.isArray(value)) {
+    for (const item of value) if (!isPlainJsonValue(item)) return false;
+    return true;
+  }
+  const proto = Object.getPrototypeOf(value);
+  if (proto !== Object.prototype && proto !== null) return false;
+  for (const k of Object.keys(value as object)) {
+    if (!isPlainJsonValue((value as Record<string, unknown>)[k])) return false;
+  }
+  return true;
+}
+
+/** Serialize a value as a JS literal that can be inlined into source.
+ *  Plain JSON values are inlined directly (fastest path, no global
+ *  state, no SW lookup at evaluation).  Non-plain values (functions,
+ *  WebAssembly exports, Date, Map, class instances) get a global-
+ *  lookup expression that reads from
+ *  `globalThis.__edgeSyntheticExports`.  The id parameter is allocated
+ *  per (record, name) pair so multiple modules don't collide.  Returns
+ *  the literal source fragment plus a side-effect of registering the
+ *  value if it took the global path. */
+function inlineOrLookup(value: unknown): string {
+  if (value === undefined) return "undefined";
+  if (isPlainJsonValue(value)) {
+    return JSON.stringify(value)!;
+  }
+  const id = nextSyntheticExportId++;
+  getSyntheticExportsMap().set(id, value);
+  return "globalThis.__edgeSyntheticExports.get(" + id + ")";
+}
+
 /** Free any blob URLs the record (or its subgraph) holds. Called on
- *  module destroy to avoid leaking blob backing memory. */
+ *  module destroy to avoid leaking blob backing memory.  Native URL
+ *  ctor is cached at `worker.ts` module load (edge.js swaps the
+ *  global URL during boot — `revokeObjectURL` on the patched URL
+ *  would throw). */
 export function releaseBlobUrls(record: ModuleRecord, visited = new Set<ModuleRecord>()): void {
   if (visited.has(record)) return;
   visited.add(record);
+  const NativeURL = (globalThis as { __edgeNativeURL?: typeof URL }).__edgeNativeURL ?? URL;
   if (record.blobUrl) {
-    try { URL.revokeObjectURL(record.blobUrl); } catch { /* best effort */ }
+    try { NativeURL.revokeObjectURL(record.blobUrl); } catch { /* best effort */ }
     record.blobUrl = undefined;
   }
   for (const dep of record.deps) releaseBlobUrls(dep, visited);
+}
+
+/** Walk a record's subgraph and return all SW URLs it owns.  Used by
+ *  `unofficial_napi_module_wrap_destroy` to clear the SW cache via the
+ *  `edge-esm-clear` message — keeps the SW's in-memory source registry
+ *  bounded so long-running pages with many ESM evaluations don't leak. */
+export function collectSwUrls(record: ModuleRecord, visited = new Set<ModuleRecord>()): string[] {
+  const out: string[] = [];
+  function visit(r: ModuleRecord): void {
+    if (visited.has(r)) return;
+    visited.add(r);
+    if (r.swUrl) {
+      out.push(r.swUrl);
+      r.swUrl = undefined;
+    }
+    for (const dep of r.deps) visit(dep);
+  }
+  visit(record);
+  return out;
 }

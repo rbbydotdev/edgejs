@@ -20,6 +20,7 @@
 import type { Context, Env } from "./emnapi";
 import type { ModuleOverride } from "../policies";
 import {
+  collectSwUrls,
   detectTopLevelAwait,
   extractModuleRequests,
   releaseBlobUrls,
@@ -345,15 +346,51 @@ export function createUnofficialNapi(ctx: UnofficialHostContext): Record<string,
       };
     }
     if (!g.__edgeImportMetaFactory) {
-      g.__edgeImportMetaFactory = (url: string): Record<string, unknown> => {
-        const meta: Record<string, unknown> = { url };
+      g.__edgeImportMetaFactory = (
+        url: string,
+        resolveMap?: Record<string, string>,
+      ): Record<string, unknown> => {
+        // `resolveMap` is baked per-module by `synthesizePreamble` from
+        // the record's static-import dep URLs.  `import.meta.resolve`
+        // returns the bound URL for known specifiers and falls back to
+        // `new URL(specifier, base).href` for absolute / scheme-prefixed
+        // specifiers, matching Node's default resolver behavior for the
+        // synchronous form.  Throws on unresolvable bare specifiers
+        // (matches Node's ERR_MODULE_NOT_FOUND).
+        const map = resolveMap ?? {};
+        const NativeURL = (globalThis as { __edgeNativeURL?: typeof URL }).__edgeNativeURL ?? URL;
+        const meta: Record<string, unknown> = {
+          url,
+          resolve(specifier: string): string {
+            // 1. Statically-known specifier from the importing module's
+            //    `link()` deps — return its bound URL.
+            if (Object.prototype.hasOwnProperty.call(map, specifier)) return map[specifier]!;
+            // 2. Already-absolute specifier (https://, file://, data:, blob:, etc.)
+            //    — `new URL(spec)` parses without a base.
+            try { return new NativeURL(specifier).href; } catch { /* fall through */ }
+            // 3. Base URL is itself absolute — Node default resolver
+            //    behavior: `new URL(spec, base).href`.  Identifiers like
+            //    "parent.mjs" without a scheme don't qualify; skip.
+            try {
+              const base = new NativeURL(url);
+              void base;
+              return new NativeURL(specifier, url).href;
+            } catch { /* fall through */ }
+            // 4. No resolution possible — throw a Node-ish error.
+            const err = new Error(
+              "edge.js: import.meta.resolve(" + JSON.stringify(specifier) +
+              ") — not a static import of this module, not absolute, " +
+              "and no absolute base URL (base=" + url + ")",
+            );
+            (err as { code?: string }).code = "ERR_MODULE_NOT_FOUND";
+            throw err;
+          },
+        };
         const cb = esmHostState.initializeImportMetaCallback;
         if (typeof cb === "function") {
           // Lib's callback receives (meta, wrap) and populates meta
-          // in-place.  We don't have the wrap on this side (it lives
-          // in wasm-V8); the callback usually only touches `url` and
-          // adds `resolve`, both of which we can pre-populate with
-          // sensible defaults.  Future: marshal the wrap handle.
+          // in-place.  Runs after we've installed `resolve` so lib can
+          // override it with the official loader-resolver if it wants.
           try { cb(meta, undefined); } catch { /* keep whatever was set */ }
         }
         return meta;
@@ -379,18 +416,32 @@ export function createUnofficialNapi(ctx: UnofficialHostContext): Record<string,
         // produce URLs the browser's `import()` can resolve.
         const url = await synthesizeUrl(record);
         const ns = await import(/* @vite-ignore */ url);
-        // Capture an own-prop snapshot of the namespace.  Module namespace
-        // objects expose getters; reading each key once at completion is
-        // sufficient for the no-cycle no-late-binding case.  Cycles +
-        // late-mutated exports get a Proxy in Phase 5.
-        const out: Record<string, unknown> = {};
-        for (const k of Object.keys(ns)) out[k] = (ns as Record<string, unknown>)[k];
-        if (Object.prototype.hasOwnProperty.call(ns, "default") && !("default" in out)) {
-          out.default = (ns as { default?: unknown }).default;
-        }
-        record.namespace = out;
+        // Live-binding semantics: keep the real Module Namespace
+        // Object as the record's namespace.  V8 exposes each export
+        // as a live getter that reads the underlying binding cell on
+        // every access — patterns like `import * as ns from './a';
+        // setTimeout(() => console.log(ns.x))` see the current value
+        // when the timeout fires, not the value at import time.
+        //
+        // Earlier the namespace was snapshotted via `Object.keys` +
+        // own-prop copy at evaluate completion, which broke modules
+        // that mutate their exports after evaluation (e.g.
+        // `export let counter = 0; export function tick(){counter++;}`
+        // — importers calling tick() would see counter stay at 0
+        // because the snapshot froze it).  Module Namespace Objects
+        // are not Proxy-typed but behave like one for property access
+        // and Object.keys/Reflect.ownKeys; lib's namespace consumers
+        // (the kWrap.getNamespace() path) hand it back unmodified.
+        //
+        // For synthetic modules that already populated
+        // record.namespace via runSyntheticEvalSteps, we still want
+        // to expose the browser's namespace because some consumers
+        // walk Module Namespace Object slots directly.  The shape
+        // matches what we put in (JSON-stringified then re-parsed),
+        // so external behavior is unchanged.
+        record.namespace = ns as Record<string, unknown>;
         record.status = 4; // kEvaluated
-        return out;
+        return ns;
       } catch (e) {
         record.error = e;
         record.status = 5; // kErrored
@@ -1364,17 +1415,27 @@ export function createUnofficialNapi(ctx: UnofficialHostContext): Record<string,
     // (napi_env, wrapper, url, context_or_undefined, export_names, synthetic_eval_steps, handle_ptr).
     unofficial_napi_module_wrap_create_synthetic(
       envHandle: number, wrapper: number, urlHandle: number, _contextOrUndefined: number,
-      exportNamesHandle: number, _syntheticEvalSteps: number, handlePtr: number,
+      exportNamesHandle: number, syntheticEvalStepsHandle: number, handlePtr: number,
     ): number {
       const env = envs.get(envHandle);
       if (!env) return 1;
       const url = String(context.jsValueFromNapiValue(urlHandle) ?? "");
       const exportNamesRaw = context.jsValueFromNapiValue(exportNamesHandle);
       const exportNames = Array.isArray(exportNamesRaw) ? exportNamesRaw.map(String) : [];
+      // Capture the synthetic eval steps function as a host-JS
+      // reference.  GC keeps it alive as long as the record lives,
+      // independent of the napi handle's scope.  JSON imports drive
+      // this path: lib's translator gives us a `function() {
+      // this.setExport('default', parsedJson); }`.
+      const evalStepsRaw = context.jsValueFromNapiValue(syntheticEvalStepsHandle);
+      const syntheticEvalSteps = typeof evalStepsRaw === "function"
+        ? evalStepsRaw as ModuleRecord["syntheticEvalSteps"]
+        : undefined;
       const record: ModuleRecord = {
         kind: "synthetic", wrapper, url, exportNames,
         deps: [], status: 0, namespace: {},
         hasTla: false, hasAsyncGraph: false,
+        syntheticEvalSteps,
       };
       if (handlePtr > 0) {
         dv(memory).setUint32(handlePtr, registerEsmRecord(record), true);
@@ -1414,6 +1475,14 @@ export function createUnofficialNapi(ctx: UnofficialHostContext): Record<string,
       const record = getEsmRecord(handle);
       if (record && record.deps !== undefined) {
         try { releaseBlobUrls(record); } catch { /* best effort */ }
+        // Collect SW URLs first (this also clears `swUrl` from the
+        // records to avoid double-publishing on a subsequent evaluate
+        // of a recreated wrap), then notify the SW so its in-memory
+        // source registry can drop the entries.
+        const swPaths = collectSwUrls(record);
+        if (swPaths.length > 0) {
+          self.postMessage({ kind: "edge-esm-clear", paths: swPaths });
+        }
       }
       dropEsmRecord(handle);
       return 0;
@@ -1496,33 +1565,49 @@ export function createUnofficialNapi(ctx: UnofficialHostContext): Record<string,
     },
     // Wasm sig (5 args, napi.rs:1700):
     // (napi_env, handle, filename, parent_filename, result_ptr).
-    // Sync variant: called from `require(esm)`.  Wrapped with
-    // `WebAssembly.Suspending` (see bottom of file) so the async blob
-    // import appears synchronous to the wasm caller.  lib's caller in
-    // module_job.js:392 throws ERR_REQUIRE_ASYNC_MODULE before reaching
-    // here if hasAsyncGraph, so we only see non-TLA modules.  Returns
-    // a Promise that resolves to the namespace.
+    // Sync variant — called from `require(esm)` via
+    // `internal/modules/esm/module_job.js:ModuleJobSync.runSync`.
+    //
+    // #!~debt esm-evaluate-sync-jspi-blocked: the browser-target
+    // architecture runs user code through `contextify_run_script` (a
+    // host-V8 `new Function(source)()`), so the call path from a
+    // user-land `require('./x.mjs')` reaches us as
+    //   promising _start (JS) → wasm (_start, edge bootstrap)
+    //     → host-JS handler for contextify_run_script
+    //     → host-JS user code: `require(...)`
+    //     → host-JS lib CJS loader → loadESMFromCJS
+    //     → host-JS ModuleJobSync.runSync
+    //     → host-JS wrap.evaluateSync (napi-bound method)
+    //     → wasm C++ ModuleWrapEvaluateSync
+    //     → our handler.
+    // Multiple host-JS frames sit between the `promising` frame and the
+    // `Suspending` import, which JSPI v2 forbids ("trying to suspend
+    // JS frames").  No purely wasm-driven call site exists for this
+    // entry point in browser-target, so the Suspending wrap that would
+    // make the async browser-`import()` look sync to wasm callers can't
+    // actually fire.
+    //
+    // Honest failure: throw a clear error.  Lib catches it from
+    // `ModuleJobSync.runSync` and surfaces to the user's `require()`
+    // call.  Workaround: refactor the call site to `await import('./x.mjs')`,
+    // which goes through `evaluate` (returns a Promise that lib awaits
+    // in module_job.js:430 without any sync-suspension constraint).
     unofficial_napi_module_wrap_evaluate_sync(
-      envHandle: number, handle: number, _filename: number, _parentFilename: number, resultOut: number,
-    ): number | Promise<number> {
+      envHandle: number, handle: number, _filename: number, _parentFilename: number, _resultOut: number,
+    ): number {
       const env = envs.get(envHandle);
       if (!env) return 1;
       const record = getEsmRecord(handle);
-      if (!record) return 1;
-      return (async () => {
-        try {
-          await evaluateRecord(record);
-          if (resultOut > 0) {
-            const h = context.napiValueFromJsValue(record.namespace);
-            dv(memory).setUint32(resultOut, Number(h), true);
-          }
-          return 0;
-        } catch (e) {
-          record.error = e;
-          record.status = 5; // kErrored
-          return 1;
-        }
-      })();
+      void record;
+      const err = new Error(
+        "edge.js: require(esm) is not supported in browser-target. " +
+        "User code runs in host V8 via contextify_run_script, which puts " +
+        "JS frames between JSPI's promising and Suspending boundaries — " +
+        "the wasm-side wrap.evaluateSync can't suspend across them. " +
+        "Refactor the caller to use `await import(...)` instead of `require()`.",
+      );
+      (err as { code?: string }).code = "ERR_REQUIRE_ASYNC_MODULE";
+      throw err;
     },
     // Wasm sig (3 args): (napi_env, handle, result_ptr).
     unofficial_napi_module_wrap_get_namespace(
@@ -1559,20 +1644,34 @@ export function createUnofficialNapi(ctx: UnofficialHostContext): Record<string,
       return 0;
     },
     // Wasm sig (3 args): (napi_env, handle, result_ptr).
+    // Source-phase imports — for Wasm-ESM lib's translator at
+    // translators.js:625 calls `module.setModuleSourceObject(compiled)`
+    // with the `WebAssembly.Module` instance, and the user's
+    // `import source X from "./mod.wasm"` resolves to that via the
+    // binding_module_wrap.cc:ModuleWrapGetModuleSourceObject C++ shim
+    // → us.  Returning undefined makes lib throw ERR_SOURCE_PHASE_NOT_DEFINED.
     unofficial_napi_module_wrap_get_module_source_object(
-      envHandle: number, _handle: number, resultOut: number,
+      envHandle: number, handle: number, resultOut: number,
     ): number {
       const env = envs.get(envHandle);
-      if (env && resultOut > 0) {
-        const h = context.napiValueFromJsValue(undefined);
+      if (!env) return 1;
+      const record = getEsmRecord(handle);
+      if (resultOut > 0) {
+        const h = context.napiValueFromJsValue(record?.sourceObject);
         dv(memory).setUint32(resultOut, Number(h), true);
       }
       return 0;
     },
     // Wasm sig (3 args): (napi_env, handle, source_object).
     unofficial_napi_module_wrap_set_module_source_object(
-      _envHandle: number, _handle: number, _sourceObject: number,
-    ): number { return 0; },
+      _envHandle: number, handle: number, sourceObjectHandle: number,
+    ): number {
+      const record = getEsmRecord(handle);
+      if (record) {
+        record.sourceObject = context.jsValueFromNapiValue(sourceObjectHandle);
+      }
+      return 0;
+    },
     // Wasm sig (3 args): (napi_env, handle, result_ptr).  result_ptr is u8.
     unofficial_napi_module_wrap_has_top_level_await(
       _envHandle: number, handle: number, resultOut: number,
@@ -1654,24 +1753,16 @@ export function createUnofficialNapi(ctx: UnofficialHostContext): Record<string,
     // stub from imports-generated.ts (returns 0 for the `napi` namespace).
   };
 
-  // ESM Phase 1: wrap `module_wrap_evaluate_sync` as a Suspending
-  // import.  Lib's binding calls this from `require(esm)` and expects
-  // a sync return; the underlying browser `import(blobUrl)` is async,
-  // so JSPI suspends the wasm frame until the browser ESM machinery
-  // settles.  Safe because lib's evaluate-sync path runs from a
-  // wasm-only stack (lib JS is INSIDE wasm-V8; host V8 sees only the
-  // _start promising frame between here and our handler).
-  //
-  // Older browsers without JSPI fall through to the plain Promise-
-  // returning impl, which wasm can't await — evaluate_sync will see a
-  // non-zero napi_status and lib will surface a clear "evaluate failed"
-  // error.  Soft degrade rather than crash.
-  const EsmSuspendingCtor = (
-    globalThis as { WebAssembly?: { Suspending?: new (fn: Function) => Function } }
-  ).WebAssembly?.Suspending;
-  if (typeof EsmSuspendingCtor === "function") {
-    const origSync = impls["unofficial_napi_module_wrap_evaluate_sync"] as (...a: unknown[]) => unknown;
-    impls["unofficial_napi_module_wrap_evaluate_sync"] = new EsmSuspendingCtor(origSync) as Function;
-  }
+  // Note: an earlier prototype wrapped `module_wrap_evaluate_sync`
+  // with `WebAssembly.Suspending` to make the async browser
+  // `import(blobUrl)` appear sync to callers.  Removed because the only
+  // browser-target call path (`require(esm)` → CJS loader →
+  // ModuleJobSync.runSync → wrap.evaluateSync) reaches us with host-JS
+  // frames between JSPI's promising and Suspending — V8 throws
+  // "trying to suspend JS frames".  The handler now throws a clear
+  // ERR_REQUIRE_ASYNC_MODULE so the failure surfaces cleanly to user
+  // code.  See the long comment on
+  // `unofficial_napi_module_wrap_evaluate_sync` above and the
+  // `#!~debt esm-evaluate-sync-jspi-blocked` entry in NOTES.md.
   return impls;
 }

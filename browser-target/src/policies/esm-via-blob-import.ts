@@ -127,6 +127,23 @@ const POST_PATCH = `
       catch (_e) { void _e; /* binding may not accept replacement; non-fatal */ }
     };
   }
+
+  // Expose the module_wrap binding under a globalThis.__edge namespace so
+  // tests + advanced users can construct ModuleWraps directly without
+  // going through internalBinding.  Lib gates access to internalBinding;
+  // process.binding('module_wrap') isn't on the allowlist.  This hook is
+  // namespaced so it's clear it's not part of any Node-compat surface.
+  try {
+    var moduleWrapBinding = internalBinding('module_wrap');
+    if (moduleWrapBinding && typeof moduleWrapBinding.ModuleWrap === 'function') {
+      Object.defineProperty(globalThis, '__edgeModuleWrap', {
+        value: moduleWrapBinding,
+        writable: false,
+        enumerable: false,
+        configurable: false,
+      });
+    }
+  } catch (_e) { void _e; /* binding may not be ready; non-fatal */ }
 })();
 `;
 

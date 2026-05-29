@@ -1,0 +1,4 @@
+initial: 0
+after-3-ticks: 3
+after-reset: 0
+keys: counter,reset,tick
