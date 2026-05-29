@@ -1,0 +1,41 @@
+browser-target/src/main.ts
+  s_92c1b47c0d6ee8::t_1a3a1c642e898e 1027-1068
+tests/js/esm-cycle-live-binding.js
+  s_92c1b47c0d6ee8::t_782cdd272ceb5d 1-11,17,19-32,34-37
+  s_92c1b47c0d6ee8::t_0dc43379a828f3 33
+  s_92c1b47c0d6ee8::t_28d4572bd7b006 12-16,18
+tests/js/esm-cycle-live-binding.stdout
+  s_92c1b47c0d6ee8::t_9aaa0f73f8d60c 1
+browser-target/src/napi-host/esm-registry.ts
+  s_92c1b47c0d6ee8::t_10797a77ec100b 291-332,347-351,355-356
+  s_92c1b47c0d6ee8::t_312c33975029de 430-510
+  s_92c1b47c0d6ee8::t_9590ebd1dc0eb2 65-69
+NOTES.md
+  s_92c1b47c0d6ee8::t_7e1fe45bff60c8 95-108
+  s_92c1b47c0d6ee8::t_54dce35951dc05 939-944
+browser-target/src/worker.ts
+  s_92c1b47c0d6ee8::t_d323678ac232f9 772-801,804-814
+browser-target/public/sw.js
+  s_92c1b47c0d6ee8::t_0601e7d8bff6b5 25,29-36
+  s_92c1b47c0d6ee8::t_42c3272b4f4ddc 94-116
+  s_92c1b47c0d6ee8::t_45a488d2ff8ce6 55-83
+browser-target/src/napi-host/unofficial.ts
+  s_92c1b47c0d6ee8::t_a0b5b489293cbc 26
+  s_92c1b47c0d6ee8::t_498febf7ca1979 377-380
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "c0b22aa51441dc8de99d15e2923945bb56085491",
+  "prompts": {},
+  "sessions": {
+    "s_92c1b47c0d6ee8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "dca99c1c-d946-4444-9a53-9ba89db5d748",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
