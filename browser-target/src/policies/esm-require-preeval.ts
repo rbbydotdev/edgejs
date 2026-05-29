@@ -110,29 +110,69 @@ const EXECUTION_POST_PATCH = `
     return out;
   }
 
-  function isEsmExtension(p) { return /\\.mjs(\\?|#|$)/.test(p); }
-  function isCjsExtension(p) { return /\\.(cjs|js)(\\?|#|$)/.test(p); }
+  // Classify a resolved file path as 'esm' | 'cjs' | 'other' per
+  // Node's resolution algorithm (lib/internal/modules/esm/get_format.js
+  // extensionFormatMap + lib/internal/modules/package_json_reader.js
+  // LOOKUP_PACKAGE_SCOPE).  Rules:
+  //   .mjs → always ESM
+  //   .cjs → always CJS
+  //   .js  → consult nearest package.json's "type" field, walking up
+  //          dir ancestors, stopping at node_modules boundary or fs
+  //          root.  "module" → ESM, otherwise CJS.
+  //   other extensions → not a JS module we preload
+  function classifyResolved(resolved, pkgCache, fs, path) {
+    var lower = resolved.replace(/[?#].*$/, '').toLowerCase();
+    if (lower.endsWith('.mjs')) return 'esm';
+    if (lower.endsWith('.cjs')) return 'cjs';
+    if (!lower.endsWith('.js')) return 'other';
+    var dir = path.dirname(resolved);
+    while (dir && dir !== path.dirname(dir)) {
+      // Stop at node_modules boundary per spec — if the parent dir
+      // segment ends with 'node_modules', the lookup terminates and
+      // no scope applies (per LOOKUP_PACKAGE_SCOPE).
+      if (path.basename(dir) === 'node_modules') return 'cjs';
+      if (pkgCache.has(dir)) {
+        var cached = pkgCache.get(dir);
+        if (cached === 'module') return 'esm';
+        if (cached === 'commonjs') return 'cjs';
+        // null = no package.json here; keep walking.
+      } else {
+        var pkgPath = path.join(dir, 'package.json');
+        var raw;
+        try { raw = fs.readFileSync(pkgPath, 'utf8'); }
+        catch (_e) { void _e; pkgCache.set(dir, null); dir = path.dirname(dir); continue; }
+        var pkg;
+        try { pkg = JSON.parse(raw); }
+        catch (_e2) { void _e2; pkgCache.set(dir, null); dir = path.dirname(dir); continue; }
+        var t = (pkg && pkg.type) ? pkg.type : null;
+        pkgCache.set(dir, t);
+        if (t === 'module') return 'esm';
+        if (t === 'commonjs') return 'cjs';
+      }
+      dir = path.dirname(dir);
+    }
+    return 'cjs'; // No package.json found; default per Node spec.
+  }
 
   // Walk the static require graph, collecting .mjs file paths to
-  // preload.  Reads transitive CJS files via fs.readFileSync (which
-  // is backed by the SAB ring in browser-target -- fast for files
-  // edge.js's bundled-fs has).
+  // preload.  Resolution uses createRequire(fromPath).resolve(spec)
+  // which gets us Node-spec relative + node_modules + exports field
+  // handling for free.  Classification uses Node's
+  // extensionFormatMap + LOOKUP_PACKAGE_SCOPE.
   function collectEsmTargets(entrySrc, entryBase) {
-    var fs, path;
+    var fs, path, mod;
     try { fs = require('fs'); } catch (_e) { void _e; return []; }
     try { path = require('path'); } catch (_e) { void _e; return []; }
+    try { mod = require('node:module'); } catch (_e) { void _e; return []; }
     var visitedCjs = new Set();
     var esmTargets = [];
+    var pkgCache = new Map(); // dir → 'module' | 'commonjs' | null
 
     function resolve(spec, fromPath) {
-      // Best-effort relative resolution.  Doesn't handle node_modules
-      // or package exports — covers the literal-relative case that's
-      // the bulk of real require(esm) usage.
-      if (!spec.startsWith('./') && !spec.startsWith('../') && !spec.startsWith('/')) return null;
-      try {
-        var dir = path.dirname(fromPath);
-        return path.resolve(dir, spec);
-      } catch (_e) { void _e; return null; }
+      var req;
+      try { req = mod.createRequire(fromPath); } catch (_e) { void _e; return null; }
+      try { return req.resolve(spec); }
+      catch (_e2) { void _e2; return null; }
     }
 
     function walk(src, fromPath) {
@@ -140,17 +180,17 @@ const EXECUTION_POST_PATCH = `
       for (var i = 0; i < specs.length; i++) {
         var resolved = resolve(specs[i], fromPath);
         if (!resolved) continue;
-        if (isEsmExtension(resolved)) {
+        var kind = classifyResolved(resolved, pkgCache, fs, path);
+        if (kind === 'esm') {
           esmTargets.push(resolved);
-        } else if (isCjsExtension(resolved)) {
+        } else if (kind === 'cjs') {
           if (visitedCjs.has(resolved)) continue;
           visitedCjs.add(resolved);
           var depSrc;
           try { depSrc = fs.readFileSync(resolved, 'utf8'); } catch (_e) { void _e; continue; }
           walk(depSrc, resolved);
         }
-        // No extension: could be CJS or ESM; skip — caller gets the
-        // clear error at runtime if it's an ESM target.
+        // 'other' — .json / .node / etc.  Skip.
       }
     }
 
