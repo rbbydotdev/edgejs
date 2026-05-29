@@ -92,22 +92,30 @@ the browser-target tree.
 
 ### Newly opened
 
-- **`esm-per-module-dynamic-import`** (2026-05-29) — `import(...)` in
-  source compiled by `new vm.SourceTextModule(src, {
-  importModuleDynamically: cb })` doesn't dispatch to the per-module
-  `cb`. Lib's `importModuleDynamicallyCallback`
-  (`internal/modules/esm/utils.js:252`) looks up the per-module
-  callback in `moduleRegistries` keyed by the referrer's
-  `host_defined_option_symbol`. The blob runs in **browser-V8**;
-  we'd need to translate "this parent URL" → "the symbol set on the
-  lib-V8 wrap" via a side channel. Doable without C++ rebuild via a
-  globalThis-tagged Map in lib + a napi extension exposed back to
-  host that takes a URL and calls the stored callback, but it's
-  ~100 LOC of bridging for a niche-but-real Node feature
-  (`vm.SourceTextModule({importModuleDynamically})`). Tracked test:
-  `tests/js/esm-dynamic-import.skip`. Marker site:
-  `napi-host/esm-registry.ts:synthesizePreamble`. The global-callback
-  case (lib's main loader) WORKS through `esmHostState`.
+- **`esm-cyclic-live-bindings`** (2026-05-29) — Cyclic ES module
+  graphs (A imports B, B imports A) fail in the blob-URL trampoline.
+  Each module's source has its dep URLs baked in at blob-mint time,
+  but blob URLs are immutable and can't be reserved before their
+  source is generated. The registry detects the cycle at
+  `napi-host/esm-registry.ts:synthesizeBlobUrlInner` and throws a
+  clear "edge.js ESM cycle detected" error instead of stack-overflow.
+  Real fix paths: (a) install a service worker that serves source
+  from the registry at a stable per-record URL (preserves V8's
+  bytecode-level live-binding), or (b) rewrite all imports through a
+  JS-runtime namespace registry (simpler but lossy for re-export-
+  from-cycle patterns). Tracked test: `esm-cycle-live-binding.skip`.
+  Static (non-cyclic), TLA, dynamic, re-export chains all green.
+
+- ~~`esm-per-module-dynamic-import`~~ — **RESOLVED 2026-05-29.** The
+  `esm-via-blob-import` policy now mirrors each module's per-module
+  dynamic-import registry into a Map keyed by `referrer.url`, then
+  wraps `initializeESM` to override the global dispatcher with one
+  that prefers our per-URL entry before falling through to lib's
+  symbol-based default. Host's `__edgeDynImportImpl` calls the global
+  callback with the proper 5-arg signature (`(refSym=null, spec,
+  phase=2, attrs={}, refName=parentUrl)`); the wrapped per-module
+  callback's return value (`m.namespace`) becomes the dynamic-import
+  resolution. Verified by `tests/js/esm-dynamic-import.js`.
 
 - **`child-process-ipc-sendhandle`** (2026-05-27, P3.3; PARTIALLY
   RESOLVED 2026-05-28 — MessagePort now works via NativePortBridge) —
@@ -927,7 +935,8 @@ and remain a fine direction.
 
 ### 3. ESM support (`module_wrap_*`) — RESOLVED 2026-05-29
 
-Phases 1, 2, 4 are shipped end-to-end; Phase 3 partial.
+Phases 1, 2, 3, 4 all shipped end-to-end.  Only known limitation:
+`esm-cyclic-live-bindings` (see debt entry above).
 
 **Architecture** (no Asyncify): the napi `module_wrap_*` family —
 `create_source_text`, `create_synthetic`, `link`, `instantiate`,
@@ -952,19 +961,22 @@ wasm caller (precedent: `unofficial_napi_yield_for_microtasks`).
 **Phase 2 — top-level await**: free with the JSPI wrap;
 `tests/js/esm-top-level-await.js`. Green.
 
-**Phase 3 — dynamic `import()` (partial)**:
+**Phase 3 — dynamic `import()`**:
 `napi-host/esm-registry.ts:rewriteDynamicImport` substitutes
 `import(...)` with `__edgeDynImport(...)`; host installs
-`globalThis.__edgeDynImportImpl` that falls through to native
-`import()` for absolute URLs (blob:/data:/https:) and to lib's
-global `importModuleDynamicallyCallback` (registered via
-`setImportModuleDynamicallyCallback`) otherwise. Per-module
-`importModuleDynamically` option on `new vm.SourceTextModule(...)`
-needs a symbol bridge (browser-V8 parent URL → lib-V8 referrer
-symbol) that we couldn't wire without a C++ rebuild. Test stub at
-`tests/js/esm-dynamic-import.skip` documents the gap. Tracked as
-`#!~debt esm-per-module-dynamic-import` (referenced from the helper
-preamble).
+`globalThis.__edgeDynImportImpl` that calls lib's global
+`importModuleDynamicallyCallback` (registered via
+`setImportModuleDynamicallyCallback`) with the proper 5-arg
+signature.  The `esm-via-blob-import` policy mirrors each module's
+per-module `importModuleDynamically` registry into a Map keyed by
+`referrer.url` and installs a wrapping dispatcher around lib's
+global callback that prefers per-URL routing before falling through
+to lib's symbol-based default.  This lets
+`new vm.SourceTextModule(src, { importModuleDynamically: cb })`
+fire `cb` even though the user source runs in browser-V8 via the
+blob trampoline.  Falls through to native browser `import()` for
+absolute URLs (blob:/data:/https:).  Test:
+`tests/js/esm-dynamic-import.js`.
 
 **Phase 4 — import.meta**:
 `rewriteImportMeta` substitutes `import.meta` with `__edgeImportMeta`,
@@ -973,14 +985,14 @@ with the **lib-provided URL** (not the leaky blob: URL). If lib
 registered an `initializeImportMetaObjectCallback` it runs to layer
 additional properties. Test: `tests/js/esm-import-meta-url.js`.
 
-**Policy**: `esm-via-blob-import` is now in `defaultBrowserPolicies`.
-It post-patches `internal/modules/esm/utils` to make `registerModule`
-tolerant of `host_defined_option_symbol` being undefined on the wrap
-(edge's `binding_module_wrap.cc:ModuleWrapCtor` doesn't set this
-symbol — Node uses v8::Script host-defined-options on the C++ side
-which we don't have a bridge for). The patch synthesizes a fresh
-Symbol per wrap so the WeakMap key requirement is satisfied. Once a
-C++ bridge ships, the policy patch can be removed.
+**Policy**: `esm-via-blob-import` is in `defaultBrowserPolicies`.
+Its remaining job is the per-URL dynamic-import registry + dispatcher
+described under Phase 3 above.  Originally it also synthesized
+`host_defined_option_symbol` on every wrap, but that's now done
+natively in `src/internal_binding/binding_module_wrap.cc:ModuleWrapCtor`
+via `unofficial_napi_create_private_symbol`.  The JS-side Symbol
+synthesis is kept as a belt-and-suspenders fallback so the policy
+works against wasm builds without the C++ fix.
 
 **Cached native intrinsics**: `worker.ts` caches `NativeURL` and
 `NativeBlob` at module load and exposes them on

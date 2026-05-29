@@ -1,0 +1,16 @@
+Cyclic ES module graphs (A imports B, B imports A) hit `#!~debt
+esm-cyclic-live-bindings` in the blob-URL trampoline.  The browser's
+import() needs the dep blob URLs baked into each module's source, but
+blob URLs are immutable — we can't pre-mint a URL for a record whose
+source isn't generated yet (and the source needs the cyclic dep's
+URL).  Real fix paths:
+  (a) install a service-worker that serves source from our registry at
+      stable per-record URLs (e.g. blob-fake:edge/<id>) — preserves
+      V8's bytecode-level live-binding semantics
+  (b) rewrite all imports through a JS-runtime namespace registry —
+      simpler but lossy for re-export-from-cycle patterns
+
+For now the registry throws a clear "edge.js ESM cycle detected" error
+instead of stack-overflowing.  Tracked in NOTES.md as
+esm-cyclic-live-bindings.  Static (non-cyclic), TLA, dynamic, and
+re-export tests cover the rest of the surface.

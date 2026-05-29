@@ -386,6 +386,29 @@ napi_value ModuleWrapCtor(napi_env env, napi_callback_info info) {
 
   SetNamedBool(env, this_arg, "hasTopLevelAwait", instance->has_top_level_await);
 
+  // Set host_defined_option_symbol -> fresh per-wrap Symbol on this_arg.
+  // Lib's internal/modules/esm/utils.js:registerModule keys
+  // moduleRegistries on `referrer[host_defined_option_symbol]` and
+  // throws "Invalid value used as weak map key" if it's undefined.
+  // Real Node sets this through v8::Script host-defined-options on the
+  // C++ side; we mirror by storing a fresh JS Symbol on the wrap.
+  // Previously stubbed via the esm-via-blob-import policy (post-patch
+  // on internal/modules/esm/utils); this C++ change retires that.
+  {
+    napi_value private_symbols = EdgeGetPrivateSymbols(env);
+    if (private_symbols != nullptr) {
+      napi_value hdo_symbol = nullptr;
+      if (napi_get_named_property(env, private_symbols, "host_defined_option_symbol",
+                                  &hdo_symbol) == napi_ok && hdo_symbol != nullptr) {
+        napi_value fresh = nullptr;
+        if (unofficial_napi_create_private_symbol(env, "edge-esm-hdo", NAPI_AUTO_LENGTH,
+                                                   &fresh) == napi_ok && fresh != nullptr) {
+          (void)napi_set_property(env, this_arg, hdo_symbol, fresh);
+        }
+      }
+    }
+  }
+
   napi_wrap(env, this_arg, instance, ModuleWrapFinalize, nullptr, &instance->wrapper_ref);
   return this_arg;
 }

@@ -311,11 +311,25 @@ export function createUnofficialNapi(ctx: UnofficialHostContext): Record<string,
         const cb = esmHostState.dynamicImportCallback;
         if (typeof cb === "function") {
           try {
-            const result = cb(specifier, parentUrl, undefined);
+            // Lib's `importModuleDynamicallyCallback` signature is
+            // (referrerSymbol, specifier, phase, attributes, referrerName).
+            // The `esm-via-blob-import` policy installs a wrapper at
+            // that name that prefers a per-URL registry (looked up by
+            // referrerName) over the symbol-based dispatch.  We don't
+            // know the referrerSymbol from the browser-V8 side; pass
+            // null and rely on referrerName=parentUrl to route to the
+            // per-module vm.SourceTextModule.importModuleDynamically.
+            // Phase 2 = kEvaluationPhase (matches binding_module_wrap.cc).
+            const result = (cb as (
+              s: unknown, spec: string, phase: number, attrs: object, name: string,
+            ) => unknown)(null, specifier, 2, {}, parentUrl);
             return Promise.resolve(result).then((mod) => {
-              // Lib's callback returns a vm.Module (SourceTextModule)
-              // — extract its namespace.  If user returned a raw
-              // namespace object instead, return that directly.
+              // Lib's callback returns either a vm.Module (its
+              // namespace getter resolves the actual Module Namespace
+              // Object) or a raw Module Namespace Object directly.
+              // The per-module wrapper (importModuleDynamicallyWrap in
+              // vm/module.js:522-544) returns m.namespace directly,
+              // so the top branch covers both cases.
               if (mod && typeof mod === "object" && "namespace" in (mod as object)) {
                 return (mod as { namespace: unknown }).namespace;
               }

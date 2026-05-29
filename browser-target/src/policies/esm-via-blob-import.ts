@@ -1,30 +1,37 @@
-// ESM-via-blob-import: enable real ES Module execution in the browser-
-// target by patching lib's loader machinery to tolerate the napi
-// stubs in `napi-host/esm-registry.ts` driving evaluation through the
-// browser's native `import(blob:URL)`.
+// ESM-via-blob-import: wire per-module `importModuleDynamically`
+// dispatch through to the browser-V8 blob trampoline in
+// `napi-host/esm-registry.ts`.
 //
-// What this policy does:
+// Backstory: phases 1–4 of the ESM bridge needed *two* policy patches.
+// The `host_defined_option_symbol` synthesis was the first — without
+// it, lib's `registerModule` threw `Invalid value used as weak map key`
+// because edge's C++ `ModuleWrapCtor` didn't set the private symbol on
+// the wrap. That's now fixed at the C++ layer
+// (`src/internal_binding/binding_module_wrap.cc:ModuleWrapCtor` calls
+// `unofficial_napi_create_private_symbol`).  The remaining JS-side
+// work is the **per-URL dynamic-import registry**: our blob runs in
+// browser-V8 and has no access to lib's `moduleRegistries` WeakMap
+// (keyed by the private symbol), so we mirror the registry by URL and
+// install a dispatcher around lib's global dynamic-import callback.
 //
-// 1. Patches `internal/modules/esm/utils` to make `registerModule`
-//    tolerant of a missing `host_defined_option_symbol` on the
-//    referrer.  Edge's C++ `ModuleWrapCtor` in
-//    `src/internal_binding/binding_module_wrap.cc:307` doesn't set
-//    this symbol (Node's C++ wraps it via host-defined options on the
-//    underlying v8::Script; we don't have that bridge yet, and adding
-//    it requires a wasm rebuild).  Instead the JS-side patch
-//    synthesizes a fresh per-wrap Symbol when none is present so
-//    the WeakMap key requirement is satisfied.  Once the C++
-//    bridge ships (future phase), this patch becomes a no-op and
-//    the policy can be retired.
+// What this policy does now:
 //
-// 2. Keeps `--experimental-vm-modules` runtime semantics — this
-//    policy doesn't toggle the flag; that happens in `worker.ts`
-//    where the args are constructed.
+// 1. Patches `internal/modules/esm/utils:registerModule` to mirror
+//    each module's per-module dynamic-import registry into a Map
+//    keyed by `referrer.url`.  Defensive Symbol synthesis is kept as
+//    a belt-and-suspenders fallback in case the wasm is ever rolled
+//    back to a build without the C++ fix.
 //
-// Naming: the policy's job is to make ESM work via the blob trampoline
-// in `napi-host/esm-registry.ts`, hence the name.  Default-on because
-// without it, `vm.SourceTextModule` and any `import` syntax with
-// `--input-type=module` would crash on the WeakMap key error.
+// 2. Wraps `initializeESM` so that AFTER lib installs its global
+//    `importModuleDynamicallyCallback`, we override it with a
+//    dispatcher that prefers our per-URL registry.  This lets
+//    `new vm.SourceTextModule(src, { importModuleDynamically: cb })`
+//    actually fire `cb` even though the user code runs inside a
+//    blob: URL evaluated by browser-V8.
+//
+// Default-on because without it, per-module dynamic import inside
+// `vm.SourceTextModule` raises `ERR_VM_DYNAMIC_IMPORT_CALLBACK_MISSING`
+// when the user's source does `await import(specifier)`.
 
 import type { Policy } from "./index";
 
@@ -47,6 +54,14 @@ const POST_PATCH = `
   if (typeof hostDefinedOptionSymbol !== 'symbol') return;
 
   var orig = module.exports.registerModule;
+
+  // Per-module dynamic-import registry, keyed by the wrap's URL.  Our
+  // blob trampoline runs in browser-V8 which has no access to lib's
+  // moduleRegistries WeakMap (keyed by host_defined_option_symbol).
+  // We mirror the registry here by URL so the dispatcher installed
+  // below can route to the right per-module callback.
+  var perUrlCallbacks = new Map();
+
   module.exports.registerModule = function registerModule(referrer, registry) {
     // edge's binding_module_wrap.cc:ModuleWrapCtor doesn't set the
     // host-defined-options Symbol on the wrap (Node does this through
@@ -61,9 +76,57 @@ const POST_PATCH = `
         referrer[hostDefinedOptionSymbol] = Symbol('edge-esm-hdo');
       } catch (_e) { void _e; /* referrer may be frozen; orig will throw a clear error */ }
     }
+    // Mirror per-module importModuleDynamically by URL for the browser-
+    // V8 blob trampoline.  callbackReferrer is the user's vm.Module
+    // instance, not the wrap, so the per-module callback gets a
+    // useful "this" referrer matching real Node semantics.
+    if (registry && typeof registry.importModuleDynamically === 'function' && referrer && typeof referrer.url === 'string') {
+      perUrlCallbacks.set(referrer.url, registry);
+    }
     return orig.call(this, referrer, registry);
   };
   module.exports.__edgeEsmRegisterPatched = true;
+
+  // Wrap initializeESM so that AFTER lib installs its global dynamic-
+  // import callback (importModuleDynamicallyCallback from this same
+  // module), we OVERRIDE it with a dispatcher that prefers our per-URL
+  // registry.  This lets vm.SourceTextModule(src, { importModuleDynamically })
+  // actually fire importModuleDynamically even though the blob runs
+  // in browser-V8 — our __edgeDynImportImpl in the host calls back
+  // into lib via the global callback (esmHostState.dynamicImportCallback)
+  // and lands HERE.
+  //
+  // The local setImportModuleDynamicallyCallback and
+  // importModuleDynamicallyCallback references are accessible from
+  // the post-patch because the post body is injected inside the same
+  // module wrapper as utils.js itself.
+  if (typeof module.exports.initializeESM === 'function' && typeof setImportModuleDynamicallyCallback === 'function') {
+    var origInitializeESM = module.exports.initializeESM;
+    var origCallback = importModuleDynamicallyCallback;
+    var edgeDispatcher = async function edgeDispatcher(referrerSymbol, specifier, phase, attributes, referrerName) {
+      // Per-URL match: route to the user's vm.SourceTextModule
+      // importModuleDynamically option, already wrapped by
+      // importModuleDynamicallyWrap so it returns the namespace
+      // (vm.Module → its .namespace, or a Module Namespace Object).
+      if (typeof referrerName === 'string' && perUrlCallbacks.has(referrerName)) {
+        var reg = perUrlCallbacks.get(referrerName);
+        if (typeof reg.importModuleDynamically === 'function') {
+          return reg.importModuleDynamically(specifier, reg.callbackReferrer || referrerName, attributes, phase);
+        }
+      }
+      // Fall through to lib's symbol-based dispatch (default loader,
+      // contextify scripts, etc.).
+      return origCallback(referrerSymbol, specifier, phase, attributes, referrerName);
+    };
+    module.exports.initializeESM = function patchedInitializeESM(shouldSpawnLoaderHookWorker) {
+      origInitializeESM(shouldSpawnLoaderHookWorker);
+      // Override with our dispatcher.  setImportModuleDynamicallyCallback
+      // replaces the global hook — both lib's own dynamic imports AND our
+      // browser-V8 blob trampoline route through edgeDispatcher.
+      try { setImportModuleDynamicallyCallback(edgeDispatcher); }
+      catch (_e) { void _e; /* binding may not accept replacement; non-fatal */ }
+    };
+  }
 })();
 `;
 

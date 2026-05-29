@@ -292,7 +292,29 @@ export function detectTopLevelAwait(source: string): boolean {
  *  bootstrap (lib/internal/url.js) which would otherwise produce
  *  `blob:nodedata:` URLs the browser can't `import()`. */
 export function synthesizeBlobUrl(record: ModuleRecord): string {
+  return synthesizeBlobUrlInner(record, new Set());
+}
+
+function synthesizeBlobUrlInner(record: ModuleRecord, inFlight: Set<ModuleRecord>): string {
   if (record.blobUrl) return record.blobUrl;
+  // Cycle guard: blob URLs are created with their source baked in — we
+  // can't pre-mint a URL for a record whose source we haven't generated
+  // yet, because the source needs the dep blob URLs which (for a cycle)
+  // include the URL we're currently generating.  This is the structural
+  // reason `#!~debt esm-cyclic-live-bindings` exists.  Until we either
+  // (a) install a service-worker that resolves a stable per-record URL,
+  // or (b) rewrite all imports through a runtime registry (lossy for
+  // live-binding semantics), cycles get a hard "module not found" instead
+  // of an infinite recursion crash.
+  if (inFlight.has(record)) {
+    throw new Error(
+      "edge.js ESM cycle detected at " + record.url +
+      " — cyclic ES module graphs require a stable per-record URL " +
+      "(blob: URLs are not retro-rewritable). " +
+      "Tracked as #!~debt esm-cyclic-live-bindings.",
+    );
+  }
+  inFlight.add(record);
 
   // Resolve native ctors lazily — they're cached on globalThis by
   // worker.ts before edge.js mutates the globals.  Falling back to the
@@ -332,7 +354,7 @@ export function synthesizeBlobUrl(record: ModuleRecord): string {
   const specifierToBlobUrl = new Map<string, string>();
   for (let i = 0; i < requests.length && i < record.deps.length; i++) {
     const dep = record.deps[i];
-    const depUrl = synthesizeBlobUrl(dep);
+    const depUrl = synthesizeBlobUrlInner(dep, inFlight);
     specifierToBlobUrl.set(requests[i].specifier, depUrl);
   }
 
@@ -366,14 +388,12 @@ export function synthesizeBlobUrl(record: ModuleRecord): string {
 /** Build the per-module preamble that exposes `__edgeImportMeta` and
  *  `__edgeDynImport` to the rewritten user source.  Both names are
  *  looked up on globalThis at evaluation time; the host worker sets
- *  them before `import(blobUrl)`.
- *
- *  #!~debt esm-per-module-dynamic-import: `__edgeDynImportImpl` only
- *  routes to lib's GLOBAL `importModuleDynamicallyCallback`. Per-
- *  module `new vm.SourceTextModule(src, {importModuleDynamically})`
- *  needs a parent-URL → referrer-symbol bridge across the wasm-V8 /
- *  host-V8 split. Falls through to native browser `import()` for
- *  absolute URLs (blob:/data:/https:). See NOTES.md. */
+ *  them at boot.  `__edgeDynImportImpl` calls lib's global dynamic-
+ *  import callback (`importModuleDynamicallyCallback`), which the
+ *  `esm-via-blob-import` policy wraps to dispatch on parent URL — so
+ *  per-module `new vm.SourceTextModule(src, {importModuleDynamically})`
+ *  fires correctly.  Falls through to native browser `import()` for
+ *  absolute URLs (blob:/data:/https:). */
 function synthesizePreamble(record: ModuleRecord): string {
   const url = JSON.stringify(record.url);
   return [
