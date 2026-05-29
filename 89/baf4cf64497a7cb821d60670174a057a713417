@@ -1,0 +1,28 @@
+browser-target/src/napi-host/esm-registry.ts
+  s_92c1b47c0d6ee8::t_c3adf8845a51f3 574-585
+  s_92c1b47c0d6ee8::t_7caccccfc9a9bf 303-310
+  s_92c1b47c0d6ee8::t_b996b63cd576dd 757-763
+NOTES.md
+  s_92c1b47c0d6ee8::t_4492e327c0019b 95-169
+browser-target/src/policies/esm-via-blob-import.ts
+  s_92c1b47c0d6ee8::t_ce5cdf2640a76e 146-152
+  s_92c1b47c0d6ee8::t_b05e655de1d6c7 74-80
+browser-target/src/policies/esm-require-preeval.ts
+  s_92c1b47c0d6ee8::t_0e23d5384c3207 55-62
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "89baf4cf64497a7cb821d60670174a057a713417",
+  "prompts": {},
+  "sessions": {
+    "s_92c1b47c0d6ee8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "dca99c1c-d946-4444-9a53-9ba89db5d748",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
