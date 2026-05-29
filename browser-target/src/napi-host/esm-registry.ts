@@ -432,17 +432,17 @@ export function rewriteImportMeta(source: string): string {
 }
 
 /** Rewrite `import(...)` expressions to `__edgeDynImport(...)`.  For
- *  dynamic imports, `imp.ss` is the position of the `import` keyword;
- *  `imp.d` is the position of the `(` (not the keyword).  We splice
- *  out the 6-char keyword at `ss`; the `(` and arguments are
- *  left untouched. */
+ *  dynamic imports, `imp.ss` is the start of the keyword and `imp.d`
+ *  is the start of `(`; we replace the `ss..d` span (`import`,
+ *  `import.source`, or `import.defer` plus any trailing whitespace)
+ *  with `__edgeDynImport`.  The `(` and arguments are left untouched. */
 export function rewriteDynamicImport(source: string): string {
   const [imports] = parse(source);
   let out = source;
   for (let i = imports.length - 1; i >= 0; i--) {
     const imp = imports[i];
     if (imp.d < 0) continue;
-    out = out.slice(0, imp.ss) + "__edgeDynImport" + out.slice(imp.ss + 6);
+    out = out.slice(0, imp.ss) + "__edgeDynImport" + out.slice(imp.d);
   }
   return out;
 }
