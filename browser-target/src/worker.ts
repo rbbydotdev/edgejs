@@ -1357,7 +1357,7 @@ async function runEdgeWithEmnapi() {
     // flag has zero effect on programs that don't touch vm modules;
     // its only side effect is patching `vm.Module` etc. in
     // `lib/internal/process/pre_execution.js:setupVmModules()`.
-    args: ["edgejs", "--experimental-vm-modules", "-e", userScriptPrelude + (userScript ?? `
+    args: ["edgejs", "--experimental-vm-modules", "--expose-internals", "-e", userScriptPrelude + (userScript ?? `
       const http = require('http');
       const fs = require('fs');
       const server = http.createServer((req, res) => {

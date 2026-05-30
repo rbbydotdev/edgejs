@@ -134,6 +134,7 @@ export { childProcessViaExecutor } from "./child-process-via-executor";
 export { esmViaBlobImport } from "./esm-via-blob-import";
 export { esmRequirePreeval } from "./esm-require-preeval";
 export { esmRequireSucraseBackstop } from "./esm-require-sucrase-backstop";
+export { v8SerdesShim } from "./v8-serdes-shim";
 
 import { bufferPoolDisable } from "./buffer-pool-disable";
 import { bufferWriteSync } from "./buffer-write-sync";
@@ -156,6 +157,7 @@ import { childProcessViaExecutor } from "./child-process-via-executor";
 import { esmViaBlobImport } from "./esm-via-blob-import";
 import { esmRequirePreeval } from "./esm-require-preeval";
 import { esmRequireSucraseBackstop } from "./esm-require-sucrase-backstop";
+import { v8SerdesShim } from "./v8-serdes-shim";
 
 // =============================================================================
 // SANE DEFAULTS
@@ -222,6 +224,7 @@ export const defaultBrowserPolicies: Policy[] = [
   workerThreadsPerThread,
   esmViaBlobImport,
   esmRequirePreeval,
+  v8SerdesShim,
 ];
 
 /**
@@ -253,4 +256,5 @@ export const policyRegistry: Record<string, Policy> = {
   [esmViaBlobImport.name]: esmViaBlobImport,
   [esmRequirePreeval.name]: esmRequirePreeval,
   [esmRequireSucraseBackstop.name]: esmRequireSucraseBackstop,
+  [v8SerdesShim.name]: v8SerdesShim,
 };

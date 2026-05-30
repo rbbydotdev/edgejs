@@ -54,12 +54,12 @@ markers (known gaps).
 
 | Module | edgejs | edgejs-web | Cloudflare | Bun | Deno | Vercel Edge | StackBlitz | Notes |
 |---|---|---|---|---|---|---|---|---|
-| `assert` | ✓ | ◐ 11% | ✓ | ✓ | ✓ | ✓ | ✓ | edgejs-web: low measured rate is largely test-harness issues (common.mustCall/common.platformTimeout), not core assert failures — needs triage. Bun: 100% Node-suite |
-| `buffer` | ✓ | ◐ 50% | ✓ | ✓ | ✓ | ✓ | ✓ | edgejs-web: `buffer-wasm-aliased` policy carries the core; sample run shows half-pass — many failures suspected to be subtle Buffer-from-SAB edge cases |
+| `assert` | ✓ | ✓ 89% | ✓ | ✓ | ✓ | ✓ | ✓ | edgejs-web: 16/18 — pure JS, near-Node. Bun: 100% Node-suite |
+| `buffer` | ✓ | ◐ 50% | ✓ | ✓ | ✓ | ✓ | ✓ | edgejs-web: 10/20 — remaining failures are vm.Context-requires + JSPI SuspendError + Node-internal-binding tests |
 | `console` | ✓ | ✓ | ◐ | ✓ | ✓ | ✓ | ✓ | edgejs-web: routed to host-worker logs |
-| `events` | ✓ | ◐ 50% | ✓ | ✓ | ✓ | ✓ | ✓ | edgejs-web: 18/36 measured — pure JS, but Node's test corpus uses `common.mustCall` which our shim may not fully implement. Bun: 100% Node-suite |
-| `process` | ◐ | ◐ 47% | ◐ | ◐ | ◐ | ◐ | ✓ | edgejs-web: 7/15 measured; `process-methods-wasm-state` policy carries it. base: depends on host providing argv/env |
-| `util` | ◐ | ◐ 32% | ✓ | ◐ | ✓ | ◐ | ✓ | edgejs-web: 8/25 measured; `util.types.isProxy` partial + some inspect formatting differences |
+| `events` | ✓ | ◐ 50% | ✓ | ✓ | ✓ | ✓ | ✓ | edgejs-web: 18/36 — most failures share a subtle `assert.deepStrictEqual` listener-reference bug; needs dedicated investigation |
+| `process` | ◐ | ◐ 53% | ◐ | ◐ | ◐ | ◐ | ✓ | edgejs-web: 8/15; `process-methods-wasm-state` policy carries it |
+| `util` | ◐ | ◐ 56% | ✓ | ◐ | ✓ | ◐ | ✓ | edgejs-web: 14/25; `util.types.isProxy` partial + vm.Context dependencies |
 
 ### Strings & paths
 
@@ -67,15 +67,15 @@ markers (known gaps).
 |---|---|---|---|---|---|---|---|---|
 | `path` | ✓ | ✓ 100% | ✓ | ✓ | ✓ | — | ✓ | edgejs-web: 16/16 — full pass. Pure JS; Bun: 100% Node-suite |
 | `querystring` | ✓ | ✓ 67% | ✓ | ✓ | ✓ | — | ✓ | edgejs-web: 2/3 measured (small sample). Pure JS; Bun: 100% Node-suite |
-| `string_decoder` | ✓ | ◐ 0% | ✓ | ✓ | ✓ | — | ✓ | edgejs-web: 0/2 measured — suspicious for pure-JS; likely harness-shim issue, needs triage. Bun: 100% Node-suite |
-| `url` | ✓ | ◐ 36% | ✓ | ✓ | ✓ | ✓ | ✓ | edgejs-web: 5/14 measured; lib's whatwg-url tests have many assertion-format differences |
+| `string_decoder` | ✓ | ✗ 0% | ✓ | ✓ | ✓ | — | ✓ | edgejs-web: 0/2 — confirmed real bug: base64 decoder truncates trailing bytes (`4piD8J+Sqe+j` vs expected `4piD8J+Sqe+jvw==`) |
+| `url` | ✓ | ✓ 86% | ✓ | ✓ | ✓ | ✓ | ✓ | edgejs-web: 12/14 — near-Node fidelity |
 | `punycode` | ✓ | ✓ | ✓ | ✓ | ✓ | — | ✓ | Pure JS; Bun: 100% Node-suite |
 
 ### Streams
 
 | Module | edgejs | edgejs-web | Cloudflare | Bun | Deno | Vercel Edge | StackBlitz | Notes |
 |---|---|---|---|---|---|---|---|---|
-| `stream` | ✓ | ✓ 80% | ✓ | ✓ | ✓ | ✓ | ✓ | edgejs-web: 16/20 measured |
+| `stream` | ✓ | ✓ 90% | ✓ | ✓ | ✓ | ✓ | ✓ | edgejs-web: 18/20 measured |
 
 ### Crypto
 
@@ -107,7 +107,7 @@ markers (known gaps).
 | Module | edgejs | edgejs-web | Cloudflare | Bun | Deno | Vercel Edge | StackBlitz | Notes |
 |---|---|---|---|---|---|---|---|---|
 | `worker_threads` | ?(host) | ✓ 87% | — | ◐ | ◐ | — | ◐ | edgejs-web: 13/15 measured — much stronger than expected; `worker-threads-per-thread` policy carrying it. StackBlitz: `unref` bug (#365), no synchronous message passing |
-| `child_process` | ?(host) | ✗ 0% | — | ◐ | ✓ | — | ✓ | edgejs-web: 0/10 measured — expected; lib's child_process needs real process spawning that our executor policy only partially provides. `child-process-via-executor` works for our test corpus but doesn't pass Node's tests which expect Unix-process semantics |
+| `child_process` | ?(host) | ⊘ 10% | — | ◐ | ✓ | — | ✓ | edgejs-web: 1/10 measured — expected; lib's child_process needs real process spawning. `child-process-via-executor` works for our test corpus but doesn't pass Node's tests which expect Unix-process semantics |
 | `cluster` | ?(host) | — | — | ◐ | ✗ | — | — | base: depends on host fd-passing. edgejs-web: architecturally impossible |
 
 ### Time
@@ -122,7 +122,7 @@ markers (known gaps).
 
 | Module | edgejs | edgejs-web | Cloudflare | Bun | Deno | Vercel Edge | StackBlitz | Notes |
 |---|---|---|---|---|---|---|---|---|
-| `os` | ✓ | ◐ 14% | ◐ | ✓ | ◐ | — | ✓ | edgejs-web: 1/7 measured — most os-specific values stubbed. base: full os from WASI. Bun: 100% Node-suite |
+| `os` | ✓ | ◐ 43% | ◐ | ✓ | ◐ | — | ✓ | edgejs-web: 3/7 measured — some os-specific values stubbed (CPUs/hostname/network interfaces). base: full os from WASI. Bun: 100% Node-suite |
 | `tty` | ?(host) | ⊘ | ⊘ | ✓ | ◐ | — | ⊘ | base: depends on host stdin; edgejs-web stubbed |
 | `readline` | ?(host) | ? | ⊘ | ✓ | ✓ | — | ✓ | base/edgejs-web: depends on stdin handling |
 | `readline/promises` | ?(host) | ? | ⊘ | ✓ | ✓ | — | ✓ | Same |
