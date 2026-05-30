@@ -92,6 +92,20 @@ the browser-target tree.
 
 ### Newly opened
 
+- `inspector-not-supported` (opened 2026-05-31).  `process.binding('inspector')`
+  (deprecated internal) and `require('node:inspector')` (public) both
+  require a V8 inspector backend (CDP transport, scope/breakpoint hooks)
+  that's not exposed to regular page JS in browsers.  Chrome's
+  `chrome.debugger` extension API could in theory mediate, but that's a
+  separate product project (browser extension), not a corpus fix.  Also
+  universally unsupported in StackBlitz/WebContainer.  Accepted as
+  permanently unavailable in our target.  Affects:
+  test-process-binding-internalbinding-allowlist.js (and any future
+  inspector-using test).  Briefly explored a "feature-unavailable" stub
+  but per the no-stubs-to-pass-tests memory rule the
+  internal/undocumented API isn't worth even an honest stub — test
+  failure documents the gap.
+
 - `timers-bucket-blocked-by-non-timer-bugs` (opened 2026-05-30).  The
   4 failing tests in the `timers` bucket are blocked by issues
   unrelated to the timers module itself, so they cannot be addressed
