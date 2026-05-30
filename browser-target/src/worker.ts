@@ -47,7 +47,6 @@ import { utilGetOwnNonIndexProperties } from "./edge-env/presets/util-get-own-no
 import { utilTypesAsyncGen } from "./edge-env/presets/util-types-async-gen";
 import { utilGetProxyDetails } from "./edge-env/presets/util-get-proxy-details";
 import { utilGetConstructorName } from "./edge-env/presets/util-get-constructor-name";
-import { processBindingInspectorStub } from "./edge-env/presets/process-binding-inspector-stub";
 import { osPriorityStateful } from "./edge-env/presets/os-priority-stateful";
 import { stringDecoderJs } from "./edge-env/presets/string-decoder-js";
 import { decodeBase64 } from "./edge-env/vendor-adapters/unenv-base64";
@@ -1341,7 +1340,6 @@ async function runEdgeWithEmnapi() {
     utilTypesAsyncGen.name,
     utilGetProxyDetails.name,
     utilGetConstructorName.name,
-    processBindingInspectorStub.name,
     osPriorityStateful.name,
     stringDecoderJs.name,
   ]);
@@ -1380,7 +1378,6 @@ async function runEdgeWithEmnapi() {
     utilTypesAsyncGen,
     utilGetProxyDetails,
     utilGetConstructorName,
-    processBindingInspectorStub,
     osPriorityStateful,
     stringDecoderJs,
   ];
