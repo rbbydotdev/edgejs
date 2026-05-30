@@ -44,16 +44,31 @@ presets — the typed framework that replaced `src/policies/` on 2026-05-30),
 and `browser-target/src/napi-host/unofficial.ts` `#!~debt` markers (known
 gaps).
 
-**Honesty note (2026-05-30):** Prior scaled-corpus numbers were inflated.
-The `process.exit` patch shipped this date causes test scripts to actually
-terminate (previously silent), which surfaced 87 of 178 corpus failures
-as `common.mustCall(fn, N)` mismatches — tests where async event handlers
-never fire under our libuv-wasix loop (which does not self-drain).
-**Honest overall pass rate: 43%** (vs 71% with the silent-skip illusion).
-The hardest-hit categories were stream (90% → 25%), worker_threads
-(87% → 13%), http (80% → 13%), zlib (73% → 33%) — all event-driven.
-Per-cell numbers below are post-correction. See [NOTES.md](./NOTES.md)
-`corpus-mustcall-not-verified`.
+**Honesty + recovery note (2026-05-30):**
+
+Two-step story this date.
+
+(1) The `process.exit` patch shipped this date causes test scripts to
+actually terminate (previously silent), which surfaced 87 of 178 corpus
+failures as `common.mustCall(fn, N)` mismatches — tests where async
+event handlers never fire because our libuv-wasix `poll_oneoff` parks
+in `Atomics.wait` for up to ~30s with no JS-side wake.  **Honest
+overall pass rate dropped from inflated 71% to honest 43%.**
+
+(2) The `poll-wake-on-schedule` preset shipped this date adds the
+missing wake source: it wraps `internalBinding('timers').scheduleTimer`
+and `toggleImmediateRef` to call `globalThis.__edgeWakePoll()` after
+scheduling, immediately interrupting any parked `poll_oneoff`.  The
+corpus driver now defers process.exit by 250ms so chained async work
+settles before mustCall verifies.  **Recovers to 50% overall** —
+stream 25% → 65%, event 36% → 54%, zlib 33% → 53%, plus smaller wins
+in os/buffer/assert.
+
+Per-cell numbers below reflect the post-recovery measurement.  The
+remaining 61 mustCall mismatches are concentrated in worker_threads
+(cross-thread events use a separate wake path we haven't bridged) and
+http (real network bindings unimplemented).  See [NOTES.md](./NOTES.md)
+`corpus-mustcall-not-verified` for the full story.
 
 ## Side-by-side compat
 
@@ -66,12 +81,12 @@ Per-cell numbers below are post-correction. See [NOTES.md](./NOTES.md)
 
 | Module | edgejs | edgejs-web | Cloudflare | Bun | Deno | Vercel Edge | StackBlitz | Notes |
 |---|---|---|---|---|---|---|---|---|
-| `assert` | ✓ | ✓ 83% | ✓ | ✓ | ✓ | ✓ | ✓ | edgejs-web: 15/18 — pure JS, near-Node. Bun: 100% Node-suite |
+| `assert` | ✓ | ✓ 89% | ✓ | ✓ | ✓ | ✓ | ✓ | edgejs-web: 16/18 — pure JS, near-Node. Bun: 100% Node-suite |
 | `buffer` | ✓ | ◐ 60% | ✓ | ✓ | ✓ | ✓ | ✓ | edgejs-web: 12/20 — fixes shipped 2026-05-30: process-exit-terminates (alloc-unsafe-is-*), buffer-base64 with vendored unenv decoder (Buffer.from base64), buffer-copy (TypedArray.set), vm-same-realm (bytelength cross-realm AB). Remaining failures: utf-8 unmatched-surrogate handling, wasm-aliased + external-ArrayBuffer mismatch, V8-internal on-heap typed-array optimization, child_process JSPI |
 | `console` | ✓ | ✓ | ◐ | ✓ | ✓ | ✓ | ✓ | edgejs-web: routed to host-worker logs |
-| `events` | ✓ | ◐ 36% | ✓ | ✓ | ✓ | ✓ | ✓ | edgejs-web: 13/36 (honest; was inflated to 50%) — most failures are mustCall-on-async-event mismatches; needs libuv-wasix loop draining work to unlock |
+| `events` | ✓ | ◐ 54% | ✓ | ✓ | ✓ | ✓ | ✓ | edgejs-web: 17/36 — recovered from 36% by poll-wake-on-schedule + deferred exit |
 | `process` | ◐ | ◐ 47% | ◐ | ◐ | ◐ | ◐ | ✓ | edgejs-web: 7/15; `process-methods-wasm-state` preset carries it |
-| `util` | ◐ | ◐ 48% | ✓ | ◐ | ✓ | ◐ | ✓ | edgejs-web: 12/25; `util.types.isProxy` partial + vm.Context dependencies |
+| `util` | ◐ | ◐ 56% | ✓ | ◐ | ✓ | ◐ | ✓ | edgejs-web: 14/25; `util.types.isProxy` partial + vm.Context dependencies |
 
 ### Strings & paths
 
@@ -87,7 +102,7 @@ Per-cell numbers below are post-correction. See [NOTES.md](./NOTES.md)
 
 | Module | edgejs | edgejs-web | Cloudflare | Bun | Deno | Vercel Edge | StackBlitz | Notes |
 |---|---|---|---|---|---|---|---|---|
-| `stream` | ✓ | ◐ 25% | ✓ | ✓ | ✓ | ✓ | ✓ | edgejs-web: 5/20 (honest; was inflated to 90%) — 14/15 failures are mustCall-not-firing under our non-draining libuv loop. The sync paths that work are pure JS. Real streams ARE Node's lib code; the gap is purely event-firing under our harness |
+| `stream` | ✓ | ✓ 65% | ✓ | ✓ | ✓ | ✓ | ✓ | edgejs-web: 13/20 — biggest single recovery (25% → 65%) from poll-wake-on-schedule.  Remaining 7 failures: a few long-chain async stream compositions and `test-stream-backpressure` (expected 11 events, fires 3) |
 
 ### Crypto
 
@@ -126,7 +141,7 @@ Per-cell numbers below are post-correction. See [NOTES.md](./NOTES.md)
 
 | Module | edgejs | edgejs-web | Cloudflare | Bun | Deno | Vercel Edge | StackBlitz | Notes |
 |---|---|---|---|---|---|---|---|---|
-| `timers` | ✓ | ◐ 47% | ✓ | ✓ | ✓ | ✓ | ✓ | edgejs-web: 7/15 measured (honest; was 67%). Lib + libuv shim. Sync paths work; timer-fires-then-mustCall-verifies pattern blocked on loop drain |
+| `timers` | ✓ | ◐ 53% | ✓ | ✓ | ✓ | ✓ | ✓ | edgejs-web: 8/15 — most timer-fires-mustCall-verifies patterns now unblocked by poll-wake-on-schedule. Lib + libuv shim |
 | `timers/promises` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Lib code |
 | `perf_hooks` | ◐ | ◐ 40% | ◐ | ◐ | ◐ | — | ✓ | edgejs-web: 4/10 measured (honest; was 70%) |
 
@@ -134,7 +149,7 @@ Per-cell numbers below are post-correction. See [NOTES.md](./NOTES.md)
 
 | Module | edgejs | edgejs-web | Cloudflare | Bun | Deno | Vercel Edge | StackBlitz | Notes |
 |---|---|---|---|---|---|---|---|---|
-| `os` | ✓ | ◐ 43% | ◐ | ✓ | ◐ | — | ✓ | edgejs-web: 3/7 measured — some os-specific values stubbed (CPUs/hostname/network interfaces). base: full os from WASI. Bun: 100% Node-suite |
+| `os` | ✓ | ◐ 57% | ◐ | ✓ | ◐ | — | ✓ | edgejs-web: 4/7 — some os-specific values stubbed (CPUs/hostname/network interfaces). base: full os from WASI. Bun: 100% Node-suite |
 | `tty` | ?(host) | ⊘ | ⊘ | ✓ | ◐ | — | ⊘ | base: depends on host stdin; edgejs-web stubbed |
 | `readline` | ?(host) | ? | ⊘ | ✓ | ✓ | — | ✓ | base/edgejs-web: depends on stdin handling |
 | `readline/promises` | ?(host) | ? | ⊘ | ✓ | ✓ | — | ✓ | Same |
@@ -154,7 +169,7 @@ Per-cell numbers below are post-correction. See [NOTES.md](./NOTES.md)
 
 | Module | edgejs | edgejs-web | Cloudflare | Bun | Deno | Vercel Edge | StackBlitz | Notes |
 |---|---|---|---|---|---|---|---|---|
-| `zlib` | ✓ | ◐ 33% | ✓ | ✓ | ✓ | — | ✓ | edgejs-web: 5/15 measured (honest; was 73%). `zlib-writestate-wasm` preset. Most failures are stream-event mustCall mismatches. Bun: 98% Node-suite |
+| `zlib` | ✓ | ◐ 53% | ✓ | ✓ | ✓ | — | ✓ | edgejs-web: 8/15 — recovered from 33% by poll-wake-on-schedule. `zlib-writestate-wasm` preset. Bun: 98% Node-suite |
 
 ### Module system
 
