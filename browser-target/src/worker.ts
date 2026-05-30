@@ -39,6 +39,7 @@ import { bufferWasmAliased } from "./edge-env/presets/buffer-wasm-aliased";
 import { childProcessViaExecutor } from "./edge-env/presets/child-process-via-executor";
 import { workerThreadsPerThread } from "./edge-env/presets/worker-threads-per-thread";
 import { bufferBase64 } from "./edge-env/presets/buffer-base64";
+import { bufferCopy } from "./edge-env/presets/buffer-copy";
 import { decodeBase64 } from "./edge-env/vendor-adapters/unenv-base64";
 import { createBundledFs } from "./host/fs/adapters/bundled";
 // opfs + layered adapters now live on the bridge worker.  Runtime
@@ -1312,6 +1313,7 @@ async function runEdgeWithEmnapi() {
     childProcessViaExecutor.name,
     workerThreadsPerThread.name,
     bufferBase64.name,
+    bufferCopy.name,
   ]);
   const legacyPolicies = [...defaultBrowserPolicies, ...extraPolicies]
     .filter((p) => !migratedNames.has(p.name));
@@ -1340,6 +1342,7 @@ async function runEdgeWithEmnapi() {
     childProcessViaExecutor,
     workerThreadsPerThread,
     bufferBase64,
+    bufferCopy,
   ];
   // buffer-base64 preset's runtime patch calls globalThis.__edgeDecodeBase64
   // to run the vendored unenv/base64-js decoder.  Install BEFORE the napi
