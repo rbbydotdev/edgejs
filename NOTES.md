@@ -92,6 +92,26 @@ the browser-target tree.
 
 ### Newly opened
 
+- `timers-bucket-blocked-by-non-timer-bugs` (opened 2026-05-30).  The
+  4 failing tests in the `timers` bucket are blocked by issues
+  unrelated to the timers module itself, so they cannot be addressed
+  without touching out-of-scope subsystems:
+    1. `test-timers-clearImmediate-als.js` — AsyncLocalStorage.run()
+       passes `undefined` to the callback, so `getStore()` returns
+       undefined.  Requires fix in async_hooks/AsyncLocalStorage
+       implementation.
+    2. `test-timers-fast-calls.js` — uses V8 native-syntax
+       (`%PrepareFunctionForOptimization`, `%OptimizeFunctionOnNextCall`)
+       behind `--allow-natives-syntax` flag.  Not testable in our env.
+    3. `test-timers-immediate-promisified.js` — requires
+       `internal/event_target` and `common.spawnPromisified` (child
+       process spawn).  child_process deferred per task constraints.
+    4. `test-timers-immediate-queue-throw.js` — exercises the `domain`
+       module + uncaught-exception flow.  Domain handler attachment
+       semantics are off.
+  No preset fix possible in this scope.  Documented for future
+  attention when those subsystems are revisited.
+
 - `cjs-dynamic-import-no-host-callback` (opened 2026-05-30).
   `unofficial_napi_contextify_compile_function` in
   `browser-target/src/napi-host/unofficial.ts:722` uses a plain
