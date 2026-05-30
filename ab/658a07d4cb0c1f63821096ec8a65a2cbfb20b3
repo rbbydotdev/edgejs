@@ -1,0 +1,26 @@
+COMPAT.md
+  s_92c1b47c0d6ee8::t_feeb5216fdeccf 89
+  s_92c1b47c0d6ee8::t_d9c8f5d1cf6071 172
+  s_92c1b47c0d6ee8::t_9e40f26f83838e 152
+  s_92c1b47c0d6ee8::t_d89bd802289f10 47-71
+  s_92c1b47c0d6ee8::t_cbd8fd0762744e 87
+  s_92c1b47c0d6ee8::t_df06fda452af24 105
+  s_92c1b47c0d6ee8::t_be4e6c90b3eb96 84
+  s_92c1b47c0d6ee8::t_13b67c9e490128 144
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "ab658a07d4cb0c1f63821096ec8a65a2cbfb20b3",
+  "prompts": {},
+  "sessions": {
+    "s_92c1b47c0d6ee8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "dca99c1c-d946-4444-9a53-9ba89db5d748",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
