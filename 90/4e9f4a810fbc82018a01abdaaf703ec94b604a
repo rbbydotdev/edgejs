@@ -1,0 +1,82 @@
+browser-target/src/edge-env/presets/process-methods-wasm-state.ts
+  s_92c1b47c0d6ee8::t_949f9cbe3ebfb3 1-201
+browser-target/src/edge-env/presets/buffer-pool-disable.ts
+  s_92c1b47c0d6ee8::t_d78d3079cf9fea 1-27
+browser-target/src/edge-env/presets/child-process-via-executor.ts
+  s_92c1b47c0d6ee8::t_118cf264e0dab3 1-165
+browser-target/src/edge-env/vendor-adapters/unenv-base64.ts
+  s_92c1b47c0d6ee8::t_ebc45ec49d755e 9-10
+  s_92c1b47c0d6ee8::t_49ccfd0ebe3d31 1-8,11-25
+browser-target/src/edge-env/presets/esm-require-sucrase-backstop.ts
+  s_92c1b47c0d6ee8::t_56dfb83dabc7ac 1-98
+browser-target/src/edge-env/presets/compression-via-compressionstream.ts
+  s_92c1b47c0d6ee8::t_53078c414524ec 1-206
+browser-target/vendor/unenv/base64clean.ts
+  ai_agent 1-26
+browser-target/src/edge-env/presets/buffer-write-sync.ts
+  s_92c1b47c0d6ee8::t_598d42d8b9f4f7 1-133
+browser-target/src/edge-env/presets/esm-require-preeval.ts
+  s_92c1b47c0d6ee8::t_552c8ea14a8e40 1-243
+browser-target/src/edge-env/presets/task-queue-enqueue-fix.ts
+  s_92c1b47c0d6ee8::t_00ffcd3c8f9a15 1-81
+browser-target/src/edge-env/presets/process-exit-terminates.ts
+  s_92c1b47c0d6ee8::t_67cbc4e9fd254e 1-97
+browser-target/src/edge-env/presets/inbound-https-via-sw.ts
+  s_92c1b47c0d6ee8::t_aaeea11885cefe 1-18
+browser-target/src/edge-env/presets/outbound-throw.ts
+  s_92c1b47c0d6ee8::t_c1dc3fde9e26b2 1-45
+browser-target/src/edge-env/presets/worker-threads-per-thread.ts
+  s_92c1b47c0d6ee8::t_dc564021fe59dc 1-24
+browser-target/src/edge-env/presets/zlib-writestate-wasm.ts
+  s_92c1b47c0d6ee8::t_c1a198d5ec5cd9 1-188
+browser-target/src/edge-env/presets/crypto-via-subtle.ts
+  s_92c1b47c0d6ee8::t_9658c3dbb8bd5e 1-211
+browser-target/src/worker.ts
+  s_92c1b47c0d6ee8::t_4b42ade4e5a3bf 19-23
+  s_92c1b47c0d6ee8::t_58036658494f49 1305-1309,1332-1336
+  s_92c1b47c0d6ee8::t_31546583bd296d 1310-1311
+  s_92c1b47c0d6ee8::t_f203eb343d5b27 39-40
+  s_92c1b47c0d6ee8::t_e5cdf1d12b69ce 1295-1299,1322-1326
+  s_92c1b47c0d6ee8::t_021108748505fa 34-38
+  s_92c1b47c0d6ee8::t_ff8eb52fcd51c8 29-33
+  s_92c1b47c0d6ee8::t_e1e68fee0a5076 1337-1338
+  s_92c1b47c0d6ee8::t_6c5c02ccf66c80 24-28
+  s_92c1b47c0d6ee8::t_e1fae4180174ff 1288-1294,1312,1315-1321,1339
+  s_92c1b47c0d6ee8::t_6fb34b52c62cb8 1300-1304,1327-1331
+browser-target/src/edge-env/presets/buffer-wasm-aliased.ts
+  s_92c1b47c0d6ee8::t_fcc0f650326927 1-318
+browser-target/src/edge-env/presets/wasm-compile-via-host.ts
+  s_92c1b47c0d6ee8::t_f45a471ab048d2 1-112
+browser-target/src/edge-env/presets/outbound-fetch-tunnel.ts
+  s_92c1b47c0d6ee8::t_521dbba8579b9f 1-207
+browser-target/src/edge-env/presets/fast-readfile.ts
+  s_92c1b47c0d6ee8::t_f298066b1e2ddd 1-110
+browser-target/src/edge-env/presets/crypto-host-random.ts
+  s_92c1b47c0d6ee8::t_97be1e583508af 1-167
+browser-target/vendor/unenv/README.md
+  ai_agent 1-39
+browser-target/src/edge-env/presets/crypto-hmac-via-host-worker.ts
+  s_92c1b47c0d6ee8::t_a806c308e40953 1-215
+browser-target/src/edge-env/presets/esm-via-blob-import.ts
+  s_92c1b47c0d6ee8::t_2293fb2d11b48d 1-168
+browser-target/src/edge-env/presets/crypto-hash-via-host-worker.ts
+  s_92c1b47c0d6ee8::t_212285810b6664 1-256
+browser-target/vendor/unenv/base64.ts
+  ai_agent 1-153
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "904e9f4a810fbc82018a01abdaaf703ec94b604a",
+  "prompts": {},
+  "sessions": {
+    "s_92c1b47c0d6ee8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "dca99c1c-d946-4444-9a53-9ba89db5d748",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
