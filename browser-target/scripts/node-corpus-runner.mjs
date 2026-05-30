@@ -42,8 +42,19 @@ function buildDriver(testName) {
   // through to the _start sentinel (TerminateExecution unwinds without
   // an ExitSignal), so we can't rely on exit codes. Instead, print
   // unambiguous PASS/FAIL markers to stdout that the harness greps.
+  //
+  // ExitSignal handling: when a test calls process.exit() (e.g. via
+  // common.skip), the process-exit-terminates policy throws a sentinel
+  // {__edgeExitSignal: true, code} after the wasm-side exit is requested.
+  // That throw is REAL Node behavior: V8 TerminateExecution unwinds the
+  // stack out of user code.  Treat it as a clean exit honoring the code
+  // (skip = exit 0 = PASS; tests that exit nonzero are real failures).
   return `
+    function isExitSignal(e) {
+      return e && typeof e === 'object' && e.__edgeExitSignal === true;
+    }
     process.on('uncaughtException', (e) => {
+      if (isExitSignal(e)) return;  // already accounted for in the throw site
       console.log('[CORPUS-RESULT] FAIL uncaught: ' + (e && e.stack || String(e)).split('\\n')[0]);
       process.exit(1);
     });
@@ -56,6 +67,17 @@ function buildDriver(testName) {
       console.log('[CORPUS-RESULT] PASS');
       process.exit(0);
     } catch (e) {
+      if (isExitSignal(e)) {
+        // Test called process.exit (e.g. common.skip → exit(0), or its
+        // own error path → exit(nonzero)).  Honor the code as Node does.
+        var code = (e.code | 0);
+        if (code === 0) {
+          console.log('[CORPUS-RESULT] PASS');
+          process.exit(0);
+        }
+        console.log('[CORPUS-RESULT] FAIL exit=' + code);
+        process.exit(code);
+      }
       console.log('[CORPUS-RESULT] FAIL sync: ' + (e && e.stack || String(e)).split('\\n')[0]);
       console.error((e && e.stack) || String(e));
       process.exit(1);

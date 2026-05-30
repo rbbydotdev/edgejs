@@ -135,6 +135,7 @@ export { esmViaBlobImport } from "./esm-via-blob-import";
 export { esmRequirePreeval } from "./esm-require-preeval";
 export { esmRequireSucraseBackstop } from "./esm-require-sucrase-backstop";
 export { v8SerdesShim } from "./v8-serdes-shim";
+export { processExitTerminates } from "./process-exit-terminates";
 
 import { bufferPoolDisable } from "./buffer-pool-disable";
 import { bufferWriteSync } from "./buffer-write-sync";
@@ -158,6 +159,7 @@ import { esmViaBlobImport } from "./esm-via-blob-import";
 import { esmRequirePreeval } from "./esm-require-preeval";
 import { esmRequireSucraseBackstop } from "./esm-require-sucrase-backstop";
 import { v8SerdesShim } from "./v8-serdes-shim";
+import { processExitTerminates } from "./process-exit-terminates";
 
 // =============================================================================
 // SANE DEFAULTS
@@ -192,6 +194,7 @@ export const minimalPolicies: Policy[] = [
   bufferWasmAliased,
   zlibWriteStateWasm,
   processMethodsWasmState,
+  processExitTerminates,
 ];
 
 /**
@@ -225,6 +228,7 @@ export const defaultBrowserPolicies: Policy[] = [
   esmViaBlobImport,
   esmRequirePreeval,
   v8SerdesShim,
+  processExitTerminates,
 ];
 
 /**
@@ -257,4 +261,5 @@ export const policyRegistry: Record<string, Policy> = {
   [esmRequirePreeval.name]: esmRequirePreeval,
   [esmRequireSucraseBackstop.name]: esmRequireSucraseBackstop,
   [v8SerdesShim.name]: v8SerdesShim,
+  [processExitTerminates.name]: processExitTerminates,
 };

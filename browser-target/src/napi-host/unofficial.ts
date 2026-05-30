@@ -1338,6 +1338,18 @@ export function createUnofficialNapi(ctx: UnofficialHostContext): Record<string,
         // though it has no return value.
         value = new Function(`${source}`)();
       } catch (e) {
+        // ExitSignal sentinel (thrown by process-exit-terminates policy):
+        // process.exit() must actually halt user-script execution.  In real
+        // Node, V8 TerminateExecution unwinds the stack; we have no such
+        // path, so the policy throws a duck-typed sentinel from process.exit
+        // that the user script can't catch silently (uncaught here is the
+        // intended unwind).  Treat as a clean exit, NOT a script error — the
+        // wasm-side exit-requested flag was already set by reallyExit.
+        if (e && typeof e === "object"
+            && (e as { __edgeExitSignal?: unknown }).__edgeExitSignal === true) {
+          if (resultOut > 0) dv(memory).setUint32(resultOut, 0, true);
+          return 0;
+        }
         // Surface as a NAPI exception so user code sees it instead of
         // silently getting nothing.  Followup e33: previously we just
         // console.warn'd and returned 1, leaving the caller with no
