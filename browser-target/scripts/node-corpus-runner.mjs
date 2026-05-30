@@ -68,12 +68,15 @@ function buildDriver(testName) {
       if (exitArmed) return;
       exitArmed = true;
       process.exitCode = code | 0;
-      // 250ms gives chained async stream / zlib / worker operations
-      // (typically 2-5 turns of libuv at the ~25ms timer floor) time to
-      // settle before common.mustCall's at-exit verifier runs.  Needs
-      // the poll-wake-on-schedule preset to bound poll_oneoff parking;
-      // without that, this setTimeout would wait up to ~30s before fire.
-      setTimeout(function watchdog() { process.exit(process.exitCode | 0); }, 250);
+      // 750ms covers chained async work (deep nextTick + promise chains,
+      // captureRejections routing, multi-tick stream events, ...) before
+      // common.mustCall's at-exit verifier runs.  Empirical floor seems
+      // to be ~50ms per microtask drain cycle in our env (poll_oneoff
+      // park interval) so 750ms gives ~15 drain cycles — enough for
+      // tests that chain through 5+ functions via nextTick.  Without
+      // poll-wake-on-schedule this would wait up to ~30s for the
+      // Atomics.wait default.
+      setTimeout(function watchdog() { process.exit(process.exitCode | 0); }, 750);
     }
     process.on('uncaughtException', (e) => {
       if (isExitSignal(e)) return;
