@@ -623,7 +623,7 @@ export function createNapiHost(opts: NapiHostOptions): NapiHost {
               return origRunScript(envHandle, scriptHandle, resultPtr);
             }
             const replaced = scriptValue.replace(overrideRegex, replacement);
-            opts.postLog?.(`[override] matched ${filename} (via run_script)`, "debug");
+            opts.postLog?.(`[override] matched ${filename} (via run_script)`, "warn");
             const newHandle = context.napiValueFromJsValue(replaced);
             return origRunScript(envHandle, Number(newHandle), resultPtr);
           }

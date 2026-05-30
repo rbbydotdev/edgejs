@@ -684,7 +684,7 @@ export function createUnofficialNapi(ctx: UnofficialHostContext): Record<string,
         if (ctx.builtinOverrides.has(filename)) override = ctx.builtinOverrides.get(filename);
         else if (ctx.builtinOverrides.has(bare)) override = ctx.builtinOverrides.get(bare);
         if (override !== undefined) {
-          ctx.postLog?.(`[override] matched ${filename}`, "debug");
+          ctx.postLog?.(`[override] matched ${filename}`, "warn");
           if (override === null) {
             code = "module.exports = {};";
           } else if (typeof override === "string") {

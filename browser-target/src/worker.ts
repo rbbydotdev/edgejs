@@ -27,6 +27,7 @@ import { fastReadFile } from "./edge-env/presets/fast-readfile";
 import { wasmCompileViaHost } from "./edge-env/presets/wasm-compile-via-host";
 import { bufferWriteSync } from "./edge-env/presets/buffer-write-sync";
 import { zlibWriteStateWasm } from "./edge-env/presets/zlib-writestate-wasm";
+import { zlibInitParamsWasm } from "./edge-env/presets/zlib-init-params-wasm";
 import { compressionViaCompressionStream as compressionViaCompressionStreamPreset } from "./edge-env/presets/compression-via-compressionstream";
 import { cryptoHostRandom } from "./edge-env/presets/crypto-host-random";
 import { cryptoViaSubtle } from "./edge-env/presets/crypto-via-subtle";
@@ -47,6 +48,8 @@ import { utilTypesAsyncGen } from "./edge-env/presets/util-types-async-gen";
 import { utilGetProxyDetails } from "./edge-env/presets/util-get-proxy-details";
 import { utilGetConstructorName } from "./edge-env/presets/util-get-constructor-name";
 import { processBindingInspectorStub } from "./edge-env/presets/process-binding-inspector-stub";
+import { osPriorityStateful } from "./edge-env/presets/os-priority-stateful";
+import { stringDecoderJs } from "./edge-env/presets/string-decoder-js";
 import { decodeBase64 } from "./edge-env/vendor-adapters/unenv-base64";
 import { createBundledFs } from "./host/fs/adapters/bundled";
 // opfs + layered adapters now live on the bridge worker.  Runtime
@@ -1318,6 +1321,7 @@ async function runEdgeWithEmnapi() {
     wasmCompileViaHost.name,
     bufferWriteSync.name,
     zlibWriteStateWasm.name,
+    zlibInitParamsWasm.name,
     compressionViaCompressionStreamPreset.name,
     cryptoHostRandom.name,
     cryptoViaSubtle.name,
@@ -1338,6 +1342,8 @@ async function runEdgeWithEmnapi() {
     utilGetProxyDetails.name,
     utilGetConstructorName.name,
     processBindingInspectorStub.name,
+    osPriorityStateful.name,
+    stringDecoderJs.name,
   ]);
   const legacyPolicies = [...defaultBrowserPolicies, ...extraPolicies]
     .filter((p) => !migratedNames.has(p.name));
@@ -1354,6 +1360,7 @@ async function runEdgeWithEmnapi() {
     wasmCompileViaHost,
     bufferWriteSync,
     zlibWriteStateWasm,
+    zlibInitParamsWasm,
     compressionViaCompressionStreamPreset,
     cryptoHostRandom,
     cryptoViaSubtle,
@@ -1374,6 +1381,8 @@ async function runEdgeWithEmnapi() {
     utilGetProxyDetails,
     utilGetConstructorName,
     processBindingInspectorStub,
+    osPriorityStateful,
+    stringDecoderJs,
   ];
   // buffer-base64 preset's runtime patch calls globalThis.__edgeDecodeBase64
   // to run the vendored unenv/base64-js decoder.  Install BEFORE the napi
@@ -1578,6 +1587,22 @@ async function runEdgeWithEmnapi() {
     .__edgeWakePoll = () => {
       Atomics.add(wakeView, 0, 1);
       Atomics.notify(wakeView, 0);
+    };
+
+  // Preset-applied tracker — primitive for diagnosing whether a preset's
+  // pre/post patch body actually executed at module-load time.  Subagents
+  // (and humans) authoring presets call `globalThis.__edgePresetApplied('preset-name')`
+  // as the first line of their IIFE; the call lands here, posts the
+  // breadcrumb via opts.postLog (which survives bootstrap), and tracks
+  // the unique names so we can emit a summary line at first user-script
+  // entry.  Strictly diagnostic — has no functional effect on lib
+  // behavior.  See agent-prompt guidance in NOTES.md.
+  const appliedPresets = new Set<string>();
+  (globalThis as unknown as { __edgePresetApplied?: (name: string) => void })
+    .__edgePresetApplied = (name: string) => {
+      if (typeof name !== "string" || appliedPresets.has(name)) return;
+      appliedPresets.add(name);
+      post("log", { text: `[preset-applied] ${name}`, level: "warn" });
     };
 
   // Wire the bridge to the socket bus.  Two channels:
