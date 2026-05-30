@@ -53,19 +53,41 @@ function buildDriver(testName) {
     function isExitSignal(e) {
       return e && typeof e === 'object' && e.__edgeExitSignal === true;
     }
+    // Deferred exit: give the libuv loop a chance to drain async events
+    // (stream 'end' / 'close', timers, async_hooks callbacks, etc.) so
+    // common.mustCall(fn, N)'s at-exit verifier (process.on('exit', ...))
+    // sees ACCURATE counts.  Without the deferral, the corpus driver's
+    // explicit process.exit terminates the loop before async events fire.
+    //
+    // Requires the poll-wake-on-schedule preset — it wraps
+    // internalBinding('timers').scheduleTimer to notify the wasi-shim's
+    // wake slot, otherwise this setTimeout would wait up to ~30s for
+    // poll_oneoff's Atomics.wait to time out.
+    var exitArmed = false;
+    function deferredExit(code) {
+      if (exitArmed) return;
+      exitArmed = true;
+      process.exitCode = code | 0;
+      // 250ms gives chained async stream / zlib / worker operations
+      // (typically 2-5 turns of libuv at the ~25ms timer floor) time to
+      // settle before common.mustCall's at-exit verifier runs.  Needs
+      // the poll-wake-on-schedule preset to bound poll_oneoff parking;
+      // without that, this setTimeout would wait up to ~30s before fire.
+      setTimeout(function watchdog() { process.exit(process.exitCode | 0); }, 250);
+    }
     process.on('uncaughtException', (e) => {
-      if (isExitSignal(e)) return;  // already accounted for in the throw site
+      if (isExitSignal(e)) return;
       console.log('[CORPUS-RESULT] FAIL uncaught: ' + (e && e.stack || String(e)).split('\\n')[0]);
-      process.exit(1);
+      deferredExit(1);
     });
     process.on('unhandledRejection', (r) => {
       console.log('[CORPUS-RESULT] FAIL unhandled: ' + (r && r.stack || String(r)).split('\\n')[0]);
-      process.exit(1);
+      deferredExit(1);
     });
     try {
       require('/test/parallel/${testName}');
-      console.log('[CORPUS-RESULT] PASS');
-      process.exit(0);
+      console.log('[CORPUS-RESULT] PASS-PROVISIONAL');
+      deferredExit(0);
     } catch (e) {
       if (isExitSignal(e)) {
         // Test called process.exit (e.g. common.skip → exit(0), or its
@@ -80,7 +102,7 @@ function buildDriver(testName) {
       }
       console.log('[CORPUS-RESULT] FAIL sync: ' + (e && e.stack || String(e)).split('\\n')[0]);
       console.error((e && e.stack) || String(e));
-      process.exit(1);
+      deferredExit(1);
     }
   `;
 }
@@ -118,14 +140,28 @@ async function runOne(browser, testName) {
     // Browser-target's _start sentinel can't propagate process.exit codes
     // reliably -- TerminateExecution unwinds without ExitSignal so we
     // get "(returned)". Instead, our driver emits an explicit
-    // [CORPUS-RESULT] PASS/FAIL marker we grep for.
+    // [CORPUS-RESULT] PASS / PASS-PROVISIONAL / FAIL marker we grep for.
+    //
+    // PASS-PROVISIONAL is logged immediately after require() returns,
+    // BEFORE the deferred exit runs.  If a deferred event later prints
+    // "Mismatched <name> function calls. Expected ..., actual ..." at
+    // process exit time (common.mustCall's at-exit verifier), the
+    // provisional pass is downgraded to FAIL.  Otherwise it upgrades
+    // to PASS.
     const result = await page.evaluate(() => {
       const log = document.getElementById("log");
       if (!log) return { passed: false, line: "no-log" };
-      const matches = [...log.innerText.matchAll(/\[CORPUS-RESULT\] (PASS|FAIL[^\n]*)/g)];
+      const text = log.innerText;
+      const matches = [...text.matchAll(/\[CORPUS-RESULT\] (PASS-PROVISIONAL|PASS|FAIL[^\n]*)/g)];
       if (matches.length === 0) return { passed: false, line: "no-marker" };
-      const last = matches[matches.length - 1];
-      return { passed: last[1] === "PASS", line: last[1] };
+      const last = matches[matches.length - 1][1];
+      if (last === "PASS") return { passed: true, line: "PASS" };
+      if (last.startsWith("FAIL")) return { passed: false, line: last };
+      const mustCallMismatch = /Mismatched [^\s]+ function calls\. Expected [^,]+, actual \d+\./.test(text);
+      if (mustCallMismatch) {
+        return { passed: false, line: "FAIL mustCall mismatch (deferred)" };
+      }
+      return { passed: true, line: "PASS (provisional confirmed)" };
     });
     if (!result.passed) {
       // Capture lvl-out (stdout) + lvl-err (stderr) separately so we see

@@ -41,6 +41,7 @@ import { workerThreadsPerThread } from "./edge-env/presets/worker-threads-per-th
 import { bufferBase64 } from "./edge-env/presets/buffer-base64";
 import { bufferCopy } from "./edge-env/presets/buffer-copy";
 import { vmSameRealm } from "./edge-env/presets/vm-same-realm";
+import { pollWakeOnSchedule } from "./edge-env/presets/poll-wake-on-schedule";
 import { decodeBase64 } from "./edge-env/vendor-adapters/unenv-base64";
 import { createBundledFs } from "./host/fs/adapters/bundled";
 // opfs + layered adapters now live on the bridge worker.  Runtime
@@ -1316,6 +1317,7 @@ async function runEdgeWithEmnapi() {
     bufferBase64.name,
     bufferCopy.name,
     vmSameRealm.name,
+    pollWakeOnSchedule.name,
   ]);
   const legacyPolicies = [...defaultBrowserPolicies, ...extraPolicies]
     .filter((p) => !migratedNames.has(p.name));
@@ -1346,6 +1348,7 @@ async function runEdgeWithEmnapi() {
     bufferBase64,
     bufferCopy,
     vmSameRealm,
+    pollWakeOnSchedule,
   ];
   // buffer-base64 preset's runtime patch calls globalThis.__edgeDecodeBase64
   // to run the vendored unenv/base64-js decoder.  Install BEFORE the napi
@@ -1536,6 +1539,21 @@ async function runEdgeWithEmnapi() {
   // process.exit() to wake the shim's parked poll_oneoff.  See
   // experiments/e9-process-exit-in-fr/FINDINGS.md.
   requestExitHolder.fn = shim.requestExit;
+
+  // Phase 7A — expose the wake primitive globally so the
+  // poll-wake-on-schedule preset's pre-patch on internal/timers can
+  // notify the parked poll_oneoff after lib queues a timer or first
+  // immediate.  Without this, host-JS-driven setTimeout / setImmediate
+  // wait up to ~30s (the Atomics.wait default) for poll_oneoff to time
+  // out before the timer fires.  See investigation in NOTES.md
+  // `corpus-mustcall-not-verified`.  Race-free under Atomics — a notify
+  // on an idle slot is a no-op; a notify on a parked wait wakes it.
+  const wakeView = shim.bus.wakeView;
+  (globalThis as unknown as { __edgeWakePoll?: () => void })
+    .__edgeWakePoll = () => {
+      Atomics.add(wakeView, 0, 1);
+      Atomics.notify(wakeView, 0);
+    };
 
   // Wire the bridge to the socket bus.  Two channels:
   //   1) The page (relaying for the SW) writes incoming HTTP requests
