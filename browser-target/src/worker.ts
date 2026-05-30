@@ -994,6 +994,12 @@ self.addEventListener("message", (e: MessageEvent) => {
             .__edgeDispatchUserWorkerExit;
           if (typeof dispatch === "function") {
             dispatchOnLibuvTick("OP_DELIVER_USER_WORKER_EXIT", () => dispatch(workerId, exitCode, errorBytes));
+            // Wake parent's parked poll_oneoff so worker.on('exit') /
+            // 'error' verifiers fire promptly.  Unlike message paths
+            // there's no uv_async slot for exit — wake notify is the
+            // only path to unpark the loop here.  See Phase 7D in
+            // NOTES.md / project-corpus-mustcall-hidden memory.
+            (globalThis as { __edgeWakePoll?: () => void }).__edgeWakePoll?.();
           } else {
             post("log", { text: `[runtime] OP_DELIVER_USER_WORKER_EXIT #${workerId}: no dispatcher registered`, level: "warn" });
           }
@@ -1049,6 +1055,7 @@ self.addEventListener("message", (e: MessageEvent) => {
             if (typeof dispatch === "function") {
               dispatchOnLibuvTick("OP_DELIVER_MESSAGE_FROM_CHILD", () => dispatch(workerId, bytes));
               pokeWorkerSlot(workerId);
+              (globalThis as { __edgeWakePoll?: () => void }).__edgeWakePoll?.();
             } else {
               post("log", { text: `[runtime] OP_DELIVER_MESSAGE_FROM_CHILD #${workerId}: no dispatcher registered`, level: "warn" });
             }
@@ -1058,6 +1065,7 @@ self.addEventListener("message", (e: MessageEvent) => {
             if (typeof cdispatch === "function") {
               dispatchOnLibuvTick("OP_DELIVER_CONTROL_FROM_CHILD", () => cdispatch(workerId, kind, bytes));
               pokeWorkerSlot(workerId);
+              (globalThis as { __edgeWakePoll?: () => void }).__edgeWakePoll?.();
             } else {
               post("log", { text: `[runtime] OP_DELIVER_MESSAGE_FROM_CHILD #${workerId}: no control dispatcher (kind=0x${kind.toString(16)})`, level: "warn" });
             }
@@ -1108,6 +1116,7 @@ self.addEventListener("message", (e: MessageEvent) => {
             if (typeof dispatch === "function") {
               dispatchOnLibuvTick("OP_DELIVER_MESSAGE_TO_CHILD", () => dispatch(bytes));
               pokeParentPortSlot();
+              (globalThis as { __edgeWakePoll?: () => void }).__edgeWakePoll?.();
             } else {
               post("log", { text: `[runtime] OP_DELIVER_MESSAGE_TO_CHILD: no dispatcher registered`, level: "warn" });
             }
@@ -1117,6 +1126,7 @@ self.addEventListener("message", (e: MessageEvent) => {
             if (typeof cdispatch === "function") {
               dispatchOnLibuvTick("OP_DELIVER_CONTROL_TO_CHILD", () => cdispatch(kind, bytes));
               pokeParentPortSlot();
+              (globalThis as { __edgeWakePoll?: () => void }).__edgeWakePoll?.();
             } else {
               post("log", { text: `[runtime] OP_DELIVER_MESSAGE_TO_CHILD: no control dispatcher (kind=0x${kind.toString(16)})`, level: "warn" });
             }
