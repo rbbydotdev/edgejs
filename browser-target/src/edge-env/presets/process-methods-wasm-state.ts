@@ -94,6 +94,39 @@ const POST_PATCH = `
     e.code = code;
     return e;
   }
+  function mkTypeErr(code, msg) {
+    var e = new TypeError(msg);
+    e.code = code;
+    return e;
+  }
+  // ERR_INVALID_ARG_TYPE message mirrors Node's exact phrasing so tests
+  // checking the message string pass.  Format:
+  //   The "ARGNAME" argument must be of type TYPENAME. Received TYPE (VALUE)
+  //   The "ARGNAME" property  must be of type TYPENAME. Received TYPE
+  function invalidArgTypeMsg(name, val, isProperty, expectedType) {
+    var noun = isProperty ? 'property' : 'argument';
+    var et = expectedType || 'object';
+    var prefix = 'The "' + name + '" ' + noun + ' must be of type ' + et + '.';
+    // Node uses short form for null/undefined ("Received null") and the
+    // typed form for everything else ("Received type X (V)").
+    if (val === null) return prefix + ' Received null';
+    if (val === undefined) return prefix + ' Received undefined';
+    var t = typeof val;
+    var v = t === 'string' ? "'" + val + "'" : String(val);
+    return prefix + ' Received type ' + t + ' (' + v + ')';
+  }
+  // previousValue.user/.system validation matching Node's order of checks:
+  //   - if not a number type → ERR_INVALID_ARG_TYPE
+  //   - if number but out of range (negative, infinity, > MAX_SAFE) → ERR_INVALID_ARG_VALUE
+  function checkPrevValueField(prevValue, name) {
+    var v = prevValue[name];
+    if (typeof v !== 'number') {
+      throw mkTypeErr('ERR_INVALID_ARG_TYPE', invalidArgTypeMsg('prevValue.' + name, v, true, 'number'));
+    }
+    if (!previousValueIsValid(v)) {
+      throw mkErr('ERR_INVALID_ARG_VALUE', "The property 'prevValue." + name + "' is invalid. Received " + v);
+    }
+  }
 
   module.exports.wrapProcessMethods = function wrapProcessMethodsPatched(binding) {
     var result = origWrap(binding);
@@ -114,13 +147,12 @@ const POST_PATCH = `
     var _rss = binding.rss;
 
     result.cpuUsage = function cpuUsage(prevValue) {
-      if (prevValue) {
-        if (!previousValueIsValid(prevValue.user)) {
-          throw mkErr('ERR_INVALID_ARG_VALUE', 'prevValue.user');
+      if (prevValue !== undefined && prevValue !== null) {
+        if (typeof prevValue !== 'object') {
+          throw mkTypeErr('ERR_INVALID_ARG_TYPE', invalidArgTypeMsg('prevValue', prevValue));
         }
-        if (!previousValueIsValid(prevValue.system)) {
-          throw mkErr('ERR_INVALID_ARG_VALUE', 'prevValue.system');
-        }
+        checkPrevValueField(prevValue, 'user');
+        checkPrevValueField(prevValue, 'system');
       }
       _cpuUsage(cpuValues);
       if (prevValue) {
@@ -130,13 +162,12 @@ const POST_PATCH = `
     };
 
     result.threadCpuUsage = function threadCpuUsage(prevValue) {
-      if (prevValue) {
-        if (!previousValueIsValid(prevValue.user)) {
-          throw mkErr('ERR_INVALID_ARG_VALUE', 'prevValue.user');
+      if (prevValue !== undefined && prevValue !== null) {
+        if (typeof prevValue !== 'object') {
+          throw mkTypeErr('ERR_INVALID_ARG_TYPE', invalidArgTypeMsg('prevValue', prevValue));
         }
-        if (!previousValueIsValid(prevValue.system)) {
-          throw mkErr('ERR_INVALID_ARG_VALUE', 'prevValue.system');
-        }
+        checkPrevValueField(prevValue, 'user');
+        checkPrevValueField(prevValue, 'system');
       }
       if (typeof process !== 'undefined' && process.platform === 'sunos') {
         var e = new Error('threadCpuUsage is not available on SunOS');

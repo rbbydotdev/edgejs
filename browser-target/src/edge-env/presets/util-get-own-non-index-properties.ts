@@ -25,6 +25,21 @@ export const utilGetOwnNonIndexProperties: Preset = {
     "Fixes assert.deepStrictEqual on Arrays and any other type whose " +
     "non-index properties include non-enumerable slots.",
   patch: {
+    // Pre-patch on EVERY module that destructures
+    // `internalBinding('util').getOwnNonIndexProperties` at top-of-file —
+    // load order isn't guaranteed, so we need our binding swap to land
+    // BEFORE any consumer captures the broken function.  Identical patch
+    // body is fine: each is idempotent via the `__edgeGetOwnNonIndexPatched`
+    // sentinel.  Consumers (per `grep -rln getOwnNonIndexProperties lib/`):
+    //   - internal/util.js (the early loader)
+    //   - internal/util/inspect.js (util.inspect)
+    //   - internal/util/comparisons.js (assert.deepStrictEqual + isDeepStrictEqual)
+    //   - internal/repl/completion.js (REPL tab-complete)
+    //   - lib/buffer.js (constants destructure)
+    "internal/util": { pre: getOwnNonIndexPatchSrc },
+    "internal/util/inspect": { pre: getOwnNonIndexPatchSrc },
     "internal/util/comparisons": { pre: getOwnNonIndexPatchSrc },
+    "internal/repl/completion": { pre: getOwnNonIndexPatchSrc },
+    buffer: { pre: getOwnNonIndexPatchSrc },
   },
 };
