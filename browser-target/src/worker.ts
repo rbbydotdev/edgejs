@@ -14,6 +14,8 @@ import { WASIThreads, type WASIInstance } from "./napi-host/emnapi";
 import { Trace, toUnifiedJsonl } from "./trace";
 import { createNapiHost } from "./napi-host";
 import { composePolicies, defaultBrowserPolicies, compressionViaCompressionStream, policyRegistry } from "./policies";
+import { defineEdgeEnv, toLegacyShape, asPreset } from "./edge-env";
+import { v8Serdes } from "./edge-env/presets/v8-serdes";
 import { createBundledFs } from "./host/fs/adapters/bundled";
 // opfs + layered adapters now live on the bridge worker.  Runtime
 // worker has only a minimal bundled-fs for any wasi-shim paths that
@@ -1256,9 +1258,21 @@ async function runEdgeWithEmnapi() {
       return p;
     })
     .filter((p): p is NonNullable<typeof p> => p !== undefined);
-  const browserPolicies = [...defaultBrowserPolicies, ...extraPolicies];
+  // Migration in progress: defaultBrowserPolicies still contains legacy
+  // Policy objects from src/policies/.  We filter out the ones already
+  // migrated into src/edge-env/presets/ and add the native versions.
+  // Once every policy is migrated, drop the filter and the import from
+  // ./policies entirely.
+  const migratedNames = new Set<string>([v8Serdes.name, "v8-serdes-shim"]);
+  const legacyPolicies = [...defaultBrowserPolicies, ...extraPolicies]
+    .filter((p) => !migratedNames.has(p.name));
+  const nativePresets = [v8Serdes];
+  const { env } = defineEdgeEnv({
+    presets: [...legacyPolicies.map(asPreset), ...nativePresets],
+  });
   const { builtinOverrides, userScriptPrelude, applied: appliedPolicies } =
-    composePolicies(browserPolicies);
+    toLegacyShape(env);
+  void composePolicies;  // suppress unused-import until migration completes
   void hasJspi;
   // E9: requestExit holder — populated after createWasiShim below so
   // wasm-side `unofficial_napi_terminate_execution` can wake a parked
