@@ -70,20 +70,27 @@ counts, beforeExit triggers correct exit.  Then a sweep of focused
 typed presets across the deferred-but-not-architectural surface:
 string-decoder full WHATWG UTF-8 impl (0→100%), util binding fixes
 (60→68%), zlib brotli init-params sync (75→87%), os priority stateful
-(57→71%).  **Final 2026-05-31: 65% raw / ~72% adjusted.**
+(57→71%).  **Final 2026-05-31: 65% (202/311).**
 
-**Honest accounting via `browser-target/known-failures.json` manifest:**
-each known-architectural-fail is annotated with a category (deferred-fs,
+**Internal tracking via `browser-target/known-failures.json` manifest:**
+each known-failing test is annotated with a category (deferred-fs,
 deferred-net, deferred-child-process, deferred-vm-cross-realm,
-inspector-not-supported, v8-natives, asynclocalstorage-promise-hooks).
-Runner classifies into 5 states: PASS, FAIL, KNOWN-FAIL, KNOWN-FAIL-CHANGED
-(diagnostic alert when a known-fail's signature changes), UNEXPECTED-PASS
-(prompt to remove from manifest when a gap is closed).  Raw vs adjusted
-metrics both reported — neither hides the gap.
+inspector-not-supported, v8-natives, asynclocalstorage-promise-hooks,
+etc.) so the runner can surface regression alerts:
+KNOWN-FAIL-CHANGED (a known-fail's signature changed — investigate),
+UNEXPECTED-PASS (a known-fail now passes — remove from manifest).  The
+public pass rate above is RAW only — failures stay in the denominator
+because each one documents a real gap.
 
-Standing rule: never stub a binding/method just to make a test pass.
-"A broken test is documentation of a missing feature" — honest failures
-beat dishonest passes.  See memory rule `feedback-no-stubs-to-pass-tests`.
+Standing rules:
+1. Never stub a binding/method just to make a test pass — honest
+   failures beat dishonest passes.
+2. Don't quote "adjusted" pass rates that exclude failures from the
+   denominator — same shape of dishonesty (a broken test is
+   documentation of a missing feature; removing it from the metric
+   hides the gap).  Raw rates only.
+
+See memory rule `feedback-no-stubs-to-pass-tests`.
 
 ## Side-by-side compat
 
@@ -96,10 +103,10 @@ beat dishonest passes.  See memory rule `feedback-no-stubs-to-pass-tests`.
 
 | Module | edgejs | edgejs-web | Cloudflare | Bun | Deno | Vercel Edge | StackBlitz | Notes |
 |---|---|---|---|---|---|---|---|---|
-| `assert` | ✓ | ✓ 94% | ✓ | ✓ | ✓ | ✓ | ✓ | edgejs-web: 17/18 — adjusted **100%** (1 known-fail = V8 Error.prepareStackTrace) |
+| `assert` | ✓ | ✓ 94% | ✓ | ✓ | ✓ | ✓ | ✓ | edgejs-web: 17/18 — 1 failing test depends on V8 Error.prepareStackTrace (not implemented) |
 | `buffer` | ✓ | ◐ 70% | ✓ | ✓ | ✓ | ✓ | ✓ | edgejs-web: 14/20 — buffer-base64 (vendored unenv decoder), buffer-copy (TypedArray.set), vm-same-realm. Remaining: utf-8 surrogate handling, wasm-aliased + external-ArrayBuffer, V8-internal on-heap typed-array, child_process JSPI dependencies |
 | `console` | ✓ | ✓ | ◐ | ✓ | ✓ | ✓ | ✓ | edgejs-web: routed to host-worker logs |
-| `events` | ✓ | ✓ 92% | ✓ | ✓ | ✓ | ✓ | ✓ | edgejs-web: 33/36 — adjusted **100%** after marking 3 known-fails (2 chain-depth mustCall, 1 harness-driver-uncaught conflict). Big jump from `util-get-own-non-index-properties` preset (root-cause fix for assert.deepStrictEqual on Arrays) |
+| `events` | ✓ | ✓ 92% | ✓ | ✓ | ✓ | ✓ | ✓ | edgejs-web: 33/36 — big jump (was 36%) from `util-get-own-non-index-properties` preset (root-cause fix for assert.deepStrictEqual on Arrays). 3 failures: 2 deep-chain captureRejections (exceeds drain watchdog), 1 corpus-driver harness conflict with uncaughtException |
 | `process` | ◐ | ◐ 67% | ◐ | ◐ | ◐ | ◐ | ✓ | edgejs-web: 10/15 — `process-methods-wasm-state` + cpuUsage validation. Remaining: 3 deferred (fs/net/child_process) + 1 inspector (no-stub policy: honest failure) + 1 beforeexit chain |
 | `util` | ◐ | ◐ 68% | ✓ | ◐ | ✓ | ◐ | ✓ | edgejs-web: 17/25 — `util-get-own-non-index-properties` + `util-get-constructor-name` (registry through setPrototypeOf) + `util-get-proxy-details` + `util-types-async-gen`. Remaining: V8-internals, vm cross-realm |
 
@@ -110,7 +117,7 @@ beat dishonest passes.  See memory rule `feedback-no-stubs-to-pass-tests`.
 | `path` | ✓ | ✓ 100% | ✓ | ✓ | ✓ | — | ✓ | edgejs-web: 16/16. Pure JS |
 | `querystring` | ✓ | ✓ 100% | ✓ | ✓ | ✓ | — | ✓ | edgejs-web: 3/3. Pure JS |
 | `string_decoder` | ✓ | ✓ 100% | ✓ | ✓ | ✓ | — | ✓ | edgejs-web: 2/2 — fixed via `string-decoder-js` preset: real WHATWG-correct UTF-8 decoder (~440 LOC) replacing the wasm `utf8Slice` that returned garbage surrogate pairs for ill-formed UTF-8. Also overrides `internalBinding('buffer').{utf8,ucs2,ascii,latin1,hex,base64,base64url}Slice` — bonus: Buffer.toString improvements across encodings |
-| `url` | ✓ | ✓ 93% | ✓ | ✓ | ✓ | ✓ | ✓ | edgejs-web: 13/14 — adjusted **100%** (1 known-fail uses child_process for spawn-test) |
+| `url` | ✓ | ✓ 93% | ✓ | ✓ | ✓ | ✓ | ✓ | edgejs-web: 13/14 — 1 failing test uses child_process.spawn for a deprecation-warning subprocess assertion |
 | `punycode` | ✓ | ✓ | ✓ | ✓ | ✓ | — | ✓ | Pure JS; Bun: 100% Node-suite |
 
 ### Streams

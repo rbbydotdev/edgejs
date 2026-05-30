@@ -301,23 +301,20 @@ function writeJsonResults(jsonPath, results, startedAt, finishedAt) {
       unexpectedPass.push({ test: c.result.test, category: c.category });
     }
   }
-  const raw = states.PASS + states["UNEXPECTED-PASS"];
+  const pass = states.PASS + states["UNEXPECTED-PASS"];
   const total = results.length;
-  const known = states["KNOWN-FAIL"] + states["KNOWN-FAIL-CHANGED"];
-  const adjustedDen = Math.max(0, total - known);
   const summary = {
     startedAt,
     finishedAt,
     durationMs: finishedAt - startedAt,
     totalTests: total,
-    pass: raw,
-    fail: states.FAIL,
+    pass,
+    fail: states.FAIL + states["KNOWN-FAIL"] + states["KNOWN-FAIL-CHANGED"],
     timeout: results.filter((r) => r.status === "timeout").length,
     knownFail: states["KNOWN-FAIL"],
     knownFailChanged: states["KNOWN-FAIL-CHANGED"],
     unexpectedPass: states["UNEXPECTED-PASS"],
-    rawPassRate: total === 0 ? 0 : Math.round((raw / total) * 10000) / 100,
-    adjustedPassRate: adjustedDen === 0 ? null : Math.round((raw / adjustedDen) * 10000) / 100,
+    passRate: total === 0 ? 0 : Math.round((pass / total) * 10000) / 100,
     perBucket: aggregates.map((a) => ({
       bucket: a.bucket,
       pass: a.pass,
@@ -394,18 +391,18 @@ async function main() {
   const finishedAt = Date.now();
   const summary = writeJsonResults(resolve(outDir, "corpus-results.json"), results, startedAt, finishedAt);
   console.log(`\nwrote ${outDir}/corpus-results.json`);
-  console.log("\n=== known-failures classification ===");
-  console.log(`  raw pass rate:       ${summary.rawPassRate}%  (${summary.pass}/${summary.totalTests})`);
-  const adj = summary.adjustedPassRate === null ? "N/A (all tests known-fail)" : `${summary.adjustedPassRate}%`;
-  console.log(`  adjusted pass rate:  ${adj}  (excluding ${summary.knownFail ?? 0} known-fails)`);
+  console.log(`\n=== pass rate: ${summary.passRate}%  (${summary.pass}/${summary.totalTests}) ===`);
+  if (summary.knownFail) {
+    console.log(`  ${summary.knownFail} of those fails are cataloged gaps (see known-failures.json) — counted as fail`);
+  }
   if (summary.knownFailChanged) {
-    console.log(`  ⚠️  KNOWN-FAIL-CHANGED: ${summary.knownFailChanged}`);
+    console.log(`  ALERT: ${summary.knownFailChanged} cataloged-gap test(s) changed signature — investigate:`);
     for (const d of summary.knownFailChangedDetail || []) {
       console.log(`     ${d.test}: expected="${d.expected}" but got="${(d.actual||'').slice(0,80)}"`);
     }
   }
   if (summary.unexpectedPass) {
-    console.log(`  🎉 UNEXPECTED-PASS: ${summary.unexpectedPass} (consider removing from known-failures.json)`);
+    console.log(`  ALERT: ${summary.unexpectedPass} cataloged-gap test(s) now pass — remove from known-failures.json:`);
     for (const d of summary.unexpectedPassDetail || []) {
       console.log(`     ${d.test} [${d.category}]`);
     }
