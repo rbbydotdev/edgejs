@@ -1,0 +1,98 @@
+{
+  "startedAt": 1780162359226,
+  "finishedAt": 1780162381183,
+  "durationMs": 21957,
+  "totalTests": 15,
+  "pass": 13,
+  "fail": 1,
+  "timeout": 0,
+  "knownFail": 1,
+  "knownFailChanged": 0,
+  "unexpectedPass": 0,
+  "rawPassRate": 86.67,
+  "adjustedPassRate": 92.86,
+  "perBucket": [
+    {
+      "bucket": "zlib",
+      "pass": 13,
+      "fail": 2,
+      "timeout": 0,
+      "total": 15,
+      "passRate": 86.67
+    }
+  ],
+  "knownFailChangedDetail": [],
+  "unexpectedPassDetail": [],
+  "results": [
+    {
+      "test": "test-zlib-brotli-16GB.js",
+      "status": "pass"
+    },
+    {
+      "test": "test-zlib-brotli-flush.js",
+      "status": "pass"
+    },
+    {
+      "test": "test-zlib-brotli-from-brotli.js",
+      "status": "fail",
+      "reason": "FAIL sync: Error: ENOSYS: function not implemented, mkdir '/test/.tmp.0'",
+      "exit": 1,
+      "stdout": "[stdout] hello from wasi in browser\n✓ end-to-end success (exit=0)\n[stdout] [CORPUS-RESULT] FAIL sync: Error: ENOSYS: function not implemented, mkdir '/test/.tmp.0'\n",
+      "stderr": "[host-worker:?] MODULE LOAD #2 — skipping listener (already attached)\n[tp]worker:enter\n[tp]worker:postsem\n[tp]worker:enter\n[tp]worker:lockmu\n[tp]worker:postsem\n[tp]worker:lockmu\n[tp]worker:looped\n[tp]worker:idle\n[tp]worker:cond-pre\n[tp]worker:enter\n[tp]worker:postsem\n[tp]worker:lockmu\n[tp]worker:looped\n[tp]worker:idle\n[tp]worker:cond-pre\n[tp]worker:enter\n[tp]worker:looped\n[tp]worker:postsem\n[tp]worker:idle\n[override] matched node:internal/per_context/primordials\n[override] matched node:internal/timers\n[override] matched node:internal/util\n[override] matched node:internal/util/types\n[override] matched node:internal/util/inspect\n[override] matched node:buffer\n[override] matched node:internal/buffer\n[override] matched node:internal/process/per_thread\n[override] matched node:internal/process/task_queues\n[override] matched node:internal/process/execution\n[override] matched node:internal/modules/esm/utils\n[override] matched node:vm\n[override] matched node:string_decoder\n[override] matched node:https\n[override] matched node:worker_threads\n[override] matched node:internal/worker\n[override] matched node:internal/child_process\n[override] matched node:internal/crypto/random\n[override] matched node:zlib\n[stderr] Error: ENOSYS: function not implemented, mkdir '/test/.tmp.0'\n[stderr]     at napi_new_instance (http://localhost:5173/@fs/Users/robertpolana/etc/projects/edgejs/vendor/emnapi/packages/core/dist/emnapi-core.js:4712:50)\n[stderr]     at http://localhost:5173/src/imports-generated.ts:17:15\n[stderr]     at wasm://wasm/0654e5c2:wasm-function[10182]:0x1f340f\n[stderr]     at wasm://wasm/0654e5c2:wasm-function[10269]:0x1f9c22\n[stderr]     at wasm://wasm/0654e5c2:wasm-function[10133]:0x1eef00\n[stderr]     at jsReentryWrap (http://localhost:5173/src/napi-host/index.ts:328:29)\n[stderr]     at callback (http://localhost:5173/@fs/Users/robertpolana/etc/projects/edgejs/vendor/emnapi/packages/runtime/dist/emnapi.js:2106:20)\n[stderr]     at NodeEnv.callIntoModule (http://localhost:5173/@fs/Users/robertpolana/etc/projects/edgejs/vendor/emnapi/packages/runtime/dist/emnapi.js:735:19)\n[stderr]     at callbackWrapper (http://localhost:5173/@fs/Users/robertpolana/etc/projects/edgejs/vendor/emnapi/packages/runtime/dist/emnapi.js:1934:33)\n[stderr]     at withScope (http://localhost:5173/@fs/Users/robertpolana/etc/projects/edgejs/vendor/emnapi/packages/runtime/dist/emnapi.js:1945:16)\n[tp]worker:cond-pre\n[tp]worker:lockmu\n[tp]worker:looped\n[tp]worker:idle\n[tp]worker:cond-pre\n[tp]worker:cond-post\n[tp]worker:woken\n[tp]worker:cond-post\n[tp]worker:woken\n[tp]worker:cond-post\n[tp]worker:woken\n[tp]worker:cond-post\n[tp]worker:woken\n_start ran 733 ms (exit=1)\n",
+      "fullTail": "    769.8ms  wasi_snapshot_preview1.path_filestat_get(5, 1, 55976880, 17, 22061664) -> errno=44\n    773.8ms  wasi_snapshot_preview1.path_filestat_get(5, 1, 55976880, 17, 22061664) -> errno=44\n    785.9ms  wasi_snapshot_preview1.path_filestat_get(5, 1, 55976880, 19, 22061664) -> errno=44\n    793.1ms  wasix_32v1.path_open2(5, 1, 55976880, 13, 0, \"-4194626n\", \"-1n\", 0, 1, 22052868) -> errno=44\n    811.5ms  wasi_snapshot_preview1.path_filestat_get(5, 1, 55976880, 21, 22061664) -> errno=44\n    814.2ms  wasi_snapshot_preview1.path_filestat_get(5, 1, 55976880, 19, 22061664) -> errno=44\n    819.5ms  wasi_snapshot_preview1.path_filestat_get(5, 0, 55976880, 12, 22061552) -> errno=44\n    819.8ms  wasi_snapshot_preview1.path_create_directory(5, 55976880, 12) -> errno=52\nlast 30 calls (closest to exit):\n    833.3ms  [impl]  napi.napi_typeof(22085656, 355, 22062268) -> 0\n    833.3ms  [impl]  napi.napi_get_value_int32(22085656, 355, 22062264) -> 0\n    833.6ms  [impl]  napi_extension_wasmer_v0.unofficial_napi_set_enqueue_foreground_task_callback(22085656, 0, 0) -> 0\n    834.4ms  [impl]  wasi_snapshot_preview1.clock_time_get(1, \"1n\", 22062296) -> 0\n    834.4ms  [impl]  napi.napi_create_double(22085656, 639, 22062316) -> 0\n    835.9ms  [impl]  wasi_snapshot_preview1.clock_time_get(1, \"1n\", 22062664) -> 0\n    836.0ms  [impl]  wasi_snapshot_preview1.clock_time_get(1, \"1n\", 22062760) -> 0\n    836.0ms  [impl]  napi.napi_delete_reference(22085656, 154) -> 0\n    836.0ms  [impl]  napi.napi_delete_reference(22085656, 43) -> 0\n    836.0ms  [impl]  napi.napi_delete_reference(22085656, 33) -> 0\n    836.0ms  [impl]  napi.napi_delete_reference(22085656, 34) -> 0\n    836.0ms  [impl]  napi.napi_delete_reference(22085656, 164) -> 0\n    836.2ms  [impl]  wasi_snapshot_preview1.clock_time_get(1, \"1n\", 22062712) -> 0\n    836.2ms  [impl]  wasi_snapshot_preview1.fd_close(5002) -> 0\n    836.2ms  [impl]  wasi_snapshot_preview1.fd_close(5003) -> 0\n    836.3ms  [impl]  wasi_snapshot_preview1.fd_close(5005) -> 0\n    836.3ms  [impl]  wasi_snapshot_preview1.fd_close(5004) -> 0\n    836.6ms  [impl]  napi_extension_wasmer_v0.unofficial_napi_release_env(1) -> 0\n    837.1ms  [impl]  wasi_snapshot_preview1.fd_filestat_get(0, 22064032) -> 0\n    837.1ms  [impl]  wasi_snapshot_preview1.fd_fdstat_get(0, 22064072) -> 0\n    837.1ms  [impl]  wasi_snapshot_preview1.fd_filestat_get(1, 22064032) -> 0\n    837.1ms  [impl]  wasi_snapshot_preview1.fd_fdstat_get(1, 22064072) -> 0\n    837.1ms  [impl]  wasi_snapshot_preview1.fd_filestat_get(2, 22064032) -> 0\n    837.1ms  [impl]  wasi_snapshot_preview1.fd_fdstat_get(2, 22064072) -> 0\n    837.1ms  [impl]  wasi_snapshot_preview1.fd_close(5000) -> 0\n    837.1ms  [impl]  wasi_snapshot_preview1.fd_close(5001) -> 0\n    837.1ms  [impl]  wasix_32v1.futex_wake(30494388, 22064191) -> 0\n    837.8ms  [impl]  wasi_snapshot_preview1.fd_filestat_get(100, 22064064) -> 0\n    837.8ms  [impl]  wasi_snapshot_preview1.fd_close(100) -> 0\n    839.0ms  [impl]  wasix_32v1.proc_exit2(1) -> THROW:ExitSignal(code=1)\n"
+    },
+    {
+      "test": "test-zlib-brotli-from-string.js",
+      "status": "pass"
+    },
+    {
+      "test": "test-zlib-brotli-kmaxlength-rangeerror.js",
+      "status": "pass"
+    },
+    {
+      "test": "test-zlib-brotli.js",
+      "status": "pass"
+    },
+    {
+      "test": "test-zlib-close-after-error.js",
+      "status": "pass"
+    },
+    {
+      "test": "test-zlib-close-after-write.js",
+      "status": "pass"
+    },
+    {
+      "test": "test-zlib-close-in-ondata.js",
+      "status": "pass"
+    },
+    {
+      "test": "test-zlib-const.js",
+      "status": "pass"
+    },
+    {
+      "test": "test-zlib-convenience-methods.js",
+      "status": "fail",
+      "reason": "FAIL unhandled: AssertionError [ERR_ASSERTION]: Should get engine Gzip after gzip string with info option.",
+      "exit": 1,
+      "stdout": "[stdout] hello from wasi in browser\n✓ end-to-end success (exit=0)\n[stdout] [CORPUS-RESULT] FAIL sync: AssertionError [ERR_ASSERTION]: Should get original string after gzipSync/gunzipSync string with options.\n[stdout] [CORPUS-RESULT] FAIL unhandled: AssertionError [ERR_ASSERTION]: Should get engine Gzip after gzip string with info option.\n",
+      "stderr": "[host-worker:?] MODULE LOAD #2 — skipping listener (already attached)\n[override] matched node:internal/per_context/primordials\n[override] matched node:internal/timers\n[override] matched node:internal/util\n[override] matched node:internal/util/types\n[override] matched node:internal/util/inspect\n[override] matched node:buffer\n[override] matched node:internal/buffer\n[override] matched node:internal/process/per_thread\n[override] matched node:internal/process/task_queues\n[override] matched node:internal/process/execution\n[override] matched node:internal/modules/esm/utils\n[override] matched node:vm\n[override] matched node:string_decoder\n[override] matched node:https\n[override] matched node:worker_threads\n[override] matched node:internal/worker\n[override] matched node:internal/child_process\n[override] matched node:internal/crypto/random\n[override] matched node:zlib\n[stderr] AssertionError [ERR_ASSERTION]: Should get original string after gzipSync/gunzipSync string with options.\n[stderr] + actual - expected\n[stderr] \n[stderr] + '\\x02\\x00\\x00\\x00\\x01\\x00\\x00\\x00\\x00\\x00\\x00\\x00 \\x00\\x00\\x00\\x01\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x10\\x00\\x00'\n[stderr] - 'blahblahblahblahblahblahblahblah'\n[stderr] \n[stderr]     at Object.eval (/test/parallel/test-zlib-convenience-methods.js:98:14)\n[stderr]     at Module._compile (node:internal/modules/cjs/loader:1807:14)\n[stderr]     at Module._extensions..js (node:internal/modules/cjs/loader:1939:10)\n[stderr]     at Module.load (node:internal/modules/cjs/loader:1528:32)\n[stderr]     at Module._load (node:internal/modules/cjs/loader:1330:12)\n[stderr]     at TracingChannel.traceSync (node:diagnostics_channel:331:14)\n[stderr]     at wrapModuleLoad (node:internal/modules/cjs/loader:248:24)\n[stderr]     at Module.require (node:internal/modules/cjs/loader:1551:12)\n[stderr]     at require (node:internal/modules/helpers:155:16)\n[stderr]     at eval (eval at unofficial_napi_contextify_run_script (http://localhost:5173/src/napi-host/unofficial.ts:883:17), <anonymous>:371:7)\n[tp]worker:enter\n[tp]worker:postsem\n[tp]worker:lockmu\n[tp]worker:enter\n[tp]worker:looped\n[tp]worker:postsem\n[tp]worker:idle\n[tp]worker:lockmu\n[tp]worker:cond-pre\n[tp]worker:enter\n[tp]worker:postsem\n[tp]worker:lockmu\n[tp]worker:looped\n[tp]worker:idle\n[tp]worker:cond-pre\n[tp]worker:looped\n[tp]worker:idle\n[tp]worker:cond-pre\n[tp]worker:enter\n[tp]worker:postsem\n[tp]worker:lockmu\n[tp]worker:looped\n[tp]worker:idle\n[tp]worker:cond-pre\n[tp]worker:cond-post\n[tp]worker:woken\n[tp]worker:cond-post\n[tp]worker:woken\n[tp]worker:cond-post\n[tp]worker:woken\n[tp]worker:cond-post\n[tp]worker:woken\n_start ran 802 ms (exit=1)\n",
+      "fullTail": "    160.7ms  wasix_32v1.path_open2(5, 1, 55976880, 56, 0, \"-4194626n\", \"-1n\", 0, 0, 22060708) -> errno=44\n    160.8ms  wasix_32v1.path_open2(5, 1, 55976880, 17, 0, \"-4194626n\", \"-1n\", 0, 0, 22060708) -> errno=44\n    160.9ms  wasix_32v1.path_open2(5, 1, 55976880, 17, 0, \"-4194626n\", \"-1n\", 0, 0, 22060708) -> errno=44\n    765.1ms  wasi_snapshot_preview1.path_filestat_get(5, 1, 55976880, 15, 22061664) -> errno=44\n    770.7ms  wasi_snapshot_preview1.path_filestat_get(5, 1, 55976880, 17, 22061664) -> errno=44\n    774.7ms  wasi_snapshot_preview1.path_filestat_get(5, 1, 55976880, 17, 22061664) -> errno=44\n    786.5ms  wasi_snapshot_preview1.path_filestat_get(5, 1, 55976880, 19, 22061664) -> errno=44\n    794.5ms  wasix_32v1.path_open2(5, 1, 55976880, 13, 0, \"-4194626n\", \"-1n\", 0, 1, 22052868) -> errno=44\nlast 30 calls (closest to exit):\n    893.0ms  [impl]  napi.napi_typeof(22085656, 355, 22062268) -> 0\n    893.0ms  [impl]  napi.napi_get_value_int32(22085656, 355, 22062264) -> 0\n    893.4ms  [impl]  napi_extension_wasmer_v0.unofficial_napi_set_enqueue_foreground_task_callback(22085656, 0, 0) -> 0\n    894.3ms  [impl]  wasi_snapshot_preview1.clock_time_get(1, \"1n\", 22062296) -> 0\n    894.3ms  [impl]  napi.napi_create_double(22085656, 700, 22062316) -> 0\n    895.8ms  [impl]  wasi_snapshot_preview1.clock_time_get(1, \"1n\", 22062664) -> 0\n    895.8ms  [impl]  wasi_snapshot_preview1.clock_time_get(1, \"1n\", 22062760) -> 0\n    895.9ms  [impl]  napi.napi_delete_reference(22085656, 154) -> 0\n    895.9ms  [impl]  napi.napi_delete_reference(22085656, 43) -> 0\n    895.9ms  [impl]  napi.napi_delete_reference(22085656, 33) -> 0\n    895.9ms  [impl]  napi.napi_delete_reference(22085656, 34) -> 0\n    895.9ms  [impl]  napi.napi_delete_reference(22085656, 164) -> 0\n    896.1ms  [impl]  wasi_snapshot_preview1.clock_time_get(1, \"1n\", 22062712) -> 0\n    896.2ms  [impl]  wasi_snapshot_preview1.fd_close(5002) -> 0\n    896.2ms  [impl]  wasi_snapshot_preview1.fd_close(5003) -> 0\n    896.2ms  [impl]  wasi_snapshot_preview1.fd_close(5005) -> 0\n    896.3ms  [impl]  wasi_snapshot_preview1.fd_close(5004) -> 0\n    896.6ms  [impl]  napi_extension_wasmer_v0.unofficial_napi_release_env(1) -> 0\n    897.2ms  [impl]  wasi_snapshot_preview1.fd_filestat_get(0, 22064032) -> 0\n    897.2ms  [impl]  wasi_snapshot_preview1.fd_fdstat_get(0, 22064072) -> 0\n    897.2ms  [impl]  wasi_snapshot_preview1.fd_filestat_get(1, 22064032) -> 0\n    897.2ms  [impl]  wasi_snapshot_preview1.fd_fdstat_get(1, 22064072) -> 0\n    897.2ms  [impl]  wasi_snapshot_preview1.fd_filestat_get(2, 22064032) -> 0\n    897.2ms  [impl]  wasi_snapshot_preview1.fd_fdstat_get(2, 22064072) -> 0\n    897.2ms  [impl]  wasi_snapshot_preview1.fd_close(5000) -> 0\n    897.2ms  [impl]  wasi_snapshot_preview1.fd_close(5001) -> 0\n    897.2ms  [impl]  wasix_32v1.futex_wake(30494388, 22064191) -> 0\n    898.0ms  [impl]  wasi_snapshot_preview1.fd_filestat_get(100, 22064064) -> 0\n    898.0ms  [impl]  wasi_snapshot_preview1.fd_close(100) -> 0\n    899.3ms  [impl]  wasix_32v1.proc_exit2(1) -> THROW:ExitSignal(code=1)\n"
+    },
+    {
+      "test": "test-zlib-crc32.js",
+      "status": "pass"
+    },
+    {
+      "test": "test-zlib-create-raw.js",
+      "status": "pass"
+    },
+    {
+      "test": "test-zlib-deflate-constructors.js",
+      "status": "pass"
+    },
+    {
+      "test": "test-zlib-deflate-raw-inherits.js",
+      "status": "pass"
+    }
+  ]
+}

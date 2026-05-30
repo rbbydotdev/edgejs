@@ -1,0 +1,70 @@
+{
+  "startedAt": 1780162153128,
+  "finishedAt": 1780162164326,
+  "durationMs": 11198,
+  "totalTests": 8,
+  "pass": 6,
+  "fail": 2,
+  "timeout": 0,
+  "knownFail": 0,
+  "knownFailChanged": 0,
+  "unexpectedPass": 0,
+  "rawPassRate": 75,
+  "adjustedPassRate": 75,
+  "perBucket": [
+    {
+      "bucket": "events",
+      "pass": 6,
+      "fail": 2,
+      "timeout": 0,
+      "total": 8,
+      "passRate": 75
+    }
+  ],
+  "knownFailChangedDetail": [],
+  "unexpectedPassDetail": [],
+  "results": [
+    {
+      "test": "test-events-customevent.js",
+      "status": "pass"
+    },
+    {
+      "test": "test-events-getmaxlisteners.js",
+      "status": "pass"
+    },
+    {
+      "test": "test-events-list.js",
+      "status": "pass"
+    },
+    {
+      "test": "test-events-listener-count-with-listener.js",
+      "status": "pass"
+    },
+    {
+      "test": "test-events-on-async-iterator.js",
+      "status": "fail",
+      "reason": "FAIL mustCall mismatch (deferred)",
+      "exit": 1,
+      "stdout": "[stdout] hello from wasi in browser\n✓ end-to-end success (exit=0)\n[stdout] [CORPUS-RESULT] PASS-PROVISIONAL\n[stdout] Mismatched noop function calls. Expected exactly 1, actual 0.\n[stdout]     at Proxy.mustCall (/test/common/index.js:440:10)\n[stdout]     at Object.eval (/test/parallel/test-events-on-async-iterator.js:436:19)\n[stdout]     at Module._compile (node:internal/modules/cjs/loader:1807:14)\n[stdout]     at Module._extensions..js (node:internal/modules/cjs/loader:1939:10)\n[stdout]     at Module.load (node:internal/modules/cjs/loader:1528:32)\n[stdout]     at Module._load (node:internal/modules/cjs/loader:1330:12)\n[stdout]     at TracingChannel.traceSync (node:diagnostics_channel:331:14)\n[stdout]     at wrapModuleLoad (node:internal/modules/cjs/loader:248:24)\n[stdout]     at Module.require (node:internal/modules/cjs/loader:1551:12)\n",
+      "stderr": "[host-worker:?] MODULE LOAD #2 — skipping listener (already attached)\n[tp]worker:enter\n[tp]worker:postsem\n[tp]worker:enter\n[tp]worker:lockmu\n[tp]worker:postsem\n[tp]worker:lockmu\n[tp]worker:looped\n[tp]worker:idle\n[tp]worker:cond-pre\n[tp]worker:enter\n[tp]worker:looped\n[tp]worker:postsem\n[tp]worker:idle\n[tp]worker:lockmu\n[tp]worker:cond-pre\n[tp]worker:looped\n[tp]worker:idle\n[tp]worker:cond-pre\n[tp]worker:enter\n[tp]worker:postsem\n[override] matched node:internal/per_context/primordials\n[override] matched node:internal/timers\n[override] matched node:internal/util\n[override] matched node:internal/util/types\n[override] matched node:internal/util/inspect\n[override] matched node:buffer\n[override] matched node:internal/buffer\n[override] matched node:internal/process/per_thread\n[override] matched node:internal/process/task_queues\n[override] matched node:internal/process/execution\n[override] matched node:internal/modules/esm/utils\n[override] matched node:vm\n[override] matched node:string_decoder\n[override] matched node:https\n[override] matched node:worker_threads\n[override] matched node:internal/worker\n[override] matched node:internal/child_process\n[override] matched node:internal/crypto/random\n[override] matched node:internal/util/comparisons\n[tp]worker:lockmu\n[tp]worker:looped\n[tp]worker:idle\n[tp]worker:cond-pre\n[tp]worker:cond-post\n[tp]worker:woken\n[tp]worker:cond-post\n[tp]worker:woken\n[tp]worker:cond-post\n[tp]worker:woken\n[tp]worker:cond-post\n[tp]worker:woken\n_start ran 728 ms (exit=1)\n",
+      "fullTail": "    178.6ms  wasix_32v1.path_open2(5, 1, 55976880, 56, 0, \"-4194626n\", \"-1n\", 0, 0, 22060708) -> errno=44\n    178.7ms  wasix_32v1.path_open2(5, 1, 55976880, 17, 0, \"-4194626n\", \"-1n\", 0, 0, 22060708) -> errno=44\n    178.7ms  wasix_32v1.path_open2(5, 1, 55976880, 17, 0, \"-4194626n\", \"-1n\", 0, 0, 22060708) -> errno=44\n    787.1ms  wasi_snapshot_preview1.path_filestat_get(5, 1, 55976880, 15, 22061664) -> errno=44\n    790.6ms  wasi_snapshot_preview1.path_filestat_get(5, 1, 55976880, 17, 22061664) -> errno=44\n    795.8ms  wasi_snapshot_preview1.path_filestat_get(5, 1, 55976880, 17, 22061664) -> errno=44\n    806.5ms  wasi_snapshot_preview1.path_filestat_get(5, 1, 55976880, 19, 22061664) -> errno=44\n    813.4ms  wasix_32v1.path_open2(5, 1, 55976880, 13, 0, \"-4194626n\", \"-1n\", 0, 1, 22052868) -> errno=44\nlast 30 calls (closest to exit):\n    843.0ms  [impl]  napi.napi_get_value_int32(22085656, 361, 22062264) -> 0\n    843.2ms  [impl]  napi_extension_wasmer_v0.unofficial_napi_set_enqueue_foreground_task_callback(22085656, 0, 0) -> 0\n    844.3ms  [impl]  wasi_snapshot_preview1.clock_time_get(1, \"1n\", 22062296) -> 0\n    844.3ms  [impl]  napi.napi_create_double(22085656, 635, 22062316) -> 0\n    844.3ms  [impl]  wasi_snapshot_preview1.clock_time_get(1, \"1n\", 22062664) -> 0\n    844.4ms  [impl]  wasi_snapshot_preview1.fd_read(5004, 22061640, 1, 22061636) -> 0\n    844.4ms  [impl]  wasi_snapshot_preview1.clock_time_get(1, \"1n\", 22062760) -> 0\n    844.5ms  [impl]  napi.napi_delete_reference(22085656, 154) -> 0\n    844.5ms  [impl]  napi.napi_delete_reference(22085656, 43) -> 0\n    844.5ms  [impl]  napi.napi_delete_reference(22085656, 33) -> 0\n    844.5ms  [impl]  napi.napi_delete_reference(22085656, 34) -> 0\n    844.5ms  [impl]  napi.napi_delete_reference(22085656, 164) -> 0\n    844.6ms  [impl]  wasi_snapshot_preview1.clock_time_get(1, \"1n\", 22062712) -> 0\n    844.7ms  [impl]  wasi_snapshot_preview1.fd_close(5002) -> 0\n    844.7ms  [impl]  wasi_snapshot_preview1.fd_close(5003) -> 0\n    844.7ms  [impl]  wasi_snapshot_preview1.fd_close(5005) -> 0\n    844.7ms  [impl]  wasi_snapshot_preview1.fd_close(5004) -> 0\n    844.9ms  [impl]  napi_extension_wasmer_v0.unofficial_napi_release_env(1) -> 0\n    845.4ms  [impl]  wasi_snapshot_preview1.fd_filestat_get(0, 22064032) -> 0\n    845.4ms  [impl]  wasi_snapshot_preview1.fd_fdstat_get(0, 22064072) -> 0\n    845.4ms  [impl]  wasi_snapshot_preview1.fd_filestat_get(1, 22064032) -> 0\n    845.4ms  [impl]  wasi_snapshot_preview1.fd_fdstat_get(1, 22064072) -> 0\n    845.4ms  [impl]  wasi_snapshot_preview1.fd_filestat_get(2, 22064032) -> 0\n    845.4ms  [impl]  wasi_snapshot_preview1.fd_fdstat_get(2, 22064072) -> 0\n    845.4ms  [impl]  wasi_snapshot_preview1.fd_close(5000) -> 0\n    845.4ms  [impl]  wasi_snapshot_preview1.fd_close(5001) -> 0\n    845.5ms  [impl]  wasix_32v1.futex_wake(30494388, 22064191) -> 0\n    846.0ms  [impl]  wasi_snapshot_preview1.fd_filestat_get(100, 22064064) -> 0\n    846.0ms  [impl]  wasi_snapshot_preview1.fd_close(100) -> 0\n    847.1ms  [impl]  wasix_32v1.proc_exit2(1) -> THROW:ExitSignal(code=1)\n"
+    },
+    {
+      "test": "test-events-once.js",
+      "status": "pass"
+    },
+    {
+      "test": "test-events-static-geteventlisteners.js",
+      "status": "pass"
+    },
+    {
+      "test": "test-events-uncaught-exception-stack.js",
+      "status": "fail",
+      "reason": "FAIL sync: Error",
+      "exit": 1,
+      "stdout": "[stdout] hello from wasi in browser\n✓ end-to-end success (exit=0)\n[stdout] [CORPUS-RESULT] FAIL sync: Error\n",
+      "stderr": "[host-worker:?] MODULE LOAD #2 — skipping listener (already attached)\n[tp]worker:enter\n[tp]worker:postsem\n[tp]worker:lockmu\n[tp]worker:enter\n[tp]worker:looped\n[tp]worker:idle\n[tp]worker:postsem\n[tp]worker:lockmu\n[tp]worker:cond-pre\n[tp]worker:looped\n[tp]worker:idle\n[tp]worker:cond-pre\n[tp]worker:enter\n[tp]worker:postsem\n[tp]worker:lockmu\n[tp]worker:looped\n[tp]worker:idle\n[tp]worker:enter\n[tp]worker:cond-pre\n[tp]worker:postsem\n[override] matched node:internal/per_context/primordials\n[override] matched node:internal/timers\n[override] matched node:internal/util\n[override] matched node:internal/util/types\n[override] matched node:internal/util/inspect\n[override] matched node:buffer\n[override] matched node:internal/buffer\n[override] matched node:internal/process/per_thread\n[override] matched node:internal/process/task_queues\n[override] matched node:internal/process/execution\n[override] matched node:internal/modules/esm/utils\n[override] matched node:vm\n[override] matched node:string_decoder\n[override] matched node:https\n[override] matched node:worker_threads\n[override] matched node:internal/worker\n[override] matched node:internal/child_process\n[override] matched node:internal/crypto/random\n[stderr] Error\n[stderr]     at Object.eval (/test/parallel/test-events-uncaught-exception-stack.js:19:34)\n[stderr]     at Module._compile (node:internal/modules/cjs/loader:1807:14)\n[stderr]     at Module._extensions..js (node:internal/modules/cjs/loader:1939:10)\n[stderr]     at Module.load (node:internal/modules/cjs/loader:1528:32)\n[stderr]     at Module._load (node:internal/modules/cjs/loader:1330:12)\n[stderr]     at TracingChannel.traceSync (node:diagnostics_channel:331:14)\n[stderr]     at wrapModuleLoad (node:internal/modules/cjs/loader:248:24)\n[stderr]     at Module.require (node:internal/modules/cjs/loader:1551:12)\n[stderr]     at require (node:internal/modules/helpers:155:16)\n[stderr]     at eval (eval at unofficial_napi_contextify_run_script (http://localhost:5173/src/napi-host/unofficial.ts:883:17), <anonymous>:371:7)\n[tp]worker:lockmu\n[tp]worker:looped\n[tp]worker:idle\n[tp]worker:cond-pre\n[tp]worker:cond-post\n[tp]worker:woken\n[tp]worker:cond-post\n[tp]worker:woken\n[tp]worker:cond-post\n[tp]worker:woken\n[tp]worker:cond-post\n[tp]worker:woken\n_start ran 718 ms (exit=1)\n",
+      "fullTail": "    155.0ms  wasix_32v1.path_open2(5, 1, 55976896, 56, 0, \"-4194626n\", \"-1n\", 0, 0, 22060708) -> errno=44\n    155.1ms  wasix_32v1.path_open2(5, 1, 55976896, 17, 0, \"-4194626n\", \"-1n\", 0, 0, 22060708) -> errno=44\n    155.2ms  wasix_32v1.path_open2(5, 1, 55976896, 17, 0, \"-4194626n\", \"-1n\", 0, 0, 22060708) -> errno=44\n    755.2ms  wasi_snapshot_preview1.path_filestat_get(5, 1, 55976896, 15, 22061664) -> errno=44\n    758.8ms  wasi_snapshot_preview1.path_filestat_get(5, 1, 55976896, 17, 22061664) -> errno=44\n    763.2ms  wasi_snapshot_preview1.path_filestat_get(5, 1, 55976896, 17, 22061664) -> errno=44\n    775.0ms  wasi_snapshot_preview1.path_filestat_get(5, 1, 55976896, 19, 22061664) -> errno=44\n    782.0ms  wasix_32v1.path_open2(5, 1, 55976896, 13, 0, \"-4194626n\", \"-1n\", 0, 1, 22052868) -> errno=44\nlast 30 calls (closest to exit):\n    809.9ms  [impl]  napi.napi_typeof(22085656, 355, 22062268) -> 0\n    809.9ms  [impl]  napi.napi_get_value_int32(22085656, 355, 22062264) -> 0\n    810.3ms  [impl]  napi_extension_wasmer_v0.unofficial_napi_set_enqueue_foreground_task_callback(22085656, 0, 0) -> 0\n    811.1ms  [impl]  wasi_snapshot_preview1.clock_time_get(1, \"1n\", 22062296) -> 0\n    811.1ms  [impl]  napi.napi_create_double(22085656, 624, 22062316) -> 0\n    812.6ms  [impl]  wasi_snapshot_preview1.clock_time_get(1, \"1n\", 22062664) -> 0\n    812.6ms  [impl]  wasi_snapshot_preview1.clock_time_get(1, \"1n\", 22062760) -> 0\n    812.7ms  [impl]  napi.napi_delete_reference(22085656, 154) -> 0\n    812.7ms  [impl]  napi.napi_delete_reference(22085656, 43) -> 0\n    812.7ms  [impl]  napi.napi_delete_reference(22085656, 33) -> 0\n    812.7ms  [impl]  napi.napi_delete_reference(22085656, 34) -> 0\n    812.7ms  [impl]  napi.napi_delete_reference(22085656, 164) -> 0\n    812.8ms  [impl]  wasi_snapshot_preview1.clock_time_get(1, \"1n\", 22062712) -> 0\n    812.9ms  [impl]  wasi_snapshot_preview1.fd_close(5002) -> 0\n    812.9ms  [impl]  wasi_snapshot_preview1.fd_close(5003) -> 0\n    812.9ms  [impl]  wasi_snapshot_preview1.fd_close(5005) -> 0\n    813.0ms  [impl]  wasi_snapshot_preview1.fd_close(5004) -> 0\n    813.4ms  [impl]  napi_extension_wasmer_v0.unofficial_napi_release_env(1) -> 0\n    813.9ms  [impl]  wasi_snapshot_preview1.fd_filestat_get(0, 22064032) -> 0\n    813.9ms  [impl]  wasi_snapshot_preview1.fd_fdstat_get(0, 22064072) -> 0\n    813.9ms  [impl]  wasi_snapshot_preview1.fd_filestat_get(1, 22064032) -> 0\n    813.9ms  [impl]  wasi_snapshot_preview1.fd_fdstat_get(1, 22064072) -> 0\n    813.9ms  [impl]  wasi_snapshot_preview1.fd_filestat_get(2, 22064032) -> 0\n    813.9ms  [impl]  wasi_snapshot_preview1.fd_fdstat_get(2, 22064072) -> 0\n    813.9ms  [impl]  wasi_snapshot_preview1.fd_close(5000) -> 0\n    813.9ms  [impl]  wasi_snapshot_preview1.fd_close(5001) -> 0\n    814.0ms  [impl]  wasix_32v1.futex_wake(30494388, 22064191) -> 0\n    814.7ms  [impl]  wasi_snapshot_preview1.fd_filestat_get(100, 22064064) -> 0\n    814.7ms  [impl]  wasi_snapshot_preview1.fd_close(100) -> 0\n    816.0ms  [impl]  wasix_32v1.proc_exit2(1) -> THROW:ExitSignal(code=1)\n"
+    }
+  ]
+}

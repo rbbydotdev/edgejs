@@ -1,0 +1,89 @@
+{
+  "startedAt": 1780162190465,
+  "finishedAt": 1780162208760,
+  "durationMs": 18295,
+  "totalTests": 14,
+  "pass": 13,
+  "fail": 1,
+  "timeout": 0,
+  "knownFail": 0,
+  "knownFailChanged": 0,
+  "unexpectedPass": 0,
+  "rawPassRate": 92.86,
+  "adjustedPassRate": 92.86,
+  "perBucket": [
+    {
+      "bucket": "url",
+      "pass": 13,
+      "fail": 1,
+      "timeout": 0,
+      "total": 14,
+      "passRate": 92.86
+    }
+  ],
+  "knownFailChangedDetail": [],
+  "unexpectedPassDetail": [],
+  "results": [
+    {
+      "test": "test-url-domain-ascii-unicode.js",
+      "status": "pass"
+    },
+    {
+      "test": "test-url-fileurltopath.js",
+      "status": "pass"
+    },
+    {
+      "test": "test-url-format-invalid-input.js",
+      "status": "pass"
+    },
+    {
+      "test": "test-url-format-whatwg.js",
+      "status": "pass"
+    },
+    {
+      "test": "test-url-format.js",
+      "status": "pass"
+    },
+    {
+      "test": "test-url-invalid-file-url-path-input.js",
+      "status": "pass"
+    },
+    {
+      "test": "test-url-is-url-internal.js",
+      "status": "pass"
+    },
+    {
+      "test": "test-url-parse-format.js",
+      "status": "pass"
+    },
+    {
+      "test": "test-url-parse-invalid-input.js",
+      "status": "fail",
+      "reason": "FAIL unhandled: [object Object]",
+      "exit": 1,
+      "stdout": "[stdout] hello from wasi in browser\n✓ end-to-end success (exit=0)\n[stdout] [CORPUS-RESULT] PASS-PROVISIONAL\n[stdout] [CORPUS-RESULT] FAIL unhandled: [object Object]\n[stdout] [CORPUS-RESULT] FAIL unhandled: [object Object]\n[stdout] Mismatched <anonymous> function calls. Expected exactly 1, actual 0.\n[stdout]     at Proxy.mustCall (/test/common/index.js:440:10)\n[stdout]     at eval (/test/parallel/test-url-parse-invalid-input.js:88:20)\n[stdout]     at Array.forEach (<anonymous>)\n[stdout]     at Object.eval (/test/parallel/test-url-parse-invalid-input.js:86:11)\n[stdout]     at Module._compile (node:internal/modules/cjs/loader:1807:14)\n[stdout]     at Module._extensions..js (node:internal/modules/cjs/loader:1939:10)\n[stdout]     at Module.load (node:internal/modules/cjs/loader:1528:32)\n[stdout]     at Module._load (node:internal/modules/cjs/loader:1330:12)\n[stdout]     at TracingChannel.traceSync (node:diagnostics_channel:331:14)\n[stdout] Mismatched <anonymous> function calls. Expected exactly 1, actual 0.\n[stdout]     at Proxy.mustCall (/test/common/index.js:440:10)\n[stdout]     at eval (/test/parallel/test-url-parse-invalid-input.js:88:20)\n[stdout]     at Array.forEach (<anonymous>)\n[stdout]     at Object.eval (/test/parallel/test-url-parse-invalid-input.js:86:11)\n[stdout]     at Module._compile (node:internal/modules/cjs/loader:1807:14)\n[stdout]     at Module._extensions..js (node:internal/modules/cjs/loader:1939:10)\n[stdout]     at Module.load (node:internal/modules/cjs/loader:1528:32)\n[stdout]     at Module._load (node:internal/modules/cjs/loader:1330:12)\n[stdout]     at TracingChannel.traceSync (node:diagnostics_channel:331:14)\n",
+      "stderr": "[host-worker:?] MODULE LOAD #2 — skipping listener (already attached)\n[tp]worker:enter\n[tp]worker:postsem\n[tp]worker:lockmu\n[tp]worker:enter\n[tp]worker:looped\n[tp]worker:postsem\n[tp]worker:lockmu\n[tp]worker:idle\n[tp]worker:cond-pre\n[tp]worker:enter\n[tp]worker:looped\n[tp]worker:idle\n[tp]worker:postsem\n[tp]worker:cond-pre\n[tp]worker:lockmu\n[tp]worker:looped\n[tp]worker:idle\n[tp]worker:cond-pre\n[tp]worker:enter\n[tp]worker:postsem\n[override] matched node:internal/per_context/primordials\n[override] matched node:internal/timers\n[override] matched node:internal/util\n[override] matched node:internal/util/types\n[override] matched node:internal/util/inspect\n[override] matched node:buffer\n[override] matched node:internal/buffer\n[override] matched node:internal/process/per_thread\n[override] matched node:internal/process/task_queues\n[override] matched node:internal/process/execution\n[override] matched node:internal/modules/esm/utils\n[override] matched node:vm\n[override] matched node:string_decoder\n[override] matched node:https\n[override] matched node:worker_threads\n[override] matched node:internal/worker\n[override] matched node:internal/child_process\n[override] matched node:internal/crypto/random\n[override] matched node:internal/util/comparisons\n[stderr] (node:1) [DEP0169] DeprecationWarning: `url.parse()` behavior is not standardized and prone to errors that have security implications. Use the WHATWG URL API instead. CVEs are not issued for `url.parse()` vulnerabilities.\n[stderr] (Use `edgejs --trace-deprecation ...` to show where the warning was created)\n[stderr] (node:1) [DEP0170] DeprecationWarning: The URL https://evil.com:.example.com is invalid. Future versions of Node.js will throw an error.\n[tp]worker:lockmu\n[tp]worker:looped\n[tp]worker:idle\n[tp]worker:cond-pre\n[tp]worker:cond-post\n[tp]worker:woken\n[tp]worker:cond-post\n[tp]worker:woken\n[tp]worker:cond-post\n[tp]worker:woken\n[tp]worker:cond-post\n[tp]worker:woken\n_start ran 1381 ms (exit=1)\n",
+      "fullTail": "    150.4ms  wasix_32v1.path_open2(5, 1, 55976880, 56, 0, \"-4194626n\", \"-1n\", 0, 0, 22060708) -> errno=44\n    150.5ms  wasix_32v1.path_open2(5, 1, 55976880, 17, 0, \"-4194626n\", \"-1n\", 0, 0, 22060708) -> errno=44\n    150.6ms  wasix_32v1.path_open2(5, 1, 55976880, 17, 0, \"-4194626n\", \"-1n\", 0, 0, 22060708) -> errno=44\n    753.4ms  wasi_snapshot_preview1.path_filestat_get(5, 1, 55976880, 15, 22061664) -> errno=44\n    757.9ms  wasi_snapshot_preview1.path_filestat_get(5, 1, 55976880, 17, 22061664) -> errno=44\n    761.3ms  wasi_snapshot_preview1.path_filestat_get(5, 1, 55976880, 17, 22061664) -> errno=44\n    773.1ms  wasi_snapshot_preview1.path_filestat_get(5, 1, 55976880, 19, 22061664) -> errno=44\n    783.3ms  wasix_32v1.path_open2(5, 1, 55976880, 13, 0, \"-4194626n\", \"-1n\", 0, 1, 22052868) -> errno=44\nlast 30 calls (closest to exit):\n   1468.2ms  [impl]  napi.napi_get_value_int32(22085656, 361, 22062264) -> 0\n   1468.4ms  [impl]  napi_extension_wasmer_v0.unofficial_napi_set_enqueue_foreground_task_callback(22085656, 0, 0) -> 0\n   1469.1ms  [impl]  wasi_snapshot_preview1.clock_time_get(1, \"1n\", 22062296) -> 0\n   1469.1ms  [impl]  napi.napi_create_double(22085656, 1288, 22062316) -> 0\n   1469.1ms  [impl]  wasi_snapshot_preview1.clock_time_get(1, \"1n\", 22062664) -> 0\n   1469.2ms  [impl]  wasi_snapshot_preview1.fd_read(5004, 22061640, 1, 22061636) -> 0\n   1469.2ms  [impl]  wasi_snapshot_preview1.clock_time_get(1, \"1n\", 22062760) -> 0\n   1469.2ms  [impl]  napi.napi_delete_reference(22085656, 154) -> 0\n   1469.2ms  [impl]  napi.napi_delete_reference(22085656, 43) -> 0\n   1469.2ms  [impl]  napi.napi_delete_reference(22085656, 33) -> 0\n   1469.2ms  [impl]  napi.napi_delete_reference(22085656, 34) -> 0\n   1469.2ms  [impl]  napi.napi_delete_reference(22085656, 164) -> 0\n   1469.4ms  [impl]  wasi_snapshot_preview1.clock_time_get(1, \"1n\", 22062712) -> 0\n   1469.5ms  [impl]  wasi_snapshot_preview1.fd_close(5002) -> 0\n   1469.5ms  [impl]  wasi_snapshot_preview1.fd_close(5003) -> 0\n   1469.5ms  [impl]  wasi_snapshot_preview1.fd_close(5005) -> 0\n   1469.5ms  [impl]  wasi_snapshot_preview1.fd_close(5004) -> 0\n   1469.7ms  [impl]  napi_extension_wasmer_v0.unofficial_napi_release_env(1) -> 0\n   1470.2ms  [impl]  wasi_snapshot_preview1.fd_filestat_get(0, 22064032) -> 0\n   1470.2ms  [impl]  wasi_snapshot_preview1.fd_fdstat_get(0, 22064072) -> 0\n   1470.2ms  [impl]  wasi_snapshot_preview1.fd_filestat_get(1, 22064032) -> 0\n   1470.2ms  [impl]  wasi_snapshot_preview1.fd_fdstat_get(1, 22064072) -> 0\n   1470.2ms  [impl]  wasi_snapshot_preview1.fd_filestat_get(2, 22064032) -> 0\n   1470.2ms  [impl]  wasi_snapshot_preview1.fd_fdstat_get(2, 22064072) -> 0\n   1470.2ms  [impl]  wasi_snapshot_preview1.fd_close(5000) -> 0\n   1470.2ms  [impl]  wasi_snapshot_preview1.fd_close(5001) -> 0\n   1470.3ms  [impl]  wasix_32v1.futex_wake(30494388, 22064191) -> 0\n   1471.1ms  [impl]  wasi_snapshot_preview1.fd_filestat_get(100, 22064064) -> 0\n   1471.1ms  [impl]  wasi_snapshot_preview1.fd_close(100) -> 0\n   1472.5ms  [impl]  wasix_32v1.proc_exit2(1) -> THROW:ExitSignal(code=1)\n"
+    },
+    {
+      "test": "test-url-parse-query.js",
+      "status": "pass"
+    },
+    {
+      "test": "test-url-pathtofileurl.js",
+      "status": "pass"
+    },
+    {
+      "test": "test-url-relative.js",
+      "status": "pass"
+    },
+    {
+      "test": "test-url-revokeobjecturl.js",
+      "status": "pass"
+    },
+    {
+      "test": "test-url-urltooptions.js",
+      "status": "pass"
+    }
+  ]
+}

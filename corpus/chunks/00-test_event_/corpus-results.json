@@ -1,0 +1,145 @@
+{
+  "startedAt": 1780162119731,
+  "finishedAt": 1780162152965,
+  "durationMs": 33234,
+  "totalTests": 28,
+  "pass": 27,
+  "fail": 1,
+  "timeout": 0,
+  "knownFail": 0,
+  "knownFailChanged": 0,
+  "unexpectedPass": 0,
+  "rawPassRate": 96.43,
+  "adjustedPassRate": 96.43,
+  "perBucket": [
+    {
+      "bucket": "events",
+      "pass": 27,
+      "fail": 1,
+      "timeout": 0,
+      "total": 28,
+      "passRate": 96.43
+    }
+  ],
+  "knownFailChangedDetail": [],
+  "unexpectedPassDetail": [],
+  "results": [
+    {
+      "test": "test-event-capture-rejections.js",
+      "status": "fail",
+      "reason": "FAIL mustCall mismatch (deferred)",
+      "exit": 1,
+      "stdout": "[stdout] hello from wasi in browser\n✓ end-to-end success (exit=0)\n[stdout] [CORPUS-RESULT] PASS-PROVISIONAL\n[stdout] Mismatched <anonymous> function calls. Expected exactly 2, actual 0.\n[stdout]     at Proxy.mustCall (/test/common/index.js:440:10)\n[stdout]     at captureRejectionsTwoHandlers (/test/parallel/test-event-capture-rejections.js:62:25)\n[stdout]     at process.processTicksAndRejections (node:internal/process/task_queues:125:11)\n[stdout]     at napi_call_function (http://localhost:5173/@fs/Users/robertpolana/etc/projects/edgejs/vendor/emnapi/packages/core/dist/emnapi-core.js:4662:32)\n[stdout]     at http://localhost:5173/src/imports-generated.ts:17:15\n[stdout]     at wasm://wasm/0654e5c2:wasm-function[16220]:0x2f6baf\n[stdout]     at wasm://wasm/0654e5c2:wasm-function[5226]:0xfeaaf\n[stdout]     at wasm://wasm/0654e5c2:wasm-function[5220]:0xfe3dd\n[stdout]     at wasm://wasm/0654e5c2:wasm-function[5217]:0xfdddb\n",
+      "stderr": "[host-worker:?] MODULE LOAD #2 — skipping listener (already attached)\n[override] matched node:internal/per_context/primordials\n[override] matched node:internal/timers\n[override] matched node:internal/util\n[override] matched node:internal/util/types\n[override] matched node:internal/util/inspect\n[override] matched node:buffer\n[override] matched node:internal/buffer\n[override] matched node:internal/process/per_thread\n[override] matched node:internal/process/task_queues\n[override] matched node:internal/process/execution\n[override] matched node:internal/modules/esm/utils\n[override] matched node:vm\n[override] matched node:string_decoder\n[override] matched node:https\n[override] matched node:worker_threads\n[override] matched node:internal/worker\n[override] matched node:internal/child_process\n[override] matched node:internal/crypto/random\n[override] matched node:internal/util/comparisons\n[tp]worker:enter\n[tp]worker:enter\n[tp]worker:postsem\n[tp]worker:postsem\n[tp]worker:lockmu\n[tp]worker:lockmu\n[tp]worker:looped\n[tp]worker:enter\n[tp]worker:idle\n[tp]worker:cond-pre\n[tp]worker:postsem\n[tp]worker:lockmu\n[tp]worker:looped\n[tp]worker:idle\n[tp]worker:cond-pre\n[tp]worker:looped\n[tp]worker:idle\n[tp]worker:cond-pre\n[tp]worker:enter\n[tp]worker:postsem\n[tp]worker:lockmu\n[tp]worker:looped\n[tp]worker:idle\n[tp]worker:cond-pre\n[tp]worker:cond-post\n[tp]worker:woken\n[tp]worker:cond-post\n[tp]worker:woken\n[tp]worker:cond-post\n[tp]worker:woken\n[tp]worker:cond-post\n[tp]worker:woken\n_start ran 776 ms (exit=1)\n",
+      "fullTail": "    402.0ms  wasix_32v1.path_open2(5, 1, 55976880, 56, 0, \"-4194626n\", \"-1n\", 0, 0, 22060708) -> errno=44\n    402.1ms  wasix_32v1.path_open2(5, 1, 55976880, 17, 0, \"-4194626n\", \"-1n\", 0, 0, 22060708) -> errno=44\n    402.2ms  wasix_32v1.path_open2(5, 1, 55976880, 17, 0, \"-4194626n\", \"-1n\", 0, 0, 22060708) -> errno=44\n   1019.1ms  wasi_snapshot_preview1.path_filestat_get(5, 1, 55976880, 15, 22061664) -> errno=44\n   1023.5ms  wasi_snapshot_preview1.path_filestat_get(5, 1, 55976880, 17, 22061664) -> errno=44\n   1028.0ms  wasi_snapshot_preview1.path_filestat_get(5, 1, 55976880, 17, 22061664) -> errno=44\n   1039.6ms  wasi_snapshot_preview1.path_filestat_get(5, 1, 55976880, 19, 22061664) -> errno=44\n   1048.1ms  wasix_32v1.path_open2(5, 1, 55976880, 13, 0, \"-4194626n\", \"-1n\", 0, 1, 22052868) -> errno=44\nlast 30 calls (closest to exit):\n   1080.5ms  [impl]  napi.napi_get_value_int32(22085656, 361, 22062264) -> 0\n   1080.8ms  [impl]  napi_extension_wasmer_v0.unofficial_napi_set_enqueue_foreground_task_callback(22085656, 0, 0) -> 0\n   1081.7ms  [impl]  wasi_snapshot_preview1.clock_time_get(1, \"1n\", 22062296) -> 0\n   1081.7ms  [impl]  napi.napi_create_double(22085656, 645, 22062316) -> 0\n   1081.7ms  [impl]  wasi_snapshot_preview1.clock_time_get(1, \"1n\", 22062664) -> 0\n   1081.8ms  [impl]  wasi_snapshot_preview1.fd_read(5004, 22061640, 1, 22061636) -> 0\n   1081.8ms  [impl]  wasi_snapshot_preview1.clock_time_get(1, \"1n\", 22062760) -> 0\n   1081.9ms  [impl]  napi.napi_delete_reference(22085656, 154) -> 0\n   1081.9ms  [impl]  napi.napi_delete_reference(22085656, 43) -> 0\n   1081.9ms  [impl]  napi.napi_delete_reference(22085656, 33) -> 0\n   1081.9ms  [impl]  napi.napi_delete_reference(22085656, 34) -> 0\n   1081.9ms  [impl]  napi.napi_delete_reference(22085656, 164) -> 0\n   1082.0ms  [impl]  wasi_snapshot_preview1.clock_time_get(1, \"1n\", 22062712) -> 0\n   1082.1ms  [impl]  wasi_snapshot_preview1.fd_close(5002) -> 0\n   1082.1ms  [impl]  wasi_snapshot_preview1.fd_close(5003) -> 0\n   1082.1ms  [impl]  wasi_snapshot_preview1.fd_close(5005) -> 0\n   1082.1ms  [impl]  wasi_snapshot_preview1.fd_close(5004) -> 0\n   1082.4ms  [impl]  napi_extension_wasmer_v0.unofficial_napi_release_env(1) -> 0\n   1082.9ms  [impl]  wasi_snapshot_preview1.fd_filestat_get(0, 22064032) -> 0\n   1082.9ms  [impl]  wasi_snapshot_preview1.fd_fdstat_get(0, 22064072) -> 0\n   1082.9ms  [impl]  wasi_snapshot_preview1.fd_filestat_get(1, 22064032) -> 0\n   1082.9ms  [impl]  wasi_snapshot_preview1.fd_fdstat_get(1, 22064072) -> 0\n   1082.9ms  [impl]  wasi_snapshot_preview1.fd_filestat_get(2, 22064032) -> 0\n   1082.9ms  [impl]  wasi_snapshot_preview1.fd_fdstat_get(2, 22064072) -> 0\n   1082.9ms  [impl]  wasi_snapshot_preview1.fd_close(5000) -> 0\n   1082.9ms  [impl]  wasi_snapshot_preview1.fd_close(5001) -> 0\n   1083.0ms  [impl]  wasix_32v1.futex_wake(30494388, 22064191) -> 0\n   1083.6ms  [impl]  wasi_snapshot_preview1.fd_filestat_get(100, 22064064) -> 0\n   1083.6ms  [impl]  wasi_snapshot_preview1.fd_close(100) -> 0\n   1084.7ms  [impl]  wasix_32v1.proc_exit2(1) -> THROW:ExitSignal(code=1)\n"
+    },
+    {
+      "test": "test-event-emitter-add-listeners.js",
+      "status": "pass"
+    },
+    {
+      "test": "test-event-emitter-check-listener-leaks.js",
+      "status": "pass"
+    },
+    {
+      "test": "test-event-emitter-emit-context.js",
+      "status": "pass"
+    },
+    {
+      "test": "test-event-emitter-error-monitor.js",
+      "status": "pass"
+    },
+    {
+      "test": "test-event-emitter-errors.js",
+      "status": "pass"
+    },
+    {
+      "test": "test-event-emitter-get-max-listeners.js",
+      "status": "pass"
+    },
+    {
+      "test": "test-event-emitter-invalid-listener.js",
+      "status": "pass"
+    },
+    {
+      "test": "test-event-emitter-listener-count.js",
+      "status": "pass"
+    },
+    {
+      "test": "test-event-emitter-listeners-side-effects.js",
+      "status": "pass"
+    },
+    {
+      "test": "test-event-emitter-listeners.js",
+      "status": "pass"
+    },
+    {
+      "test": "test-event-emitter-max-listeners-warning-for-null.js",
+      "status": "pass"
+    },
+    {
+      "test": "test-event-emitter-max-listeners-warning-for-symbol.js",
+      "status": "pass"
+    },
+    {
+      "test": "test-event-emitter-max-listeners-warning.js",
+      "status": "pass"
+    },
+    {
+      "test": "test-event-emitter-max-listeners.js",
+      "status": "pass"
+    },
+    {
+      "test": "test-event-emitter-method-names.js",
+      "status": "pass"
+    },
+    {
+      "test": "test-event-emitter-modify-in-emit.js",
+      "status": "pass"
+    },
+    {
+      "test": "test-event-emitter-no-error-provided-to-error-event.js",
+      "status": "pass"
+    },
+    {
+      "test": "test-event-emitter-num-args.js",
+      "status": "pass"
+    },
+    {
+      "test": "test-event-emitter-once.js",
+      "status": "pass"
+    },
+    {
+      "test": "test-event-emitter-prepend.js",
+      "status": "pass"
+    },
+    {
+      "test": "test-event-emitter-remove-all-listeners.js",
+      "status": "pass"
+    },
+    {
+      "test": "test-event-emitter-remove-listeners.js",
+      "status": "pass"
+    },
+    {
+      "test": "test-event-emitter-set-max-listeners-side-effects.js",
+      "status": "pass"
+    },
+    {
+      "test": "test-event-emitter-special-event-names.js",
+      "status": "pass"
+    },
+    {
+      "test": "test-event-emitter-subclass.js",
+      "status": "pass"
+    },
+    {
+      "test": "test-event-emitter-symbols.js",
+      "status": "pass"
+    },
+    {
+      "test": "test-event-target.js",
+      "status": "pass"
+    }
+  ]
+}

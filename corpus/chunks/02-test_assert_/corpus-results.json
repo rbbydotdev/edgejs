@@ -1,0 +1,105 @@
+{
+  "startedAt": 1780162164486,
+  "finishedAt": 1780162190288,
+  "durationMs": 25802,
+  "totalTests": 18,
+  "pass": 17,
+  "fail": 0,
+  "timeout": 0,
+  "knownFail": 1,
+  "knownFailChanged": 0,
+  "unexpectedPass": 0,
+  "rawPassRate": 94.44,
+  "adjustedPassRate": 100,
+  "perBucket": [
+    {
+      "bucket": "assert",
+      "pass": 17,
+      "fail": 1,
+      "timeout": 0,
+      "total": 18,
+      "passRate": 94.44
+    }
+  ],
+  "knownFailChangedDetail": [],
+  "unexpectedPassDetail": [],
+  "results": [
+    {
+      "test": "test-assert-async.js",
+      "status": "pass"
+    },
+    {
+      "test": "test-assert-calltracker-calls.js",
+      "status": "fail",
+      "reason": "no-marker",
+      "exit": null,
+      "stdout": "[stdout] hello from wasi in browser\n✓ end-to-end success (exit=0)\n",
+      "stderr": "[host-worker:?] MODULE LOAD #2 — skipping listener (already attached)\n[tp]worker:enter\n[tp]worker:postsem\n[tp]worker:lockmu\n[tp]worker:enter\n[tp]worker:postsem\n[tp]worker:lockmu\n[tp]worker:looped\n[tp]worker:idle\n[tp]worker:cond-pre\n[tp]worker:enter\n[tp]worker:looped\n[tp]worker:postsem\n[tp]worker:idle\n[tp]worker:lockmu\n[tp]worker:cond-pre\n[tp]worker:looped\n[tp]worker:idle\n[tp]worker:cond-pre\n[tp]worker:enter\n[tp]worker:postsem\n[override] matched node:internal/per_context/primordials\n[override] matched node:internal/timers\n[override] matched node:internal/util\n[override] matched node:internal/util/types\n[override] matched node:internal/util/inspect\n[override] matched node:buffer\n[override] matched node:internal/buffer\n[override] matched node:internal/process/per_thread\n[override] matched node:internal/process/task_queues\n[override] matched node:internal/process/execution\n[override] matched node:internal/modules/esm/utils\n[override] matched node:vm\n[override] matched node:string_decoder\n[override] matched node:https\n[override] matched node:worker_threads\n[override] matched node:internal/worker\n[override] matched node:internal/child_process\n[override] matched node:internal/crypto/random\n[override] matched node:internal/util/comparisons\ncontextify_run_script failed — TypeError: Cannot read properties of undefined (reading 'scriptName') (source size: 15760 chars)\n_start ran 716 ms (THREW)\nFATAL: TypeError: Cannot read properties of undefined (reading 'scriptName')\n    at Array Iterator.mustNotCall (/test/common/index.js:541:71)\n    at Trace.byNamespace (http://localhost:5173/src/trace.ts:63:16)\n    at runEdgeWithEmnapi (http://localhost:5173/src/worker.ts?worker_file&type=module:1390:31)\n    at async boot (http://localhost:5173/src/worker.ts?worker_file&type=module:1445:5)\n[tp]worker:lockmu\n[tp]worker:looped\n[tp]worker:idle\n[tp]worker:cond-pre\n",
+      "fullTail": "[bundled-fs] HEAD /test/common.json → 404\n[bundled-fs] HEAD /test/common.json/index.js → 404\n[bundled-fs] HEAD /test/common.json/package.json → 404\n[bundled-fs] HEAD /test/common.node → 404\n[bundled-fs] HEAD /test/common.node/index.js → 404\n[bundled-fs] HEAD /test/common.node/package.json → 404\n[bridge] [bundled-fs] GET /test/common/package.json → 200 (25B)\n[bridge] [fs-snapshot] loaded /test/common/package.json (25B) slot=9\n[wasi] path_open2 /test/common/package.json → fd 6000 (snapshot)\n[bridge] [fs-snapshot] loaded /test/common/package.json (25B) slot=10\n[wasi] path_open2 /test/common/package.json → fd 6000 (snapshot)\n[bridge] [bundled-fs] GET /test/common/index.js → 200 (32279B)\n[bridge] [fs-snapshot] loaded /test/common/index.js (32279B) slot=11\n[wasi] path_open2 /test/common/index.js → fd 6000 (snapshot)\n[override] matched node:worker_threads\n[override] matched node:internal/worker\n[bundled-fs] HEAD /test/common/tmpdir → 404\n[bundled-fs] HEAD /test/common/tmpdir/index.js → 404\n[bundled-fs] HEAD /test/common/tmpdir/package.json → 404\n[bundled-fs] HEAD /test/common/tmpdir.js → 200 (2953B)\n[bridge] [fs-snapshot] loaded /test/common/package.json (25B) slot=12\n[wasi] path_open2 /test/common/package.json → fd 6000 (snapshot)\n[bridge] [bundled-fs] GET /test/common/tmpdir.js → 200 (2953B)\n[bridge] [fs-snapshot] loaded /test/common/tmpdir.js (2953B) slot=13\n[wasi] path_open2 /test/common/tmpdir.js → fd 6000 (snapshot)\n[override] matched node:internal/child_process\n[override] matched node:internal/crypto/random\n[override] matched node:internal/util/comparisons\ncontextify_run_script failed — TypeError: Cannot read properties of undefined (reading 'scriptName') (source size: 15760 chars)\n_start ran 716 ms (THREW)\nFATAL: TypeError: Cannot read properties of undefined (reading 'scriptName')\n    at Array Iterator.mustNotCall (/test/common/index.js:541:71)\n    at Trace.byNamespace (http://localhost:5173/src/trace.ts:63:16)\n    at runEdgeWithEmnapi (http://localhost:5173/src/worker.ts?worker_file&type=module:1390:31)\n    at async boot (http://localhost:5173/src/worker.ts?worker_file&type=module:1445:5)\n[tp]worker:lockmu\n[tp]worker:looped\n[tp]worker:idle\n[tp]worker:cond-pre\n"
+    },
+    {
+      "test": "test-assert-calltracker-getCalls.js",
+      "status": "pass"
+    },
+    {
+      "test": "test-assert-calltracker-report.js",
+      "status": "pass"
+    },
+    {
+      "test": "test-assert-calltracker-verify.js",
+      "status": "pass"
+    },
+    {
+      "test": "test-assert-checktag.js",
+      "status": "pass"
+    },
+    {
+      "test": "test-assert-class-destructuring.js",
+      "status": "pass"
+    },
+    {
+      "test": "test-assert-class.js",
+      "status": "pass"
+    },
+    {
+      "test": "test-assert-deep-with-error.js",
+      "status": "pass"
+    },
+    {
+      "test": "test-assert-deep.js",
+      "status": "pass"
+    },
+    {
+      "test": "test-assert-esm-cjs-message-verify.js",
+      "status": "pass"
+    },
+    {
+      "test": "test-assert-fail-deprecation.js",
+      "status": "pass"
+    },
+    {
+      "test": "test-assert-fail.js",
+      "status": "pass"
+    },
+    {
+      "test": "test-assert-first-line.js",
+      "status": "pass"
+    },
+    {
+      "test": "test-assert-if-error.js",
+      "status": "pass"
+    },
+    {
+      "test": "test-assert-myers-diff.js",
+      "status": "pass"
+    },
+    {
+      "test": "test-assert-partial-deep-equal.js",
+      "status": "pass"
+    },
+    {
+      "test": "test-assert-typedarray-deepequal.js",
+      "status": "pass"
+    }
+  ]
+}

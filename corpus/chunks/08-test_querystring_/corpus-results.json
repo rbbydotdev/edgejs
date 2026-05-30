@@ -1,0 +1,40 @@
+{
+  "startedAt": 1780162294227,
+  "finishedAt": 1780162298788,
+  "durationMs": 4561,
+  "totalTests": 3,
+  "pass": 3,
+  "fail": 0,
+  "timeout": 0,
+  "knownFail": 0,
+  "knownFailChanged": 0,
+  "unexpectedPass": 0,
+  "rawPassRate": 100,
+  "adjustedPassRate": 100,
+  "perBucket": [
+    {
+      "bucket": "querystring",
+      "pass": 3,
+      "fail": 0,
+      "timeout": 0,
+      "total": 3,
+      "passRate": 100
+    }
+  ],
+  "knownFailChangedDetail": [],
+  "unexpectedPassDetail": [],
+  "results": [
+    {
+      "test": "test-querystring-escape.js",
+      "status": "pass"
+    },
+    {
+      "test": "test-querystring-maxKeys-non-finite.js",
+      "status": "pass"
+    },
+    {
+      "test": "test-querystring-multichar-separator.js",
+      "status": "pass"
+    }
+  ]
+}

@@ -1,0 +1,92 @@
+{
+  "startedAt": 1780162208914,
+  "finishedAt": 1780162228555,
+  "durationMs": 19641,
+  "totalTests": 16,
+  "pass": 16,
+  "fail": 0,
+  "timeout": 0,
+  "knownFail": 0,
+  "knownFailChanged": 0,
+  "unexpectedPass": 0,
+  "rawPassRate": 100,
+  "adjustedPassRate": 100,
+  "perBucket": [
+    {
+      "bucket": "path",
+      "pass": 16,
+      "fail": 0,
+      "timeout": 0,
+      "total": 16,
+      "passRate": 100
+    }
+  ],
+  "knownFailChangedDetail": [],
+  "unexpectedPassDetail": [],
+  "results": [
+    {
+      "test": "test-path-basename.js",
+      "status": "pass"
+    },
+    {
+      "test": "test-path-dirname.js",
+      "status": "pass"
+    },
+    {
+      "test": "test-path-extname.js",
+      "status": "pass"
+    },
+    {
+      "test": "test-path-glob.js",
+      "status": "pass"
+    },
+    {
+      "test": "test-path-isabsolute.js",
+      "status": "pass"
+    },
+    {
+      "test": "test-path-join.js",
+      "status": "pass"
+    },
+    {
+      "test": "test-path-makelong.js",
+      "status": "pass"
+    },
+    {
+      "test": "test-path-normalize.js",
+      "status": "pass"
+    },
+    {
+      "test": "test-path-parse-format.js",
+      "status": "pass"
+    },
+    {
+      "test": "test-path-posix-exists.js",
+      "status": "pass"
+    },
+    {
+      "test": "test-path-posix-relative-on-windows.js",
+      "status": "pass"
+    },
+    {
+      "test": "test-path-relative.js",
+      "status": "pass"
+    },
+    {
+      "test": "test-path-resolve.js",
+      "status": "pass"
+    },
+    {
+      "test": "test-path-win32-exists.js",
+      "status": "pass"
+    },
+    {
+      "test": "test-path-win32-normalize-device-names.js",
+      "status": "pass"
+    },
+    {
+      "test": "test-path-zero-length-strings.js",
+      "status": "pass"
+    }
+  ]
+}
