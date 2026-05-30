@@ -68,15 +68,21 @@ function buildDriver(testName) {
       if (exitArmed) return;
       exitArmed = true;
       process.exitCode = code | 0;
-      // 750ms covers chained async work (deep nextTick + promise chains,
-      // captureRejections routing, multi-tick stream events, ...) before
-      // common.mustCall's at-exit verifier runs.  Empirical floor seems
-      // to be ~50ms per microtask drain cycle in our env (poll_oneoff
-      // park interval) so 750ms gives ~15 drain cycles — enough for
-      // tests that chain through 5+ functions via nextTick.  Without
-      // poll-wake-on-schedule this would wait up to ~30s for the
-      // Atomics.wait default.
-      setTimeout(function watchdog() { process.exit(process.exitCode | 0); }, 750);
+      // ATTEMPTED NATURAL DRAIN BUT FAILED IN CORPUS CONTEXT:
+      // browser-target/scripts/exit-experiments.mjs proves that an
+      // UNREF'd setTimeout backstop + natural drain works in
+      // isolation, BUT the same shape inside the corpus runner causes
+      // EVERY test to time out (wasm starts, modules load, then no
+      // sentinel — execution stops after vm preset loads).  Root
+      // cause unknown — possibly an interaction with a preset's
+      // module load order under defaultBrowserPolicies that doesn't
+      // happen in the experiments runner.  See NOTES.md entry
+      // corpus-natural-drain-blocked.
+      //
+      // 750ms watchdog is brittle but functional.  Real fix: track
+      // down why drain works in experiments but not corpus.
+      var watchdog = setTimeout(function() { process.exit(process.exitCode | 0); }, 750);
+      void watchdog;
     }
     process.on('uncaughtException', (e) => {
       if (isExitSignal(e)) return;
@@ -138,7 +144,13 @@ async function runOne(browser, testName) {
       await new Promise(r => setTimeout(r, 200));
     }
     if (!sentinel) {
-      return { status: "timeout", logs: consoleLogs.slice(-5).join("\n") };
+      // Diagnostic: capture more of what happened
+      const tail = await page.evaluate(() => {
+        const log = document.getElementById("log");
+        if (!log) return "no-log-element";
+        return log.innerText.split("\n").slice(-30).join("\n");
+      }).catch(e => `eval-failed: ${e.message}`);
+      return { status: "timeout", logs: consoleLogs.slice(-5).join("\n"), tail };
     }
     // Browser-target's _start sentinel can't propagate process.exit codes
     // reliably -- TerminateExecution unwinds without ExitSignal so we
