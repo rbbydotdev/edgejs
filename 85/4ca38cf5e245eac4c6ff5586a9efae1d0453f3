@@ -1,0 +1,42 @@
+browser-target/scripts/node-corpus-scaled.mjs
+  s_92c1b47c0d6ee8::t_9865320d5774f7 1-187
+browser-target/scripts/node-corpus-runner.mjs
+  s_92c1b47c0d6ee8::t_bc24258235ab4b 14
+  s_92c1b47c0d6ee8::t_86d8b077c363ab 127-227,229-231,239,241-242,252,255,263,267,284-291
+corpus/corpus-summary.md
+  s_92c1b47c0d6ee8::t_622277be20f3b9 1,3,5-10,12-16,21-41
+  s_92c1b47c0d6ee8::t_8d33f90dbe89c4 2,4,11,17-20,42
+corpus/corpus-results.json
+  s_92c1b47c0d6ee8::t_8d33f90dbe89c4 1,9-11,52,110,119,121,178-190,193-203,2193-2196
+  s_92c1b47c0d6ee8::t_622277be20f3b9 2-8,12-51,53-109,111-118,120,122-177,191-192,204-2192
+COMPAT.md
+  s_92c1b47c0d6ee8::t_37dfecff11c974 125
+  s_92c1b47c0d6ee8::t_ad5c6b16a27e2e 97
+  s_92c1b47c0d6ee8::t_8be1ab034e5f37 57-58,60-62
+  s_92c1b47c0d6ee8::t_418c22e26e118e 117,119
+  s_92c1b47c0d6ee8::t_5000eec0a55bb4 84
+  s_92c1b47c0d6ee8::t_58d677abd9a0c9 134
+  s_92c1b47c0d6ee8::t_4a2b4bf2c70d90 145
+  s_92c1b47c0d6ee8::t_17e54a1a20e15f 90
+  s_92c1b47c0d6ee8::t_c3750018e04f3a 153
+  s_92c1b47c0d6ee8::t_ff3e70414b8bde 68-71
+  s_92c1b47c0d6ee8::t_790f424d6547d4 10-17
+  s_92c1b47c0d6ee8::t_3efa358128b547 78
+  s_92c1b47c0d6ee8::t_99a60fe7dc5b05 109-110
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "854ca38cf5e245eac4c6ff5586a9efae1d0453f3",
+  "prompts": {},
+  "sessions": {
+    "s_92c1b47c0d6ee8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "dca99c1c-d946-4444-9a53-9ba89db5d748",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
