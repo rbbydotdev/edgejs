@@ -7,6 +7,14 @@ partial, what's stubbed, and what we don't intend to ship.
 
 **Last updated**: 2026-05-30.
 
+**edgejs-web pass rates** come from a sampled run of Node's
+upstream test corpus (`test/parallel/*.js`) against browser-target via
+`browser-target/scripts/node-corpus-scaled.mjs` — ~311 tests across
+22 module families, sampled (not the full 3961). Bun-style. See
+[`corpus/corpus-summary.md`](corpus/corpus-summary.md) for the
+detailed table and [`corpus/corpus-results.json`](corpus/corpus-results.json)
+for per-test outcomes. Rerun with `cd browser-target && node scripts/node-corpus-scaled.mjs`.
+
 ## edge.js's two surfaces
 
 | Surface | What it is | How JS executes |
@@ -46,47 +54,47 @@ markers (known gaps).
 
 | Module | edgejs | edgejs-web | Cloudflare | Bun | Deno | Vercel Edge | StackBlitz | Notes |
 |---|---|---|---|---|---|---|---|---|
-| `assert` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Pure JS; Bun: 100% Node-suite |
-| `buffer` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | edgejs-web: `buffer-wasm-aliased` policy carries it |
+| `assert` | ✓ | ◐ 11% | ✓ | ✓ | ✓ | ✓ | ✓ | edgejs-web: low measured rate is largely test-harness issues (common.mustCall/common.platformTimeout), not core assert failures — needs triage. Bun: 100% Node-suite |
+| `buffer` | ✓ | ◐ 50% | ✓ | ✓ | ✓ | ✓ | ✓ | edgejs-web: `buffer-wasm-aliased` policy carries the core; sample run shows half-pass — many failures suspected to be subtle Buffer-from-SAB edge cases |
 | `console` | ✓ | ✓ | ◐ | ✓ | ✓ | ✓ | ✓ | edgejs-web: routed to host-worker logs |
-| `events` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Pure JS; Bun: 100% Node-suite |
-| `process` | ◐ | ◐ | ◐ | ◐ | ◐ | ◐ | ✓ | edgejs-web: `process-methods-wasm-state` policy; some fields stub. base: depends on host providing argv/env |
-| `util` | ◐ | ◐ | ✓ | ◐ | ✓ | ◐ | ✓ | `util.types.isProxy` partial (#!~debt) |
+| `events` | ✓ | ◐ 50% | ✓ | ✓ | ✓ | ✓ | ✓ | edgejs-web: 18/36 measured — pure JS, but Node's test corpus uses `common.mustCall` which our shim may not fully implement. Bun: 100% Node-suite |
+| `process` | ◐ | ◐ 47% | ◐ | ◐ | ◐ | ◐ | ✓ | edgejs-web: 7/15 measured; `process-methods-wasm-state` policy carries it. base: depends on host providing argv/env |
+| `util` | ◐ | ◐ 32% | ✓ | ◐ | ✓ | ◐ | ✓ | edgejs-web: 8/25 measured; `util.types.isProxy` partial + some inspect formatting differences |
 
 ### Strings & paths
 
 | Module | edgejs | edgejs-web | Cloudflare | Bun | Deno | Vercel Edge | StackBlitz | Notes |
 |---|---|---|---|---|---|---|---|---|
-| `path` | ✓ | ✓ | ✓ | ✓ | ✓ | — | ✓ | Pure JS; Bun: 100% Node-suite |
-| `querystring` | ✓ | ✓ | ✓ | ✓ | ✓ | — | ✓ | Pure JS; Bun: 100% Node-suite |
-| `string_decoder` | ✓ | ✓ | ✓ | ✓ | ✓ | — | ✓ | Pure JS; Bun: 100% Node-suite |
-| `url` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | edgejs-web: native URL cache for blob: trampoline |
+| `path` | ✓ | ✓ 100% | ✓ | ✓ | ✓ | — | ✓ | edgejs-web: 16/16 — full pass. Pure JS; Bun: 100% Node-suite |
+| `querystring` | ✓ | ✓ 67% | ✓ | ✓ | ✓ | — | ✓ | edgejs-web: 2/3 measured (small sample). Pure JS; Bun: 100% Node-suite |
+| `string_decoder` | ✓ | ◐ 0% | ✓ | ✓ | ✓ | — | ✓ | edgejs-web: 0/2 measured — suspicious for pure-JS; likely harness-shim issue, needs triage. Bun: 100% Node-suite |
+| `url` | ✓ | ◐ 36% | ✓ | ✓ | ✓ | ✓ | ✓ | edgejs-web: 5/14 measured; lib's whatwg-url tests have many assertion-format differences |
 | `punycode` | ✓ | ✓ | ✓ | ✓ | ✓ | — | ✓ | Pure JS; Bun: 100% Node-suite |
 
 ### Streams
 
 | Module | edgejs | edgejs-web | Cloudflare | Bun | Deno | Vercel Edge | StackBlitz | Notes |
 |---|---|---|---|---|---|---|---|---|
-| `stream` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Lib code |
+| `stream` | ✓ | ✓ 80% | ✓ | ✓ | ✓ | ✓ | ✓ | edgejs-web: 16/20 measured |
 
 ### Crypto
 
 | Module | edgejs | edgejs-web | Cloudflare | Bun | Deno | Vercel Edge | StackBlitz | Notes |
 |---|---|---|---|---|---|---|---|---|
-| `crypto` | ✓ | ✓ | ✓ | ◐ | ✓ | ✓ | ◐ | edgejs-web: lib + `crypto-host-random`, `crypto-via-subtle`, host-worker hash/HMAC. StackBlitz: `createHmac` broken (#31, 2021), AES-256-CBC broken (#1571, Oct 2024) |
+| `crypto` | ✓ | ◐ 53% | ✓ | ◐ | ✓ | ✓ | ◐ | edgejs-web: 8/15 measured. Lib + `crypto-host-random`, `crypto-via-subtle`, host-worker hash/HMAC. StackBlitz: `createHmac` broken (#31, 2021), AES-256-CBC broken (#1571, Oct 2024) |
 
 ### Filesystem
 
 | Module | edgejs | edgejs-web | Cloudflare | Bun | Deno | Vercel Edge | StackBlitz | Notes |
 |---|---|---|---|---|---|---|---|---|
-| `fs` | ✓ | ◐ | ✓ | ✓ | ✓ | ✗ | ◐ | base: full fs via WASI host. edgejs-web: read via SAB ring; OPFS write deferred. Bun: 92% Node-suite. StackBlitz: custom Rust fs over SAB+Atomics (PostHog 2025) — NOT Node's libuv fs; presents Node-fs surface but with spec gaps that come from re-implementing |
+| `fs` | ✓ | ◐ 33% | ✓ | ✓ | ✓ | ✗ | ◐ | edgejs-web: 5/15 measured — matches "read works, write deferred" story. base: full fs via WASI host. Bun: 92% Node-suite. StackBlitz: custom Rust fs over SAB+Atomics (PostHog 2025) — NOT Node's libuv fs |
 | `fs/promises` | ✓ | ◐ | ✓ | ✓ | ✓ | ✗ | ◐ | Same backing as `fs` |
 
 ### Network
 
 | Module | edgejs | edgejs-web | Cloudflare | Bun | Deno | Vercel Edge | StackBlitz | Notes |
 |---|---|---|---|---|---|---|---|---|
-| `http` | ?(host) | ◐ | ✓ | ◐ | ◐ | — | ✓ | base: depends on WASI host network. edgejs-web: inbound via SW; outbound throws by default. Bun: outgoing client body buffered |
+| `http` | ?(host) | ◐ 80% | ✓ | ◐ | ◐ | — | ✓ | edgejs-web: 12/15 measured — surprisingly high; sample dominated by parser/utility tests, not server tests. base: depends on WASI host network. Bun: outgoing client body buffered |
 | `https` | ?(host) | ◐ | ✓ | ◐ | ◐ | — | ✓ | Delegated to http; TLS context inspection works in edgejs-web |
 | `http2` | ?(host) | ? | ◐ | ◐ | ◐ | — | ✓ | Untested; Bun: 95% gRPC-suite (not Node-suite) |
 | `net` | ?(host) | ⊘ | ✓ | ✓ | ◐ | — | ◐ | base: WASIX has TCP. edgejs-web: `sock_connect` returns ENOSYS. StackBlitz: localhost only |
@@ -98,23 +106,23 @@ markers (known gaps).
 
 | Module | edgejs | edgejs-web | Cloudflare | Bun | Deno | Vercel Edge | StackBlitz | Notes |
 |---|---|---|---|---|---|---|---|---|
-| `worker_threads` | ?(host) | ◐ | — | ◐ | ◐ | — | ◐ | base: depends on WASI threads. edgejs-web: phase 1 via `worker-threads-per-thread`. StackBlitz: `unref` bug (#365), no synchronous message passing |
-| `child_process` | ?(host) | ◐ | — | ◐ | ✓ | — | ✓ | base: depends on host proc spawning. edgejs-web: `child-process-via-executor` policy |
+| `worker_threads` | ?(host) | ✓ 87% | — | ◐ | ◐ | — | ◐ | edgejs-web: 13/15 measured — much stronger than expected; `worker-threads-per-thread` policy carrying it. StackBlitz: `unref` bug (#365), no synchronous message passing |
+| `child_process` | ?(host) | ✗ 0% | — | ◐ | ✓ | — | ✓ | edgejs-web: 0/10 measured — expected; lib's child_process needs real process spawning that our executor policy only partially provides. `child-process-via-executor` works for our test corpus but doesn't pass Node's tests which expect Unix-process semantics |
 | `cluster` | ?(host) | — | — | ◐ | ✗ | — | — | base: depends on host fd-passing. edgejs-web: architecturally impossible |
 
 ### Time
 
 | Module | edgejs | edgejs-web | Cloudflare | Bun | Deno | Vercel Edge | StackBlitz | Notes |
 |---|---|---|---|---|---|---|---|---|
-| `timers` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Lib + libuv shim |
+| `timers` | ✓ | ◐ 67% | ✓ | ✓ | ✓ | ✓ | ✓ | edgejs-web: 10/15 measured. Lib + libuv shim |
 | `timers/promises` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Lib code |
-| `perf_hooks` | ◐ | ◐ | ◐ | ◐ | ◐ | — | ✓ | Partial like everyone — needs audit |
+| `perf_hooks` | ◐ | ◐ 70% | ◐ | ◐ | ◐ | — | ✓ | edgejs-web: 7/10 measured — higher than expected |
 
 ### OS / terminal
 
 | Module | edgejs | edgejs-web | Cloudflare | Bun | Deno | Vercel Edge | StackBlitz | Notes |
 |---|---|---|---|---|---|---|---|---|
-| `os` | ✓ | ◐ | ◐ | ✓ | ◐ | — | ✓ | base: full os from WASI. edgejs-web: some values stubbed. Bun: 100% Node-suite |
+| `os` | ✓ | ◐ 14% | ◐ | ✓ | ◐ | — | ✓ | edgejs-web: 1/7 measured — most os-specific values stubbed. base: full os from WASI. Bun: 100% Node-suite |
 | `tty` | ?(host) | ⊘ | ⊘ | ✓ | ◐ | — | ⊘ | base: depends on host stdin; edgejs-web stubbed |
 | `readline` | ?(host) | ? | ⊘ | ✓ | ✓ | — | ✓ | base/edgejs-web: depends on stdin handling |
 | `readline/promises` | ?(host) | ? | ⊘ | ✓ | ✓ | — | ✓ | Same |
@@ -123,7 +131,7 @@ markers (known gaps).
 
 | Module | edgejs | edgejs-web | Cloudflare | Bun | Deno | Vercel Edge | StackBlitz | Notes |
 |---|---|---|---|---|---|---|---|---|
-| `async_hooks` (ALS) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ◐ | AsyncLocalStorage works. StackBlitz: works for `.then()` chains, NOT for native `async/await` (Sam Verschueren on issue #1169, 2026-02-12: "we can't know when a promise is scheduled or resolved" without transpilation) — same constraint applies to us |
+| `async_hooks` (ALS) | ✓ | ◐ 50% | ✓ | ✓ | ✓ | ✓ | ◐ | edgejs-web: 5/10 measured. AsyncLocalStorage works for `.then()` chains; the half that fail are mostly `async/await`-using tests. StackBlitz: same constraint admits this same gap (Verschueren #1169, 2026-02-12) |
 | `async_hooks` (promise hooks) | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | Universally weak (`#!~debt` no-op). StackBlitz publicly admits this same gap |
 | `diagnostics_channel` | ✓ | ? | ✓ | ✓ | ✓ | ✗ | ? | base: pure JS, inherits Node. StackBlitz: untested but inherits Node 20 |
 | `inspector` | ✗ | ✗ | ✗ | ⊘ | ✗ | ✗ | ✗ | Rare in production |
@@ -134,7 +142,7 @@ markers (known gaps).
 
 | Module | edgejs | edgejs-web | Cloudflare | Bun | Deno | Vercel Edge | StackBlitz | Notes |
 |---|---|---|---|---|---|---|---|---|
-| `zlib` | ✓ | ✓ | ✓ | ✓ | ✓ | — | ✓ | edgejs-web: `zlib-writestate-wasm` policy. Bun: 98% Node-suite |
+| `zlib` | ✓ | ✓ 73% | ✓ | ✓ | ✓ | — | ✓ | edgejs-web: 11/15 measured. `zlib-writestate-wasm` policy. Bun: 98% Node-suite |
 
 ### Module system
 
@@ -142,7 +150,7 @@ markers (known gaps).
 |---|---|---|---|---|---|---|---|---|
 | `module` (CJS) | ✓ | ✓ | ◐ | ✓ | ✓ | ✗ | ✓ | Standard CJS works. StackBlitz uses custom TS resolver (PostHog 2025-09-16) |
 | `module` (ESM) | ◐ | ◐ | ◐ | ✓ | ✓ | ✗ | ◐ | base: depends on host import. edgejs-web: full `import` + dynamic + TLA + cycles via blob trampoline; `require(esm)` partial via b₁/b₄. StackBlitz: ESM works but `require(esm)` (Node 22.12+) NOT available — still on Node 20.19 in 2026 |
-| `vm` | ◐ | ◐ | ⊘ | ◐ | ◐ | ✗ | ? | edgejs-web: `vm.Script` via `new Function`; `vm.SourceTextModule` works via ESM bridge. StackBlitz: no public statement in 2024-2026; unknown but presumably same V8-bounded ceiling we have (their 2021 V8 quote not refuted) |
+| `vm` | ◐ | ⊘ 7% | ⊘ | ◐ | ◐ | ✗ | ? | edgejs-web: 1/15 measured — `vm.Script` via `new Function` covers only basic code; break-on-sigint, timeout, real Context isolation all missing. `vm.SourceTextModule` works via ESM bridge but it's a small slice of the test corpus. StackBlitz: no public statement; presumably similar V8-bounded ceiling |
 
 ### Niche
 
