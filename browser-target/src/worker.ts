@@ -43,6 +43,10 @@ import { bufferCopy } from "./edge-env/presets/buffer-copy";
 import { vmSameRealm } from "./edge-env/presets/vm-same-realm";
 import { pollWakeOnSchedule } from "./edge-env/presets/poll-wake-on-schedule";
 import { utilGetOwnNonIndexProperties } from "./edge-env/presets/util-get-own-non-index-properties";
+import { utilTypesAsyncGen } from "./edge-env/presets/util-types-async-gen";
+import { utilGetProxyDetails } from "./edge-env/presets/util-get-proxy-details";
+import { utilGetConstructorName } from "./edge-env/presets/util-get-constructor-name";
+import { processBindingInspectorStub } from "./edge-env/presets/process-binding-inspector-stub";
 import { decodeBase64 } from "./edge-env/vendor-adapters/unenv-base64";
 import { createBundledFs } from "./host/fs/adapters/bundled";
 // opfs + layered adapters now live on the bridge worker.  Runtime
@@ -1330,6 +1334,10 @@ async function runEdgeWithEmnapi() {
     vmSameRealm.name,
     pollWakeOnSchedule.name,
     utilGetOwnNonIndexProperties.name,
+    utilTypesAsyncGen.name,
+    utilGetProxyDetails.name,
+    utilGetConstructorName.name,
+    processBindingInspectorStub.name,
   ]);
   const legacyPolicies = [...defaultBrowserPolicies, ...extraPolicies]
     .filter((p) => !migratedNames.has(p.name));
@@ -1362,6 +1370,10 @@ async function runEdgeWithEmnapi() {
     vmSameRealm,
     pollWakeOnSchedule,
     utilGetOwnNonIndexProperties,
+    utilTypesAsyncGen,
+    utilGetProxyDetails,
+    utilGetConstructorName,
+    processBindingInspectorStub,
   ];
   // buffer-base64 preset's runtime patch calls globalThis.__edgeDecodeBase64
   // to run the vendored unenv/base64-js decoder.  Install BEFORE the napi

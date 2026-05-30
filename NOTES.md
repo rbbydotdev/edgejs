@@ -92,6 +92,22 @@ the browser-target tree.
 
 ### Newly opened
 
+- `cjs-dynamic-import-no-host-callback` (opened 2026-05-30).
+  `unofficial_napi_contextify_compile_function` in
+  `browser-target/src/napi-host/unofficial.ts:722` uses a plain
+  `new Function(...)` instead of a real `vm.compileFunction` impl.
+  Plain `new Function` drops the `importModuleDynamically` parameter
+  that lib's cjs/loader.js wires (`loader.js:1696`), so when CJS code
+  does `import('node:process')` the dispatch falls through to the
+  browser-V8 default `import()` and fails with "Failed to fetch
+  dynamically imported module: node:process".  Manifest test:
+  test/parallel/test-process-default.js.  Fix requires migrating the
+  compile_function shim from `new Function` to a real
+  vm.compileFunction-equivalent that captures the
+  hostDefinedOptionId+importModuleDynamically and routes them through
+  `__edgeDynImportImpl` like ESM modules do.  Architectural — out of
+  scope for a preset patch.
+
 - `corpus-mustcall-not-verified` (opened 2026-05-30).  Tests using
   `common.mustCall(fn, N)` on ASYNC events (stream `'end'` / `'close'`,
   timers, async_hooks, ...) are not honestly verified by the corpus
