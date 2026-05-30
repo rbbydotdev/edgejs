@@ -1,0 +1,35 @@
+browser-target/src/edge-env/define-env.ts
+  s_92c1b47c0d6ee8::t_c9bcab04ead5c0 1-77
+browser-target/src/worker.ts
+  s_92c1b47c0d6ee8::t_5abe4ee5f4165c 1261-1272,1274-1275
+  s_92c1b47c0d6ee8::t_257ffa52b19a80 17-18
+browser-target/src/vite-env.d.ts
+  s_92c1b47c0d6ee8::t_a488c53217941f 1-10
+browser-target/src/edge-env/policy-adapter.ts
+  s_92c1b47c0d6ee8::t_bdb36494ae6730 1-53
+browser-target/src/edge-env/index.ts
+  s_92c1b47c0d6ee8::t_fed0519d82851a 1-19
+  s_92c1b47c0d6ee8::t_fe0027a300c888 20
+browser-target/src/edge-env/presets/v8-serdes.ts
+  s_92c1b47c0d6ee8::t_04774aa8965f50 1-42
+browser-target/src/edge-env/compose.ts
+  s_92c1b47c0d6ee8::t_116e7673b9d05f 1-46
+browser-target/src/edge-env/types.ts
+  s_92c1b47c0d6ee8::t_54a51c05c1944b 1-99
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "a7944bf7b2ed71053d4a477c4daf15706d4e1c8e",
+  "prompts": {},
+  "sessions": {
+    "s_92c1b47c0d6ee8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "dca99c1c-d946-4444-9a53-9ba89db5d748",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
