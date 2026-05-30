@@ -1,0 +1,45 @@
+browser-target/src/edge-env/presets/util-get-proxy-details.ts
+  s_92c1b47c0d6ee8::t_4d4d7aeb189545 1-32
+browser-target/src/edge-env/presets/util-get-proxy-details/util-get-proxy-details.patch.js
+  s_92c1b47c0d6ee8::t_5e9dfb265aff72 1-132
+browser-target/src/edge-env/presets/util-get-constructor-name.ts
+  s_92c1b47c0d6ee8::t_765c07edb0ce7a 1-31
+browser-target/src/edge-env/presets/util-get-constructor-name/util-get-constructor-name.patch.js
+  s_92c1b47c0d6ee8::t_c6193695570001 1-151
+NOTES.md
+  s_92c1b47c0d6ee8::t_a97ec8f56190ec 95-110
+browser-target/src/worker.ts
+  s_92c1b47c0d6ee8::t_94720b82e0b6cd 1376
+  s_92c1b47c0d6ee8::t_a0b9f094051a50 1340
+  s_92c1b47c0d6ee8::t_3b2adfcb187e9b 1337-1339
+  s_92c1b47c0d6ee8::t_d6c1d19ccde9cb 1373-1375
+  s_92c1b47c0d6ee8::t_f4820f1903cb5a 49
+  s_92c1b47c0d6ee8::t_217b3109f974a6 46-48
+browser-target/src/edge-env/presets/util-types-async-gen/util-types-async-gen.patch.js
+  s_92c1b47c0d6ee8::t_3cd58b8f6ccfbc 1-93
+browser-target/src/edge-env/presets/util-types-async-gen.ts
+  s_92c1b47c0d6ee8::t_b456041b1622e3 1-28
+browser-target/src/edge-env/presets/process-binding-inspector-stub.ts
+  s_92c1b47c0d6ee8::t_7f271846fe80f9 1-25
+browser-target/src/edge-env/presets/process-binding-inspector-stub/process-binding-inspector-stub.patch.js
+  s_92c1b47c0d6ee8::t_978cd141bf6f7e 43-47,55-57
+  s_92c1b47c0d6ee8::t_52c538811996e5 1-22,32-42,58-65
+  s_92c1b47c0d6ee8::t_85f3fe659664e0 48-54,66
+  s_92c1b47c0d6ee8::t_b03cdb11715194 23-31
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "952e1daae78e475509a08131baa260cbd4706917",
+  "prompts": {},
+  "sessions": {
+    "s_92c1b47c0d6ee8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "dca99c1c-d946-4444-9a53-9ba89db5d748",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
