@@ -1,0 +1,31 @@
+browser-target/known-failures.json
+  s_92c1b47c0d6ee8::t_7f9c27b00150fa 71-78
+  s_92c1b47c0d6ee8::t_0e3dab3e0812fb 7,11,13-16
+COMPAT.md
+  s_92c1b47c0d6ee8::t_f56efa87ac0b08 161
+  s_92c1b47c0d6ee8::t_d2658e1424682d 167
+  s_92c1b47c0d6ee8::t_e56b64a93b4579 120
+  s_92c1b47c0d6ee8::t_e9396f7d1e6375 126
+  s_92c1b47c0d6ee8::t_bde7dfeb7b28e5 151-152
+  s_92c1b47c0d6ee8::t_4ea0b742d4d9a5 176
+  s_92c1b47c0d6ee8::t_26a80be1075fd4 47-86
+  s_92c1b47c0d6ee8::t_c7d5b91cef5c7a 110-113
+  s_92c1b47c0d6ee8::t_3e01d818272516 159
+  s_92c1b47c0d6ee8::t_a0b13acdc92ac2 99-100,102-104
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "8042123d21ccdcef12843f93c0153593ffea9853",
+  "prompts": {},
+  "sessions": {
+    "s_92c1b47c0d6ee8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "dca99c1c-d946-4444-9a53-9ba89db5d748",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
