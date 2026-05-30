@@ -12,6 +12,7 @@
 //     (success = no thrown error + clean exit).
 
 import { readFileSync, readdirSync, existsSync, writeFileSync, mkdirSync } from "node:fs";
+void readFileSync; void existsSync;
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -26,8 +27,56 @@ import {
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, "..", "..");
 const nodeTestsDir = resolve(repoRoot, "test", "parallel");
+const knownFailuresPath = resolve(here, "..", "known-failures.json");
 
 const SENTINEL_RE = /_start ran \d+ ms \((exit=(-?\d+)|THREW|returned)\)/;
+
+// Load known-failure manifest. See browser-target/known-failures.json for
+// the schema + category refs.  Each entry: testName → { category, expectedFailure? }.
+// Classification:
+//   PASS                — test passed (expected)
+//   FAIL                — failed AND not in manifest → real regression
+//   KNOWN-FAIL          — failed AND matches manifest entry (substring match
+//                          against expectedFailure if provided, else any failure)
+//   KNOWN-FAIL-CHANGED  — failed AND in manifest BUT failure signature differs
+//                          from expectedFailure → diagnostic alert
+//   UNEXPECTED-PASS     — passed AND in manifest → improvement, prompts cleanup
+function loadKnownFailures() {
+  let raw;
+  try { raw = readFileSync(knownFailuresPath, "utf8"); }
+  catch (_e) { return { tests: {}, categories: {} }; }
+  try {
+    const j = JSON.parse(raw);
+    return { tests: j.tests || {}, categories: j["$category-refs"] || {} };
+  } catch (e) {
+    console.warn(`[known-failures] parse failed: ${e.message}`);
+    return { tests: {}, categories: {} };
+  }
+}
+
+function classifyResult(r, manifest) {
+  const entry = manifest.tests[r.test];
+  if (r.status === "pass") {
+    return entry ? { state: "UNEXPECTED-PASS", category: entry.category } : { state: "PASS" };
+  }
+  if (!entry) return { state: "FAIL" };
+  // If manifest has no expectedFailure specifier, ANY failure is accepted.
+  if (!entry.expectedFailure) {
+    return { state: "KNOWN-FAIL", category: entry.category };
+  }
+  // Substring match on stderr / stdout / reason.
+  const haystack = [r.reason || "", r.stderr || "", r.stdout || ""].join("\n").toLowerCase();
+  const needle = String(entry.expectedFailure).toLowerCase();
+  if (haystack.includes(needle)) {
+    return { state: "KNOWN-FAIL", category: entry.category };
+  }
+  return {
+    state: "KNOWN-FAIL-CHANGED",
+    category: entry.category,
+    expected: entry.expectedFailure,
+    actualReason: r.reason,
+  };
+}
 
 function loadList(filter) {
   const tests = readdirSync(nodeTestsDir)
@@ -232,14 +281,43 @@ function aggregateByBucket(results) {
 function writeJsonResults(jsonPath, results, startedAt, finishedAt) {
   mkdirSync(dirname(jsonPath), { recursive: true });
   const aggregates = aggregateByBucket(results);
+  const manifest = loadKnownFailures();
+  // Classify each result against the manifest.
+  const classified = results.map((r) => ({ result: r, ...classifyResult(r, manifest) }));
+  const states = { PASS: 0, FAIL: 0, "KNOWN-FAIL": 0, "KNOWN-FAIL-CHANGED": 0, "UNEXPECTED-PASS": 0 };
+  const knownFailChanged = [];
+  const unexpectedPass = [];
+  for (const c of classified) {
+    states[c.state] = (states[c.state] || 0) + 1;
+    if (c.state === "KNOWN-FAIL-CHANGED") {
+      knownFailChanged.push({
+        test: c.result.test,
+        category: c.category,
+        expected: c.expected,
+        actual: c.actualReason,
+      });
+    }
+    if (c.state === "UNEXPECTED-PASS") {
+      unexpectedPass.push({ test: c.result.test, category: c.category });
+    }
+  }
+  const raw = states.PASS + states["UNEXPECTED-PASS"];
+  const total = results.length;
+  const known = states["KNOWN-FAIL"] + states["KNOWN-FAIL-CHANGED"];
+  const adjustedDen = Math.max(0, total - known);
   const summary = {
     startedAt,
     finishedAt,
     durationMs: finishedAt - startedAt,
-    totalTests: results.length,
-    pass: results.filter((r) => r.status === "pass").length,
-    fail: results.filter((r) => r.status === "fail" || r.status === "err").length,
+    totalTests: total,
+    pass: raw,
+    fail: states.FAIL,
     timeout: results.filter((r) => r.status === "timeout").length,
+    knownFail: states["KNOWN-FAIL"],
+    knownFailChanged: states["KNOWN-FAIL-CHANGED"],
+    unexpectedPass: states["UNEXPECTED-PASS"],
+    rawPassRate: total === 0 ? 0 : Math.round((raw / total) * 10000) / 100,
+    adjustedPassRate: adjustedDen === 0 ? null : Math.round((raw / adjustedDen) * 10000) / 100,
     perBucket: aggregates.map((a) => ({
       bucket: a.bucket,
       pass: a.pass,
@@ -248,6 +326,8 @@ function writeJsonResults(jsonPath, results, startedAt, finishedAt) {
       total: a.total,
       passRate: a.total === 0 ? 0 : Math.round((a.pass / a.total) * 10000) / 100,
     })),
+    knownFailChangedDetail: knownFailChanged,
+    unexpectedPassDetail: unexpectedPass,
     results,
   };
   writeFileSync(jsonPath, JSON.stringify(summary, null, 2) + "\n");
@@ -263,9 +343,15 @@ function writeMarkdownSummary(mdPath, summary) {
   lines.push(`* Started: ${new Date(summary.startedAt).toISOString()}`);
   lines.push(`* Finished: ${new Date(summary.finishedAt).toISOString()}`);
   lines.push(`* Duration: ${(summary.durationMs / 1000).toFixed(1)}s`);
-  lines.push(`* Total: ${summary.totalTests} (pass ${summary.pass} / fail ${summary.fail} / timeout ${summary.timeout})`);
-  const rate = summary.totalTests === 0 ? 0 : Math.round((summary.pass / summary.totalTests) * 10000) / 100;
-  lines.push(`* Overall pass rate: **${rate}%**`);
+  lines.push(`* Total: ${summary.totalTests} (pass ${summary.pass} / fail ${summary.fail} / known-fail ${summary.knownFail ?? 0} / timeout ${summary.timeout})`);
+  lines.push(`* **Raw pass rate**: ${summary.rawPassRate ?? "?"}%`);
+  lines.push(`* **Adjusted pass rate** (excluding known-fails): ${summary.adjustedPassRate ?? "?"}%`);
+  if (summary.knownFailChanged) {
+    lines.push(`* ⚠️ KNOWN-FAIL-CHANGED: ${summary.knownFailChanged} (test failed but signature differs from known-failures.json — see corpus-results.json for details)`);
+  }
+  if (summary.unexpectedPass) {
+    lines.push(`* 🎉 UNEXPECTED-PASS: ${summary.unexpectedPass} (test in known-failures.json now passes — consider removing entry)`);
+  }
   lines.push("");
   lines.push("## Per-module pass rates");
   lines.push("");
@@ -275,7 +361,7 @@ function writeMarkdownSummary(mdPath, summary) {
     lines.push(`| \`${b.bucket}\` | ${b.pass} | ${b.fail} | ${b.timeout} | ${b.total} | ${b.passRate}% |`);
   }
   lines.push("");
-  lines.push("Source: `corpus-results.json` (same dir).");
+  lines.push("Source: `corpus-results.json` (same dir).  Known-failure manifest: `browser-target/known-failures.json`.");
   writeFileSync(mdPath, lines.join("\n") + "\n");
 }
 
@@ -340,6 +426,22 @@ async function main() {
   const summary = writeJsonResults(resolve(outDir, "corpus-results.json"), results, startedAt, finishedAt);
   writeMarkdownSummary(resolve(outDir, "corpus-summary.md"), summary);
   console.log(`\nwrote ${outDir}/corpus-results.json + corpus-summary.md`);
+  console.log("\n=== known-failures classification ===");
+  console.log(`  raw pass rate:       ${summary.rawPassRate}%  (${summary.pass}/${summary.totalTests})`);
+  const adj = summary.adjustedPassRate === null ? "N/A (all tests known-fail)" : `${summary.adjustedPassRate}%`;
+  console.log(`  adjusted pass rate:  ${adj}  (excluding ${summary.knownFail ?? 0} known-fails)`);
+  if (summary.knownFailChanged) {
+    console.log(`  ⚠️  KNOWN-FAIL-CHANGED: ${summary.knownFailChanged}`);
+    for (const d of summary.knownFailChangedDetail || []) {
+      console.log(`     ${d.test}: expected="${d.expected}" but got="${(d.actual||'').slice(0,80)}"`);
+    }
+  }
+  if (summary.unexpectedPass) {
+    console.log(`  🎉 UNEXPECTED-PASS: ${summary.unexpectedPass} (consider removing from known-failures.json)`);
+    for (const d of summary.unexpectedPassDetail || []) {
+      console.log(`     ${d.test} [${d.category}]`);
+    }
+  }
   console.log("\n=== per-bucket pass rates ===");
   for (const b of summary.perBucket) {
     console.log(`  ${b.bucket.padEnd(20)} ${b.pass}/${b.total} (${b.passRate}%)`);

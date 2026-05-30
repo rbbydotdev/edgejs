@@ -1,0 +1,70 @@
+{
+  "$schema-comment": "known-failure manifest — each entry documents an accepted-failing test with a reason and a categorization. The corpus runner classifies real fails against this manifest: matching entry → KNOWN-FAIL; missing entry → FAIL (real regression); entry exists but test now passes → UNEXPECTED-PASS (prompts cleanup); entry exists but test fails differently → KNOWN-FAIL-CHANGED (diagnostic alert).",
+
+  "$category-refs": {
+    "deferred-fs": "fs writable adapter deferred for external integration — see CLAUDE.md scope decision",
+    "deferred-net": "net.createServer / TCP sockets deferred for external integration",
+    "deferred-child-process": "child_process.spawn JSPI fix is a multi-week architectural project",
+    "deferred-vm-cross-realm": "real cross-realm vm needs iframe-RPC or ShadowRealm; same-realm preset is best-effort fallback",
+    "inspector-not-supported": "V8 inspector backend not exposed to browser page JS; see NOTES.md inspector-not-supported",
+    "v8-natives": "tests using %PrepareFunctionForOptimization etc require --allow-natives-syntax in V8; not enabled in browser builds",
+    "asynclocalstorage-promise-hooks": "AsyncLocalStorage promise-hook integration unsupported (universal browser-Node-runtime gap)",
+    "no-marker-bootstrap": "test fails before driver emits PASS/FAIL marker; common.js loading issue likely tied to specific binding"
+  },
+
+  "tests": {
+    "test-process-binding-internalbinding-allowlist.js": {
+      "category": "inspector-not-supported",
+      "expectedFailure": "AssertionError [ERR_ASSERTION]: undefined == true"
+    },
+
+    "test-os-fast.js": { "category": "v8-natives", "expectedFailure": "SyntaxError: Unexpected token '%'" },
+    "test-timers-fast-calls.js": { "category": "v8-natives", "expectedFailure": "SyntaxError: Unexpected token '%'" },
+    "test-perf-hooks-histogram-fast-calls.js": { "category": "v8-natives", "expectedFailure": "SyntaxError: Unexpected token '%'" },
+
+    "test-fs-append-file-flush.js": { "category": "deferred-fs" },
+    "test-fs-append-file-sync.js": { "category": "deferred-fs" },
+    "test-fs-append-file.js": { "category": "deferred-fs" },
+    "test-fs-buffer.js": { "category": "deferred-fs" },
+    "test-fs-chmod.js": { "category": "deferred-fs" },
+    "test-fs-chown-type-check.js": { "category": "deferred-fs" },
+    "test-fs-copyfile-respect-permissions.js": { "category": "deferred-fs" },
+    "test-process-chdir.js": { "category": "deferred-fs", "expectedFailure": "ENOENT" },
+    "test-zlib-brotli-from-brotli.js": { "category": "deferred-fs", "expectedFailure": "ENOSYS" },
+    "test-crypto-authenticated-stream.js": { "category": "deferred-fs", "expectedFailure": "ENOSYS" },
+    "test-crypto-authenticated.js": { "category": "deferred-fs", "expectedFailure": "ENOENT" },
+
+    "test-http-agent-destroyed-after-failed-write.js": { "category": "deferred-net" },
+    "test-http-agent-keepalive-delay.js": { "category": "deferred-net" },
+    "test-http-agent.js": { "category": "deferred-net" },
+    "test-http-allow-req-after-204-res.js": { "category": "deferred-net" },
+    "test-process-beforeexit.js": { "category": "deferred-net", "expectedFailure": "net.createServer" },
+    "test-process-beforeexit-throw-exit.js": { "category": "deferred-net" },
+    "test-stream-base-typechecking.js": { "category": "deferred-net" },
+    "test-stream-destroy.js": { "category": "deferred-net" },
+
+    "test-child-process-detached.js": { "category": "deferred-child-process" },
+    "test-child-process-default-options.js": { "category": "deferred-child-process" },
+    "test-child-process-cwd.js": { "category": "deferred-child-process" },
+    "test-process-argv-0.js": { "category": "deferred-child-process" },
+    "test-os-homedir-no-envvar.js": { "category": "deferred-child-process" },
+    "test-buffer-constructor-node-modules-paths.js": { "category": "deferred-child-process" },
+    "test-buffer-constructor-node-modules.js": { "category": "deferred-child-process" },
+    "test-buffer-constructor-outside-node-modules.js": { "category": "deferred-vm-cross-realm" },
+
+    "test-vm-context.js": { "category": "deferred-vm-cross-realm" },
+    "test-vm-context-async-script.js": { "category": "deferred-vm-cross-realm" },
+    "test-vm-context-dont-contextify.js": { "category": "deferred-vm-cross-realm" },
+    "test-vm-basic.js": { "category": "deferred-vm-cross-realm" },
+    "test-util-promisify.js": { "category": "deferred-vm-cross-realm", "expectedFailure": "vm.runInNewContext" },
+    "test-buffer-bytelength.js": { "category": "deferred-vm-cross-realm" },
+    "test-buffer-arraybuffer.js": { "category": "deferred-vm-cross-realm" },
+
+    "test-timers-clearImmediate-als.js": { "category": "asynclocalstorage-promise-hooks" },
+    "test-async-hooks-async-await.js": { "category": "asynclocalstorage-promise-hooks" },
+    "test-async-hooks-correctly-switch-promise-hook.js": { "category": "asynclocalstorage-promise-hooks" },
+
+    "test-assert-calltracker-calls.js": { "category": "no-marker-bootstrap" },
+    "test-util-getcallsites-preparestacktrace.js": { "category": "no-marker-bootstrap" }
+  }
+}
