@@ -16,6 +16,28 @@ import { createNapiHost } from "./napi-host";
 import { composePolicies, defaultBrowserPolicies, compressionViaCompressionStream, policyRegistry } from "./policies";
 import { defineEdgeEnv, toLegacyShape, asPreset } from "./edge-env";
 import { v8Serdes } from "./edge-env/presets/v8-serdes";
+import { bufferPoolDisable } from "./edge-env/presets/buffer-pool-disable";
+import { taskQueueEnqueueFix } from "./edge-env/presets/task-queue-enqueue-fix";
+import { inboundHttpsViaSW } from "./edge-env/presets/inbound-https-via-sw";
+import { outboundThrow } from "./edge-env/presets/outbound-throw";
+import { outboundFetchTunnel } from "./edge-env/presets/outbound-fetch-tunnel";
+import { processExitTerminates } from "./edge-env/presets/process-exit-terminates";
+import { processMethodsWasmState } from "./edge-env/presets/process-methods-wasm-state";
+import { fastReadFile } from "./edge-env/presets/fast-readfile";
+import { wasmCompileViaHost } from "./edge-env/presets/wasm-compile-via-host";
+import { bufferWriteSync } from "./edge-env/presets/buffer-write-sync";
+import { zlibWriteStateWasm } from "./edge-env/presets/zlib-writestate-wasm";
+import { compressionViaCompressionStream as compressionViaCompressionStreamPreset } from "./edge-env/presets/compression-via-compressionstream";
+import { cryptoHostRandom } from "./edge-env/presets/crypto-host-random";
+import { cryptoViaSubtle } from "./edge-env/presets/crypto-via-subtle";
+import { cryptoHashViaHostWorker } from "./edge-env/presets/crypto-hash-via-host-worker";
+import { cryptoHmacViaHostWorker } from "./edge-env/presets/crypto-hmac-via-host-worker";
+import { esmViaBlobImport } from "./edge-env/presets/esm-via-blob-import";
+import { esmRequirePreeval } from "./edge-env/presets/esm-require-preeval";
+import { esmRequireSucraseBackstop } from "./edge-env/presets/esm-require-sucrase-backstop";
+import { bufferWasmAliased } from "./edge-env/presets/buffer-wasm-aliased";
+import { childProcessViaExecutor } from "./edge-env/presets/child-process-via-executor";
+import { workerThreadsPerThread } from "./edge-env/presets/worker-threads-per-thread";
 import { createBundledFs } from "./host/fs/adapters/bundled";
 // opfs + layered adapters now live on the bridge worker.  Runtime
 // worker has only a minimal bundled-fs for any wasi-shim paths that
@@ -1263,10 +1285,58 @@ async function runEdgeWithEmnapi() {
   // migrated into src/edge-env/presets/ and add the native versions.
   // Once every policy is migrated, drop the filter and the import from
   // ./policies entirely.
-  const migratedNames = new Set<string>([v8Serdes.name, "v8-serdes-shim"]);
+  const migratedNames = new Set<string>([
+    v8Serdes.name, "v8-serdes-shim",
+    bufferPoolDisable.name,
+    taskQueueEnqueueFix.name,
+    inboundHttpsViaSW.name,
+    outboundThrow.name,
+    outboundFetchTunnel.name,
+    processExitTerminates.name,
+    processMethodsWasmState.name,
+    fastReadFile.name,
+    wasmCompileViaHost.name,
+    bufferWriteSync.name,
+    zlibWriteStateWasm.name,
+    compressionViaCompressionStreamPreset.name,
+    cryptoHostRandom.name,
+    cryptoViaSubtle.name,
+    cryptoHashViaHostWorker.name,
+    cryptoHmacViaHostWorker.name,
+    esmViaBlobImport.name,
+    esmRequirePreeval.name,
+    esmRequireSucraseBackstop.name,
+    bufferWasmAliased.name,
+    childProcessViaExecutor.name,
+    workerThreadsPerThread.name,
+  ]);
   const legacyPolicies = [...defaultBrowserPolicies, ...extraPolicies]
     .filter((p) => !migratedNames.has(p.name));
-  const nativePresets = [v8Serdes];
+  const nativePresets = [
+    v8Serdes,
+    bufferPoolDisable,
+    taskQueueEnqueueFix,
+    inboundHttpsViaSW,
+    outboundThrow,
+    outboundFetchTunnel,
+    processExitTerminates,
+    processMethodsWasmState,
+    fastReadFile,
+    wasmCompileViaHost,
+    bufferWriteSync,
+    zlibWriteStateWasm,
+    compressionViaCompressionStreamPreset,
+    cryptoHostRandom,
+    cryptoViaSubtle,
+    cryptoHashViaHostWorker,
+    cryptoHmacViaHostWorker,
+    esmViaBlobImport,
+    esmRequirePreeval,
+    esmRequireSucraseBackstop,
+    bufferWasmAliased,
+    childProcessViaExecutor,
+    workerThreadsPerThread,
+  ];
   const { env } = defineEdgeEnv({
     presets: [...legacyPolicies.map(asPreset), ...nativePresets],
   });
