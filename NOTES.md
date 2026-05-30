@@ -92,6 +92,36 @@ the browser-target tree.
 
 ### Newly opened
 
+- `corpus-mustcall-not-verified` (opened 2026-05-30).  Tests using
+  `common.mustCall(fn, N)` on ASYNC events (stream `'end'` / `'close'`,
+  timers, async_hooks, ...) are not honestly verified by the corpus
+  runner.  Real Node lets the event loop drain naturally — once no more
+  handles are pending, `'beforeExit'` fires, then `'exit'`, at which
+  point mustCall's at-exit verifier runs against accurate counts.  Our
+  libuv-wasix loop does NOT self-drain: after the user script's
+  synchronous portion completes, deferring process.exit via
+  setTimeout(0), setImmediate, or `process.on('beforeExit')` all fail
+  to fire the queued exit — wasm hangs.  We therefore call process.exit
+  synchronously from the driver, terminating the loop BEFORE async
+  events fire, which means mustCall's verifier sees actual=0 for any
+  event-driven handler.  Scaled-corpus measurement shows **87 of 178
+  failures are mustCall mismatches** that would convert to passes (or
+  honest failures) under a draining loop.  Fix requires making
+  libuv-wasix honor natural drain (deep architectural work) OR a
+  fundamentally different runner topology where each test runs in its
+  own wasm instance with a timeout-based exit watchdog.  Until then,
+  treat any pass rate higher than the synchronous-only baseline as
+  potentially inflated.
+
+- `edge-env-migration-thin-shim` (opened 2026-05-30).  Two presets
+  (`worker-threads-per-thread`, `child-process-via-executor`) are
+  partially migrated to the new edge-env framework — they live at the
+  new path but their runtime sources still import from the legacy
+  `src/policies/child-process-via-executor/` folder.  Should be moved
+  fully when those files are next touched substantively — extract the
+  template literals into sibling `.runtime.js` files (same pattern as
+  `v8-serdes`) and update the imports.
+
 - ~~`esm-rewrite-source-maps`~~ — **RESOLVED 2026-05-30 (same
   day).**  The blob trampoline now emits a Source Map v3 alongside
   the `// # sourceURL=` pragma — accumulated by
