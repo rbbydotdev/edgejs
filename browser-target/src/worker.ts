@@ -42,6 +42,7 @@ import { bufferBase64 } from "./edge-env/presets/buffer-base64";
 import { bufferCopy } from "./edge-env/presets/buffer-copy";
 import { vmSameRealm } from "./edge-env/presets/vm-same-realm";
 import { pollWakeOnSchedule } from "./edge-env/presets/poll-wake-on-schedule";
+import { utilGetOwnNonIndexProperties } from "./edge-env/presets/util-get-own-non-index-properties";
 import { decodeBase64 } from "./edge-env/vendor-adapters/unenv-base64";
 import { createBundledFs } from "./host/fs/adapters/bundled";
 // opfs + layered adapters now live on the bridge worker.  Runtime
@@ -1328,6 +1329,7 @@ async function runEdgeWithEmnapi() {
     bufferCopy.name,
     vmSameRealm.name,
     pollWakeOnSchedule.name,
+    utilGetOwnNonIndexProperties.name,
   ]);
   const legacyPolicies = [...defaultBrowserPolicies, ...extraPolicies]
     .filter((p) => !migratedNames.has(p.name));
@@ -1359,6 +1361,7 @@ async function runEdgeWithEmnapi() {
     bufferCopy,
     vmSameRealm,
     pollWakeOnSchedule,
+    utilGetOwnNonIndexProperties,
   ];
   // buffer-base64 preset's runtime patch calls globalThis.__edgeDecodeBase64
   // to run the vendored unenv/base64-js decoder.  Install BEFORE the napi
