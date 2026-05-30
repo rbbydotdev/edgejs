@@ -37,59 +37,45 @@ function loadList(filter) {
   return tests;
 }
 
+// buildDriver — keep the returned template literal LEAN.  The script gets
+// URL-encoded into a `?script=` query param and there's an empirical
+// ~2150-char URL-encoded cliff in the transport (see exit-experiments
+// agent report 2026-05-30 in commit history): drivers larger than that
+// fail to make forward progress past the `[override] matched node:vm`
+// stage — the wasm boots but never executes.  Comments INSIDE the
+// template inflate the URL; keep them OUT here.
+//
+// Design notes (don't inline these in the template):
+//   - PASS / FAIL markers are scraped from stdout by runOne() — the
+//     _start sentinel can't carry the exit code because process.exit()
+//     uses TerminateExecution which doesn't propagate.
+//   - process.exit() throws a __edgeExitSignal sentinel (from the
+//     process-exit-terminates preset) so the catch handles common.skip
+//     correctly.
+//   - exit is deferred via an UNREF'd 5s watchdog: with
+//     poll-wake-on-schedule shipping, the libuv loop drains naturally
+//     for sync + async work alike, and the unref'd timer doesn't keep
+//     the loop alive — so when work IS done, _start exits well within
+//     5s.  The watchdog catches genuine leaked-handle cases.
 function buildDriver(testName) {
-  // The browser-target runtime doesn't propagate process.exit() codes
-  // through to the _start sentinel (TerminateExecution unwinds without
-  // an ExitSignal), so we can't rely on exit codes. Instead, print
-  // unambiguous PASS/FAIL markers to stdout that the harness greps.
-  //
-  // ExitSignal handling: when a test calls process.exit() (e.g. via
-  // common.skip), the process-exit-terminates policy throws a sentinel
-  // {__edgeExitSignal: true, code} after the wasm-side exit is requested.
-  // That throw is REAL Node behavior: V8 TerminateExecution unwinds the
-  // stack out of user code.  Treat it as a clean exit honoring the code
-  // (skip = exit 0 = PASS; tests that exit nonzero are real failures).
   return `
     function isExitSignal(e) {
       return e && typeof e === 'object' && e.__edgeExitSignal === true;
     }
-    // Deferred exit: give the libuv loop a chance to drain async events
-    // (stream 'end' / 'close', timers, async_hooks callbacks, etc.) so
-    // common.mustCall(fn, N)'s at-exit verifier (process.on('exit', ...))
-    // sees ACCURATE counts.  Without the deferral, the corpus driver's
-    // explicit process.exit terminates the loop before async events fire.
-    //
-    // Requires the poll-wake-on-schedule preset — it wraps
-    // internalBinding('timers').scheduleTimer to notify the wasi-shim's
-    // wake slot, otherwise this setTimeout would wait up to ~30s for
-    // poll_oneoff's Atomics.wait to time out.
     var exitArmed = false;
     function deferredExit(code) {
       if (exitArmed) return;
       exitArmed = true;
       process.exitCode = code | 0;
-      // ATTEMPTED NATURAL DRAIN BUT FAILED IN CORPUS CONTEXT:
-      // browser-target/scripts/exit-experiments.mjs proves that an
-      // UNREF'd setTimeout backstop + natural drain works in
-      // isolation, BUT the same shape inside the corpus runner causes
-      // EVERY test to time out (wasm starts, modules load, then no
-      // sentinel — execution stops after vm preset loads).  Root
-      // cause unknown — possibly an interaction with a preset's
-      // module load order under defaultBrowserPolicies that doesn't
-      // happen in the experiments runner.  See NOTES.md entry
-      // corpus-natural-drain-blocked.
-      //
-      // 750ms watchdog is brittle but functional.  Real fix: track
-      // down why drain works in experiments but not corpus.
-      var watchdog = setTimeout(function() { process.exit(process.exitCode | 0); }, 750);
-      void watchdog;
+      var wd = setTimeout(function() { process.exit(process.exitCode | 0); }, 5000);
+      if (wd && typeof wd.unref === 'function') wd.unref();
     }
-    process.on('uncaughtException', (e) => {
+    process.on('uncaughtException', function(e) {
       if (isExitSignal(e)) return;
       console.log('[CORPUS-RESULT] FAIL uncaught: ' + (e && e.stack || String(e)).split('\\n')[0]);
       deferredExit(1);
     });
-    process.on('unhandledRejection', (r) => {
+    process.on('unhandledRejection', function(r) {
       console.log('[CORPUS-RESULT] FAIL unhandled: ' + (r && r.stack || String(r)).split('\\n')[0]);
       deferredExit(1);
     });
@@ -99,13 +85,8 @@ function buildDriver(testName) {
       deferredExit(0);
     } catch (e) {
       if (isExitSignal(e)) {
-        // Test called process.exit (e.g. common.skip → exit(0), or its
-        // own error path → exit(nonzero)).  Honor the code as Node does.
         var code = (e.code | 0);
-        if (code === 0) {
-          console.log('[CORPUS-RESULT] PASS');
-          process.exit(0);
-        }
+        if (code === 0) { console.log('[CORPUS-RESULT] PASS'); process.exit(0); }
         console.log('[CORPUS-RESULT] FAIL exit=' + code);
         process.exit(code);
       }
