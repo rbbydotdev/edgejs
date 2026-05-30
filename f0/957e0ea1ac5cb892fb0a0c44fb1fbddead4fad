@@ -1,0 +1,35 @@
+browser-target/src/edge-env/presets/string-decoder-js/string-decoder-js.patch.js
+  s_92c1b47c0d6ee8::t_e2cbbec21c9998 216-221,223-224
+  s_92c1b47c0d6ee8::t_5d2f128b9f870a 358-379,384-438
+  s_92c1b47c0d6ee8::t_09758333b59a84 1-215,222,225-357,439
+  s_92c1b47c0d6ee8::t_53836abcbac39f 380-383
+browser-target/src/edge-env/presets/os-priority-stateful.ts
+  s_92c1b47c0d6ee8::t_ed39cab13c417c 1-30
+browser-target/src/edge-env/presets/zlib-init-params-wasm.ts
+  s_92c1b47c0d6ee8::t_aef96a771e8e96 1-25
+browser-target/src/edge-env/presets/string-decoder-js.ts
+  s_92c1b47c0d6ee8::t_39a19a7d24bee6 1-30,37-38
+  s_92c1b47c0d6ee8::t_1a0b58175680f9 31-36
+browser-target/src/edge-env/presets/zlib-init-params-wasm/zlib-init-params-wasm.patch.js
+  s_92c1b47c0d6ee8::t_9145485a484859 1-125
+browser-target/src/edge-env/presets/os-priority-stateful/os-priority-stateful.patch.js
+  s_92c1b47c0d6ee8::t_d74b0892152abb 1-121
+NOTES.md
+  s_92c1b47c0d6ee8::t_75ac6b4a020d57 95-114
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "f0957e0ea1ac5cb892fb0a0c44fb1fbddead4fad",
+  "prompts": {},
+  "sessions": {
+    "s_92c1b47c0d6ee8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "dca99c1c-d946-4444-9a53-9ba89db5d748",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
