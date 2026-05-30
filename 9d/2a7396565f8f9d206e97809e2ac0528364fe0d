@@ -1,0 +1,30 @@
+browser-target/scripts/node-corpus-runner.mjs
+  s_92c1b47c0d6ee8::t_b28879fa8cf443 56-70,77,79,81,85,89-90,105
+  s_92c1b47c0d6ee8::t_57a698bcf7bc00 71-76
+  s_92c1b47c0d6ee8::t_aa7ca0c32acf21 143-150,154-155,157-164
+browser-target/src/edge-env/presets/poll-wake-on-schedule/poll-wake-on-schedule.patch.js
+  s_92c1b47c0d6ee8::t_af2f37ac1b23e7 1-82
+browser-target/src/edge-env/presets/poll-wake-on-schedule.ts
+  s_92c1b47c0d6ee8::t_1c6258ba40178e 1-28
+browser-target/src/worker.ts
+  s_92c1b47c0d6ee8::t_121644ef04fc4e 1351
+  s_92c1b47c0d6ee8::t_2e9916328147ad 1320
+  s_92c1b47c0d6ee8::t_f04f4fcbb559c8 1543-1557
+  s_92c1b47c0d6ee8::t_9a8cd6ce3f4a89 44
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "9d2a7396565f8f9d206e97809e2ac0528364fe0d",
+  "prompts": {},
+  "sessions": {
+    "s_92c1b47c0d6ee8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "dca99c1c-d946-4444-9a53-9ba89db5d748",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
