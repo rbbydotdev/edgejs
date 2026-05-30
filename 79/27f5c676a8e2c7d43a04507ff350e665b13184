@@ -1,0 +1,26 @@
+browser-target/src/edge-env/presets/buffer-base64.ts
+  s_92c1b47c0d6ee8::t_6aa82a37f458d0 1-49
+browser-target/src/edge-env/presets/buffer-base64/buffer-from-base64.patch.js
+  s_92c1b47c0d6ee8::t_c10ac127fa9fd9 1-80,83-91
+  s_92c1b47c0d6ee8::t_eeb9c79e7f3550 81-82
+browser-target/src/worker.ts
+  s_92c1b47c0d6ee8::t_b8d7147af6526e 1342,1344-1348
+  s_92c1b47c0d6ee8::t_f0d1ae39adaf96 1314
+  s_92c1b47c0d6ee8::t_be96fb497dddbe 41-42
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "7927f5c676a8e2c7d43a04507ff350e665b13184",
+  "prompts": {},
+  "sessions": {
+    "s_92c1b47c0d6ee8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "dca99c1c-d946-4444-9a53-9ba89db5d748",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
