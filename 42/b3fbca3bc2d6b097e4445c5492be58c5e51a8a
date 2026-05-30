@@ -1,0 +1,27 @@
+browser-target/scripts/node-corpus-runner.mjs
+  s_92c1b47c0d6ee8::t_d0f0b0d85ea6c3 429-430,433-444
+  s_92c1b47c0d6ee8::t_cc106b892b1e40 431-432
+  s_92c1b47c0d6ee8::t_24d0bb6f12a74a 15
+  s_92c1b47c0d6ee8::t_acbc1b9f7f716f 284-307,312-314,316-319,329-330
+  s_92c1b47c0d6ee8::t_15b333878a2f6b 30,34-79
+  s_92c1b47c0d6ee8::t_7aa91ead9fb050 320
+  s_92c1b47c0d6ee8::t_fecc46801441ff 346-354,364
+browser-target/known-failures.json
+  s_92c1b47c0d6ee8::t_7a7f43522037fb 1-70
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "42b3fbca3bc2d6b097e4445c5492be58c5e51a8a",
+  "prompts": {},
+  "sessions": {
+    "s_92c1b47c0d6ee8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "dca99c1c-d946-4444-9a53-9ba89db5d748",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
