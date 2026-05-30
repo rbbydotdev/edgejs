@@ -1,0 +1,25 @@
+browser-target/src/edge-env/presets/vm-same-realm.ts
+  s_92c1b47c0d6ee8::t_01e7b716b47838 1-34
+browser-target/src/worker.ts
+  s_92c1b47c0d6ee8::t_1eeb76e37e4410 1318
+  s_92c1b47c0d6ee8::t_a64b3f2130e86c 1348
+  s_92c1b47c0d6ee8::t_f39717b0ee1a2c 43
+browser-target/src/edge-env/presets/vm-same-realm/vm-same-realm.patch.js
+  s_92c1b47c0d6ee8::t_1d32ddf8027a57 1-91
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "046f72d7dad84cdbde98f691b7f088982dc938a4",
+  "prompts": {},
+  "sessions": {
+    "s_92c1b47c0d6ee8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "dca99c1c-d946-4444-9a53-9ba89db5d748",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
