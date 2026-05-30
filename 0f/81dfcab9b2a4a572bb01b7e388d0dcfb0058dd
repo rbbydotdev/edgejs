@@ -1,0 +1,27 @@
+browser-target/scripts/exit-experiments.mjs
+  s_92c1b47c0d6ee8::t_269373c7756cb5 198-243
+  s_92c1b47c0d6ee8::t_823185efb4f3c2 179-197
+  s_92c1b47c0d6ee8::t_bd48811bdc5db8 1-148,244-329
+  s_92c1b47c0d6ee8::t_d94376a2c032c6 149-178
+browser-target/scripts/node-corpus-runner.mjs
+  s_92c1b47c0d6ee8::t_65f633b7408e3f 79-80
+  s_92c1b47c0d6ee8::t_f312c3ebdeb0bb 71-78,82-85
+  s_92c1b47c0d6ee8::t_6ab0d78ce37373 147-153
+  s_92c1b47c0d6ee8::t_78f947726db362 81
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "0f81dfcab9b2a4a572bb01b7e388d0dcfb0058dd",
+  "prompts": {},
+  "sessions": {
+    "s_92c1b47c0d6ee8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "dca99c1c-d946-4444-9a53-9ba89db5d748",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "robby <robby.polana+github@gmail.com>"
+    }
+  }
+}
